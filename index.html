@@ -8351,6 +8351,114 @@ window.pushPublicDigitalSnapshotQuiet = async function () {
     }
 };
 
+/** Copia testo (Clipboard API + fallback execCommand per Safari / contesti non sicuri). */
+window.__serviceHubCopyTextWithFallback = async function (text) {
+    const t = String(text || "");
+    if (!t) return false;
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(t);
+            return true;
+        }
+    } catch (_) {}
+    try {
+        const ta = document.createElement("textarea");
+        ta.value = t;
+        ta.setAttribute("readonly", "");
+        ta.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0;";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        ta.setSelectionRange(0, t.length);
+        const ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        return ok;
+    } catch (_) {
+        return false;
+    }
+};
+
+/** Modale con URL completo selezionabile: così da tablet si può sempre copiare / incollare. */
+window.__serviceHubShowDigitalRemoteLinkModal = function (href) {
+    const prev = document.getElementById("sh-digital-remote-link-modal");
+    if (prev) prev.remove();
+    const backdrop = document.createElement("div");
+    backdrop.id = "sh-digital-remote-link-modal";
+    backdrop.setAttribute("role", "dialog");
+    backdrop.setAttribute("aria-modal", "true");
+    backdrop.style.cssText =
+        "position:fixed;inset:0;z-index:2147483647;background:rgba(15,23,42,0.78);display:flex;align-items:center;justify-content:center;padding:14px;box-sizing:border-box;font-family:system-ui,-apple-system,sans-serif;";
+    const card = document.createElement("div");
+    card.style.cssText =
+        "width:100%;max-width:540px;background:#0f172a;border:1px solid rgba(148,163,184,0.38);border-radius:18px;padding:20px 22px;box-shadow:0 28px 56px rgba(0,0,0,0.5);color:#e2e8f0;";
+    const h = document.createElement("h2");
+    h.style.cssText = "margin:0 0 8px;font-size:17px;font-weight:800;letter-spacing:0.02em;";
+    h.textContent = "Link Digital remoto";
+    const intro = document.createElement("p");
+    intro.style.cssText = "margin:0 0 10px;font-size:13px;line-height:1.45;color:#94a3b8;";
+    card.onclick = function (e) {
+        e.stopPropagation();
+    };
+    intro.innerHTML =
+        "Usa il campo qui sotto per <strong>copiare e incollare</strong> su altri dispositivi. Il report remoto si aggiorna da solo dopo ogni salvataggio dall'app operatore. Se il copia automatico non funziona, tieni premuto sul testo e scegli «Copia».";
+    const ta = document.createElement("textarea");
+    ta.readOnly = true;
+    ta.value = href;
+    ta.style.cssText =
+        "width:100%;min-height:96px;box-sizing:border-box;margin:0 0 12px;padding:12px 14px;border-radius:12px;border:1px solid rgba(148,163,184,0.45);background:#020617;color:#f1f5f9;font:600 12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;";
+    const status = document.createElement("p");
+    status.style.cssText = "margin:0 0 14px;font-size:13px;font-weight:700;min-height:1.4em;";
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end;";
+    const btnCopy = document.createElement("button");
+    btnCopy.type = "button";
+    btnCopy.textContent = "Copia di nuovo";
+    btnCopy.style.cssText =
+        "cursor:pointer;padding:10px 16px;border-radius:11px;border:1px solid rgba(99,102,241,0.5);background:linear-gradient(135deg,#6366f1,#4f46e5);color:#fff;font-weight:800;font-size:12px;";
+    const btnClose = document.createElement("button");
+    btnClose.type = "button";
+    btnClose.textContent = "Chiudi";
+    btnClose.style.cssText =
+        "cursor:pointer;padding:10px 16px;border-radius:11px;border:1px solid rgba(148,163,184,0.4);background:rgba(30,41,59,0.95);color:#e2e8f0;font-weight:700;font-size:12px;";
+    function setStatus(ok, manual) {
+        if (ok) {
+            status.style.color = "#86efac";
+            status.textContent = manual ? "Grazie: copiato di nuovo negli appunti." : "Grazie: link copiato negli appunti.";
+        } else {
+            status.style.color = "#fde047";
+            status.textContent = "Seleziona il testo sopra e copia manualmente (menu contestuale).";
+        }
+    }
+    async function doCopy(manual) {
+        const ok = await window.__serviceHubCopyTextWithFallback(href);
+        setStatus(ok, manual);
+        try {
+            ta.focus();
+            ta.select();
+            ta.setSelectionRange(0, href.length);
+        } catch (_) {}
+    }
+    btnCopy.onclick = function () {
+        doCopy(true);
+    };
+    btnClose.onclick = function () {
+        backdrop.remove();
+    };
+    backdrop.onclick = function (e) {
+        if (e.target === backdrop) backdrop.remove();
+    };
+    row.appendChild(btnCopy);
+    row.appendChild(btnClose);
+    card.appendChild(h);
+    card.appendChild(intro);
+    card.appendChild(ta);
+    card.appendChild(status);
+    card.appendChild(row);
+    backdrop.appendChild(card);
+    document.body.appendChild(backdrop);
+    doCopy(false);
+};
+
 window.publishDigitalRemoteReport = async () => {
     if (!db || !user || !user.uid) {
         alert('Serve il cloud attivo (LED verde). Accedi e riprova.');
@@ -8392,13 +8500,17 @@ window.publishDigitalRemoteReport = async () => {
     const u = new URL('digital-view.html', window.location.href);
     u.searchParams.set('k', shareKey);
     u.searchParams.set('app', appId);
-    u.searchParams.set('dv', '9');
+    u.searchParams.set('dv', '10');
     const href = u.href;
-    try {
-        await navigator.clipboard.writeText(href);
-        alert('Link remoto (fisso per tutti i dispositivi) copiato negli appunti.\n\nIl Digital si aggiorna da solo dopo ogni salvataggio.\n\nSe su un telefono vedi ancora la vecchia scritta «Apri e condividi…»: è cache — usa questo link appena copiato, oppure Safari → icona AA → «Siti web» → «Rimuovi dati» solo per questo sito, poi riapri.\n\n' + href);
-    } catch (_) {
-        prompt('Copia questo link (Digital remoto):', href);
+    if (typeof window.__serviceHubShowDigitalRemoteLinkModal === "function") {
+        window.__serviceHubShowDigitalRemoteLinkModal(href);
+    } else {
+        try {
+            await navigator.clipboard.writeText(href);
+            alert("Link remoto copiato negli appunti.\n\n" + href);
+        } catch (_) {
+            prompt("Copia questo link (Digital remoto):", href);
+        }
     }
 };
 

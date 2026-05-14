@@ -516,7 +516,7 @@ window.colorPreviewNumber = function(tankName, value) {
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, getDocFromServer, onSnapshot, collection, addDoc, query, getDocs, limit, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, initializeFirestore, memoryLocalCache, doc, setDoc, getDoc, getDocFromServer, onSnapshot, collection, addDoc, query, getDocs, limit, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Configurazione Firebase del progetto ServiceHub (servicehub-18309)
         // Usata su GitHub Pages e ovunque non sia disponibile la config iniettata da Canvas.
@@ -542,7 +542,15 @@ window.colorPreviewNumber = function(tankName, value) {
             if (firebaseConfig && firebaseConfig.apiKey) {
                 app = initializeApp(firebaseConfig);
                 auth = getAuth(app);
-                db = getFirestore(app);
+                try {
+                    db = initializeFirestore(app, {
+                        localCache: memoryLocalCache(),
+                        experimentalForceLongPolling: true
+                    });
+                } catch (eFS) {
+                    console.warn('[ServiceHub] Firestore initializeFirestore non disponibile, uso getFirestore:', eFS && eFS.message);
+                    db = getFirestore(app);
+                }
                 window.__SERVICEHUB_FIREBASE_PROJECT = firebaseConfig.projectId || '';
                 console.log('[ServiceHub] Firebase attivo, progetto:', firebaseConfig.projectId);
             } else {
@@ -589,6 +597,8 @@ window.colorPreviewNumber = function(tankName, value) {
         let __shUnsubPlant = null;
         let __shUnsubSettings = null;
         let __shUnsubAlarm = null;
+        /** Salvataggi arrivati prima che Firebase Auth fosse pronto: si ripete il push dopo il login. */
+        let __plantRetrySaveAfterAuth = false;
 
         window.initAlarmConfigListener = function() {
             if (!user || !user.uid || !db) return;
@@ -922,6 +932,11 @@ window.colorPreviewNumber = function(tankName, value) {
                     syncWithCloud();
                     window.__hydrateDigitalShareKeyFromCloud();
                     window.initAlarmConfigListener();
+                    setTimeout(function () {
+                        if (user && user.uid && db && __plantRetrySaveAfterAuth && typeof window.saveData === 'function') {
+                            void window.saveData(true);
+                        }
+                    }, 2000);
                 } else {
                     if(led) led.className = "w-2.5 h-2.5 rounded-full bg-red-600 shadow-[0_0_10px_#dc2626]";
                 }
@@ -1035,7 +1050,10 @@ window.colorPreviewNumber = function(tankName, value) {
                     }
                 }, 280);
             };
-            __shUnsubPlant = onSnapshot(dataDoc, (snapshot) => {
+            __shUnsubPlant = onSnapshot(
+                dataDoc,
+                { includeMetadataChanges: true },
+                (snapshot) => {
                 if (snapshot.exists()) {
                     const d = snapshot.data();
                     applyData(d, { forceRemotePlant: true });
@@ -1123,6 +1141,7 @@ window.colorPreviewNumber = function(tankName, value) {
             } catch (_) {}
             try { 
                 await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data, { merge: true }); 
+                __plantRetrySaveAfterAuth = false;
                 if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
                 try {
                     localStorage.setItem('stabileCurrentData', JSON.stringify(data));
@@ -1562,6 +1581,7 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!user || !user.uid || !db) {
                 if (!(window.isEditingArchive && window.editingArchiveId)) {
                     snapshotPlantToLocalStorage();
+                    __plantRetrySaveAfterAuth = true;
                 }
                 return;
             }
@@ -1722,6 +1742,7 @@ window.colorPreviewNumber = function(tankName, value) {
             } catch (_) {}
             try { 
                 await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data, { merge: true }); 
+                __plantRetrySaveAfterAuth = false;
                 if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
                 try {
                     localStorage.setItem('stabileCurrentData', JSON.stringify(data));

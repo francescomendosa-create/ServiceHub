@@ -516,7 +516,7 @@ window.colorPreviewNumber = function(tankName, value) {
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, initializeFirestore, doc, setDoc, getDoc, getDocFromServer, onSnapshot, collection, addDoc, query, getDocs, limit, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, getDoc, getDocFromServer, onSnapshot, collection, addDoc, query, getDocs, limit, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Configurazione Firebase del progetto ServiceHub (servicehub-18309)
         // Usata su GitHub Pages e ovunque non sia disponibile la config iniettata da Canvas.
@@ -542,12 +542,7 @@ window.colorPreviewNumber = function(tankName, value) {
             if (firebaseConfig && firebaseConfig.apiKey) {
                 app = initializeApp(firebaseConfig);
                 auth = getAuth(app);
-                try {
-                    db = initializeFirestore(app, { experimentalForceLongPolling: true });
-                } catch (eFS) {
-                    console.warn('[ServiceHub] initializeFirestore fallito, uso getFirestore:', eFS && eFS.message);
-                    db = getFirestore(app);
-                }
+                db = getFirestore(app);
                 window.__SERVICEHUB_FIREBASE_PROJECT = firebaseConfig.projectId || '';
                 console.log('[ServiceHub] Firebase attivo, progetto:', firebaseConfig.projectId);
             } else {
@@ -978,11 +973,12 @@ window.colorPreviewNumber = function(tankName, value) {
             return Number.isFinite(t) ? t : null;
         };
 
-        /** true se stabileCurrentData locale ha lastUpdate più recente del doc remoto (entrambi con ISO valido). */
+        /** true se conviene NON sostituire locale/DOM con `remote` (bootstrap / pull server). */
         const __localPlantLastUpdateNewerThanRemote = (remote) => {
             if (!remote || typeof remote !== 'object') return false;
             const rMs = __plantLastUpdateMs(remote.lastUpdate);
             const lMs = __plantLastUpdateMs(__readPrevPlantLastUpdateIso());
+            if (lMs != null && rMs == null) return true;
             if (rMs == null || lMs == null) return false;
             return lMs > rMs;
         };
@@ -1000,11 +996,6 @@ window.colorPreviewNumber = function(tankName, value) {
                     }
                 } catch (_) {
                     prev = {};
-                }
-                const prevMs = __plantLastUpdateMs(prev.lastUpdate);
-                const remoteMs = __plantLastUpdateMs(remote.lastUpdate);
-                if (prevMs != null && remoteMs != null && prevMs > remoteMs) {
-                    return;
                 }
                 const merged = { ...prev, ...remote };
                 localStorage.setItem('stabileCurrentData', JSON.stringify(merged));
@@ -1073,18 +1064,6 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (snapshot.exists()) {
                     const d = snapshot.data();
                     const md = snapshot.metadata;
-                    // Cache locale più fresca del payload nello snapshot: non applicare (evita flash di dati vecchi).
-                    // NON chiamare saveData verso Firestore qui: il doc in cache non è la verità server; un push
-                    // riscriverebbe il cloud con numeri vecchi di questo dispositivo e annullerebbe l'altro telefono.
-                    if (md && md.fromCache && __localPlantLastUpdateNewerThanRemote(d)) {
-                        if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
-                            window.__applyPlantFromLocalStorageFallback();
-                        }
-                        if (!md || !md.hasPendingWrites) {
-                            schedulePlantTruthFromServer();
-                        }
-                        return;
-                    }
                     applyData(d, { forceRemotePlant: true });
                     mergePlantIntoStabileLocalStorage(d);
                     if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
@@ -1121,10 +1100,16 @@ window.colorPreviewNumber = function(tankName, value) {
                 .then((snap) => {
                     if (snap.exists()) {
                         const d = snap.data();
-                        // getDocFromServer = verità server: applica sempre (evita che lastUpdate locale
-                        // più alto per skew orologio blocchi per sempre gli aggiornamenti dall'altro dispositivo).
-                        applyData(d, { forceRemotePlant: true });
-                        mergePlantIntoStabileLocalStorage(d);
+                        // Se l'ultimo salvataggio locale è più recente del doc server, NON sovrascrivere DOM/storage:
+                        // altrimenti al riavvio si applica un cloud vecchio e pagehide riscrive stabileCurrentData con numeri sbagliati.
+                        if (__localPlantLastUpdateNewerThanRemote(d)) {
+                            if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
+                                window.__applyPlantFromLocalStorageFallback();
+                            }
+                        } else {
+                            applyData(d, { forceRemotePlant: true });
+                            mergePlantIntoStabileLocalStorage(d);
+                        }
                     } else if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
                         window.__applyPlantFromLocalStorageFallback();
                     }
@@ -5180,10 +5165,16 @@ window.updateStoricoButton = async function() {
                 .then(function (snap) {
                     if (snap.exists()) {
                         const d = snap.data();
-                        applyData(d, { forceRemotePlant: true });
-                        mergePlantIntoStabileLocalStorage(d);
-                        if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
-                            window.schedulePublicDigitalSnapshotSync();
+                        if (__localPlantLastUpdateNewerThanRemote(d)) {
+                            if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
+                                window.__applyPlantFromLocalStorageFallback();
+                            }
+                        } else {
+                            applyData(d, { forceRemotePlant: true });
+                            mergePlantIntoStabileLocalStorage(d);
+                            if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
+                                window.schedulePublicDigitalSnapshotSync();
+                            }
                         }
                     }
                 })

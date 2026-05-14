@@ -1678,7 +1678,9 @@ window.colorPreviewNumber = function(tankName, value) {
                 try {
                     localStorage.setItem('stabileCurrentData', JSON.stringify(data));
                 } catch (_) {}
-                if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
+                if (typeof window.flushPublicDigitalSnapshotNow === "function") {
+                    window.flushPublicDigitalSnapshotNow();
+                } else if (typeof window.schedulePublicDigitalSnapshotSync === "function") {
                     window.schedulePublicDigitalSnapshotSync();
                 }
             } catch (e) { 
@@ -2067,8 +2069,11 @@ window.colorPreviewNumber = function(tankName, value) {
                         data
                     );
 
-                    if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
-                        window.schedulePublicDigitalSnapshotSync();
+                    // PublicDigital deve leggere il DOM ancora "nuovo" (prima del ripristino pre-modifica sotto).
+                    try {
+                        await window.pushPublicDigitalSnapshotQuiet();
+                    } catch (e) {
+                        console.warn("[ServiceHub] archiveCurrentData edit publicDigital:", e && e.message);
                     }
 
                     // ✅ AGGIUNGI STORICO DEI SALVATAGGI PER TREND (anche per modifiche)
@@ -2173,8 +2178,10 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (window.setTankLevelBaselineFromSnapshotData) window.setTankLevelBaselineFromSnapshotData(data);
                 if (window.refreshAllTankLevelArrows) window.refreshAllTankLevelArrows();
 
-                if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
-                    window.schedulePublicDigitalSnapshotSync();
+                try {
+                    await window.pushPublicDigitalSnapshotQuiet();
+                } catch (e) {
+                    console.warn("[ServiceHub] archiveCurrentData nuovo backup publicDigital:", e && e.message);
                 }
 
                 btn.innerHTML = "SALVATO!";
@@ -8309,14 +8316,48 @@ window.closeDigitalPreview = () => {
 };
 
     window.__publicDigitalSyncTimer = null;
-/** Dopo ogni salvataggio su sharedDial/plant (o ricezione plant da altro tablet), aggiorna publicDigital così il remoto si aggiorna da solo. */
+/** Esegue subito (dopo 2 frame) la pubblicazione su publicDigital — usato dopo saveData così il client remoto non aspetta il debounce. */
+window.flushPublicDigitalSnapshotNow = function () {
+    if (!db || !user || !user.uid) return;
+    if (window.__publicDigitalSyncTimer) {
+        clearTimeout(window.__publicDigitalSyncTimer);
+        window.__publicDigitalSyncTimer = null;
+    }
+    var run = function () {
+        return Promise.resolve(window.pushPublicDigitalSnapshotQuiet())
+            .then(function (ok) {
+                if (!ok) {
+                    console.warn(
+                        "[ServiceHub] flushPublicDigitalSnapshotNow: publicDigital non aggiornato (controlla console per permission-denied)."
+                    );
+                }
+            })
+            .catch(function (e) {
+                console.error("[ServiceHub] flushPublicDigitalSnapshotNow:", e && e.message);
+            });
+    };
+    requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+            void run();
+        });
+    });
+};
+/** Dopo ricezione plant da altro tablet (onSnapshot), debounce leggero per non spammare Firestore. */
 window.schedulePublicDigitalSnapshotSync = function () {
     if (!db || !user || !user.uid) return;
     if (window.__publicDigitalSyncTimer) clearTimeout(window.__publicDigitalSyncTimer);
     window.__publicDigitalSyncTimer = setTimeout(function () {
         window.__publicDigitalSyncTimer = null;
-        window.pushPublicDigitalSnapshotQuiet();
-    }, 220);
+        Promise.resolve(window.pushPublicDigitalSnapshotQuiet())
+            .then(function (ok) {
+                if (!ok) {
+                    console.warn("[ServiceHub] schedulePublicDigitalSnapshotSync: push non riuscito.");
+                }
+            })
+            .catch(function (e) {
+                console.error("[ServiceHub] schedulePublicDigitalSnapshotSync:", e && e.message);
+            });
+    }, 80);
 };
 
 window.pushPublicDigitalSnapshotQuiet = async function () {
@@ -8652,7 +8693,7 @@ window.publishDigitalRemoteReport = async () => {
         const u = new URL("digital-view.html", window.location.href);
         u.searchParams.set("k", shareKey);
         u.searchParams.set("app", appId);
-        u.searchParams.set("dv", "11");
+        u.searchParams.set("dv", "12");
         const href = u.href;
 
         if (typeof window.__serviceHubShowDigitalRemoteLinkModal === "function") {

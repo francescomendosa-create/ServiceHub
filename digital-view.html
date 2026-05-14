@@ -13,7 +13,7 @@
   <meta name="apple-mobile-web-app-title" content="STABILE Digital" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <link rel="apple-touch-icon" href="sh-touch.png?v=shpc4" />
-  <link rel="stylesheet" href="digital-remote.css?v=dig11" />
+  <link rel="stylesheet" href="digital-remote.css?v=dig12" />
   <style>
     html, body {
       margin: 0;
@@ -102,6 +102,8 @@
     import { initializeApp, getApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
     import {
       getFirestore,
+      initializeFirestore,
+      memoryLocalCache,
       doc,
       onSnapshot,
       getDoc,
@@ -492,7 +494,17 @@
         } catch (_) {
           app = initializeApp(DEFAULT_FIREBASE_CONFIG, "digital-remote-viewer");
         }
-        const db = getFirestore(app);
+        const db = (function initRemoteFirestore() {
+          try {
+            return initializeFirestore(app, {
+              localCache: memoryLocalCache(),
+              experimentalForceLongPolling: true
+            });
+          } catch (err) {
+            console.warn("[Digital remoto] Firestore init:", err && err.message);
+            return getFirestore(app);
+          }
+        })();
         prefRef = doc(db, "artifacts", appIdParam, "publicDigital", shareKey);
 
         refreshHandler = async function () {
@@ -524,12 +536,19 @@
             return;
           }
           renderFromData(snap.data());
+          try {
+            if (snap.metadata && snap.metadata.fromCache) {
+              setTimeout(function () {
+                pullFromServer("snapshot-from-cache");
+              }, 300);
+            }
+          } catch (_) {}
         }
 
         onSnapshot(
           prefRef,
           { includeMetadataChanges: true },
-          (snap) => {
+          function (snap) {
             applySnapshot(snap);
           },
           (err) => {
@@ -540,8 +559,13 @@
           }
         );
 
+        var __lastPublicDigitalPullMs = 0;
+
         /** Lettura forzata da server (evita cache SDK / tab in background). */
         async function pullFromServer(reason) {
+          var now = Date.now();
+          if (now - __lastPublicDigitalPullMs < 450) return;
+          __lastPublicDigitalPullMs = now;
           try {
             const snap = await getDocFromServer(prefRef);
             applySnapshot(snap);
@@ -565,7 +589,7 @@
           if (document.visibilityState === "visible") {
             pullFromServer("interval");
           }
-        }, 40000);
+        }, 6000);
       })();
     }
   </script>

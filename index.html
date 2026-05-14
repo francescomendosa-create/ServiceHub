@@ -1058,50 +1058,57 @@ window.colorPreviewNumber = function(tankName, value) {
                     }
                 }, 280);
             };
-            __shUnsubPlant = onSnapshot(
-                dataDoc,
-                (snapshot) => {
-                if (snapshot.exists()) {
-                    const d = snapshot.data();
-                    const md = snapshot.metadata;
-                    // Solo se lo snapshot è ancora da CACHE e il locale è più recente: non applicare (evita flash giusto → vecchio).
-                    // Se fromCache è false, i dati vengono dal server: applica sempre così l'altro dispositivo si aggiorna subito
-                    // (altrimenti un orologio leggermente avanti blocca per sempre la sync).
-                    if (md && md.fromCache && __localPlantLastUpdateNewerThanRemote(d)) {
+
+            const __wirePlantSnapshotListener = function () {
+                __shUnsubPlant = onSnapshot(
+                    dataDoc,
+                    (snapshot) => {
+                        if (snapshot.exists()) {
+                            const d = snapshot.data();
+                            const md = snapshot.metadata;
+                            // Se stabileCurrentData è più recente del payload Firestore, non sovrascrivere:
+                            // evita flash del numero giusto → poi quello vecchio (primo evento spesso in cache).
+                            // Quando l'altro dispositivo salva, lastUpdate sul server diventa più nuovo → si applica.
+                            if (__localPlantLastUpdateNewerThanRemote(d)) {
+                                if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
+                                    window.__applyPlantFromLocalStorageFallback();
+                                }
+                                if (!md || !md.hasPendingWrites) {
+                                    schedulePlantTruthFromServer();
+                                }
+                                return;
+                            }
+                            applyData(d, { forceRemotePlant: true });
+                            mergePlantIntoStabileLocalStorage(d);
+                            if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
+                                window.schedulePublicDigitalSnapshotSync();
+                            }
+                            if (!md || !md.hasPendingWrites) {
+                                schedulePlantTruthFromServer();
+                            }
+                        } else {
+                            if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
+                                window.__applyPlantFromLocalStorageFallback();
+                            }
+                        }
+                    },
+                    (error) => {
+                        console.warn('[ServiceHub] plant Firestore:', error && error.message);
+                        if (window.__isFirestorePermissionError && window.__isFirestorePermissionError(error)) {
+                            const pid = window.__SERVICEHUB_FIREBASE_PROJECT || 'Firebase';
+                            window.__showPlantCloudSyncBanner(
+                                'Impossibile leggere il cruscotto dal cloud (permessi Firestore). Gli altri dispositivi non ricevono aggiornamenti in tempo reale. Apri Firebase Console → Firestore → Regole e pubblica il file firestore.rules del repository (progetto ' + pid + ').'
+                            );
+                        }
                         if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
                             window.__applyPlantFromLocalStorageFallback();
                         }
-                        if (!md || !md.hasPendingWrites) {
-                            schedulePlantTruthFromServer();
-                        }
-                        return;
                     }
-                    applyData(d, { forceRemotePlant: true });
-                    mergePlantIntoStabileLocalStorage(d);
-                    if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
-                        window.schedulePublicDigitalSnapshotSync();
-                    }
-                    if (!md || !md.hasPendingWrites) {
-                        schedulePlantTruthFromServer();
-                    }
-                } else {
-                    if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
-                        window.__applyPlantFromLocalStorageFallback();
-                    }
-                }
-            }, (error) => {
-                console.warn('[ServiceHub] plant Firestore:', error && error.message);
-                if (window.__isFirestorePermissionError && window.__isFirestorePermissionError(error)) {
-                    const pid = window.__SERVICEHUB_FIREBASE_PROJECT || 'Firebase';
-                    window.__showPlantCloudSyncBanner(
-                        'Impossibile leggere il cruscotto dal cloud (permessi Firestore). Gli altri dispositivi non ricevono aggiornamenti in tempo reale. Apri Firebase Console → Firestore → Regole e pubblica il file firestore.rules del repository (progetto ' + pid + ').'
-                    );
-                }
-                if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
-                    window.__applyPlantFromLocalStorageFallback();
-                }
-            });
+                );
+            };
 
+            // Prima allinea con il server (getDocFromServer), POI attiva onSnapshot: così il primo evento listener
+            // non passa prima del bootstrap e non ti cancella il numero buono con una copia cache vecchia.
             Promise.resolve()
                 .then(function () {
                     return getDocFromServer(dataDoc);
@@ -1112,8 +1119,6 @@ window.colorPreviewNumber = function(tankName, value) {
                 .then((snap) => {
                     if (snap.exists()) {
                         const d = snap.data();
-                        // Se l'ultimo salvataggio locale è più recente del doc server, NON sovrascrivere DOM/storage:
-                        // altrimenti al riavvio si applica un cloud vecchio e pagehide riscrive stabileCurrentData con numeri sbagliati.
                         if (__localPlantLastUpdateNewerThanRemote(d)) {
                             if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
                                 window.__applyPlantFromLocalStorageFallback();
@@ -1131,6 +1136,9 @@ window.colorPreviewNumber = function(tankName, value) {
                     if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
                         window.__applyPlantFromLocalStorageFallback();
                     }
+                })
+                .finally(function () {
+                    __wirePlantSnapshotListener();
                 });
 
             const settingsDoc = doc(db, 'artifacts', appId, 'sharedDial', 'settings');

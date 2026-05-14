@@ -3,7 +3,7 @@
 // NON facciamo cache offline aggressiva per evitare di servire versioni stantie
 // del index.html: l'app si aggiorna automaticamente a ogni reload.
 
-const CACHE_NAME = 'servicehub-shell-v4';
+const CACHE_NAME = 'servicehub-shell-v5';
 const SHELL_FILES = [
   './icon-192.png',
   './icon-512.png',

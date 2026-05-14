@@ -537,6 +537,7 @@ window.colorPreviewNumber = function(tankName, value) {
             console.warn('[ServiceHub] Firebase non disponibile, modalità solo-locale attiva. Dettagli:', e && e.message);
         }
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'stabile-2026-v4';
+        // Dati operativi condivisi: artifacts/{appId}/sharedDial/* (tutti i dispositivi vedono gli stessi numeri).
 
         let user = null;
         let hiddenModules = [];
@@ -556,7 +557,7 @@ window.colorPreviewNumber = function(tankName, value) {
 
             try {
                 await setDoc(
-                    doc(db, 'artifacts', appId, 'users', user.uid, 'alarmSettings', 'config'),
+                    doc(db, 'artifacts', appId, 'sharedDial', 'alarmConfig'),
                     {
                         config: config,
                         updatedAt: new Date().toISOString()
@@ -568,12 +569,22 @@ window.colorPreviewNumber = function(tankName, value) {
             }
         };
 
+        let __shUnsubPlant = null;
+        let __shUnsubSettings = null;
+        let __shUnsubAlarm = null;
+
         window.initAlarmConfigListener = function() {
             if (!user || !user.uid || !db) return;
 
-            const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'alarmSettings', 'config');
+            if (__shUnsubAlarm) {
+                try {
+                    __shUnsubAlarm();
+                } catch (_) {}
+                __shUnsubAlarm = null;
+            }
+            const ref = doc(db, 'artifacts', appId, 'sharedDial', 'alarmConfig');
 
-            onSnapshot(ref, (snap) => {
+            __shUnsubAlarm = onSnapshot(ref, (snap) => {
                 if (snap.exists()) {
                     const data = snap.data().config;
 
@@ -892,6 +903,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (user && user.uid) {
                     if(led) led.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_10px_#10b981]"; 
                     syncWithCloud();
+                    window.__hydrateDigitalShareKeyFromCloud();
                     window.initAlarmConfigListener();
                 } else {
                     if(led) led.className = "w-2.5 h-2.5 rounded-full bg-red-600 shadow-[0_0_10px_#dc2626]";
@@ -899,17 +911,43 @@ window.colorPreviewNumber = function(tankName, value) {
             });
         }
 
+        /** Chiave Digital remota condivisa tra tutti i dispositivi (salvata in sharedDial/meta). */
+        window.__hydrateDigitalShareKeyFromCloud = async function () {
+            if (!db || !user || !user.uid) return;
+            try {
+                const metaRef = doc(db, "artifacts", appId, "sharedDial", "meta");
+                const s = await getDoc(metaRef);
+                if (s.exists() && s.data().digitalShareKey) {
+                    try {
+                        sessionStorage.setItem("servicehub_digital_share_key", s.data().digitalShareKey);
+                    } catch (_) {}
+                }
+            } catch (_) {}
+        };
+
         const syncWithCloud = () => {
             if (!user || !user.uid || !db) return;
-            const dataDoc = doc(db, 'artifacts', appId, 'users', user.uid);
-            onSnapshot(dataDoc, (snapshot) => {
+            if (__shUnsubPlant) {
+                try {
+                    __shUnsubPlant();
+                } catch (_) {}
+                __shUnsubPlant = null;
+            }
+            if (__shUnsubSettings) {
+                try {
+                    __shUnsubSettings();
+                } catch (_) {}
+                __shUnsubSettings = null;
+            }
+            const dataDoc = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
+            __shUnsubPlant = onSnapshot(dataDoc, (snapshot) => {
                 if (snapshot.exists()) {
                     applyData(snapshot.data());
                 }
             }, (error) => {});
 
-            const settingsDoc = doc(db, 'artifacts', appId, 'users', user.uid, 'settings');
-            onSnapshot(settingsDoc, (snapshot) => {
+            const settingsDoc = doc(db, 'artifacts', appId, 'sharedDial', 'settings');
+            __shUnsubSettings = onSnapshot(settingsDoc, (snapshot) => {
                 if (snapshot.exists()) {
                     const settings = snapshot.data();
                     isDarkMode = settings.isDarkMode || false;
@@ -939,7 +977,10 @@ window.colorPreviewNumber = function(tankName, value) {
             window.addToHistory(data);
             
             try { 
-                await setDoc(doc(db, 'artifacts', appId, 'users', user.uid), data); 
+                await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data); 
+                if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
+                    window.schedulePublicDigitalSnapshotSync();
+                }
             } catch (e) { 
                 localStorage.setItem('stabileCurrentData', JSON.stringify(data));
             }
@@ -1263,7 +1304,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 const savedArchiveId = window.editingArchiveId;
 
                 await setDoc(
-                    doc(db, 'artifacts', appId, 'users', user.uid, 'snapshots', window.editingArchiveId),
+                    doc(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots', window.editingArchiveId),
                     data
                 );
 
@@ -1293,7 +1334,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 // ✅ RICARICA I BACKUP PER IL TREND DOPO AVER SALVATO LA MODIFICA
                 setTimeout(() => {
                     if (user && user.uid) {
-                        const archiveRef = collection(db, 'artifacts', appId, 'users', user.uid, 'snapshots');
+                        const archiveRef = collection(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots');
                         getDocs(archiveRef).then(querySnapshot => {
                             // Svuota e ricarica lo storico
                             window.savedHistory = [];
@@ -1381,7 +1422,10 @@ window.colorPreviewNumber = function(tankName, value) {
             window.addToHistory(data);
             
             try { 
-                await setDoc(doc(db, 'artifacts', appId, 'users', user.uid), data); 
+                await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data); 
+                if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
+                    window.schedulePublicDigitalSnapshotSync();
+                }
             } catch (e) { 
                 localStorage.setItem('stabileCurrentData', JSON.stringify(data));
             }
@@ -1394,7 +1438,7 @@ window.colorPreviewNumber = function(tankName, value) {
             console.log('syncBackupHistory: inizio sincronizzazione backup...');
             
             try {
-                const archiveRef = collection(db, 'artifacts', appId, 'users', user.uid, 'snapshots');
+                const archiveRef = collection(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots');
                 const querySnapshot = await getDocs(archiveRef);
                 
                 let backupCount = 0;
@@ -1616,7 +1660,7 @@ window.colorPreviewNumber = function(tankName, value) {
 
                 // 2. Elimina archivio storico completo
                 if (user && user.uid) {
-                    const archiveRef = collection(db, "artifacts", appId, "users", user.uid, "snapshots");
+                    const archiveRef = collection(db, "artifacts", appId, "sharedDial", "plant", "snapshots");
                     const snapshotDocs = await getDocs(archiveRef);
                     
                     // Elimina tutti i documenti nell'archivio
@@ -1711,7 +1755,7 @@ window.colorPreviewNumber = function(tankName, value) {
             });
 
             try {
-                const archiveRef = collection(db, 'artifacts', appId, 'users', user.uid, 'snapshots');
+                const archiveRef = collection(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots');
 
                 // ✅ MODALITÀ MODIFICA = SOVRASCRIVE
                 if (window.isEditingArchive && window.editingArchiveId) {
@@ -1733,7 +1777,7 @@ window.colorPreviewNumber = function(tankName, value) {
                     if (window.tankStatuses) data.tankStatuses = window.tankStatuses;
 
                     await setDoc(
-                        doc(db, 'artifacts', appId, 'users', user.uid, 'snapshots', window.editingArchiveId),
+                        doc(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots', window.editingArchiveId),
                         data
                     );
 
@@ -1753,7 +1797,7 @@ window.colorPreviewNumber = function(tankName, value) {
                         // FORZA RICALCOLO TREND DOPO MODIFICA
                         setTimeout(() => {
                             if (user && user.uid) {
-                                const archiveRef = collection(db, 'artifacts', appId, 'users', user.uid, 'snapshots');
+                                const archiveRef = collection(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots');
                                 getDocs(archiveRef).then(querySnapshot => {
                                     // Svuota e ricarica lo storico
                                     window.savedHistory = [];
@@ -2361,7 +2405,7 @@ window.updateStoricoButton = async function() {
             // Conta archivi cloud
             try {
                 if (user && user.uid) {
-                    const archiveRef = collection(db, 'artifacts', appId, 'users', user.uid, 'snapshots');
+                    const archiveRef = collection(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots');
                     const querySnapshot = await getDocs(archiveRef);
                     totalArchives += querySnapshot.size;
                 }
@@ -2413,7 +2457,7 @@ window.updateStoricoButton = async function() {
 
     // CLOUD
     try {
-        const archiveRef = collection(db, 'artifacts', appId, 'users', user.uid, 'snapshots');
+        const archiveRef = collection(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots');
         const q = query(archiveRef, limit(20));
         const querySnapshot = await getDocs(q);
 
@@ -2694,7 +2738,7 @@ window.updateStoricoButton = async function() {
 
             try {
                 // ELIMINA TUTTI GLI ARCHIVI CLOUD
-                const archiveRef = collection(db, 'artifacts', appId, 'users', user.uid, 'snapshots');
+                const archiveRef = collection(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots');
                 const querySnapshot = await getDocs(archiveRef);
 
                 const deletePromises = [];
@@ -2832,7 +2876,7 @@ window.updateStoricoButton = async function() {
                     window.updateStoricoButton();
                 } else {
                     // Cancella archivio cloud
-                    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'snapshots', archiveId));
+                    await deleteDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots', archiveId));
                     
                     // Rimuovi dall'UI con animazione
                     const listContainer = document.getElementById('archive-list-content');
@@ -2915,8 +2959,8 @@ window.updateStoricoButton = async function() {
                     db,
                     'artifacts',
                     appId,
-                    'users',
-                    user.uid,
+                    'sharedDial',
+                    'plant',
                     'snapshots'
                 );
 
@@ -2958,7 +3002,7 @@ window.updateStoricoButton = async function() {
         window.saveSettings = async function() {
             if (!user || !user.uid) return;
             const settings = { hiddenModules, isDarkMode };
-            try { await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings'), settings); } catch (e) {}
+            try { await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'settings'), settings); } catch (e) {}
         };
 
         window.saveAIMemory = async function(memory) {
@@ -2968,7 +3012,7 @@ window.updateStoricoButton = async function() {
             // 2. Salva su Firestore se disponibile (priorità principale)
             if (user && user.uid) {
                 try {
-                    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'aiMemory'), {
+                    await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'aiMemory'), {
                         memory: memory,
                         lastUpdated: new Date().toISOString()
                     });
@@ -2985,7 +3029,7 @@ window.updateStoricoButton = async function() {
             // 1. Prova a caricare da Firestore (priorità principale)
             if (user && user.uid) {
                 try {
-                    const docSnap = await getDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'aiMemory'));
+                    const docSnap = await getDoc(doc(db, 'artifacts', appId, 'sharedDial', 'aiMemory'));
                     if (docSnap.exists()) {
                         firestoreMemory = docSnap.data().memory || "";
                     }
@@ -3016,7 +3060,7 @@ window.updateStoricoButton = async function() {
             } catch (e) {}
             if (user && user.uid) {
                 try {
-                    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'aiChat'), {
+                    await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'aiChat'), {
                         transcript: t,
                         lastUpdated: new Date().toISOString()
                     });
@@ -3030,7 +3074,7 @@ window.updateStoricoButton = async function() {
             let cloud = '';
             if (user && user.uid) {
                 try {
-                    const docSnap = await getDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'aiChat'));
+                    const docSnap = await getDoc(doc(db, 'artifacts', appId, 'sharedDial', 'aiChat'));
                     if (docSnap.exists()) {
                         cloud = docSnap.data().transcript || '';
                     }
@@ -7856,48 +7900,125 @@ window.closeDigitalPreview = () => {
     }
 };
 
-window.publishDigitalRemoteReport = async () => {
-    if (!db || !user || !user.uid) {
-        alert('Serve il cloud attivo (LED verde). Accedi e riprova.');
-        return;
-    }
+window.__publicDigitalSyncTimer = null;
+/** Dopo ogni salvataggio su sharedDial/plant, aggiorna il documento publicDigital (stesso ?k= fisso) così il remoto si aggiorna da solo. */
+window.schedulePublicDigitalSnapshotSync = function () {
+    if (!db || !user || !user.uid) return;
+    if (window.__publicDigitalSyncTimer) clearTimeout(window.__publicDigitalSyncTimer);
+    window.__publicDigitalSyncTimer = setTimeout(function () {
+        window.__publicDigitalSyncTimer = null;
+        window.pushPublicDigitalSnapshotQuiet();
+    }, 380);
+};
+
+window.pushPublicDigitalSnapshotQuiet = async function () {
+    if (!db || !user || !user.uid) return false;
+    if (typeof window.buildDigitalCardsHTML !== "function") return false;
     let cardsHTML;
     try {
         cardsHTML = window.buildDigitalCardsHTML();
     } catch (e) {
-        alert('Errore generazione Digital: ' + (e && e.message));
-        return;
+        console.warn("[ServiceHub] pushPublicDigitalSnapshotQuiet buildDigitalCardsHTML:", e);
+        return false;
     }
-    let shareKey = sessionStorage.getItem('servicehub_digital_share_key');
+    const metaRef = doc(db, "artifacts", appId, "sharedDial", "meta");
+    let shareKey = null;
+    try {
+        const metaSnap = await getDoc(metaRef);
+        if (metaSnap.exists() && metaSnap.data().digitalShareKey) {
+            shareKey = metaSnap.data().digitalShareKey;
+        }
+    } catch (_) {}
     if (!shareKey) {
-        shareKey = (typeof crypto !== 'undefined' && crypto.randomUUID)
-            ? crypto.randomUUID()
-            : 'k' + Date.now() + '-' + Math.random().toString(16).slice(2);
-        sessionStorage.setItem('servicehub_digital_share_key', shareKey);
+        try {
+            shareKey = sessionStorage.getItem("servicehub_digital_share_key");
+        } catch (_) {}
     }
-    const shiftLabel = document.getElementById('current-shift-label')?.innerText?.trim() || '';
+    if (!shareKey) {
+        shareKey =
+            typeof crypto !== "undefined" && crypto.randomUUID
+                ? crypto.randomUUID()
+                : "k" + Date.now() + "-" + Math.random().toString(16).slice(2);
+        try {
+            await setDoc(
+                metaRef,
+                { digitalShareKey: shareKey, digitalShareUpdatedAt: new Date().toISOString() },
+                { merge: true }
+            );
+        } catch (e) {
+            console.warn("[ServiceHub] pushPublicDigitalSnapshotQuiet meta:", e);
+            return false;
+        }
+        try {
+            sessionStorage.setItem("servicehub_digital_share_key", shareKey);
+        } catch (_) {}
+    }
+    const shiftLabel = document.getElementById("current-shift-label")?.innerText?.trim() || "";
     try {
         await setDoc(
-            doc(db, 'artifacts', appId, 'publicDigital', shareKey),
+            doc(db, "artifacts", appId, "publicDigital", shareKey),
             {
-                ownerUid: user.uid,
+                teamAppId: appId,
                 updatedAt: new Date().toISOString(),
                 shiftLabel,
                 cardsHTML
             }
         );
-        const u = new URL('digital-view.html', window.location.href);
-        u.searchParams.set('k', shareKey);
-        u.searchParams.set('app', appId);
-        const href = u.href;
-        try {
-            await navigator.clipboard.writeText(href);
-            alert('Link remoto copiato negli appunti.\n\nApribile da un altro PC o tablet (solo lettura). Ogni nuova pubblicazione da questo browser aggiorna lo stesso link in tempo reale.\n\n' + href);
-        } catch (_) {
-            prompt('Copia questo link (accesso remoto Digital):', href);
-        }
+        return true;
     } catch (e) {
-        alert('Pubblicazione su Firestore non riuscita: ' + (e && e.message) + '\n\nAggiungi le regole per publicDigital (vedi firestore-public-digital.rules.txt nella cartella del progetto).');
+        console.warn("[ServiceHub] pushPublicDigitalSnapshotQuiet:", e);
+        return false;
+    }
+};
+
+window.publishDigitalRemoteReport = async () => {
+    if (!db || !user || !user.uid) {
+        alert('Serve il cloud attivo (LED verde). Accedi e riprova.');
+        return;
+    }
+    const metaRef = doc(db, 'artifacts', appId, 'sharedDial', 'meta');
+    let shareKey = null;
+    try {
+        const metaSnap = await getDoc(metaRef);
+        if (metaSnap.exists() && metaSnap.data().digitalShareKey) {
+            shareKey = metaSnap.data().digitalShareKey;
+        }
+    } catch (_) {}
+    if (!shareKey) {
+        try {
+            shareKey = sessionStorage.getItem('servicehub_digital_share_key');
+        } catch (_) {}
+    }
+    if (!shareKey) {
+        shareKey = (typeof crypto !== 'undefined' && crypto.randomUUID)
+            ? crypto.randomUUID()
+            : 'k' + Date.now() + '-' + Math.random().toString(16).slice(2);
+    }
+    try {
+        await setDoc(
+            metaRef,
+            { digitalShareKey: shareKey, digitalShareUpdatedAt: new Date().toISOString() },
+            { merge: true }
+        );
+    } catch (_) {}
+    try {
+        sessionStorage.setItem('servicehub_digital_share_key', shareKey);
+    } catch (_) {}
+    const pushed = await window.pushPublicDigitalSnapshotQuiet();
+    if (!pushed) {
+        alert('Pubblicazione Digital non riuscita (generazione o Firestore). Controlla le regole publicDigital e riprova.');
+        return;
+    }
+    const u = new URL('digital-view.html', window.location.href);
+    u.searchParams.set('k', shareKey);
+    u.searchParams.set('app', appId);
+    u.searchParams.set('dv', '8');
+    const href = u.href;
+    try {
+        await navigator.clipboard.writeText(href);
+        alert('Link remoto (fisso per tutti i dispositivi) copiato negli appunti.\n\nIl Digital si aggiorna da solo dopo ogni salvataggio.\n\nSe su un telefono vedi ancora la vecchia scritta «Apri e condividi…»: è cache — usa questo link appena copiato, oppure Safari → icona AA → «Siti web» → «Rimuovi dati» solo per questo sito, poi riapri.\n\n' + href);
+    } catch (_) {
+        prompt('Copia questo link (Digital remoto):', href);
     }
 };
 

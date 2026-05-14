@@ -1,4 +1,4 @@
-# Rigenera icon PWA: ritaglio contenuto + eliminazione nero agli angoli (rounded icon).
+# Rigenera icone PWA: ritaglio, rimozione nero, pulizia bordi dopo resize, output con nuovi nomi file.
 
 Add-Type -AssemblyName System.Drawing
 
@@ -46,7 +46,6 @@ $g0.DrawImage($srcImg, [System.Drawing.Rectangle]::new(0, 0, $cw, $ch), $cropRec
 $g0.Dispose()
 $srcImg.Dispose()
 
-# Colore medio sui pixel chiari (blu icona)
 $sumR=0L; $sumG=0L; $sumB=0L; $cnt=0
 for ($y = 0; $y -lt $ch; $y++) {
     for ($x = 0; $x -lt $cw; $x++) {
@@ -60,10 +59,10 @@ for ($y = 0; $y -lt $ch; $y++) {
 if ($cnt -eq 0) { $bg = [System.Drawing.Color]::FromArgb(37, 99, 235) } else {
     $bg = [System.Drawing.Color]::FromArgb([int]($sumR/$cnt), [int]($sumG/$cnt), [int]($sumB/$cnt))
 }
-Write-Host "Colore sfondo angoli: R=$($bg.R) G=$($bg.G) B=$($bg.B)"
+Write-Host "Colore riempimento: R=$($bg.R) G=$($bg.G) B=$($bg.B)"
 
-# Sostituisci nero / quasi nero con blu medio (angoli arrotondati)
-$threshBlack = 52
+# Nero e quasi-nero ovunque
+$threshBlack = 62
 for ($y = 0; $y -lt $ch; $y++) {
     for ($x = 0; $x -lt $cw; $x++) {
         $c = $cropped.GetPixel($x, $y)
@@ -83,9 +82,54 @@ $oy = [int](($side - $ch) / 2)
 $gs.DrawImage($cropped, $ox, $oy)
 $gs.Dispose()
 $cropped.Dispose()
-Write-Host "Quadrato finale: ${side}x${side}"
+Write-Host "Quadrato: ${side}x${side}"
 
-function Save-Resized($bmp, $size, $out) {
+function Lum($c) { return [int](($c.R + $c.G + $c.B) / 3) }
+function Sat($c) {
+    $mx = [Math]::Max($c.R, [Math]::Max($c.G, $c.B))
+    $mn = [Math]::Min($c.R, [Math]::Min($c.G, $c.B))
+    return $mx - $mn
+}
+
+# Aloni scuri/grigi tra squircle e sfondo: bassa luminanza + bassa saturazione
+function Repair-Bitmap($bmp, [System.Drawing.Color]$fill) {
+    $W = $bmp.Width
+    $H = $bmp.Height
+    $bx = [Math]::Max(2, [int]($W * 0.045))
+    $by = [Math]::Max(2, [int]($H * 0.045))
+    $edgeLum = 72
+    for ($y = 0; $y -lt $H; $y++) {
+        for ($x = 0; $x -lt $bx; $x++) {
+            $c = $bmp.GetPixel($x, $y)
+            if ((Lum $c) -lt $edgeLum) { $bmp.SetPixel($x, $y, $fill) }
+        }
+        for ($x = $W - $bx; $x -lt $W; $x++) {
+            $c = $bmp.GetPixel($x, $y)
+            if ((Lum $c) -lt $edgeLum) { $bmp.SetPixel($x, $y, $fill) }
+        }
+    }
+    for ($x = $bx; $x -lt ($W - $bx); $x++) {
+        for ($y = 0; $y -lt $by; $y++) {
+            $c = $bmp.GetPixel($x, $y)
+            if ((Lum $c) -lt $edgeLum) { $bmp.SetPixel($x, $y, $fill) }
+        }
+        for ($y = $H - $by; $y -lt $H; $y++) {
+            $c = $bmp.GetPixel($x, $y)
+            if ((Lum $c) -lt $edgeLum) { $bmp.SetPixel($x, $y, $fill) }
+        }
+    }
+    for ($y = 0; $y -lt $H; $y++) {
+        for ($x = 0; $x -lt $W; $x++) {
+            $c = $bmp.GetPixel($x, $y)
+            $L = Lum $c
+            $S = Sat $c
+            if ($L -lt 44) { $bmp.SetPixel($x, $y, $fill) }
+            elseif ($L -lt 62 -and $S -lt 48) { $bmp.SetPixel($x, $y, $fill) }
+        }
+    }
+}
+
+function Save-Resized($bmp, $size, $out, $fill) {
     $r = New-Object System.Drawing.Bitmap $size, $size
     $gr = [System.Drawing.Graphics]::FromImage($r)
     $gr.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
@@ -94,15 +138,17 @@ function Save-Resized($bmp, $size, $out) {
     $gr.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
     $gr.DrawImage($bmp, 0, 0, $size, $size)
     $gr.Dispose()
+    Repair-Bitmap $r $fill
     $r.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)
     $r.Dispose()
     Write-Host "Salvato $out"
 }
 
-Save-Resized $square 512 "$PSScriptRoot\icon-512.png"
-Save-Resized $square 192 "$PSScriptRoot\icon-192.png"
-Save-Resized $square 180 "$PSScriptRoot\apple-touch-icon.png"
-Save-Resized $square 32  "$PSScriptRoot\favicon-32.png"
+# Nuovi nomi file -> Windows/Chrome non riusano cache dei vecchi path
+Save-Resized $square 512 "$PSScriptRoot\sh-icon-512.png" $bg
+Save-Resized $square 192 "$PSScriptRoot\sh-icon-192.png" $bg
+Save-Resized $square 180 "$PSScriptRoot\sh-touch.png" $bg
+Save-Resized $square 32  "$PSScriptRoot\sh-favicon.png" $bg
 $square.Save("$PSScriptRoot\icon-source.png", [System.Drawing.Imaging.ImageFormat]::Png)
 
 $square.Dispose()

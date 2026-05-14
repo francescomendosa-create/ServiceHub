@@ -31,10 +31,10 @@ function Save-Resized($bmp, $size, $out) {
     Write-Host "Saved $out (${size}x${size})"
 }
 
-Save-Resized $cropped 192 "$PSScriptRoot\icon-192.png"
-Save-Resized $cropped 512 "$PSScriptRoot\icon-512.png"
-Save-Resized $cropped 180 "$PSScriptRoot\apple-touch-icon.png"
-Save-Resized $cropped 32  "$PSScriptRoot\favicon-32.png"
+Save-Resized $cropped 192 "$PSScriptRoot\sh-icon-192.png"
+Save-Resized $cropped 512 "$PSScriptRoot\sh-icon-512.png"
+Save-Resized $cropped 180 "$PSScriptRoot\sh-touch.png"
+Save-Resized $cropped 32  "$PSScriptRoot\sh-favicon.png"
 
 $cropped.Dispose()
 $srcImg.Dispose()

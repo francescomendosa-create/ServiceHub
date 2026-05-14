@@ -990,8 +990,9 @@ window.colorPreviewNumber = function(tankName, value) {
             }
         };
 
-        /** Evita che un doc Firestore parziale o in cache cancelli chiavi più recenti in stabileCurrentData. */
-        const mergePlantIntoStabileLocalStorage = (remote) => {
+        /** Evita che un doc Firestore parziale o in cache cancelli chiavi più recenti in stabileCurrentData.
+         *  @param {boolean} [appliedRemote] se true, il remoto ha vinto sull'UI → merge deve preferire remote su tutte le chiavi sovrapposte. */
+        const mergePlantIntoStabileLocalStorage = (remote, appliedRemote) => {
             try {
                 if (!remote || typeof remote !== 'object') return;
                 let prev = {};
@@ -1007,7 +1008,11 @@ window.colorPreviewNumber = function(tankName, value) {
                 const tPrev = __parsePlantLastUpdateMs(prev.lastUpdate);
                 const tRemote = __parsePlantLastUpdateMs(remote.lastUpdate);
                 const merged =
-                    tRemote > tPrev ? { ...prev, ...remote } : { ...remote, ...prev };
+                    appliedRemote === true
+                        ? { ...prev, ...remote }
+                        : tRemote > tPrev
+                          ? { ...prev, ...remote }
+                          : { ...remote, ...prev };
                 localStorage.setItem('stabileCurrentData', JSON.stringify(merged));
             } catch (e) {
                 console.warn('[ServiceHub] merge stabileCurrentData:', e && e.message);
@@ -1061,18 +1066,23 @@ window.colorPreviewNumber = function(tankName, value) {
             __shUnsubPlant = onSnapshot(dataDoc, (snapshot) => {
                 if (snapshot.exists()) {
                     const d = snapshot.data();
-                    const appliedRemote = __shouldApplyRemotePlantOverLocal(d);
+                    let fromCache = false;
+                    try {
+                        fromCache = !!(snapshot.metadata && snapshot.metadata.fromCache === true);
+                    } catch (_) {}
+                    // Server → sempre allinea (multi-tablet). Solo cache SDK → confronta lastUpdate (eco vecchio dopo chiusura app).
+                    const appliedRemote = !fromCache || __shouldApplyRemotePlantOverLocal(d);
                     if (appliedRemote) {
                         applyData(d);
                     } else {
                         try {
                             console.info(
-                                '[ServiceHub] plant snapshot ignorato (locale più recente di cloud):',
+                                '[ServiceHub] plant snapshot (cache) ignorato — locale più recente di cloud:',
                                 d && d.lastUpdate
                             );
                         } catch (_) {}
                     }
-                    mergePlantIntoStabileLocalStorage(d);
+                    mergePlantIntoStabileLocalStorage(d, appliedRemote);
                     // Solo se abbiamo applicato il plant al DOM: altrimenti si pubblicherebbe ancora il cruscotto
                     // vecchio di questo device e si sovrascriverebbe il Digital remoto con numeri sbagliati.
                     if (

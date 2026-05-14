@@ -8378,8 +8378,13 @@ window.__serviceHubCopyTextWithFallback = async function (text) {
     }
 };
 
-/** Modale con URL completo selezionabile: così da tablet si può sempre copiare / incollare. */
-window.__serviceHubShowDigitalRemoteLinkModal = function (href) {
+/** Modale con URL completo selezionabile: così da tablet si può sempre copiare / incollare.
+ *  @param {string} href URL completo del Digital remoto
+ *  @param {{ publishOk?: boolean }} [options] se publishOk === false mostra avviso (pubblicazione cloud fallita ma il link resta utile) */
+window.__serviceHubShowDigitalRemoteLinkModal = function (href, options) {
+    options = options || {};
+    const publishOk = options.publishOk !== false;
+    const hrefSafe = String(href || "").trim() || String(window.location.origin || "") + "/digital-view.html";
     const prev = document.getElementById("sh-digital-remote-link-modal");
     if (prev) prev.remove();
     const backdrop = document.createElement("div");
@@ -8387,7 +8392,7 @@ window.__serviceHubShowDigitalRemoteLinkModal = function (href) {
     backdrop.setAttribute("role", "dialog");
     backdrop.setAttribute("aria-modal", "true");
     backdrop.style.cssText =
-        "position:fixed;inset:0;z-index:2147483647;background:rgba(15,23,42,0.78);display:flex;align-items:center;justify-content:center;padding:14px;box-sizing:border-box;font-family:system-ui,-apple-system,sans-serif;";
+        "position:fixed;inset:0;z-index:2147483000;background:rgba(15,23,42,0.82);display:flex;align-items:center;justify-content:center;padding:14px;box-sizing:border-box;font-family:system-ui,-apple-system,sans-serif;-webkit-overflow-scrolling:touch;";
     const card = document.createElement("div");
     card.style.cssText =
         "width:100%;max-width:540px;background:#0f172a;border:1px solid rgba(148,163,184,0.38);border-radius:18px;padding:20px 22px;box-shadow:0 28px 56px rgba(0,0,0,0.5);color:#e2e8f0;";
@@ -8399,11 +8404,19 @@ window.__serviceHubShowDigitalRemoteLinkModal = function (href) {
     card.onclick = function (e) {
         e.stopPropagation();
     };
+    let publishWarnEl = null;
+    if (!publishOk) {
+        publishWarnEl = document.createElement("p");
+        publishWarnEl.style.cssText =
+            "margin:0 0 12px;padding:11px 13px;border-radius:11px;background:rgba(127,29,29,0.42);border:1px solid rgba(248,113,113,0.55);color:#fecaca;font-size:12px;font-weight:700;line-height:1.45;";
+        publishWarnEl.textContent =
+            "La pubblicazione sul cloud non è riuscita (controlla le regole Firestore per publicDigital o riprova). Il link qui sotto è comunque quello da usare: dopo aver sistemato, salva di nuovo dall'app.";
+    }
     intro.innerHTML =
         "Usa il campo qui sotto per <strong>copiare e incollare</strong> su altri dispositivi. Il report remoto si aggiorna da solo dopo ogni salvataggio dall'app operatore. Se il copia automatico non funziona, tieni premuto sul testo e scegli «Copia».";
     const ta = document.createElement("textarea");
     ta.readOnly = true;
-    ta.value = href;
+    ta.value = hrefSafe;
     ta.style.cssText =
         "width:100%;min-height:96px;box-sizing:border-box;margin:0 0 12px;padding:12px 14px;border-radius:12px;border:1px solid rgba(148,163,184,0.45);background:#020617;color:#f1f5f9;font:600 12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;";
     const status = document.createElement("p");
@@ -8430,12 +8443,17 @@ window.__serviceHubShowDigitalRemoteLinkModal = function (href) {
         }
     }
     async function doCopy(manual) {
-        const ok = await window.__serviceHubCopyTextWithFallback(href);
+        let ok = false;
+        try {
+            ok = await window.__serviceHubCopyTextWithFallback(hrefSafe);
+        } catch (_) {
+            ok = false;
+        }
         setStatus(ok, manual);
         try {
             ta.focus();
             ta.select();
-            ta.setSelectionRange(0, href.length);
+            ta.setSelectionRange(0, hrefSafe.length);
         } catch (_) {}
     }
     btnCopy.onclick = function () {
@@ -8450,13 +8468,16 @@ window.__serviceHubShowDigitalRemoteLinkModal = function (href) {
     row.appendChild(btnCopy);
     row.appendChild(btnClose);
     card.appendChild(h);
+    if (publishWarnEl) card.appendChild(publishWarnEl);
     card.appendChild(intro);
     card.appendChild(ta);
     card.appendChild(status);
     card.appendChild(row);
     backdrop.appendChild(card);
     document.body.appendChild(backdrop);
-    doCopy(false);
+    void doCopy(false).catch(function () {
+        setStatus(false, false);
+    });
 };
 
 window.publishDigitalRemoteReport = async () => {
@@ -8492,22 +8513,27 @@ window.publishDigitalRemoteReport = async () => {
     try {
         sessionStorage.setItem('servicehub_digital_share_key', shareKey);
     } catch (_) {}
-    const pushed = await window.pushPublicDigitalSnapshotQuiet();
-    if (!pushed) {
-        alert('Pubblicazione Digital non riuscita (generazione o Firestore). Controlla le regole publicDigital e riprova.');
-        return;
+    let pushed = false;
+    try {
+        pushed = !!(await window.pushPublicDigitalSnapshotQuiet());
+    } catch (e) {
+        console.warn("[ServiceHub] publishDigitalRemoteReport push:", e);
+        pushed = false;
     }
     const u = new URL('digital-view.html', window.location.href);
     u.searchParams.set('k', shareKey);
     u.searchParams.set('app', appId);
     u.searchParams.set('dv', '10');
     const href = u.href;
+    if (!pushed) {
+        console.warn("[ServiceHub] publishDigitalRemoteReport: pubblicazione publicDigital fallita; mostro comunque il link.");
+    }
     if (typeof window.__serviceHubShowDigitalRemoteLinkModal === "function") {
-        window.__serviceHubShowDigitalRemoteLinkModal(href);
+        window.__serviceHubShowDigitalRemoteLinkModal(href, { publishOk: pushed });
     } else {
         try {
             await navigator.clipboard.writeText(href);
-            alert("Link remoto copiato negli appunti.\n\n" + href);
+            alert((pushed ? "" : "Attenzione: pubblicazione cloud non riuscita.\n\n") + "Link remoto copiato negli appunti.\n\n" + href);
         } catch (_) {
             prompt("Copia questo link (Digital remoto):", href);
         }

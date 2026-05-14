@@ -3,13 +3,13 @@
 // NON facciamo cache offline aggressiva per evitare di servire versioni stantie
 // del index.html: l'app si aggiorna automaticamente a ogni reload.
 
-const CACHE_NAME = 'servicehub-shell-v5';
+const CACHE_NAME = 'servicehub-shell-v6';
 const SHELL_FILES = [
-  './icon-192.png',
-  './icon-512.png',
-  './apple-touch-icon.png',
-  './favicon-32.png',
-  './manifest.json'
+  './icon-192.png?v=ic20260514',
+  './icon-512.png?v=ic20260514',
+  './apple-touch-icon.png?v=ic20260514',
+  './favicon-32.png?v=ic20260514',
+  './manifest.json?v=ic20260514'
 ];
 
 self.addEventListener('install', (event) => {
@@ -34,7 +34,8 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET') return;
 
   const url = new URL(req.url);
-  const isShellAsset = SHELL_FILES.some((f) => url.pathname.endsWith(f.replace('./', '')));
+  const shellBasenames = ['icon-192.png', 'icon-512.png', 'apple-touch-icon.png', 'favicon-32.png', 'manifest.json'];
+  const isShellAsset = shellBasenames.some((b) => url.pathname.endsWith('/' + b) || url.pathname.endsWith(b));
 
   if (isShellAsset) {
     event.respondWith(

@@ -925,6 +925,27 @@ window.colorPreviewNumber = function(tankName, value) {
             } catch (_) {}
         };
 
+        /** Evita che un doc Firestore parziale cancelli chiavi già presenti in stabileCurrentData (stesso device). */
+        const mergePlantIntoStabileLocalStorage = (remote) => {
+            try {
+                if (!remote || typeof remote !== 'object') return;
+                let prev = {};
+                try {
+                    const raw = localStorage.getItem('stabileCurrentData');
+                    if (raw) {
+                        const p = JSON.parse(raw);
+                        if (p && typeof p === 'object') prev = p;
+                    }
+                } catch (_) {
+                    prev = {};
+                }
+                const merged = { ...prev, ...remote };
+                localStorage.setItem('stabileCurrentData', JSON.stringify(merged));
+            } catch (e) {
+                console.warn('[ServiceHub] merge stabileCurrentData:', e && e.message);
+            }
+        };
+
         const syncWithCloud = () => {
             if (!user || !user.uid || !db) return;
             if (__shUnsubPlant) {
@@ -944,11 +965,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (snapshot.exists()) {
                     const d = snapshot.data();
                     applyData(d);
-                    try {
-                        if (d && typeof d === 'object') {
-                            localStorage.setItem('stabileCurrentData', JSON.stringify(d));
-                        }
-                    } catch (_) {}
+                    mergePlantIntoStabileLocalStorage(d);
                 } else {
                     if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
                         window.__applyPlantFromLocalStorageFallback();
@@ -1004,6 +1021,9 @@ window.colorPreviewNumber = function(tankName, value) {
             // AGGIUNGI STORICO DEI SALVATAGGI PER TREND
             window.addToHistory(data);
             
+            try {
+                localStorage.setItem('stabileCurrentData', JSON.stringify(data));
+            } catch (_) {}
             try { 
                 await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data); 
                 try {
@@ -1298,10 +1318,39 @@ window.colorPreviewNumber = function(tankName, value) {
             }
         };
 
-        window.saveData = async function() {
-            if (!user || !user.uid) return;
-            if (!db) {
-                console.warn('[ServiceHub] saveData: Firestore non disponibile.');
+        window.saveData = async function (skipHistory) {
+            const skipHist = skipHistory === true;
+
+            const snapshotPlantToLocalStorage = function () {
+                try {
+                    const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
+                    const data = {
+                        shift: currentShift,
+                        lastUpdate: new Date().toISOString()
+                    };
+                    document.querySelectorAll('input').forEach(function (input) {
+                        if (input.id) data[input.id] = input.value;
+                    });
+                    document.querySelectorAll('.status-cell-btn, .status-header, .vwt-label-dynamic, .osmosi-label-dynamic').forEach(function (btn) {
+                        if (btn.id && btn.id !== 'numpad-tank-btn') {
+                            data[btn.id] = {
+                                text: btn.innerHTML,
+                                class: btn.className,
+                                style: btn.getAttribute('style') || ''
+                            };
+                        }
+                    });
+                    if (window.tankStatuses) data.tankStatuses = window.tankStatuses;
+                    localStorage.setItem('stabileCurrentData', JSON.stringify(data));
+                } catch (e) {
+                    console.warn('[ServiceHub] snapshotPlantToLocalStorage', e);
+                }
+            };
+
+            if (!user || !user.uid || !db) {
+                if (!(window.isEditingArchive && window.editingArchiveId)) {
+                    snapshotPlantToLocalStorage();
+                }
                 return;
             }
             
@@ -1433,8 +1482,10 @@ window.colorPreviewNumber = function(tankName, value) {
                 return;
             }
             
-            // ✅ NUOVO: SYNC BACKUP PRIMA DI SALVATAGGIO NORMALE
-            await window.ensureBackupHistory();
+            // ✅ SYNC BACKUP (saltato durante salvataggio silenzioso da input/pagehide)
+            if (!skipHist) {
+                await window.ensureBackupHistory();
+            }
             
             // ✅ USA IL TURNO REALE, NON QUELLO MANUALE
             const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
@@ -1450,9 +1501,13 @@ window.colorPreviewNumber = function(tankName, value) {
             if (window.tankStatuses) data.tankStatuses = window.tankStatuses;
             
                         
-            // AGGIUNGI STORICO DEI SALVATAGGI PER TREND
-            window.addToHistory(data);
+            if (!skipHist) {
+                window.addToHistory(data);
+            }
             
+            try {
+                localStorage.setItem('stabileCurrentData', JSON.stringify(data));
+            } catch (_) {}
             try { 
                 await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data); 
                 try {
@@ -3222,6 +3277,11 @@ window.updateStoricoButton = async function() {
             window.loadDB();
             window.alarmConfig = window.APP_DB.alarms || {};
 
+            // Ripristino immediato ultimo stato salvato (stesso dispositivo) prima di Firebase
+            if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
+                window.__applyPlantFromLocalStorageFallback();
+            }
+
             const btnShModifica = document.getElementById('btn-sh-settings-modifica');
             if (btnShModifica) {
                 btnShModifica.addEventListener('click', (e) => {
@@ -3236,6 +3296,32 @@ window.updateStoricoButton = async function() {
             }
             
             initAuth();
+
+            let __plantPersistTimer = null;
+            document.addEventListener(
+                'input',
+                function (e) {
+                    const t = e.target;
+                    if (!t || !t.closest || !t.closest('.main-container')) return;
+                    if (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA') return;
+                    if (t.closest('#settings-modal') || t.closest('#management-modal') || t.closest('#shift-modal')) return;
+                    if (__plantPersistTimer) clearTimeout(__plantPersistTimer);
+                    __plantPersistTimer = setTimeout(function () {
+                        __plantPersistTimer = null;
+                        if (typeof window.saveData === 'function') void window.saveData(true);
+                    }, 450);
+                },
+                true
+            );
+            window.addEventListener('pagehide', function () {
+                if (typeof window.saveData === 'function') void window.saveData(true);
+            });
+            document.addEventListener('visibilitychange', function () {
+                if (document.visibilityState === 'hidden' && typeof window.saveData === 'function') {
+                    void window.saveData(true);
+                }
+            });
+
             updateDeviceInfo(); 
             setInterval(updateDeviceInfo, 60000);
             
@@ -3249,14 +3335,9 @@ window.updateStoricoButton = async function() {
                 }
             }, 2000);
             
-            // Inizializza stato FERMO all'avvio
+            // All avvio NON resettare tutti i pulsanti a FERMO: sovrascriveva i dati ripristinati
+            // da Firestore / localStorage (race ~100ms). L HTML ha già gli stati iniziali.
             setTimeout(() => {
-                // Imposta tutti i pulsanti a FERMO
-                document.querySelectorAll('.status-cell-btn').forEach(btn => {
-                    btn.innerText = "FERMO";
-                    btn.className = "status-cell-btn bg-fermo";
-                });
-                
                 // ✅ CARICA STORICO CHAT ALL'AVVIO per evitare perdita aggiornando
                 if (window.loadAIChatTranscript) {
                     window.loadAIChatTranscript().then(transcript => {
@@ -3269,15 +3350,8 @@ window.updateStoricoButton = async function() {
                         console.warn('⚠️ Errore caricamento storico chat:', e);
                     });
                 }
-                
-                document.querySelectorAll('.status-header.compact').forEach(h => {
-                    const id = h.id.replace('h', '');
-                    const sigla = h.innerText.split('\n')[0];
-                    h.className = "status-header compact bg-fermo";
-                    h.innerHTML = `${sigla}<br><small id="t${id}" class="text-[10px] tracking-wide">FERMO</small>`;
-                });
-                
-                // Aggiorna lo stato degli input (disabilita quando FERMO)
+
+                // Aggiorna lo stato degli input (disabilita quando FERMO) senza azzerare MARCIA salvata
                 window.updateBoilerInputs();
             }, 100);
             

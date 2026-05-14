@@ -942,14 +942,7 @@ window.colorPreviewNumber = function(tankName, value) {
             } catch (_) {}
         };
 
-        /** Timestamp ISO → ms (0 se assente/invalido). */
-        const __parsePlantLastUpdateMs = (iso) => {
-            if (!iso || typeof iso !== 'string') return 0;
-            const t = Date.parse(iso);
-            return Number.isFinite(t) ? t : 0;
-        };
-
-        /** Ultimo lastUpdate ISO già noto in stabileCurrentData (solo confronto cloud vs locale). */
+        /** Ultimo lastUpdate ISO già noto in stabileCurrentData (snapshot locale senza bump fittizio). */
         const __readPrevPlantLastUpdateIso = () => {
             try {
                 const raw = localStorage.getItem('stabileCurrentData');
@@ -967,32 +960,8 @@ window.colorPreviewNumber = function(tankName, value) {
             return null;
         };
 
-        /** true se il plant remoto è strettamente più recente dello stabile in localStorage. */
-        const __shouldApplyRemotePlantOverLocal = (remote) => {
-            try {
-                if (!remote || typeof remote !== 'object') return true;
-                let prev = null;
-                try {
-                    const raw = localStorage.getItem('stabileCurrentData');
-                    if (raw) {
-                        const p = JSON.parse(raw);
-                        if (p && typeof p === 'object') prev = p;
-                    }
-                } catch (_) {
-                    prev = null;
-                }
-                if (!prev) return true;
-                const tPrev = __parsePlantLastUpdateMs(prev.lastUpdate);
-                const tRemote = __parsePlantLastUpdateMs(remote.lastUpdate);
-                return tRemote > tPrev;
-            } catch (_) {
-                return true;
-            }
-        };
-
-        /** Evita che un doc Firestore parziale o in cache cancelli chiavi più recenti in stabileCurrentData.
-         *  @param {boolean} [appliedRemote] se true, il remoto ha vinto sull'UI → merge deve preferire remote su tutte le chiavi sovrapposte. */
-        const mergePlantIntoStabileLocalStorage = (remote, appliedRemote) => {
+        /** Merge del doc plant Firestore in stabileCurrentData (remote vince sulle chiavi comuni). */
+        const mergePlantIntoStabileLocalStorage = (remote) => {
             try {
                 if (!remote || typeof remote !== 'object') return;
                 let prev = {};
@@ -1005,14 +974,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 } catch (_) {
                     prev = {};
                 }
-                const tPrev = __parsePlantLastUpdateMs(prev.lastUpdate);
-                const tRemote = __parsePlantLastUpdateMs(remote.lastUpdate);
-                const merged =
-                    appliedRemote === true
-                        ? { ...prev, ...remote }
-                        : tRemote > tPrev
-                          ? { ...prev, ...remote }
-                          : { ...remote, ...prev };
+                const merged = { ...prev, ...remote };
                 localStorage.setItem('stabileCurrentData', JSON.stringify(merged));
             } catch (e) {
                 console.warn('[ServiceHub] merge stabileCurrentData:', e && e.message);
@@ -1066,31 +1028,9 @@ window.colorPreviewNumber = function(tankName, value) {
             __shUnsubPlant = onSnapshot(dataDoc, (snapshot) => {
                 if (snapshot.exists()) {
                     const d = snapshot.data();
-                    let fromCache = false;
-                    try {
-                        fromCache = !!(snapshot.metadata && snapshot.metadata.fromCache === true);
-                    } catch (_) {}
-                    // Server → sempre allinea (multi-tablet). Solo cache SDK → confronta lastUpdate (eco vecchio dopo chiusura app).
-                    const appliedRemote = !fromCache || __shouldApplyRemotePlantOverLocal(d);
-                    if (appliedRemote) {
-                        applyData(d);
-                    } else {
-                        try {
-                            console.info(
-                                '[ServiceHub] plant snapshot (cache) ignorato — locale più recente di cloud:',
-                                d && d.lastUpdate
-                            );
-                        } catch (_) {}
-                    }
-                    mergePlantIntoStabileLocalStorage(d, appliedRemote);
-                    // Solo se abbiamo applicato il plant al DOM: altrimenti si pubblicherebbe ancora il cruscotto
-                    // vecchio di questo device e si sovrascriverebbe il Digital remoto con numeri sbagliati.
-                    if (
-                        appliedRemote &&
-                        user &&
-                        user.uid &&
-                        typeof window.schedulePublicDigitalSnapshotSync === 'function'
-                    ) {
+                    applyData(d, { forceRemotePlant: true });
+                    mergePlantIntoStabileLocalStorage(d);
+                    if (user && user.uid && typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                         window.schedulePublicDigitalSnapshotSync();
                     }
                 } else {
@@ -1562,8 +1502,9 @@ window.colorPreviewNumber = function(tankName, value) {
             }
         };
 
-        window.saveData = async function (skipHistory) {
+        window.saveData = async function (skipHistory, localDiskOnly) {
             const skipHist = skipHistory === true;
+            const diskOnly = localDiskOnly === true;
 
             const snapshotPlantToLocalStorage = function () {
                 try {
@@ -1756,6 +1697,9 @@ window.colorPreviewNumber = function(tankName, value) {
             try {
                 localStorage.setItem('stabileCurrentData', JSON.stringify(data));
             } catch (_) {}
+            if (diskOnly) {
+                return;
+            }
             try { 
                 await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data, { merge: true }); 
                 if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
@@ -3610,7 +3554,7 @@ window.updateStoricoButton = async function() {
                     if (__plantPersistTimer) clearTimeout(__plantPersistTimer);
                     __plantPersistTimer = setTimeout(function () {
                         __plantPersistTimer = null;
-                        if (typeof window.saveData === 'function') void window.saveData(true);
+                        if (typeof window.saveData === 'function') void window.saveData(true, true);
                     }, 300);
                 },
                 true
@@ -5097,8 +5041,10 @@ window.updateStoricoButton = async function() {
 
         function forceBlur() { if (document.activeElement && document.activeElement.tagName === 'INPUT') document.activeElement.blur(); }
         
-        function applyData(data) {
+        function applyData(data, opts) {
             if (!data) return;
+            const forcePlant =
+                opts && opts.forceRemotePlant === true;
             if (data.manualShift !== undefined) { manualShift = data.manualShift; updateDeviceInfo(); }
             if (data.shift !== undefined && document.getElementById('current-shift-label')) {
                 document.getElementById('current-shift-label').innerText = data.shift;
@@ -5113,8 +5059,8 @@ window.updateStoricoButton = async function() {
                 const el = document.getElementById(id);
                 if (!el) continue;
                 if (el.tagName === 'INPUT') { 
-                    if (document.activeElement !== el) {
-                        el.value = val;
+                    if (forcePlant || document.activeElement !== el) {
+                        el.value = val != null && val !== undefined ? val : '';
                         if(id === 'osmosi') adjustOsmosiFontSize(el);
                     }
                 } 

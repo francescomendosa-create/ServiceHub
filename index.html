@@ -553,13 +553,29 @@ window.colorPreviewNumber = function(tankName, value) {
         }
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'stabile-2026-v4';
         window.__SERVICEHUB_APP_ID = appId;
-        console.info('[ServiceHub] Multi-dispositivo: tutti devono usare lo stesso progetto Firebase e lo stesso appId. Path plant:', 'artifacts/' + appId + '/sharedDial/plant');
+        console.info('[ServiceHub] Multi-dispositivo: tutti devono usare lo stesso progetto Firebase e lo stesso appId. Path plant:', 'artifacts/' + appId + '/sharedDial/plant', '| Salvataggio cloud: solo campi modificati (evita sovrascritture incrociate tra tablet).');
         // Dati operativi condivisi: artifacts/{appId}/sharedDial/* (tutti i dispositivi vedono gli stessi numeri).
 
         let user = null;
         let hiddenModules = [];
         let isDarkMode = false;
         let manualShift = null;
+
+        /** Evita che setDoc(merge) con tutto il cruscotto locale sovrascriva campi aggiornati da altri dispositivi. */
+        window.__plantDirtyKeys = window.__plantDirtyKeys || new Set();
+        window.__plantTankStatusesDirty = false;
+        window.__plantForceFullCloudWrite = false;
+        window.markPlantFieldDirty = function (key) {
+            if (!key || typeof key !== 'string') return;
+            window.__plantDirtyKeys.add(key);
+        };
+        window.markTankStatusesDirty = function () {
+            window.__plantTankStatusesDirty = true;
+            window.__plantDirtyKeys.add('tankStatuses');
+        };
+        window.markAllPlantFieldsDirtyForNextSave = function () {
+            window.__plantForceFullCloudWrite = true;
+        };
 
         // Esponi hiddenModules come proprietà di window per accessibilità globale
         window.hiddenModules = hiddenModules;
@@ -1033,7 +1049,7 @@ window.colorPreviewNumber = function(tankName, value) {
                     if (typeof window.__pullPlantFromServerNow === 'function') {
                         void window.__pullPlantFromServerNow();
                     }
-                }, 400);
+                }, 280);
             };
             __shUnsubPlant = onSnapshot(dataDoc, (snapshot) => {
                 if (snapshot.exists()) {
@@ -1093,26 +1109,22 @@ window.colorPreviewNumber = function(tankName, value) {
         // ✅ FUNZIONE PER SALVATAGGIO MOMENTANEO (FUNZIONA ANCHE IN MODIFICA)
         window.saveCurrentData = async function() {
             if (!user || !user.uid || !db) return;
-            
-            const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
-            const data = { 
-                shift: currentShift,
-                lastUpdate: new Date().toISOString() 
-            }; 
-            document.querySelectorAll('input').forEach(input => { if (input.id) data[input.id] = input.value; });
-            document.querySelectorAll('.status-cell-btn, .status-header, .vwt-label-dynamic, .osmosi-label-dynamic').forEach(btn => {
-                if (btn.id && btn.id !== 'numpad-tank-btn') data[btn.id] = { text: btn.innerHTML, class: btn.className, style: btn.getAttribute('style') || "" };
-            });
-            if (window.tankStatuses) data.tankStatuses = window.tankStatuses;
-            
+
+            if (window.markAllPlantFieldsDirtyForNextSave) window.markAllPlantFieldsDirtyForNextSave();
+
+            const data = __collectPlantDataFromDomForCloud();
+
             // AGGIUNGI STORICO DEI SALVATAGGI PER TREND
             window.addToHistory(data);
-            
+
             try {
                 localStorage.setItem('stabileCurrentData', JSON.stringify(data));
             } catch (_) {}
-            try { 
-                await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data, { merge: true }); 
+            const cloudWrite = __buildPlantCloudWriteFromFull(data);
+            if (!cloudWrite) return;
+            try {
+                await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), cloudWrite, { merge: true });
+                __clearPlantDirtyAfterCloudWrite(cloudWrite);
                 if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
                 try {
                     localStorage.setItem('stabileCurrentData', JSON.stringify(data));
@@ -1120,7 +1132,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                     window.schedulePublicDigitalSnapshotSync();
                 }
-            } catch (e) { 
+            } catch (e) {
                 console.error('[ServiceHub] saveCurrentData Firestore:', e && e.code, e && e.message);
                 localStorage.setItem('stabileCurrentData', JSON.stringify(data));
                 if (window.__isFirestorePermissionError && window.__isFirestorePermissionError(e)) {
@@ -1516,6 +1528,79 @@ window.colorPreviewNumber = function(tankName, value) {
             }
         };
 
+        function __collectPlantDataFromDomForCloud() {
+            const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
+            const data = {
+                shift: currentShift,
+                lastUpdate: new Date().toISOString()
+            };
+            if (typeof manualShift !== 'undefined' && manualShift != null) {
+                data.manualShift = manualShift;
+            }
+            document.querySelectorAll('input').forEach(function (input) {
+                if (input.id) data[input.id] = input.value;
+            });
+            document.querySelectorAll('.status-cell-btn, .status-header, .vwt-label-dynamic, .osmosi-label-dynamic').forEach(function (btn) {
+                if (btn.id && btn.id !== 'numpad-tank-btn') {
+                    data[btn.id] = {
+                        text: btn.innerHTML,
+                        class: btn.className,
+                        style: btn.getAttribute('style') || ''
+                    };
+                }
+            });
+            if (window.tankStatuses) data.tankStatuses = window.tankStatuses;
+            return data;
+        }
+
+        function __buildPlantCloudWriteFromFull(full) {
+            if (window.__plantForceFullCloudWrite) {
+                window.__plantForceFullCloudWrite = false;
+                if (window.__plantDirtyKeys) window.__plantDirtyKeys.clear();
+                window.__plantTankStatusesDirty = false;
+                return Object.assign({}, full);
+            }
+            const w = {
+                shift: full.shift,
+                lastUpdate: full.lastUpdate
+            };
+            let any = false;
+            const dirty = window.__plantDirtyKeys;
+            if (dirty && dirty.size > 0) {
+                dirty.forEach(function (k) {
+                    if (k === 'shift') {
+                        w.shift = full.shift;
+                        any = true;
+                        return;
+                    }
+                    if (k === 'manualShift') {
+                        if (full.manualShift !== undefined) w.manualShift = full.manualShift;
+                        any = true;
+                        return;
+                    }
+                    if (Object.prototype.hasOwnProperty.call(full, k)) {
+                        w[k] = full[k];
+                        any = true;
+                    }
+                });
+            }
+            if (window.__plantTankStatusesDirty && full.tankStatuses !== undefined) {
+                w.tankStatuses = full.tankStatuses;
+                any = true;
+            }
+            return any ? w : null;
+        }
+
+        function __clearPlantDirtyAfterCloudWrite(written) {
+            if (!written || typeof written !== 'object') return;
+            if (window.__plantDirtyKeys) {
+                Object.keys(written).forEach(function (k) {
+                    if (k !== 'lastUpdate') window.__plantDirtyKeys.delete(k);
+                });
+            }
+            if (written.tankStatuses !== undefined) window.__plantTankStatusesDirty = false;
+        }
+
         window.saveData = async function (skipHistory) {
             const skipHist = skipHistory === true;
 
@@ -1688,30 +1773,23 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!skipHist) {
                 await window.ensureBackupHistory();
             }
-            
-            // ✅ USA IL TURNO REALE, NON QUELLO MANUALE
-            const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
-            const data = { 
-                shift: currentShift,
-                lastUpdate: new Date().toISOString() 
-            }; 
-            document.querySelectorAll('input').forEach(input => { if (input.id) data[input.id] = input.value; });
-            document.querySelectorAll('.status-cell-btn, .status-header, .vwt-label-dynamic, .osmosi-label-dynamic').forEach(btn => {
-                if (btn.id && btn.id !== 'numpad-tank-btn') data[btn.id] = { text: btn.innerHTML, class: btn.className, style: btn.getAttribute('style') || "" };
-            });
-            // Salva anche gli stati dei serbatoi
-            if (window.tankStatuses) data.tankStatuses = window.tankStatuses;
-            
-                        
+
+            const data = __collectPlantDataFromDomForCloud();
+
             if (!skipHist) {
                 window.addToHistory(data);
             }
-            
+
             try {
                 localStorage.setItem('stabileCurrentData', JSON.stringify(data));
             } catch (_) {}
-            try { 
-                await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data, { merge: true }); 
+            const cloudWrite = __buildPlantCloudWriteFromFull(data);
+            if (!cloudWrite) {
+                return;
+            }
+            try {
+                await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), cloudWrite, { merge: true });
+                __clearPlantDirtyAfterCloudWrite(cloudWrite);
                 if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
                 try {
                     localStorage.setItem('stabileCurrentData', JSON.stringify(data));
@@ -1721,7 +1799,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 } else if (typeof window.schedulePublicDigitalSnapshotSync === "function") {
                     window.schedulePublicDigitalSnapshotSync();
                 }
-            } catch (e) { 
+            } catch (e) {
                 console.error('[ServiceHub] saveData Firestore:', e && e.code, e && e.message);
                 localStorage.setItem('stabileCurrentData', JSON.stringify(data));
                 if (window.__isFirestorePermissionError && window.__isFirestorePermissionError(e)) {
@@ -1866,6 +1944,7 @@ window.colorPreviewNumber = function(tankName, value) {
             confirmBtn.innerHTML = "RESET AVVENUTO!";
             confirmBtn.classList.replace('bg-red-600', 'bg-emerald-600');
             
+            if (window.markAllPlantFieldsDirtyForNextSave) window.markAllPlantFieldsDirtyForNextSave();
             await window.saveData();
             
             setTimeout(() => {
@@ -1981,6 +2060,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 }
 
                 // 4. Salva lo stato pulito
+                if (window.markAllPlantFieldsDirtyForNextSave) window.markAllPlantFieldsDirtyForNextSave();
                 await window.saveData();
 
                 // 5. Chiudi la modale e mostra feedback
@@ -3561,11 +3641,12 @@ window.updateStoricoButton = async function() {
                     if (!t || !t.closest || !t.closest('.main-container')) return;
                     if (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA') return;
                     if (t.closest('#settings-modal') || t.closest('#management-modal') || t.closest('#shift-modal')) return;
+                    if (t.id && window.markPlantFieldDirty) window.markPlantFieldDirty(t.id);
                     if (__plantPersistTimer) clearTimeout(__plantPersistTimer);
                     __plantPersistTimer = setTimeout(function () {
                         __plantPersistTimer = null;
                         if (typeof window.saveData === 'function') void window.saveData(true);
-                    }, 300);
+                    }, 180);
                 },
                 true
             );
@@ -3946,6 +4027,7 @@ window.updateStoricoButton = async function() {
                 const npt = currentNumpadTarget;
                 if (currentNumpadTarget.id === 'vwt-notes' && val !== "") currentNumpadTarget.value = val + " mc";
                 else currentNumpadTarget.value = val;
+                if (currentNumpadTarget.id && window.markPlantFieldDirty) window.markPlantFieldDirty(currentNumpadTarget.id);
                 window.saveData();
                 if (window.updateTankLevelArrowForInput) window.updateTankLevelArrowForInput(npt);
             }
@@ -4707,6 +4789,7 @@ window.updateStoricoButton = async function() {
             }
             
             // Salva dati
+            if (window.markAllPlantFieldsDirtyForNextSave) window.markAllPlantFieldsDirtyForNextSave();
             window.saveData();
             
             // Aggiorna testo e colore del bottone
@@ -4779,6 +4862,10 @@ window.updateStoricoButton = async function() {
                 const inpVwtNotes = document.getElementById('inp-vwt-notes');
                 if (vwtNotes) vwtNotes.value = val + " mc";
                 if (inpVwtNotes) inpVwtNotes.value = val + " mc";
+                if (window.markPlantFieldDirty) {
+                    if (vwtNotes && vwtNotes.id) window.markPlantFieldDirty(vwtNotes.id);
+                    if (inpVwtNotes && inpVwtNotes.id) window.markPlantFieldDirty(inpVwtNotes.id);
+                }
                 window.saveData();
                 // Aggiorna i calcoli dei nutrienti
                 if (window.updateNutrientiCalcolati) {
@@ -4843,6 +4930,7 @@ window.updateStoricoButton = async function() {
                 labelText.innerText = 'Analisi';
             }
             
+            if (analisiInput && analisiInput.id && window.markPlantFieldDirty) window.markPlantFieldDirty(analisiInput.id);
             window.saveData();
         };
         
@@ -4865,6 +4953,7 @@ window.updateStoricoButton = async function() {
             if (label) {
                 label.innerText = val || "WWT";
                 label.className = val ? "vwt-label-dynamic text-blue-600 font-black" : "vwt-label-dynamic";
+                if (window.markPlantFieldDirty) window.markPlantFieldDirty('vwt-label-text');
                 window.saveData();
             }
         };
@@ -4899,6 +4988,10 @@ window.updateStoricoButton = async function() {
                 const inpVwtNotes = document.getElementById('inp-vwt-notes');
                 if (vwtNotes) vwtNotes.value = val + " mc";
                 if (inpVwtNotes) inpVwtNotes.value = val + " mc";
+                if (window.markPlantFieldDirty) {
+                    if (vwtNotes && vwtNotes.id) window.markPlantFieldDirty(vwtNotes.id);
+                    if (inpVwtNotes && inpVwtNotes.id) window.markPlantFieldDirty(inpVwtNotes.id);
+                }
                 window.saveData(); 
                 
                 // Aggiorna i calcoli dei nutrienti immediatamente
@@ -4971,6 +5064,7 @@ window.updateStoricoButton = async function() {
                     osmosiLabel.className = "osmosi-label-dynamic";
                     selectedOsmosiUnits = [];
                 }
+                if (window.markPlantFieldDirty) window.markPlantFieldDirty('osmosi-label-text');
                 window.saveData();
             }
         };
@@ -5034,6 +5128,13 @@ window.updateStoricoButton = async function() {
             m.classList.add('exit-right');
             setTimeout(() => {
                 m.classList.remove('active', 'exit-right');
+                const oInp = document.getElementById('osmosi');
+                const oMain = document.getElementById('inp-osmosi');
+                if (window.markPlantFieldDirty) {
+                    if (oInp && oInp.id) window.markPlantFieldDirty(oInp.id);
+                    if (oMain && oMain.id) window.markPlantFieldDirty(oMain.id);
+                    window.markPlantFieldDirty('osmosi-label-text');
+                }
                 window.saveData();
                 const currentAmbRow = document.querySelector('.amb-label[onclick*="openOsmosiPopup"]')?.closest('.amb-row');
                 const nextRow = currentAmbRow?.nextElementSibling;
@@ -5089,6 +5190,24 @@ window.updateStoricoButton = async function() {
                     el.className = val.class; 
                     if(val.style) el.setAttribute('style', val.style);
                 }
+            }
+            if (forcePlant && window.__plantDirtyKeys) {
+                try {
+                    const skipRemoteDirtyClear = new Set([
+                        'hiddenModules',
+                        'isDarkMode',
+                        'lastUpdate',
+                        'archiveTime',
+                        'createdAt'
+                    ]);
+                    for (const k of Object.keys(data)) {
+                        if (skipRemoteDirtyClear.has(k)) continue;
+                        window.__plantDirtyKeys.delete(k);
+                    }
+                    if (data.tankStatuses !== undefined) {
+                        window.__plantTankStatusesDirty = false;
+                    }
+                } catch (_) {}
             }
             updateBoilerInputs(); 
             
@@ -5401,6 +5520,7 @@ window.updateStoricoButton = async function() {
             el.innerText = active ? "MARCIA" : "FERMO";
             el.className = `status-cell-btn ${active ? 'bg-marcia' : 'bg-fermo'}`;
             if (id === 'stat-mk-A' || id === 'stat-mk-D') updateBoilerInputs();
+            if (window.markPlantFieldDirty) window.markPlantFieldDirty(id);
             window.saveData();
         };
 
@@ -5492,12 +5612,12 @@ window.updateStoricoButton = async function() {
                 }
             });
             
+            const compactHeaderId = id === '105A' ? 'h105A' : id === '105B' ? 'h105B' : 'hmk10600';
+            if (window.markPlantFieldDirty) window.markPlantFieldDirty(compactHeaderId);
             window.saveData();
         };
-
-        window.openShiftPopup = () => { document.getElementById('shift-modal').classList.add('active'); };
         window.closeShiftPopup = () => { document.getElementById('shift-modal').classList.remove('active'); };
-        window.selectShift = (shiftName) => { manualShift = shiftName; updateDeviceInfo(); window.saveData(); window.closeShiftPopup(); };
+        window.selectShift = (shiftName) => { manualShift = shiftName; updateDeviceInfo(); if (window.markPlantFieldDirty) { window.markPlantFieldDirty('shift'); window.markPlantFieldDirty('manualShift'); } window.saveData(); window.closeShiftPopup(); };
         window.openSettings = () => { 
     forceBlur(); 
     
@@ -8931,6 +9051,7 @@ window.convertToHtml = async () => {
                 // Salva le selezioni del serbatoio precedente
                 if (!window.tankStatuses) window.tankStatuses = {};
                 window.tankStatuses[window.currentTank] = window.selectedTankStatuses.join('+');
+                if (window.markTankStatusesDirty) window.markTankStatusesDirty();
                 window.saveData();
                 console.log('Salvato automaticamente serbatoio precedente:', window.currentTank, window.selectedTankStatuses);
             }
@@ -9063,6 +9184,7 @@ window.convertToHtml = async () => {
                     } else {
                         window.tankStatuses[window.currentTank] = window.selectedTankStatuses.join('+');
                     }
+                    if (window.markTankStatusesDirty) window.markTankStatusesDirty();
                     window.saveData();
                 }
             } else {
@@ -9090,6 +9212,7 @@ window.convertToHtml = async () => {
                 if (window.currentTank) {
                     if (!window.tankStatuses) window.tankStatuses = {};
                     window.tankStatuses[window.currentTank] = window.selectedTankStatuses.join('+');
+                    if (window.markTankStatusesDirty) window.markTankStatusesDirty();
                     window.saveData();
                 }
                 
@@ -9212,6 +9335,7 @@ window.convertToHtml = async () => {
             // Salva gli stati
             if (!window.tankStatuses) window.tankStatuses = {};
             window.tankStatuses[window.currentTank] = window.selectedTankStatuses.join('+');
+            if (window.markTankStatusesDirty) window.markTankStatusesDirty();
             window.saveData();
             
             // Resetta selezione
@@ -9263,6 +9387,7 @@ window.convertToHtml = async () => {
             // Rimuovi lo stato salvato
             if (!window.tankStatuses) window.tankStatuses = {};
             delete window.tankStatuses[window.currentTank];
+            if (window.markTankStatusesDirty) window.markTankStatusesDirty();
             window.saveData();
             
             // RESETTA LE SELEZIONI NEL POP-UP
@@ -9471,6 +9596,7 @@ window.convertToHtml = async () => {
                 window.tankStatuses[tankId + '_name'] = tankName;
             });
             
+            if (window.markTankStatusesDirty) window.markTankStatusesDirty();
             window.saveData();
             window.closeTankManagement();
         };
@@ -9551,6 +9677,7 @@ window.convertToHtml = async () => {
             window.updateDashboard();
             
             // Salva i dati
+            if (window.markTankStatusesDirty) window.markTankStatusesDirty();
             window.saveData();
             
             // Mostra feedback visivo
@@ -10433,6 +10560,7 @@ window.convertToHtml = async () => {
                             }
                             if (!window.tankStatuses) window.tankStatuses = {};
                             delete window.tankStatuses[window.currentTank];
+                            if (window.markTankStatusesDirty) window.markTankStatusesDirty();
                             window.saveData();
                             window.selectedTankStatuses = [];
                             modal.classList.add('exit-right');

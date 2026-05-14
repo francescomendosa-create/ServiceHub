@@ -1010,7 +1010,12 @@ window.colorPreviewNumber = function(tankName, value) {
             };
             
             tankName = tankMapping[inputId];
-            if (!tankName) return;
+            if (!tankName) {
+                if (typeof window.applyAlarmLevelFillToField === 'function') {
+                    window.applyAlarmLevelFillToField(input);
+                }
+                return;
+            }
             
             const normalizedTankName = tankName.toUpperCase();
             
@@ -1209,6 +1214,15 @@ window.colorPreviewNumber = function(tankName, value) {
 
             // Aggiungi anche la colorazione per gli input SCAM
             window.colorScamInputs();
+
+            // Input con soglie da Gestione allarmi ma non in tankMapping (es. scheda Azoto val-az-*)
+            if (typeof window.applyAlarmLevelFillToField === 'function') {
+                document.querySelectorAll('input, select').forEach(el => {
+                    if (!el.id || tankInputIds.includes(el.id)) return;
+                    if (['ph', 'cloro', 'reintegro'].includes(el.id)) return;
+                    window.applyAlarmLevelFillToField(el);
+                });
+            }
         };
 
         window.saveData = async function() {
@@ -9823,6 +9837,89 @@ function openTabAlarms(tab) {
 // ===============================
 // STEP 7 — CARICA SIGLE REALI
 // ===============================
+function escapeHtmlAlarm(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+/** Etichetta lunga come in interfaccia: titolo modulo + riga (DA N2, SG 9400A — PROD, …) */
+function getInterfaceLabelForAlarmInput(el, tab) {
+    const section = document.getElementById(tab.id);
+    const vLabelEl = section && section.querySelector('.v-label-text');
+    const moduleTitle = ((vLabelEl && vLabelEl.innerText) || tab.name || '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const bdRow = el.closest('.bd-input-row');
+    if (bdRow) {
+        const col = el.closest('.bd-column');
+        const head = col && col.querySelector('.status-header');
+        const bdLab = bdRow.querySelector('.bd-label');
+        const headPart = head ? head.innerText.split('\n')[0].trim() : '';
+        const labPart = bdLab ? bdLab.innerText.replace(/\s+/g, ' ').trim() : '';
+        const row = [headPart, labPart].filter(Boolean).join(' — ');
+        if (moduleTitle && row) return moduleTitle + ' — ' + row;
+        return row || moduleTitle;
+    }
+
+    const ambRow = el.closest('.amb-row');
+    if (ambRow) {
+        const lab = ambRow.querySelector('.amb-label');
+        const row = (lab && lab.innerText || '').replace(/\s+/g, ' ').trim();
+        if (moduleTitle && row) return moduleTitle + ' — ' + row;
+        return row || moduleTitle;
+    }
+
+    const td = el.closest('td');
+    if (!td) return moduleTitle || '';
+
+    const tr = td.closest('tr');
+    if (!tr) return moduleTitle || '';
+
+    let context = '';
+    const par = tr.parentElement;
+    if (par) {
+        let p = tr.previousElementSibling;
+        while (p) {
+            if (p.classList && p.classList.contains('th-bg')) {
+                p = p.previousElementSibling;
+                continue;
+            }
+            const firstTd = p.querySelector && p.querySelector('td:first-child');
+            if (firstTd && firstTd.classList.contains('cell-label-main')) {
+                const t = firstTd.innerText.replace(/\s+/g, ' ').trim();
+                if (/^SG\s|^POZZO|^MK\s|^SISTEMA/i.test(t) || t.length > 10) {
+                    context = t;
+                    break;
+                }
+            }
+            p = p.previousElementSibling;
+        }
+    }
+
+    let rowLabel = '';
+    let cur = td.previousElementSibling;
+    while (cur) {
+        if (cur.classList && cur.classList.contains('cell-label-main')) {
+            rowLabel = cur.innerText.replace(/\s+/g, ' ').trim();
+            break;
+        }
+        const inner = cur.querySelector && cur.querySelector('.cell-label-main');
+        if (inner) {
+            rowLabel = inner.innerText.replace(/\s+/g, ' ').trim();
+            break;
+        }
+        cur = cur.previousElementSibling;
+    }
+
+    const combined = context && rowLabel && context !== rowLabel ? context + ' — ' + rowLabel : (rowLabel || context);
+    if (moduleTitle && combined) return moduleTitle + ' — ' + combined;
+    return combined || moduleTitle || '';
+}
+
 function loadTabSignals(tab) {
     const container = window.__shAlarm$('#alarmSignals');
     if (!container) return;
@@ -9909,10 +10006,12 @@ function loadTabSignals(tab) {
             return;
         }
 
-        // Salva ENTRAMBI: label per UI e ID originale per logica
+        // Salva ENTRAMBI: label per UI (testo come in schermata) e ID originale per logica
+        const displayLabel = (getInterfaceLabelForAlarmInput(el, tab) || '').trim() || clean;
+
         const tankData = {
-            label: clean,        // per UI (es. "AZOTO N2")
-            inputId: id          // per logica (es. "inp_azn2")
+            label: displayLabel,
+            inputId: id
         };
 
         // Verifica se già esiste basandosi sull'inputId (chiave unica)
@@ -9948,7 +10047,7 @@ function loadTabSignals(tab) {
         row.innerHTML = `
             <div style="display:flex; justify-content:space-between; align-items:center;">
                 <div>
-                    <div style="font-weight:800; font-size:16px; color:white; margin-bottom:4px;">${tank.label}</div>
+                    <div style="font-weight:800; font-size:16px; color:white; margin-bottom:4px;">${escapeHtmlAlarm(tank.label)}</div>
                     <div style="font-size:12px; color:#60a5fa; font-weight:600;">Clicca per configurare allarmi</div>
                 </div>
                 <div style="width:40px; height:40px; background:#3b82f6; border-radius:50%; display:flex; align-items:center; justify-content:center;">
@@ -9976,12 +10075,14 @@ function openTankAlarmEditor(tank, tab) {
     updateHeaderBackButton(true, `openTabAlarms(${JSON.stringify(tab).replace(/"/g, '&quot;')})`);
 
     const config = window.getAlarmConfig();
-    // Usa ID normalizzato per leggere la configurazione
     const normalizedTank = window.normalizeTankId(tank.inputId);
-    const current = config[normalizedTank] || { red: '', yellow: '', redMin: '', yellowMin: '' };
+    const current =
+        (typeof window.thresholdsForAlarmFieldId === 'function' && window.thresholdsForAlarmFieldId(tank.inputId)) ||
+        config[normalizedTank] ||
+        { red: '', yellow: '', redMin: '', yellowMin: '' };
 
     // Verifica se è PH SCAM per mostrare soglie minime
-    const isPhScam = tank.label === 'PH SCAM';
+    const isPhScam = tank.inputId === 'ph';
 
     let additionalFields = '';
     if (isPhScam) {
@@ -10040,7 +10141,7 @@ function openTankAlarmEditor(tank, tab) {
     container.innerHTML = `
         <div>
             <div class="bg-gradient-to-r from-blue-600 to-blue-700 text-white p-6 rounded-2xl mb-6 shadow-xl">
-                <h2 class="font-black text-2xl uppercase tracking-tighter mb-2">${tank.label}</h2>
+                <h2 class="font-black text-2xl uppercase tracking-tighter mb-2">${escapeHtmlAlarm(tank.label)}</h2>
                 <div class="text-blue-100 text-sm font-semibold">Configurazione Allarmi</div>
             </div>
 
@@ -10150,7 +10251,7 @@ async function saveTankAlarm(e, tank) {
     // Verifica se è PH SCAM per salvare anche le soglie minime
     let yellowMin = null;
     let redMin = null;
-    if (tank.label === 'PH SCAM') {
+    if (tank.inputId === 'ph') {
         yellowMin = document.getElementById('yellowMinInput')?.value || null;
         redMin = document.getElementById('redMinInput')?.value || null;
     }
@@ -10165,12 +10266,22 @@ async function saveTankAlarm(e, tank) {
     };
     
     // Aggiungi soglie minime solo per PH SCAM
-    if (tank.label === 'PH SCAM') {
+    if (tank.inputId === 'ph') {
         if (yellowMin !== null) alarmData.yellowMin = Number(yellowMin);
         if (redMin !== null) alarmData.redMin = Number(redMin);
     }
 
     config[normalizedTank] = alarmData;
+
+    if (/^val[\-_]/i.test(tank.inputId)) {
+        const legacy = tank.inputId
+            .replace(/^analisi\-/gi, '')
+            .replace(/^inp/gi, '')
+            .replace(/^v/gi, '')
+            .replace(/[^a-z0-9]/gi, '')
+            .toLowerCase();
+        if (legacy && legacy !== normalizedTank) delete config[legacy];
+    }
 
     saveAlarmConfig(config);
 
@@ -10520,72 +10631,74 @@ function deleteConfig() {
 
 window.normalizeTankId = function(id) {
     if (!id) return null;
-    
     return id
-        // Rimuovi "analisi-" prefix se presente
         .replace(/^analisi\-/gi, '')
-        // Rimuovi "inp" prefix per input serbatoi
-        .replace(/^inp/gi, '')
-        // Rimuovi "v" prefix per valvole
-        .replace(/^v/gi, '')
-        // Rimuovi "vmk" prefix per valvole mk
+        .replace(/^(imp|val|inp)[\-_]?/gi, '')
         .replace(/^vmk/gi, '')
-        // Sostituisci tutti i caratteri non alfanumerici con niente (rimuovi spazi, trattini, underscore)
+        .replace(/^v/gi, '')
         .replace(/[^a-z0-9]/gi, '')
         .toLowerCase()
         .trim();
 };
 
-window.colorAllTankInputs = function() {
-    const config = window.getAlarmConfig();
-
-    document.querySelectorAll('input, select').forEach(el => {
-        if (!el.id) return;
-
-        const normalized = window.normalizeTankId(el.id);
-        const thresholds = config[normalized];
-
-        if (!thresholds) {
-            el.style.background = '';
-            return;
-        }
-
-        const value = Number(el.value);
-
-        if (isNaN(value)) {
-            el.style.background = '';
-            return;
-        }
-
-        // Controlla soglie massime (valori troppo alti)
-        if (thresholds.red && value >= thresholds.red) {
-            el.style.background = '#dc2626'; // ROSSO
-            el.style.color = 'white';
-        }
-        else if (thresholds.yellow && value >= thresholds.yellow) {
-            el.style.background = '#facc15'; // GIALLO
-            el.style.color = 'black';
-        }
-        // Controlla soglie minime (valori troppo bassi)
-        else if (thresholds.redMin && value <= thresholds.redMin) {
-            el.style.background = '#dc2626'; // ROSSO
-            el.style.color = 'white';
-        }
-        else if (thresholds.yellowMin && value <= thresholds.yellowMin) {
-            el.style.background = '#facc15'; // GIALLO
-            el.style.color = 'black';
-        }
-        else {
-            el.style.background = '#16a34a'; // VERDE
-            el.style.color = 'white';
-        }
-    });
+/** Soglie allarme per id campo: chiave nuova (normalizeTankId) o legacy (prima "v" su val-...) */
+window.thresholdsForAlarmFieldId = function (rawId) {
+    const cfg = window.getAlarmConfig ? window.getAlarmConfig() : {};
+    if (!rawId || !cfg) return null;
+    const nid = window.normalizeTankId(rawId);
+    if (nid && cfg[nid]) return cfg[nid];
+    if (/^val[\-_]/i.test(rawId)) {
+        const legacy = rawId
+            .replace(/^analisi\-/gi, '')
+            .replace(/^inp/gi, '')
+            .replace(/^v/gi, '')
+            .replace(/[^a-z0-9]/gi, '')
+            .toLowerCase();
+        if (legacy && cfg[legacy]) return cfg[legacy];
+    }
+    return null;
 };
 
-// Event listener per applicare colori al caricamento pagina
-window.addEventListener('load', () => {
-    window.colorAllTankInputs();
-});
+/** Colorazione a riempimento (come export / modale) per input con soglie salvate — Azoto val-*, ecc. */
+window.applyAlarmLevelFillToField = function (el) {
+    if (!el || !el.id) return;
+    const th = window.thresholdsForAlarmFieldId(el.id);
+    if (!th || (!th.red && !th.yellow && !th.redMin && !th.yellowMin)) {
+        el.style.backgroundColor = '';
+        el.style.background = '';
+        el.style.color = '';
+        return;
+    }
+    if (el.value === '' || el.value === null) {
+        el.style.backgroundColor = '';
+        el.style.background = '';
+        el.style.color = '';
+        return;
+    }
+    const value = Number(el.value);
+    if (isNaN(value)) {
+        el.style.backgroundColor = '';
+        el.style.background = '';
+        el.style.color = '';
+        return;
+    }
+    if (th.red && value >= th.red) {
+        el.style.backgroundColor = '#dc2626';
+        el.style.color = 'white';
+    } else if (th.yellow && value >= th.yellow) {
+        el.style.backgroundColor = '#facc15';
+        el.style.color = 'black';
+    } else if (th.redMin && value <= th.redMin) {
+        el.style.backgroundColor = '#dc2626';
+        el.style.color = 'white';
+    } else if (th.yellowMin && value <= th.yellowMin) {
+        el.style.backgroundColor = '#facc15';
+        el.style.color = 'black';
+    } else {
+        el.style.backgroundColor = '#16a34a';
+        el.style.color = 'white';
+    }
+};
 
 // --- INTEGRAZIONE GEMINI AI: STABILE, VOCALE E ULTRA-RAPIDA ---
 window.callGeminiAPI = async function(promptText, isChat = false, imageData = null) {

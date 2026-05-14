@@ -13,7 +13,7 @@
   <meta name="apple-mobile-web-app-title" content="STABILE Digital" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <link rel="apple-touch-icon" href="sh-touch.png?v=shpc4" />
-  <link rel="stylesheet" href="digital-remote.css?v=dig12" />
+  <link rel="stylesheet" href="digital-remote.css?v=dig13" />
   <style>
     html, body {
       margin: 0;
@@ -462,8 +462,71 @@
       document.head.appendChild(l);
     }
 
-    function renderFromData(d) {
-      document.getElementById("digital-preview-container").classList.remove("digital-focus-active");
+    /** Evita re-render identici (onSnapshot / metadata). */
+    let __lastDigitalRemoteSig = "";
+
+    function updateRemoteMetaStrip(d) {
+      const meta1 = bodyEl.querySelector(".digital-remote-top__meta");
+      const meta2 = bodyEl.querySelector(".digital-remote-top__meta2");
+      if (meta1) meta1.textContent = turnoLabel(d);
+      if (meta2) {
+        const when = d.updatedAt ? new Date(d.updatedAt).toLocaleString("it-IT") : "—";
+        meta2.textContent = "Ultimo aggiornamento: " + when;
+      }
+    }
+
+    /**
+     * @param {object} d dati publicDigital
+     * @param {{ fullRefresh?: boolean }} opts fullRefresh=true solo da pulsante AGGIORNA (animazione / DOM completo)
+     */
+    function renderFromData(d, opts) {
+      const o = opts || {};
+      const forceFull = o.fullRefresh === true;
+      const root = document.getElementById("digital-preview-container");
+      const existingGrid = bodyEl.querySelector("#digital-cards-grid");
+      const canSilent =
+        !forceFull &&
+        existingGrid &&
+        d &&
+        typeof d.cardsHTML === "string" &&
+        !String(bodyEl.innerHTML || "").includes("remote-error-banner");
+
+      if (canSilent) {
+        const sig = String(d.updatedAt || "") + "\u0001" + d.cardsHTML;
+        if (sig === __lastDigitalRemoteSig) return;
+        __lastDigitalRemoteSig = sig;
+
+        const inFocus = root.classList.contains("digital-focus-active");
+        let expandedTitle = "";
+        if (inFocus) {
+          const tt = root.querySelector("#digital-focus-title");
+          if (tt) expandedTitle = String(tt.textContent || "").replace(/\s+/g, " ").trim();
+        }
+
+        updateRemoteMetaStrip(d);
+        existingGrid.innerHTML = d.cardsHTML || "";
+
+        if (inFocus && expandedTitle) {
+          root.classList.add("digital-remote--silent-patch");
+          const cards = existingGrid.querySelectorAll(".digital-card");
+          let matched = null;
+          cards.forEach(function (c) {
+            const titleNode = c.querySelector(".digital-card-title");
+            const t = titleNode ? String(titleNode.textContent || "").replace(/\s+/g, " ").trim() : "";
+            if (t === expandedTitle) matched = c;
+          });
+          if (matched) window.expandDigitalModule(matched);
+          requestAnimationFrame(function () {
+            requestAnimationFrame(function () {
+              root.classList.remove("digital-remote--silent-patch");
+            });
+          });
+        }
+        return;
+      }
+
+      __lastDigitalRemoteSig = String((d && d.updatedAt) || "") + "\u0001" + String((d && d.cardsHTML) || "");
+      root.classList.remove("digital-focus-active");
       bodyEl.innerHTML = buildMainMarkup(d || {});
       wireButtons();
       bindCardZoomOnce();
@@ -513,12 +576,14 @@
           try {
             const snap = await getDocFromServer(prefRef);
             if (!snap.exists()) {
+              __lastDigitalRemoteSig = "";
               bodyEl.innerHTML =
                 '<div class="remote-error-banner">Nessun report su questo link. Salva dall app operatore o premi LINK REMOTO una volta.</div>';
               return;
             }
-            renderFromData(snap.data());
+            renderFromData(snap.data(), { fullRefresh: true });
           } catch (err) {
+            __lastDigitalRemoteSig = "";
             bodyEl.innerHTML =
               '<div class="remote-error-banner">Aggiornamento non riuscito: ' +
               esc(err && err.message) +
@@ -529,29 +594,59 @@
           }
         };
 
+        var __remoteSnapshotDebounce = null;
+
         function applySnapshot(snap) {
+          const flush = function () {
+            __remoteSnapshotDebounce = null;
+            if (!snap.exists()) {
+              __lastDigitalRemoteSig = "";
+              bodyEl.innerHTML =
+                '<div class="remote-error-banner">In attesa del primo salvataggio o pubblicazione Digital…</div>';
+              return;
+            }
+            const d = snap.data();
+            var isFirst = !bodyEl.querySelector("#digital-cards-grid");
+            renderFromData(d, { fullRefresh: isFirst });
+            try {
+              if (snap.metadata && snap.metadata.fromCache) {
+                setTimeout(function () {
+                  pullFromServer("snapshot-from-cache");
+                }, 300);
+              }
+            } catch (_) {}
+          };
+
           if (!snap.exists()) {
-            bodyEl.innerHTML =
-              '<div class="remote-error-banner">In attesa del primo salvataggio o pubblicazione Digital…</div>';
+            if (__remoteSnapshotDebounce) {
+              clearTimeout(__remoteSnapshotDebounce);
+              __remoteSnapshotDebounce = null;
+            }
+            flush();
             return;
           }
-          renderFromData(snap.data());
-          try {
-            if (snap.metadata && snap.metadata.fromCache) {
-              setTimeout(function () {
-                pullFromServer("snapshot-from-cache");
-              }, 300);
+
+          var isFirstNow = !bodyEl.querySelector("#digital-cards-grid");
+          if (isFirstNow) {
+            if (__remoteSnapshotDebounce) {
+              clearTimeout(__remoteSnapshotDebounce);
+              __remoteSnapshotDebounce = null;
             }
-          } catch (_) {}
+            flush();
+            return;
+          }
+
+          if (__remoteSnapshotDebounce) clearTimeout(__remoteSnapshotDebounce);
+          __remoteSnapshotDebounce = setTimeout(flush, 120);
         }
 
         onSnapshot(
           prefRef,
-          { includeMetadataChanges: true },
           function (snap) {
             applySnapshot(snap);
           },
           (err) => {
+            __lastDigitalRemoteSig = "";
             bodyEl.innerHTML =
               '<div class="remote-error-banner">Errore Firestore: ' +
               esc(err && err.message) +
@@ -589,7 +684,7 @@
           if (document.visibilityState === "visible") {
             pullFromServer("interval");
           }
-        }, 6000);
+        }, 300000);
       })();
     }
   </script>

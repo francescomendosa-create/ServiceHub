@@ -516,7 +516,7 @@ window.colorPreviewNumber = function(tankName, value) {
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, initializeFirestore, memoryLocalCache, doc, setDoc, getDoc, getDocFromServer, onSnapshot, collection, addDoc, query, getDocs, limit, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, getDoc, getDocFromServer, onSnapshot, collection, addDoc, query, getDocs, limit, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Configurazione Firebase del progetto ServiceHub (servicehub-18309)
         // Usata su GitHub Pages e ovunque non sia disponibile la config iniettata da Canvas.
@@ -542,15 +542,7 @@ window.colorPreviewNumber = function(tankName, value) {
             if (firebaseConfig && firebaseConfig.apiKey) {
                 app = initializeApp(firebaseConfig);
                 auth = getAuth(app);
-                try {
-                    db = initializeFirestore(app, {
-                        localCache: memoryLocalCache(),
-                        experimentalForceLongPolling: true
-                    });
-                } catch (e2) {
-                    console.warn('[ServiceHub] initializeFirestore non disponibile, uso getFirestore:', e2 && e2.message);
-                    db = getFirestore(app);
-                }
+                db = getFirestore(app);
                 window.__SERVICEHUB_FIREBASE_PROJECT = firebaseConfig.projectId || '';
                 console.log('[ServiceHub] Firebase attivo, progetto:', firebaseConfig.projectId);
             } else {
@@ -930,11 +922,6 @@ window.colorPreviewNumber = function(tankName, value) {
                     syncWithCloud();
                     window.__hydrateDigitalShareKeyFromCloud();
                     window.initAlarmConfigListener();
-                    setTimeout(function () {
-                        if (user && user.uid && typeof window.__pullPlantFromServerNow === 'function') {
-                            void window.__pullPlantFromServerNow();
-                        }
-                    }, 600);
                 } else {
                     if(led) led.className = "w-2.5 h-2.5 rounded-full bg-red-600 shadow-[0_0_10px_#dc2626]";
                 }
@@ -1038,13 +1025,27 @@ window.colorPreviewNumber = function(tankName, value) {
                 __shUnsubSettings = null;
             }
             const dataDoc = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
+            let __plantTruthTimer = null;
+            const schedulePlantTruthFromServer = function () {
+                if (__plantTruthTimer) clearTimeout(__plantTruthTimer);
+                __plantTruthTimer = setTimeout(function () {
+                    __plantTruthTimer = null;
+                    if (typeof window.__pullPlantFromServerNow === 'function') {
+                        void window.__pullPlantFromServerNow();
+                    }
+                }, 400);
+            };
             __shUnsubPlant = onSnapshot(dataDoc, (snapshot) => {
                 if (snapshot.exists()) {
                     const d = snapshot.data();
                     applyData(d, { forceRemotePlant: true });
                     mergePlantIntoStabileLocalStorage(d);
-                    if (user && user.uid && typeof window.schedulePublicDigitalSnapshotSync === 'function') {
+                    if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                         window.schedulePublicDigitalSnapshotSync();
+                    }
+                    const md = snapshot.metadata;
+                    if (!md || !md.hasPendingWrites) {
+                        schedulePlantTruthFromServer();
                     }
                 } else {
                     if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
@@ -3596,6 +3597,11 @@ window.updateStoricoButton = async function() {
                     }
                 }
             });
+            window.addEventListener('online', function () {
+                if (typeof window.__pullPlantFromServerNow === 'function') {
+                    void window.__pullPlantFromServerNow();
+                }
+            });
 
             document.addEventListener(
                 'blur',
@@ -5073,7 +5079,8 @@ window.updateStoricoButton = async function() {
                 if (!el) continue;
                 if (el.tagName === 'INPUT') { 
                     if (forcePlant || document.activeElement !== el) {
-                        el.value = val != null && val !== undefined ? val : '';
+                        el.value =
+                            val != null && val !== undefined ? String(val) : '';
                         if(id === 'osmosi') adjustOsmosiFontSize(el);
                     }
                 } 
@@ -5114,6 +5121,9 @@ window.updateStoricoButton = async function() {
                         const d = snap.data();
                         applyData(d, { forceRemotePlant: true });
                         mergePlantIntoStabileLocalStorage(d);
+                        if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
+                            window.schedulePublicDigitalSnapshotSync();
+                        }
                     }
                 })
                 .catch(function (e) {

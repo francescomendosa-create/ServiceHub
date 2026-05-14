@@ -517,6 +517,7 @@ window.colorPreviewNumber = function(tankName, value) {
         };
 
         let app = null, auth = null, db = null;
+        window.__SERVICEHUB_FIREBASE_PROJECT = '';
         try {
             let firebaseConfig = DEFAULT_FIREBASE_CONFIG;
             if (typeof __firebase_config !== 'undefined' && __firebase_config) {
@@ -529,6 +530,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 app = initializeApp(firebaseConfig);
                 auth = getAuth(app);
                 db = getFirestore(app);
+                window.__SERVICEHUB_FIREBASE_PROJECT = firebaseConfig.projectId || '';
                 console.log('[ServiceHub] Firebase attivo, progetto:', firebaseConfig.projectId);
             } else {
                 console.warn('[ServiceHub] Firebase non configurato: modalità solo-locale (localStorage).');
@@ -537,6 +539,8 @@ window.colorPreviewNumber = function(tankName, value) {
             console.warn('[ServiceHub] Firebase non disponibile, modalità solo-locale attiva. Dettagli:', e && e.message);
         }
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'stabile-2026-v4';
+        window.__SERVICEHUB_APP_ID = appId;
+        console.info('[ServiceHub] Multi-dispositivo: tutti devono usare lo stesso progetto Firebase e lo stesso appId. Path plant:', 'artifacts/' + appId + '/sharedDial/plant');
         // Dati operativi condivisi: artifacts/{appId}/sharedDial/* (tutti i dispositivi vedono gli stessi numeri).
 
         let user = null;
@@ -946,6 +950,35 @@ window.colorPreviewNumber = function(tankName, value) {
             }
         };
 
+        window.__isFirestorePermissionError = function (e) {
+            const c = e && e.code;
+            return c === 'permission-denied' || c === 'missing-or-insufficient-permissions';
+        };
+
+        window.__showPlantCloudSyncBanner = function (message) {
+            try {
+                const b = document.getElementById('plant-cloud-sync-banner');
+                const t = document.getElementById('plant-cloud-sync-banner-text');
+                if (t && message) t.textContent = message;
+                if (b) {
+                    b.classList.remove('hidden');
+                    b.classList.add('flex');
+                    b.style.display = '';
+                }
+            } catch (_) {}
+        };
+
+        window.__hidePlantCloudSyncBanner = function () {
+            try {
+                const b = document.getElementById('plant-cloud-sync-banner');
+                if (b) {
+                    b.classList.add('hidden');
+                    b.classList.remove('flex');
+                    b.style.display = 'none';
+                }
+            } catch (_) {}
+        };
+
         const syncWithCloud = () => {
             if (!user || !user.uid || !db) return;
             if (__shUnsubPlant) {
@@ -973,6 +1006,12 @@ window.colorPreviewNumber = function(tankName, value) {
                 }
             }, (error) => {
                 console.warn('[ServiceHub] plant Firestore:', error && error.message);
+                if (window.__isFirestorePermissionError && window.__isFirestorePermissionError(error)) {
+                    const pid = window.__SERVICEHUB_FIREBASE_PROJECT || 'Firebase';
+                    window.__showPlantCloudSyncBanner(
+                        'Impossibile leggere il cruscotto dal cloud (permessi Firestore). Gli altri dispositivi non ricevono aggiornamenti in tempo reale. Apri Firebase Console → Firestore → Regole e pubblica il file firestore.rules del repository (progetto ' + pid + ').'
+                    );
+                }
                 if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
                     window.__applyPlantFromLocalStorageFallback();
                 }
@@ -1025,7 +1064,8 @@ window.colorPreviewNumber = function(tankName, value) {
                 localStorage.setItem('stabileCurrentData', JSON.stringify(data));
             } catch (_) {}
             try { 
-                await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data); 
+                await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data, { merge: true }); 
+                if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
                 try {
                     localStorage.setItem('stabileCurrentData', JSON.stringify(data));
                 } catch (_) {}
@@ -1035,6 +1075,12 @@ window.colorPreviewNumber = function(tankName, value) {
             } catch (e) { 
                 console.error('[ServiceHub] saveCurrentData Firestore:', e && e.code, e && e.message);
                 localStorage.setItem('stabileCurrentData', JSON.stringify(data));
+                if (window.__isFirestorePermissionError && window.__isFirestorePermissionError(e)) {
+                    const pid = window.__SERVICEHUB_FIREBASE_PROJECT || 'Firebase';
+                    window.__showPlantCloudSyncBanner(
+                        'Salvataggio sul cloud rifiutato (regole Firestore). I dati restano su questo dispositivo; gli altri non li vedono. Pubblica in Firebase il file firestore.rules del repository (progetto ' + pid + ').'
+                    );
+                }
             }
         };
 
@@ -1052,12 +1098,22 @@ window.colorPreviewNumber = function(tankName, value) {
             }
         };
 
+        // Ritarda la colorazione allarmi mentre si digita (i prefissi numerici possono sembrare sotto soglia minima).
+        window.__fieldColorDebounceMs = 380;
+        window.__alarmFillTimers = window.__alarmFillTimers || {};
+        window.__tankColorTimers = window.__tankColorTimers || {};
+        window.__scamColorTimers = window.__scamColorTimers || {};
+
         // Funzione per colorare input serbatoi in base al livello
-        window.colorTankInput = function(input) {
+        window.colorTankInput = function (input, immediate) {
             if (!input) return;
             
             // Se il campo è vuoto, resetta i colori
             if (!input.value) {
+                if (input.id && window.__tankColorTimers[input.id]) {
+                    clearTimeout(window.__tankColorTimers[input.id]);
+                    window.__tankColorTimers[input.id] = null;
+                }
                 input.style.backgroundColor = '';
                 input.style.color = '';
                 input.style.fontWeight = '';
@@ -1065,7 +1121,8 @@ window.colorPreviewNumber = function(tankName, value) {
                 input.classList.add('tank-normal');
                 return;
             }
-            
+
+            const runCore = function () {
             // Estrai il nome del serbatoio dall'ID dell'input
             const inputId = input.id;
             let tankName = null;
@@ -1105,7 +1162,7 @@ window.colorPreviewNumber = function(tankName, value) {
             tankName = tankMapping[inputId];
             if (!tankName) {
                 if (typeof window.applyAlarmLevelFillToField === 'function') {
-                    window.applyAlarmLevelFillToField(input);
+                    window.applyAlarmLevelFillToField(input, true);
                 }
                 return;
             }
@@ -1213,17 +1270,38 @@ window.colorPreviewNumber = function(tankName, value) {
                 input.style.fontWeight = '';
                 input.classList.remove('tank-normal', 'tank-warning', 'tank-critical');
             }
+            };
+
+            const tid = input.id;
+            if (immediate === true || document.activeElement !== input) {
+                if (tid && window.__tankColorTimers[tid]) {
+                    clearTimeout(window.__tankColorTimers[tid]);
+                    window.__tankColorTimers[tid] = null;
+                }
+                runCore();
+                return;
+            }
+            if (tid) {
+                clearTimeout(window.__tankColorTimers[tid]);
+                window.__tankColorTimers[tid] = setTimeout(function () {
+                    window.__tankColorTimers[tid] = null;
+                    runCore();
+                }, window.__fieldColorDebounceMs || 380);
+            }
         };
 
         // Funzione per colorare input SCAM in base ai valori di allarme personalizzati
-        window.colorScamInputs = function() {
+        window.colorScamInputs = function (forceImmediate) {
             const scamInputIds = ['ph', 'cloro', 'reintegro'];
             const alarmConfig = getAlarmConfig ? window.getAlarmConfig() : {};
 
             scamInputIds.forEach(inputId => {
                 const input = document.getElementById(inputId);
                 if (!input || !input.value) {
-                    // Resetta i colori se il campo è vuoto
+                    if (window.__scamColorTimers[inputId]) {
+                        clearTimeout(window.__scamColorTimers[inputId]);
+                        window.__scamColorTimers[inputId] = null;
+                    }
                     if (input) {
                         input.style.backgroundColor = '';
                         input.style.color = '';
@@ -1233,58 +1311,66 @@ window.colorPreviewNumber = function(tankName, value) {
                     return;
                 }
 
-                const value = parseFloat(input.value);
-                if (isNaN(value)) return;
+                const applyOne = function () {
+                    const value = parseFloat(input.value);
+                    if (isNaN(value)) return;
 
-                // Usa le soglie personalizzate come gli altri input
-                const normalizedId = window.normalizeTankId(inputId);
-                const thresholds = alarmConfig[normalizedId];
+                    const normalizedId = window.normalizeTankId(inputId);
+                    const thresholds = alarmConfig[normalizedId];
 
-                if (!thresholds || !thresholds.red || !thresholds.yellow) {
-                    // Se non ci sono soglie personalizzate, non applicare colori
-                    input.style.backgroundColor = '';
-                    input.style.color = '';
-                    input.style.fontWeight = '';
-                    input.classList.remove('tank-warning', 'tank-critical');
+                    if (!thresholds || !thresholds.red || !thresholds.yellow) {
+                        input.style.backgroundColor = '';
+                        input.style.color = '';
+                        input.style.fontWeight = '';
+                        input.classList.remove('tank-warning', 'tank-critical');
+                        return;
+                    }
+
+                    if (value >= thresholds.red) {
+                        input.style.backgroundColor = '';
+                        input.style.color = '#dc2626';
+                        input.style.fontWeight = '700';
+                        input.classList.add('tank-critical');
+                        input.classList.remove('tank-warning');
+                    } else if (value >= thresholds.yellow) {
+                        input.style.backgroundColor = '';
+                        input.style.color = '#f59e0b';
+                        input.style.fontWeight = '600';
+                        input.classList.add('tank-warning');
+                        input.classList.remove('tank-critical');
+                    } else if (thresholds.redMin && value <= thresholds.redMin) {
+                        input.style.backgroundColor = '';
+                        input.style.color = '#dc2626';
+                        input.style.fontWeight = '700';
+                        input.classList.add('tank-critical');
+                        input.classList.remove('tank-warning');
+                    } else if (thresholds.yellowMin && value <= thresholds.yellowMin) {
+                        input.style.backgroundColor = '';
+                        input.style.color = '#f59e0b';
+                        input.style.fontWeight = '600';
+                        input.classList.add('tank-warning');
+                        input.classList.remove('tank-critical');
+                    } else {
+                        input.style.backgroundColor = '';
+                        input.style.color = '';
+                        input.style.fontWeight = '';
+                        input.classList.remove('tank-warning', 'tank-critical');
+                    }
+                };
+
+                if (forceImmediate === true || document.activeElement !== input) {
+                    if (window.__scamColorTimers[inputId]) {
+                        clearTimeout(window.__scamColorTimers[inputId]);
+                        window.__scamColorTimers[inputId] = null;
+                    }
+                    applyOne();
                     return;
                 }
-
-                // Logica di colorazione per SCAM usando soglie personalizzate
-                if (value >= thresholds.red) {
-                    // CRITICO - Rosso (soglia massima)
-                    input.style.backgroundColor = '';
-                    input.style.color = '#dc2626';
-                    input.style.fontWeight = '700';
-                    input.classList.add('tank-critical');
-                    input.classList.remove('tank-warning');
-                } else if (value >= thresholds.yellow) {
-                    // ATTENZIONE - Giallo (soglia massima)
-                    input.style.backgroundColor = '';
-                    input.style.color = '#f59e0b';
-                    input.style.fontWeight = '600';
-                    input.classList.add('tank-warning');
-                    input.classList.remove('tank-critical');
-                } else if (thresholds.redMin && value <= thresholds.redMin) {
-                    // CRITICO - Rosso (soglia minima)
-                    input.style.backgroundColor = '';
-                    input.style.color = '#dc2626';
-                    input.style.fontWeight = '700';
-                    input.classList.add('tank-critical');
-                    input.classList.remove('tank-warning');
-                } else if (thresholds.yellowMin && value <= thresholds.yellowMin) {
-                    // ATTENZIONE - Giallo (soglia minima)
-                    input.style.backgroundColor = '';
-                    input.style.color = '#f59e0b';
-                    input.style.fontWeight = '600';
-                    input.classList.add('tank-warning');
-                    input.classList.remove('tank-critical');
-                } else {
-                    // NORMALE - Reset colori
-                    input.style.backgroundColor = '';
-                    input.style.color = '';
-                    input.style.fontWeight = '';
-                    input.classList.remove('tank-warning', 'tank-critical');
-                }
+                clearTimeout(window.__scamColorTimers[inputId]);
+                window.__scamColorTimers[inputId] = setTimeout(function () {
+                    window.__scamColorTimers[inputId] = null;
+                    applyOne();
+                }, window.__fieldColorDebounceMs || 380);
             });
         };
 
@@ -1301,19 +1387,19 @@ window.colorPreviewNumber = function(tankName, value) {
             tankInputIds.forEach(inputId => {
                 const input = document.getElementById(inputId);
                 if (input) {
-                    window.colorTankInput(input);
+                    window.colorTankInput(input, true);
                 }
             });
 
             // Aggiungi anche la colorazione per gli input SCAM
-            window.colorScamInputs();
+            window.colorScamInputs(true);
 
             // Input con soglie da Gestione allarmi ma non in tankMapping (es. scheda Azoto val-az-*)
             if (typeof window.applyAlarmLevelFillToField === 'function') {
                 document.querySelectorAll('input, select').forEach(el => {
                     if (!el.id || tankInputIds.includes(el.id)) return;
                     if (['ph', 'cloro', 'reintegro'].includes(el.id)) return;
-                    window.applyAlarmLevelFillToField(el);
+                    window.applyAlarmLevelFillToField(el, true);
                 });
             }
         };
@@ -1509,7 +1595,8 @@ window.colorPreviewNumber = function(tankName, value) {
                 localStorage.setItem('stabileCurrentData', JSON.stringify(data));
             } catch (_) {}
             try { 
-                await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data); 
+                await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data, { merge: true }); 
+                if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
                 try {
                     localStorage.setItem('stabileCurrentData', JSON.stringify(data));
                 } catch (_) {}
@@ -1519,6 +1606,12 @@ window.colorPreviewNumber = function(tankName, value) {
             } catch (e) { 
                 console.error('[ServiceHub] saveData Firestore:', e && e.code, e && e.message);
                 localStorage.setItem('stabileCurrentData', JSON.stringify(data));
+                if (window.__isFirestorePermissionError && window.__isFirestorePermissionError(e)) {
+                    const pid = window.__SERVICEHUB_FIREBASE_PROJECT || 'Firebase';
+                    window.__showPlantCloudSyncBanner(
+                        'Salvataggio sul cloud rifiutato (regole Firestore). I dati restano su questo dispositivo; gli altri non li vedono. Pubblica in Firebase il file firestore.rules del repository (progetto ' + pid + ').'
+                    );
+                }
             }
         };
 
@@ -3321,6 +3414,42 @@ window.updateStoricoButton = async function() {
                     void window.saveData(true);
                 }
             });
+
+            document.addEventListener(
+                'focusout',
+                function (e) {
+                    const el = e.target;
+                    if (!el || !el.id) return;
+                    if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') return;
+                    if (!el.closest || !el.closest('.main-container')) return;
+                    if (el.closest('#settings-modal') || el.closest('#management-modal') || el.closest('#shift-modal')) return;
+                    try {
+                        if (window.__alarmFillTimers && window.__alarmFillTimers[el.id]) {
+                            clearTimeout(window.__alarmFillTimers[el.id]);
+                            window.__alarmFillTimers[el.id] = null;
+                        }
+                        if (window.__tankColorTimers && window.__tankColorTimers[el.id]) {
+                            clearTimeout(window.__tankColorTimers[el.id]);
+                            window.__tankColorTimers[el.id] = null;
+                        }
+                        if (window.__scamColorTimers && window.__scamColorTimers[el.id]) {
+                            clearTimeout(window.__scamColorTimers[el.id]);
+                            window.__scamColorTimers[el.id] = null;
+                        }
+                    } catch (_) {}
+                    if (['ph', 'cloro', 'reintegro'].includes(el.id)) {
+                        if (typeof window.colorScamInputs === 'function') window.colorScamInputs(true);
+                    } else {
+                        if (typeof window.applyAlarmLevelFillToField === 'function') {
+                            window.applyAlarmLevelFillToField(el, true);
+                        }
+                        if (typeof window.colorTankInput === 'function') {
+                            window.colorTankInput(el, true);
+                        }
+                    }
+                },
+                true
+            );
 
             updateDeviceInfo(); 
             setInterval(updateDeviceInfo, 60000);
@@ -8083,10 +8212,12 @@ window.pushPublicDigitalSnapshotQuiet = async function () {
             doc(db, "artifacts", appId, "publicDigital", shareKey),
             {
                 teamAppId: appId,
+                ownerUid: user.uid,
                 updatedAt: new Date().toISOString(),
                 shiftLabel,
                 cardsHTML
-            }
+            },
+            { merge: true }
         );
         return true;
     } catch (e) {
@@ -9716,7 +9847,7 @@ window.convertToHtml = async () => {
     <div class="main-container">
         <div class="main-header">
             <div class="flex items-center gap-2">
-                <div id="cloud-status-led" class="w-2.5 h-2.5 rounded-full bg-slate-500 shadow-[0_0_8px_#64748b]"></div>
+                <div id="cloud-status-led" class="w-2.5 h-2.5 rounded-full bg-slate-500 shadow-[0_0_8px_#64748b]" title="Verde = connesso. Se non si sincronizzano gli altri dispositivi, controlla le regole Firestore (banner sotto)."></div>
                 <span class="font-black italic text-[15px] tracking-tighter uppercase text-white cursor-pointer" onclick="showResetModal()">STABILE 2026</span>
                 <span id="device-tag" class="px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded text-[8px] font-black">V4.3</span>
             </div>
@@ -9729,6 +9860,11 @@ window.convertToHtml = async () => {
                     <div class="settings-badge-value hidden absolute top-0 right-0 bg-red-500 text-white text-[8px] font-black w-4 h-4 rounded-full flex items-center justify-center border border-white">0</div>
                 </div>
             </div>
+        </div>
+
+        <div id="plant-cloud-sync-banner" role="alert" class="hidden flex-row items-center justify-between gap-2 px-3 py-2 bg-amber-400 text-slate-900 text-[10px] font-bold leading-snug border-b-2 border-amber-600">
+            <span id="plant-cloud-sync-banner-text">Sincronizzazione cloud non disponibile. Controlla le regole Firestore nel progetto indicato dalla console (file firestore.rules nel repository).</span>
+            <button type="button" class="shrink-0 px-2 py-1 rounded bg-slate-900/15 text-[9px] font-black uppercase border border-slate-900/30" onclick="if(typeof window.__hidePlantCloudSyncBanner==='function')window.__hidePlantCloudSyncBanner()">Chiudi</button>
         </div>
 
         <!-- Righe dei Moduli -->
@@ -11179,7 +11315,7 @@ window.thresholdsForAlarmFieldId = function (rawId) {
 };
 
 /** Allarmi: solo colore del numero (come serbatoi / SCAM), senza sfondo rosso/giallo/verde */
-window.applyAlarmLevelFillToField = function (el) {
+window.__applyAlarmLevelFillToFieldImmediate = function (el) {
     if (!el || !el.id) return;
     const th = window.thresholdsForAlarmFieldId(el.id);
     if (!th || (!th.red && !th.yellow && !th.redMin && !th.yellowMin)) {
@@ -11236,6 +11372,30 @@ window.applyAlarmLevelFillToField = function (el) {
         el.style.fontWeight = '';
         el.classList.remove('tank-warning', 'tank-critical', 'tank-normal');
     }
+};
+
+/** Durante la digitazione ritarda: es. "2" prima di "250" può essere sotto soglia minima e lampeggiare rosso. */
+window.applyAlarmLevelFillToField = function (el, immediate) {
+    if (!el || !el.id) return;
+    const th = window.thresholdsForAlarmFieldId(el.id);
+    const noRules = !th || (!th.red && !th.yellow && !th.redMin && !th.yellowMin);
+    const empty = el.value === '' || el.value === null;
+    const run = function () {
+        window.__applyAlarmLevelFillToFieldImmediate(el);
+    };
+    if (immediate === true || noRules || empty || document.activeElement !== el) {
+        if (window.__alarmFillTimers[el.id]) {
+            clearTimeout(window.__alarmFillTimers[el.id]);
+            window.__alarmFillTimers[el.id] = null;
+        }
+        run();
+        return;
+    }
+    clearTimeout(window.__alarmFillTimers[el.id]);
+    window.__alarmFillTimers[el.id] = setTimeout(function () {
+        window.__alarmFillTimers[el.id] = null;
+        run();
+    }, window.__fieldColorDebounceMs || 380);
 };
 
 // --- INTEGRAZIONE GEMINI AI: STABILE, VOCALE E ULTRA-RAPIDA ---

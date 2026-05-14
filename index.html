@@ -9704,6 +9704,9 @@ window.loadSettingsHome = function () {
                 </svg>
                 <span class="text-lg uppercase">Gestione Allarmi</span>
             </button>
+            <p style="font-size:11px;color:#94a3b8;text-align:center;line-height:1.45;padding:0 8px;">
+                Le soglie si applicano agli <strong style="color:#e2e8f0;">input numerici</strong> delle schede: sfondo <strong style="color:#facc15;">giallo</strong> (attenzione) o <strong style="color:#f87171;">rosso</strong> (critico) quando il valore supera le soglie salvate. Usa <strong style="color:#e2e8f0;">Salva Configurazione</strong> in fondo alla schermata allarmi.
+            </p>
         </div>
     `;
 };
@@ -10122,11 +10125,21 @@ function openTankAlarmEditor(tank, tab) {
 // ===============================
 
 function saveAlarmConfig(config) {
-    // Usa cloud se disponibile, altrimenti localStorage
-    if (user && user.uid) {
-        window.saveAlarmConfigCloud(config);
-    } else {
+    if (!config || typeof config !== 'object') return;
+    try {
+        window.APP_DB = window.APP_DB || { alarms: {}, updatedAt: null };
+        window.APP_DB.alarms = config;
+        window.APP_DB.updatedAt = new Date().toISOString();
+        if (typeof window.saveDB === 'function') window.saveDB();
+    } catch (_) {}
+    try {
         localStorage.setItem('alarmConfig', JSON.stringify(config));
+    } catch (_) {}
+    window.alarmConfig = config;
+    if (typeof window.saveAlarmConfigCloud === 'function') {
+        Promise.resolve(window.saveAlarmConfigCloud(config)).catch(function (e) {
+            console.warn('[ServiceHub] saveAlarmConfigCloud:', e && e.message);
+        });
     }
 }
 
@@ -10159,14 +10172,7 @@ async function saveTankAlarm(e, tank) {
 
     config[normalizedTank] = alarmData;
 
-    // SALVA NEL DB CENTRALE
-    window.APP_DB.alarms = config;
-
-    // PERSISTENZA IMMEDIATA
-    window.saveDB();
-
-    // memoria runtime
-    window.alarmConfig = config;
+    saveAlarmConfig(config);
 
     // UI
     if (window.colorAllTankInputs) window.colorAllTankInputs();
@@ -10207,7 +10213,7 @@ function exportConfig() {
     const modal = document.createElement('div');
     modal.id = 'exportImportModal';
     modal.innerHTML = `
-        <div style="position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:999999; display:flex; align-items:center; justify-content:center;">
+        <div style="position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:2147483646; display:flex; align-items:center; justify-content:center;">
             <div style="background:#111827; border-radius:16px; padding:20px; width:90%; max-width:500px; box-shadow:0 20px 40px rgba(0,0,0,0.5);">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
                     <h3 style="color:white; font-weight:700; font-size:18px;">Esporta Configurazione Allarmi</h3>
@@ -10276,17 +10282,12 @@ function exportConfig() {
         a.click();
         URL.revokeObjectURL(url);
         
-        // ✅ NUOVO: Salva anche le configurazioni degli allarmi su cloud
-        if (user && user.uid && Object.keys(config).length > 0) {
-            try {
-                setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'alarmSettings', 'config'), {
-                    config: config,
-                    updatedAt: new Date().toISOString()
-                });
-                console.log('Configurazione allarmi salvata su cloud da export:', config);
-            } catch (e) {
-                console.log('Errore salvataggio allarmi su cloud da export:', e);
-            }
+        if (Object.keys(config).length > 0 && typeof window.saveAlarmConfigCloud === 'function') {
+            Promise.resolve(window.saveAlarmConfigCloud(config)).then(function () {
+                console.log('[ServiceHub] Allarmi sincronizzati su cloud dopo export');
+            }).catch(function (e) {
+                console.warn('[ServiceHub] Export: sync cloud allarmi fallita:', e && e.message);
+            });
         }
         
         alert('File scaricato con successo!');
@@ -10301,7 +10302,7 @@ function importConfig() {
     const modal = document.createElement('div');
     modal.id = 'exportImportModal';
     modal.innerHTML = `
-        <div style="position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:999999; display:flex; align-items:center; justify-content:center;">
+        <div style="position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:2147483646; display:flex; align-items:center; justify-content:center;">
             <div style="background:#111827; border-radius:16px; padding:20px; width:90%; max-width:500px; box-shadow:0 20px 40px rgba(0,0,0,0.5);">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
                     <h3 style="color:white; font-weight:700; font-size:18px;">Importa Configurazione Allarmi</h3>
@@ -10344,9 +10345,13 @@ function importConfig() {
             const reader = new FileReader();
             reader.onload = function(e) {
                 try {
-                    const config = JSON.parse(e.target.result);
+                    const data = JSON.parse(e.target.result);
                     const preview = document.getElementById('importPreview');
-                    preview.innerHTML = Object.entries(config).map(([tank, thresholds]) => {
+                    const alarmBlock = data && typeof data === 'object' && data.alarmConfig && typeof data.alarmConfig === 'object'
+                        ? data.alarmConfig
+                        : (data && typeof data === 'object' ? data : {});
+                    preview.innerHTML = Object.entries(alarmBlock).map(([tank, thresholds]) => {
+                        if (!thresholds || typeof thresholds !== 'object') return '';
                         const safeTank = String(tank).replace(/</g, "&lt;").replace(/>/g, "&gt;");
                         const safeYellow = String(thresholds.yellow || 'Non impostato').replace(/</g, "&lt;").replace(/>/g, "&gt;");
                         const safeRed = String(thresholds.red || 'Non impostato').replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -10383,9 +10388,15 @@ function importConfig() {
                     // ===============================
                     // RIPRISTINO ALLARMI DA IMPORT
                     // ===============================
-                    if (data.alarmConfig) {
-                        localStorage.setItem('alarmConfig', JSON.stringify(data.alarmConfig));
-                        saveAlarmConfig(data.alarmConfig);
+                    let alarmsToApply = null;
+                    if (data.alarmConfig && typeof data.alarmConfig === 'object') {
+                        alarmsToApply = data.alarmConfig;
+                    } else if (!data.backup && data && typeof data === 'object') {
+                        alarmsToApply = data;
+                    }
+                    if (alarmsToApply) {
+                        localStorage.setItem('alarmConfig', JSON.stringify(alarmsToApply));
+                        saveAlarmConfig(alarmsToApply);
                         console.log('Allarmi ripristinati da import');
                     }
                     
@@ -10455,7 +10466,7 @@ function deleteConfig() {
     const modal = document.createElement('div');
     modal.id = 'exportImportModal';
     modal.innerHTML = `
-        <div style="position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:999999; display:flex; align-items:center; justify-content:center;">
+        <div style="position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:2147483646; display:flex; align-items:center; justify-content:center;">
             <div style="background:#111827; border-radius:16px; padding:20px; width:90%; max-width:500px; box-shadow:0 20px 40px rgba(0,0,0,0.5);">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
                     <h3 style="color:white; font-weight:700; font-size:18px;">Elimina Configurazione Allarmi</h3>

@@ -516,7 +516,7 @@ window.colorPreviewNumber = function(tankName, value) {
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, getDocFromServer, onSnapshot, collection, addDoc, query, getDocs, limit, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, initializeFirestore, doc, setDoc, getDoc, getDocFromServer, onSnapshot, collection, addDoc, query, getDocs, limit, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Configurazione Firebase del progetto ServiceHub (servicehub-18309)
         // Usata su GitHub Pages e ovunque non sia disponibile la config iniettata da Canvas.
@@ -542,7 +542,12 @@ window.colorPreviewNumber = function(tankName, value) {
             if (firebaseConfig && firebaseConfig.apiKey) {
                 app = initializeApp(firebaseConfig);
                 auth = getAuth(app);
-                db = getFirestore(app);
+                try {
+                    db = initializeFirestore(app, { experimentalForceLongPolling: true });
+                } catch (eFS) {
+                    console.warn('[ServiceHub] initializeFirestore fallito, uso getFirestore:', eFS && eFS.message);
+                    db = getFirestore(app);
+                }
                 window.__SERVICEHUB_FIREBASE_PROJECT = firebaseConfig.projectId || '';
                 console.log('[ServiceHub] Firebase attivo, progetto:', firebaseConfig.projectId);
             } else {
@@ -982,15 +987,6 @@ window.colorPreviewNumber = function(tankName, value) {
             return lMs > rMs;
         };
 
-        let __plantStalePushTimer = null;
-        const __schedulePushLocalPlantAfterStaleRemote = () => {
-            if (__plantStalePushTimer) return;
-            __plantStalePushTimer = setTimeout(function () {
-                __plantStalePushTimer = null;
-                if (typeof window.saveData === 'function') void window.saveData(true);
-            }, 700);
-        };
-
         /** Merge del doc plant Firestore in stabileCurrentData (remote vince sulle chiavi comuni). */
         const mergePlantIntoStabileLocalStorage = (remote) => {
             try {
@@ -1125,15 +1121,10 @@ window.colorPreviewNumber = function(tankName, value) {
                 .then((snap) => {
                     if (snap.exists()) {
                         const d = snap.data();
-                        if (__localPlantLastUpdateNewerThanRemote(d)) {
-                            __schedulePushLocalPlantAfterStaleRemote();
-                            if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
-                                window.__applyPlantFromLocalStorageFallback();
-                            }
-                        } else {
-                            applyData(d, { forceRemotePlant: true });
-                            mergePlantIntoStabileLocalStorage(d);
-                        }
+                        // getDocFromServer = verità server: applica sempre (evita che lastUpdate locale
+                        // più alto per skew orologio blocchi per sempre gli aggiornamenti dall'altro dispositivo).
+                        applyData(d, { forceRemotePlant: true });
+                        mergePlantIntoStabileLocalStorage(d);
                     } else if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
                         window.__applyPlantFromLocalStorageFallback();
                     }
@@ -5189,17 +5180,10 @@ window.updateStoricoButton = async function() {
                 .then(function (snap) {
                     if (snap.exists()) {
                         const d = snap.data();
-                        if (__localPlantLastUpdateNewerThanRemote(d)) {
-                            __schedulePushLocalPlantAfterStaleRemote();
-                            if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
-                                window.__applyPlantFromLocalStorageFallback();
-                            }
-                        } else {
-                            applyData(d, { forceRemotePlant: true });
-                            mergePlantIntoStabileLocalStorage(d);
-                            if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
-                                window.schedulePublicDigitalSnapshotSync();
-                            }
+                        applyData(d, { forceRemotePlant: true });
+                        mergePlantIntoStabileLocalStorage(d);
+                        if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
+                            window.schedulePublicDigitalSnapshotSync();
                         }
                     }
                 })

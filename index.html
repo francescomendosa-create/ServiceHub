@@ -942,7 +942,37 @@ window.colorPreviewNumber = function(tankName, value) {
             } catch (_) {}
         };
 
-        /** Evita che un doc Firestore parziale cancelli chiavi già presenti in stabileCurrentData (stesso device). */
+        /** Timestamp ISO → ms (0 se assente/invalido). */
+        const __parsePlantLastUpdateMs = (iso) => {
+            if (!iso || typeof iso !== 'string') return 0;
+            const t = Date.parse(iso);
+            return Number.isFinite(t) ? t : 0;
+        };
+
+        /** true se il plant remoto è strettamente più recente dello stabile in localStorage. */
+        const __shouldApplyRemotePlantOverLocal = (remote) => {
+            try {
+                if (!remote || typeof remote !== 'object') return true;
+                let prev = null;
+                try {
+                    const raw = localStorage.getItem('stabileCurrentData');
+                    if (raw) {
+                        const p = JSON.parse(raw);
+                        if (p && typeof p === 'object') prev = p;
+                    }
+                } catch (_) {
+                    prev = null;
+                }
+                if (!prev) return true;
+                const tPrev = __parsePlantLastUpdateMs(prev.lastUpdate);
+                const tRemote = __parsePlantLastUpdateMs(remote.lastUpdate);
+                return tRemote > tPrev;
+            } catch (_) {
+                return true;
+            }
+        };
+
+        /** Evita che un doc Firestore parziale o in cache cancelli chiavi più recenti in stabileCurrentData. */
         const mergePlantIntoStabileLocalStorage = (remote) => {
             try {
                 if (!remote || typeof remote !== 'object') return;
@@ -956,7 +986,10 @@ window.colorPreviewNumber = function(tankName, value) {
                 } catch (_) {
                     prev = {};
                 }
-                const merged = { ...prev, ...remote };
+                const tPrev = __parsePlantLastUpdateMs(prev.lastUpdate);
+                const tRemote = __parsePlantLastUpdateMs(remote.lastUpdate);
+                const merged =
+                    tRemote > tPrev ? { ...prev, ...remote } : { ...remote, ...prev };
                 localStorage.setItem('stabileCurrentData', JSON.stringify(merged));
             } catch (e) {
                 console.warn('[ServiceHub] merge stabileCurrentData:', e && e.message);
@@ -1010,7 +1043,16 @@ window.colorPreviewNumber = function(tankName, value) {
             __shUnsubPlant = onSnapshot(dataDoc, (snapshot) => {
                 if (snapshot.exists()) {
                     const d = snapshot.data();
-                    applyData(d);
+                    if (__shouldApplyRemotePlantOverLocal(d)) {
+                        applyData(d);
+                    } else {
+                        try {
+                            console.info(
+                                '[ServiceHub] plant snapshot ignorato (locale più recente di cloud):',
+                                d && d.lastUpdate
+                            );
+                        } catch (_) {}
+                    }
                     mergePlantIntoStabileLocalStorage(d);
                     // Qualsiasi tablet che riceve il plant aggiornato deve poter rigenerare publicDigital
                     // (prima solo il creatore ownerUid poteva scrivere → Digital remoto bloccato sugli altri device).
@@ -2003,6 +2045,23 @@ window.colorPreviewNumber = function(tankName, value) {
                 b.style.borderColor = '';
             };
 
+            /** Non bloccare il tasto Salva: publicDigital è secondario rispetto allo snapshot backup. */
+            const schedulePublicDigitalAfterArchive = function (logTag) {
+                try {
+                    const tag = logTag || "archiveCurrentData publicDigital";
+                    const pushPromise = Promise.resolve(window.pushPublicDigitalSnapshotQuiet());
+                    const wrapped =
+                        typeof window.__serviceHubWithTimeout === "function"
+                            ? window.__serviceHubWithTimeout(pushPromise, 22000, tag)
+                            : pushPromise;
+                    void Promise.resolve(wrapped).catch(function (e) {
+                        console.warn("[ServiceHub] " + tag + ":", e && e.message);
+                    });
+                } catch (e) {
+                    console.warn("[ServiceHub] schedulePublicDigitalAfterArchive:", e && e.message);
+                }
+            };
+
             btn.innerHTML = window.isEditingArchive ? "MODIFICA..." : "SALVATAGGIO...";
 
             const now = new Date();
@@ -2069,9 +2128,17 @@ window.colorPreviewNumber = function(tankName, value) {
                         data
                     );
 
-                    // PublicDigital deve leggere il DOM ancora "nuovo" (prima del ripristino pre-modifica sotto).
+                    // PublicDigital: leggere il DOM ancora "nuovo" prima del ripristino sotto — con timeout per non bloccare il tasto Salva.
                     try {
-                        await window.pushPublicDigitalSnapshotQuiet();
+                        if (typeof window.__serviceHubWithTimeout === "function") {
+                            await window.__serviceHubWithTimeout(
+                                window.pushPublicDigitalSnapshotQuiet(),
+                                22000,
+                                "archiveCurrentData edit publicDigital"
+                            );
+                        } else {
+                            await window.pushPublicDigitalSnapshotQuiet();
+                        }
                     } catch (e) {
                         console.warn("[ServiceHub] archiveCurrentData edit publicDigital:", e && e.message);
                     }
@@ -2178,11 +2245,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (window.setTankLevelBaselineFromSnapshotData) window.setTankLevelBaselineFromSnapshotData(data);
                 if (window.refreshAllTankLevelArrows) window.refreshAllTankLevelArrows();
 
-                try {
-                    await window.pushPublicDigitalSnapshotQuiet();
-                } catch (e) {
-                    console.warn("[ServiceHub] archiveCurrentData nuovo backup publicDigital:", e && e.message);
-                }
+                schedulePublicDigitalAfterArchive("archiveCurrentData nuovo backup publicDigital");
 
                 btn.innerHTML = "SALVATO!";
                 btn.classList.add('bg-emerald-600');

@@ -3,13 +3,13 @@
 // NON facciamo cache offline aggressiva per evitare di servire versioni stantie
 // del index.html: l'app si aggiorna automaticamente a ogni reload.
 
-const CACHE_NAME = 'servicehub-shell-v8';
+const CACHE_NAME = 'servicehub-shell-v10';
 const SHELL_FILES = [
-  './sh-icon-192.png?v=shpc2',
-  './sh-icon-512.png?v=shpc2',
-  './sh-touch.png?v=shpc2',
-  './sh-favicon.png?v=shpc2',
-  './manifest.json?v=shpc2'
+  './sh-icon-192.png?v=shpc4',
+  './sh-icon-512.png?v=shpc4',
+  './sh-touch.png?v=shpc4',
+  './sh-favicon.png?v=shpc4',
+  './manifest.json?v=shpc4'
 ];
 
 self.addEventListener('install', (event) => {

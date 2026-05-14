@@ -74,15 +74,16 @@ for ($y = 0; $y -lt $ch; $y++) {
 }
 
 $side = [Math]::Max($cw, $ch)
-$square = New-Object System.Drawing.Bitmap $side, $side
+$master = [Math]::Max(640, $side * 2)
+$square = New-Object System.Drawing.Bitmap $master, $master
 $gs = [System.Drawing.Graphics]::FromImage($square)
 $gs.Clear($bg)
-$ox = [int](($side - $cw) / 2)
-$oy = [int](($side - $ch) / 2)
-$gs.DrawImage($cropped, $ox, $oy)
+$gs.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBilinear
+$gs.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+$gs.DrawImage($cropped, [System.Drawing.Rectangle]::new(0, 0, $master, $master), [System.Drawing.Rectangle]::new(0, 0, $cw, $ch), [System.Drawing.GraphicsUnit]::Pixel)
 $gs.Dispose()
 $cropped.Dispose()
-Write-Host "Quadrato: ${side}x${side}"
+Write-Host "Master quadrato: ${master}x${master} (upscale da ${cw}x${ch})"
 
 function Lum($c) { return [int](($c.R + $c.G + $c.B) / 3) }
 function Sat($c) {
@@ -91,58 +92,79 @@ function Sat($c) {
     return $mx - $mn
 }
 
-# Aloni scuri/grigi tra squircle e sfondo: bassa luminanza + bassa saturazione
+# Ripara aloni scuri: soglie + confronto con luminanza angoli (sfondo blu pieno)
 function Repair-Bitmap($bmp, [System.Drawing.Color]$fill) {
     $W = $bmp.Width
     $H = $bmp.Height
-    $bx = [Math]::Max(2, [int]($W * 0.045))
-    $by = [Math]::Max(2, [int]($H * 0.045))
-    $edgeLum = 72
-    for ($y = 0; $y -lt $H; $y++) {
-        for ($x = 0; $x -lt $bx; $x++) {
-            $c = $bmp.GetPixel($x, $y)
-            if ((Lum $c) -lt $edgeLum) { $bmp.SetPixel($x, $y, $fill) }
-        }
-        for ($x = $W - $bx; $x -lt $W; $x++) {
-            $c = $bmp.GetPixel($x, $y)
-            if ((Lum $c) -lt $edgeLum) { $bmp.SetPixel($x, $y, $fill) }
-        }
-    }
-    for ($x = $bx; $x -lt ($W - $bx); $x++) {
-        for ($y = 0; $y -lt $by; $y++) {
-            $c = $bmp.GetPixel($x, $y)
-            if ((Lum $c) -lt $edgeLum) { $bmp.SetPixel($x, $y, $fill) }
-        }
-        for ($y = $H - $by; $y -lt $H; $y++) {
-            $c = $bmp.GetPixel($x, $y)
-            if ((Lum $c) -lt $edgeLum) { $bmp.SetPixel($x, $y, $fill) }
-        }
-    }
+    $c0 = $bmp.GetPixel(0, 0)
+    $c1 = $bmp.GetPixel($W - 1, 0)
+    $c2 = $bmp.GetPixel(0, $H - 1)
+    $c3 = $bmp.GetPixel($W - 1, $H - 1)
+    $cornerMaxL = [Math]::Max((Lum $c0), [Math]::Max((Lum $c1), [Math]::Max((Lum $c2), (Lum $c3))))
+    $floorL = [Math]::Max(52, $cornerMaxL - 12)
+
     for ($y = 0; $y -lt $H; $y++) {
         for ($x = 0; $x -lt $W; $x++) {
             $c = $bmp.GetPixel($x, $y)
             $L = Lum $c
             $S = Sat $c
-            if ($L -lt 44) { $bmp.SetPixel($x, $y, $fill) }
-            elseif ($L -lt 62 -and $S -lt 48) { $bmp.SetPixel($x, $y, $fill) }
+            if ($L -lt 42) { $bmp.SetPixel($x, $y, $fill); continue }
+            if ($L -lt $floorL -and $S -lt 52) { $bmp.SetPixel($x, $y, $fill); continue }
+            if ($L -lt 95 -and $S -lt 36) { $bmp.SetPixel($x, $y, $fill); continue }
+            if ($L -lt 92 -and $S -lt 44) { $bmp.SetPixel($x, $y, $fill) }
         }
     }
+}
+
+# Pixel scuri adiacenti a blu chiaro (tipico filo nero tra squircle e sfondo)
+function Inpaint-DarkVsBright($bmp, [System.Drawing.Color]$fill, [int]$darkMax, [int]$brightMin) {
+    $W = $bmp.Width
+    $H = $bmp.Height
+    $buf = New-Object System.Drawing.Bitmap $W, $H
+    $gb = [System.Drawing.Graphics]::FromImage($buf)
+    $gb.DrawImage($bmp, 0, 0)
+    $gb.Dispose()
+
+    for ($y = 1; $y -lt ($H - 1); $y++) {
+        for ($x = 1; $x -lt ($W - 1); $x++) {
+            if ((Lum ($buf.GetPixel($x, $y))) -gt $darkMax) { continue }
+            $ne = @(
+                (Lum ($buf.GetPixel($x - 1, $y))), (Lum ($buf.GetPixel($x + 1, $y))),
+                (Lum ($buf.GetPixel($x, $y - 1))), (Lum ($buf.GetPixel($x, $y + 1)))
+            )
+            if (($ne | Measure-Object -Maximum).Maximum -ge $brightMin) {
+                $bmp.SetPixel($x, $y, $fill)
+            }
+        }
+    }
+    $buf.Dispose()
 }
 
 function Save-Resized($bmp, $size, $out, $fill) {
     $r = New-Object System.Drawing.Bitmap $size, $size
     $gr = [System.Drawing.Graphics]::FromImage($r)
-    $gr.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+    # Bilineare: meno "anello" scuro del bicubico sui bordi sintetici
+    $gr.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBilinear
     $gr.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
     $gr.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
     $gr.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
     $gr.DrawImage($bmp, 0, 0, $size, $size)
     $gr.Dispose()
     Repair-Bitmap $r $fill
+    Repair-Bitmap $r $fill
+    Inpaint-DarkVsBright $r $fill 52 66
+    Inpaint-DarkVsBright $r $fill 54 64
+    Inpaint-DarkVsBright $r $fill 56 62
     $r.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)
     $r.Dispose()
     Write-Host "Salvato $out"
 }
+
+# Pulizia sul master ad alta risoluzione prima dei ridimensionamenti
+Repair-Bitmap $square $bg
+Repair-Bitmap $square $bg
+Inpaint-DarkVsBright $square $bg 52 66
+Inpaint-DarkVsBright $square $bg 54 64
 
 # Nuovi nomi file -> Windows/Chrome non riusano cache dei vecchi path
 Save-Resized $square 512 "$PSScriptRoot\sh-icon-512.png" $bg

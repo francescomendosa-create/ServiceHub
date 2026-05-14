@@ -1098,22 +1098,30 @@ window.colorPreviewNumber = function(tankName, value) {
             }
         };
 
-        // Ritarda la colorazione allarmi mentre si digita (i prefissi numerici possono sembrare sotto soglia minima).
-        window.__fieldColorDebounceMs = 380;
-        window.__alarmFillTimers = window.__alarmFillTimers || {};
-        window.__tankColorTimers = window.__tankColorTimers || {};
-        window.__scamColorTimers = window.__scamColorTimers || {};
+        // Evita falsi rossi/gialli per soglie MIN mentre il numero è ancora un prefisso corto (es. "2" prima di "250").
+        // Le soglie MAX restano sempre valutate subito. All'uscita dal campo si forza il ricalcolo (forceMin).
+        window.__shouldSkipMinAlarmWhileFocused = function (el, value, th) {
+            if (!el || !th || document.activeElement !== el) return false;
+            if (value == null || isNaN(value)) return false;
+            if (!th.redMin && !th.yellowMin) return false;
+            const rM = Number(th.redMin);
+            const yM = Number(th.yellowMin);
+            const zMin = Math.max(isNaN(rM) ? 0 : rM, isNaN(yM) ? 0 : yM);
+            if (zMin <= 0 || value > zMin) return false;
+            const raw = String(el.value == null ? '' : el.value).trim();
+            if (!/^-?\d+[.,]?\d*$/.test(raw) && !/^-?\d*[.,]\d+$/.test(raw)) return false;
+            const intStr = raw.split(/[.,]/)[0].replace(/^-/, '');
+            const intSig = intStr.replace(/^0+(?=\d)/, '');
+            const intLen = intSig.length || (intStr === '0' ? 1 : 0);
+            const zDigits = String(Math.floor(Math.abs(zMin))).length;
+            return zDigits > 1 && intLen > 0 && intLen < zDigits;
+        };
 
         // Funzione per colorare input serbatoi in base al livello
-        window.colorTankInput = function (input, immediate) {
+        window.colorTankInput = function (input) {
             if (!input) return;
             
-            // Se il campo è vuoto, resetta i colori
             if (!input.value) {
-                if (input.id && window.__tankColorTimers[input.id]) {
-                    clearTimeout(window.__tankColorTimers[input.id]);
-                    window.__tankColorTimers[input.id] = null;
-                }
                 input.style.backgroundColor = '';
                 input.style.color = '';
                 input.style.fontWeight = '';
@@ -1121,13 +1129,10 @@ window.colorPreviewNumber = function(tankName, value) {
                 input.classList.add('tank-normal');
                 return;
             }
-
-            const runCore = function () {
-            // Estrai il nome del serbatoio dall'ID dell'input
+            
             const inputId = input.id;
             let tankName = null;
             
-            // Mappatura ID input -> nome serbatoio
             const tankMapping = {
                 'inp-s818': 'S818',
                 'inp-s817': 'S817',
@@ -1162,7 +1167,7 @@ window.colorPreviewNumber = function(tankName, value) {
             tankName = tankMapping[inputId];
             if (!tankName) {
                 if (typeof window.applyAlarmLevelFillToField === 'function') {
-                    window.applyAlarmLevelFillToField(input, true);
+                    window.applyAlarmLevelFillToField(input);
                 }
                 return;
             }
@@ -1270,38 +1275,16 @@ window.colorPreviewNumber = function(tankName, value) {
                 input.style.fontWeight = '';
                 input.classList.remove('tank-normal', 'tank-warning', 'tank-critical');
             }
-            };
-
-            const tid = input.id;
-            if (immediate === true || document.activeElement !== input) {
-                if (tid && window.__tankColorTimers[tid]) {
-                    clearTimeout(window.__tankColorTimers[tid]);
-                    window.__tankColorTimers[tid] = null;
-                }
-                runCore();
-                return;
-            }
-            if (tid) {
-                clearTimeout(window.__tankColorTimers[tid]);
-                window.__tankColorTimers[tid] = setTimeout(function () {
-                    window.__tankColorTimers[tid] = null;
-                    runCore();
-                }, window.__fieldColorDebounceMs || 380);
-            }
         };
 
         // Funzione per colorare input SCAM in base ai valori di allarme personalizzati
-        window.colorScamInputs = function (forceImmediate) {
+        window.colorScamInputs = function (forceMin) {
             const scamInputIds = ['ph', 'cloro', 'reintegro'];
             const alarmConfig = getAlarmConfig ? window.getAlarmConfig() : {};
 
             scamInputIds.forEach(inputId => {
                 const input = document.getElementById(inputId);
                 if (!input || !input.value) {
-                    if (window.__scamColorTimers[inputId]) {
-                        clearTimeout(window.__scamColorTimers[inputId]);
-                        window.__scamColorTimers[inputId] = null;
-                    }
                     if (input) {
                         input.style.backgroundColor = '';
                         input.style.color = '';
@@ -1311,66 +1294,53 @@ window.colorPreviewNumber = function(tankName, value) {
                     return;
                 }
 
-                const applyOne = function () {
-                    const value = parseFloat(input.value);
-                    if (isNaN(value)) return;
+                const value = parseFloat(input.value);
+                if (isNaN(value)) return;
 
-                    const normalizedId = window.normalizeTankId(inputId);
-                    const thresholds = alarmConfig[normalizedId];
+                const normalizedId = window.normalizeTankId(inputId);
+                const thresholds = alarmConfig[normalizedId];
 
-                    if (!thresholds || !thresholds.red || !thresholds.yellow) {
-                        input.style.backgroundColor = '';
-                        input.style.color = '';
-                        input.style.fontWeight = '';
-                        input.classList.remove('tank-warning', 'tank-critical');
-                        return;
-                    }
-
-                    if (value >= thresholds.red) {
-                        input.style.backgroundColor = '';
-                        input.style.color = '#dc2626';
-                        input.style.fontWeight = '700';
-                        input.classList.add('tank-critical');
-                        input.classList.remove('tank-warning');
-                    } else if (value >= thresholds.yellow) {
-                        input.style.backgroundColor = '';
-                        input.style.color = '#f59e0b';
-                        input.style.fontWeight = '600';
-                        input.classList.add('tank-warning');
-                        input.classList.remove('tank-critical');
-                    } else if (thresholds.redMin && value <= thresholds.redMin) {
-                        input.style.backgroundColor = '';
-                        input.style.color = '#dc2626';
-                        input.style.fontWeight = '700';
-                        input.classList.add('tank-critical');
-                        input.classList.remove('tank-warning');
-                    } else if (thresholds.yellowMin && value <= thresholds.yellowMin) {
-                        input.style.backgroundColor = '';
-                        input.style.color = '#f59e0b';
-                        input.style.fontWeight = '600';
-                        input.classList.add('tank-warning');
-                        input.classList.remove('tank-critical');
-                    } else {
-                        input.style.backgroundColor = '';
-                        input.style.color = '';
-                        input.style.fontWeight = '';
-                        input.classList.remove('tank-warning', 'tank-critical');
-                    }
-                };
-
-                if (forceImmediate === true || document.activeElement !== input) {
-                    if (window.__scamColorTimers[inputId]) {
-                        clearTimeout(window.__scamColorTimers[inputId]);
-                        window.__scamColorTimers[inputId] = null;
-                    }
-                    applyOne();
+                if (!thresholds || !thresholds.red || !thresholds.yellow) {
+                    input.style.backgroundColor = '';
+                    input.style.color = '';
+                    input.style.fontWeight = '';
+                    input.classList.remove('tank-warning', 'tank-critical');
                     return;
                 }
-                clearTimeout(window.__scamColorTimers[inputId]);
-                window.__scamColorTimers[inputId] = setTimeout(function () {
-                    window.__scamColorTimers[inputId] = null;
-                    applyOne();
-                }, window.__fieldColorDebounceMs || 380);
+
+                const skipMin = !forceMin && typeof window.__shouldSkipMinAlarmWhileFocused === 'function'
+                    && window.__shouldSkipMinAlarmWhileFocused(input, value, thresholds);
+
+                if (value >= thresholds.red) {
+                    input.style.backgroundColor = '';
+                    input.style.color = '#dc2626';
+                    input.style.fontWeight = '700';
+                    input.classList.add('tank-critical');
+                    input.classList.remove('tank-warning');
+                } else if (value >= thresholds.yellow) {
+                    input.style.backgroundColor = '';
+                    input.style.color = '#f59e0b';
+                    input.style.fontWeight = '600';
+                    input.classList.add('tank-warning');
+                    input.classList.remove('tank-critical');
+                } else if (!skipMin && thresholds.redMin && value <= thresholds.redMin) {
+                    input.style.backgroundColor = '';
+                    input.style.color = '#dc2626';
+                    input.style.fontWeight = '700';
+                    input.classList.add('tank-critical');
+                    input.classList.remove('tank-warning');
+                } else if (!skipMin && thresholds.yellowMin && value <= thresholds.yellowMin) {
+                    input.style.backgroundColor = '';
+                    input.style.color = '#f59e0b';
+                    input.style.fontWeight = '600';
+                    input.classList.add('tank-warning');
+                    input.classList.remove('tank-critical');
+                } else {
+                    input.style.backgroundColor = '';
+                    input.style.color = '';
+                    input.style.fontWeight = '';
+                    input.classList.remove('tank-warning', 'tank-critical');
+                }
             });
         };
 
@@ -1387,7 +1357,7 @@ window.colorPreviewNumber = function(tankName, value) {
             tankInputIds.forEach(inputId => {
                 const input = document.getElementById(inputId);
                 if (input) {
-                    window.colorTankInput(input, true);
+                    window.colorTankInput(input);
                 }
             });
 
@@ -3423,29 +3393,14 @@ window.updateStoricoButton = async function() {
                     if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') return;
                     if (!el.closest || !el.closest('.main-container')) return;
                     if (el.closest('#settings-modal') || el.closest('#management-modal') || el.closest('#shift-modal')) return;
-                    try {
-                        if (window.__alarmFillTimers && window.__alarmFillTimers[el.id]) {
-                            clearTimeout(window.__alarmFillTimers[el.id]);
-                            window.__alarmFillTimers[el.id] = null;
-                        }
-                        if (window.__tankColorTimers && window.__tankColorTimers[el.id]) {
-                            clearTimeout(window.__tankColorTimers[el.id]);
-                            window.__tankColorTimers[el.id] = null;
-                        }
-                        if (window.__scamColorTimers && window.__scamColorTimers[el.id]) {
-                            clearTimeout(window.__scamColorTimers[el.id]);
-                            window.__scamColorTimers[el.id] = null;
-                        }
-                    } catch (_) {}
-                    if (['ph', 'cloro', 'reintegro'].includes(el.id)) {
-                        if (typeof window.colorScamInputs === 'function') window.colorScamInputs(true);
-                    } else {
-                        if (typeof window.applyAlarmLevelFillToField === 'function') {
-                            window.applyAlarmLevelFillToField(el, true);
-                        }
-                        if (typeof window.colorTankInput === 'function') {
-                            window.colorTankInput(el, true);
-                        }
+                    if (typeof window.applyAlarmLevelFillToField === 'function') {
+                        window.applyAlarmLevelFillToField(el, true);
+                    }
+                    if (typeof window.colorTankInput === 'function') {
+                        window.colorTankInput(el);
+                    }
+                    if (['ph', 'cloro', 'reintegro'].includes(el.id) && typeof window.colorScamInputs === 'function') {
+                        window.colorScamInputs(true);
                     }
                 },
                 true
@@ -11314,8 +11269,9 @@ window.thresholdsForAlarmFieldId = function (rawId) {
     return null;
 };
 
-/** Allarmi: solo colore del numero (come serbatoi / SCAM), senza sfondo rosso/giallo/verde */
-window.__applyAlarmLevelFillToFieldImmediate = function (el) {
+/** Allarmi: solo colore del numero (come serbatoi / SCAM), senza sfondo rosso/giallo/verde.
+ *  forceMin true = ricalcolo completo (sync / uscita campo); altrimenti le soglie MIN si sopprimono solo per prefissi corti mentre digiti. */
+window.applyAlarmLevelFillToField = function (el, forceMin) {
     if (!el || !el.id) return;
     const th = window.thresholdsForAlarmFieldId(el.id);
     if (!th || (!th.red && !th.yellow && !th.redMin && !th.yellowMin)) {
@@ -11347,6 +11303,9 @@ window.__applyAlarmLevelFillToFieldImmediate = function (el) {
     el.style.backgroundColor = '';
     el.style.background = '';
 
+    const skipMin = !forceMin && typeof window.__shouldSkipMinAlarmWhileFocused === 'function'
+        && window.__shouldSkipMinAlarmWhileFocused(el, value, th);
+
     if (th.red && value >= th.red) {
         el.style.color = '#dc2626';
         el.style.fontWeight = '700';
@@ -11357,12 +11316,12 @@ window.__applyAlarmLevelFillToFieldImmediate = function (el) {
         el.style.fontWeight = '600';
         el.classList.add('tank-warning');
         el.classList.remove('tank-critical', 'tank-normal');
-    } else if (th.redMin && value <= th.redMin) {
+    } else if (!skipMin && th.redMin && value <= th.redMin) {
         el.style.color = '#dc2626';
         el.style.fontWeight = '700';
         el.classList.add('tank-critical');
         el.classList.remove('tank-warning', 'tank-normal');
-    } else if (th.yellowMin && value <= th.yellowMin) {
+    } else if (!skipMin && th.yellowMin && value <= th.yellowMin) {
         el.style.color = '#f59e0b';
         el.style.fontWeight = '600';
         el.classList.add('tank-warning');
@@ -11372,30 +11331,6 @@ window.__applyAlarmLevelFillToFieldImmediate = function (el) {
         el.style.fontWeight = '';
         el.classList.remove('tank-warning', 'tank-critical', 'tank-normal');
     }
-};
-
-/** Durante la digitazione ritarda: es. "2" prima di "250" può essere sotto soglia minima e lampeggiare rosso. */
-window.applyAlarmLevelFillToField = function (el, immediate) {
-    if (!el || !el.id) return;
-    const th = window.thresholdsForAlarmFieldId(el.id);
-    const noRules = !th || (!th.red && !th.yellow && !th.redMin && !th.yellowMin);
-    const empty = el.value === '' || el.value === null;
-    const run = function () {
-        window.__applyAlarmLevelFillToFieldImmediate(el);
-    };
-    if (immediate === true || noRules || empty || document.activeElement !== el) {
-        if (window.__alarmFillTimers[el.id]) {
-            clearTimeout(window.__alarmFillTimers[el.id]);
-            window.__alarmFillTimers[el.id] = null;
-        }
-        run();
-        return;
-    }
-    clearTimeout(window.__alarmFillTimers[el.id]);
-    window.__alarmFillTimers[el.id] = setTimeout(function () {
-        window.__alarmFillTimers[el.id] = null;
-        run();
-    }, window.__fieldColorDebounceMs || 380);
 };
 
 // --- INTEGRAZIONE GEMINI AI: STABILE, VOCALE E ULTRA-RAPIDA ---

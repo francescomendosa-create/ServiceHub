@@ -1098,6 +1098,23 @@ window.colorPreviewNumber = function(tankName, value) {
             }
         };
 
+        /** Numero da input italiano (virgola) o vuoto → NaN */
+        window.__parseNumericInputValue = function (el) {
+            if (!el || el.value == null) return NaN;
+            const t = String(el.value).trim().replace(/\s/g, '').replace(',', '.');
+            if (t === '' || t === '-' || t === '.' || t === '-.') return NaN;
+            const n = Number(t);
+            return isNaN(n) ? NaN : n;
+        };
+
+        window.__clearTankAlarmVisual = function (input) {
+            if (!input) return;
+            input.style.backgroundColor = '';
+            input.style.color = '';
+            input.style.fontWeight = '';
+            input.classList.remove('tank-normal', 'tank-warning', 'tank-critical');
+        };
+
         // Evita falsi rossi/gialli per soglie MIN mentre il numero è ancora un prefisso corto (es. "2" prima di "250").
         // Le soglie MAX restano sempre valutate subito. All'uscita dal campo si forza il ricalcolo (forceMin).
         window.__shouldSkipMinAlarmWhileFocused = function (el, value, th) {
@@ -1121,11 +1138,8 @@ window.colorPreviewNumber = function(tankName, value) {
         window.colorTankInput = function (input) {
             if (!input) return;
             
-            if (!input.value) {
-                input.style.backgroundColor = '';
-                input.style.color = '';
-                input.style.fontWeight = '';
-                input.classList.remove('tank-warning', 'tank-critical');
+            if (!String(input.value == null ? '' : input.value).trim()) {
+                window.__clearTankAlarmVisual(input);
                 input.classList.add('tank-normal');
                 return;
             }
@@ -1176,11 +1190,25 @@ window.colorPreviewNumber = function(tankName, value) {
             
             // Ottieni il livello massimo dal database
             const maxLevel = window.TANK_MAX[tankName];
-            if (!maxLevel) return;
+            if (!maxLevel) {
+                window.__clearTankAlarmVisual(input);
+                if (typeof window.applyAlarmLevelFillToField === 'function') {
+                    window.applyAlarmLevelFillToField(input, true);
+                }
+                return;
+            }
             
-            // Calcola la percentuale
-            const currentValue = parseFloat(input.value);
-            if (isNaN(currentValue)) return;
+            // Calcola la percentuale (virgola decimale come su tastiera IT)
+            const currentValue = typeof window.__parseNumericInputValue === 'function'
+                ? window.__parseNumericInputValue(input)
+                : parseFloat(String(input.value).replace(',', '.'));
+            if (isNaN(currentValue)) {
+                window.__clearTankAlarmVisual(input);
+                if (typeof window.applyAlarmLevelFillToField === 'function') {
+                    window.applyAlarmLevelFillToField(input, true);
+                }
+                return;
+            }
             
             const percentage = (currentValue / maxLevel) * 100;
             
@@ -1284,7 +1312,7 @@ window.colorPreviewNumber = function(tankName, value) {
 
             scamInputIds.forEach(inputId => {
                 const input = document.getElementById(inputId);
-                if (!input || !input.value) {
+                if (!input || !String(input.value == null ? '' : input.value).trim()) {
                     if (input) {
                         input.style.backgroundColor = '';
                         input.style.color = '';
@@ -1294,8 +1322,16 @@ window.colorPreviewNumber = function(tankName, value) {
                     return;
                 }
 
-                const value = parseFloat(input.value);
-                if (isNaN(value)) return;
+                const value = typeof window.__parseNumericInputValue === 'function'
+                    ? window.__parseNumericInputValue(input)
+                    : parseFloat(String(input.value).replace(',', '.'));
+                if (isNaN(value)) {
+                    input.style.backgroundColor = '';
+                    input.style.color = '';
+                    input.style.fontWeight = '';
+                    input.classList.remove('tank-warning', 'tank-critical');
+                    return;
+                }
 
                 const normalizedId = window.normalizeTankId(inputId);
                 const thresholds = alarmConfig[normalizedId];
@@ -1371,6 +1407,33 @@ window.colorPreviewNumber = function(tankName, value) {
                     if (['ph', 'cloro', 'reintegro'].includes(el.id)) return;
                     window.applyAlarmLevelFillToField(el, true);
                 });
+            }
+        };
+
+        /** Snapshot immediato su localStorage (stesso payload di saveData) — chiamare su pagehide prima del salvataggio async. */
+        window.__snapshotStabilePlantLocalOnly = function () {
+            try {
+                const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
+                const data = {
+                    shift: currentShift,
+                    lastUpdate: new Date().toISOString()
+                };
+                document.querySelectorAll('input').forEach(function (input) {
+                    if (input.id) data[input.id] = input.value;
+                });
+                document.querySelectorAll('.status-cell-btn, .status-header, .vwt-label-dynamic, .osmosi-label-dynamic').forEach(function (btn) {
+                    if (btn.id && btn.id !== 'numpad-tank-btn') {
+                        data[btn.id] = {
+                            text: btn.innerHTML,
+                            class: btn.className,
+                            style: btn.getAttribute('style') || ''
+                        };
+                    }
+                });
+                if (window.tankStatuses) data.tankStatuses = window.tankStatuses;
+                localStorage.setItem('stabileCurrentData', JSON.stringify(data));
+            } catch (e) {
+                console.warn('[ServiceHub] snapshot locale immediato:', e);
             }
         };
 
@@ -3372,18 +3435,52 @@ window.updateStoricoButton = async function() {
                     __plantPersistTimer = setTimeout(function () {
                         __plantPersistTimer = null;
                         if (typeof window.saveData === 'function') void window.saveData(true);
-                    }, 450);
+                    }, 300);
                 },
                 true
             );
             window.addEventListener('pagehide', function () {
+                if (__plantPersistTimer) {
+                    clearTimeout(__plantPersistTimer);
+                    __plantPersistTimer = null;
+                }
+                if (typeof window.__snapshotStabilePlantLocalOnly === 'function') {
+                    window.__snapshotStabilePlantLocalOnly();
+                }
                 if (typeof window.saveData === 'function') void window.saveData(true);
             });
             document.addEventListener('visibilitychange', function () {
-                if (document.visibilityState === 'hidden' && typeof window.saveData === 'function') {
-                    void window.saveData(true);
+                if (document.visibilityState === 'hidden') {
+                    if (__plantPersistTimer) {
+                        clearTimeout(__plantPersistTimer);
+                        __plantPersistTimer = null;
+                    }
+                    if (typeof window.__snapshotStabilePlantLocalOnly === 'function') {
+                        window.__snapshotStabilePlantLocalOnly();
+                    }
+                    if (typeof window.saveData === 'function') {
+                        void window.saveData(true);
+                    }
                 }
             });
+
+            document.addEventListener(
+                'blur',
+                function (e) {
+                    const t = e.target;
+                    if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) return;
+                    if (!t.closest || !t.closest('.main-container')) return;
+                    if (t.closest('#settings-modal') || t.closest('#management-modal') || t.closest('#shift-modal')) return;
+                    if (!__plantPersistTimer) return;
+                    clearTimeout(__plantPersistTimer);
+                    __plantPersistTimer = null;
+                    if (typeof window.__snapshotStabilePlantLocalOnly === 'function') {
+                        window.__snapshotStabilePlantLocalOnly();
+                    }
+                    if (typeof window.saveData === 'function') void window.saveData(true);
+                },
+                true
+            );
 
             document.addEventListener(
                 'focusout',
@@ -11282,7 +11379,8 @@ window.applyAlarmLevelFillToField = function (el, forceMin) {
         el.classList.remove('tank-warning', 'tank-critical', 'tank-normal');
         return;
     }
-    if (el.value === '' || el.value === null) {
+    const rawTrim = String(el.value == null ? '' : el.value).trim();
+    if (rawTrim === '') {
         el.style.backgroundColor = '';
         el.style.background = '';
         el.style.color = '';
@@ -11290,7 +11388,9 @@ window.applyAlarmLevelFillToField = function (el, forceMin) {
         el.classList.remove('tank-warning', 'tank-critical', 'tank-normal');
         return;
     }
-    const value = Number(el.value);
+    const value = typeof window.__parseNumericInputValue === 'function'
+        ? window.__parseNumericInputValue(el)
+        : Number(rawTrim.replace(',', '.'));
     if (isNaN(value)) {
         el.style.backgroundColor = '';
         el.style.background = '';

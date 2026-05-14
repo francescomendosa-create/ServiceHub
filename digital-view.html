@@ -8,15 +8,39 @@
   <style>
     html, body { margin: 0; min-height: 100%; }
     #digital-preview-container { box-sizing: border-box; }
-    .remote-meta {
-      padding: 10px 16px;
-      margin-bottom: 14px;
-      background: rgba(15, 23, 42, 0.85);
-      border-radius: 12px;
+    .remote-link-row {
+      margin-bottom: 12px;
+      padding: 10px 14px;
+      background: rgba(15, 23, 42, 0.88);
       border: 1px solid rgba(96, 165, 250, 0.35);
+      border-radius: 12px;
       font: 600 13px system-ui, sans-serif;
       color: #e2e8f0;
-      line-height: 1.4;
+      line-height: 1.5;
+      word-break: break-all;
+    }
+    .remote-link-row a {
+      color: #93c5fd;
+      font-weight: 800;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    .remote-link-row a:hover { color: #bfdbfe; }
+    .remote-link-row button {
+      margin-left: 10px;
+      padding: 6px 12px;
+      border-radius: 8px;
+      border: 1px solid rgba(148, 163, 184, 0.5);
+      background: rgba(51, 65, 85, 0.9);
+      color: #f1f5f9;
+      font-size: 11px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .remote-status {
+      font-size: 12px;
+      color: #94a3b8;
+      margin-top: 6px;
     }
   </style>
 </head>
@@ -25,12 +49,12 @@
     id="digital-preview-container"
     style="display:flex;flex-direction:column;overflow:auto;padding:24px;min-height:100vh;background:radial-gradient(circle at 30% 20%, #0f172a 0%, #1e293b 40%, #020617 100%);color:#fff;"
   >
-    <div class="remote-meta" id="remote-meta">Caricamento…</div>
-    <div id="digital-inner-mount"></div>
+    <div id="remote-link-slot"></div>
+    <div id="digital-remote-body"></div>
   </div>
   <script type="module">
     import { initializeApp, getApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-    import { getFirestore, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+    import { getFirestore, doc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
     const DEFAULT_FIREBASE_CONFIG = {
       apiKey: "AIzaSyASdslVw8q_1Bz9RbN7Q_Fg_PEsbPOSkjM",
@@ -41,15 +65,194 @@
       appId: "1:844169156848:web:91b6c4e08900a350078a35"
     };
 
-    const metaEl = document.getElementById("remote-meta");
-    const mount = document.getElementById("digital-inner-mount");
     const params = new URLSearchParams(location.search);
     const shareKey = params.get("k");
     const appIdParam = params.get("app") || "stabile-2026-v4";
+    const pageUrl = window.location.href;
+
+    const linkSlot = document.getElementById("remote-link-slot");
+    const bodyEl = document.getElementById("digital-remote-body");
+
+    window.closeDigitalModuleFocus = function () {
+      const root = document.getElementById("digital-preview-container");
+      if (!root) return;
+      root.classList.remove("digital-focus-active");
+      root.querySelectorAll(".digital-card").forEach(function (c) {
+        c.classList.remove("digital-card--expanded");
+      });
+    };
+
+    window.expandDigitalModule = function (cardEl) {
+      const root = document.getElementById("digital-preview-container");
+      if (!root || !cardEl) return;
+      const titleSpan = root.querySelector("#digital-focus-title");
+      const titleNode = cardEl.querySelector(".digital-card-title");
+      if (titleSpan && titleNode) {
+        titleSpan.textContent = titleNode.textContent.replace(/\s+/g, " ").trim();
+      }
+      root.classList.add("digital-focus-active");
+      root.querySelectorAll(".digital-card").forEach(function (c) {
+        if (c === cardEl) c.classList.add("digital-card--expanded");
+        else c.classList.remove("digital-card--expanded");
+      });
+      try {
+        cardEl.focus({ preventScroll: true });
+      } catch (e) {}
+    };
+
+    function exitRemote() {
+      window.closeDigitalModuleFocus();
+      if (window.history.length > 1) {
+        window.history.back();
+        return;
+      }
+      window.close();
+      setTimeout(function () {
+        alert("Chiudi questa scheda dal browser (icona X) per uscire.");
+      }, 150);
+    }
+
+    window.exitRemoteDigital = exitRemote;
+
+    function buildMainMarkup(cardsHTML) {
+      return (
+        '<div style="' +
+        "display: flex;" +
+        "justify-content: space-between;" +
+        "align-items: center;" +
+        "margin-bottom: 15px;" +
+        "padding: 8px 15px;" +
+        "background: linear-gradient(135deg, rgba(255,255,255,0.1), rgba(255,255,255,0.05));" +
+        "border-radius: 12px;" +
+        "backdrop-filter: blur(20px);" +
+        "border: 1px solid rgba(255,255,255,0.2);" +
+        "box-shadow: 0 8px 16px rgba(0,0,0,0.2);" +
+        '">' +
+        '<div style="' +
+        "font-size: 16px;" +
+        "font-weight: 700;" +
+        "letter-spacing: 0.5px;" +
+        "background: linear-gradient(45deg, #3b82f6, #8b5cf6, #ec4899);" +
+        "-webkit-background-clip: text;" +
+        "-webkit-text-fill-color: transparent;" +
+        "background-clip: text;" +
+        '">DIGITAL REPORT HD</div>' +
+        '<div style="display: flex; gap: 8px;">' +
+        '<button type="button" id="btn-remote-refresh" style="' +
+        "background: linear-gradient(135deg, #22c55e, #16a34a);" +
+        "border: 1px solid rgba(34, 197, 94, 0.3);" +
+        "color: white;" +
+        "padding: 6px 12px;" +
+        "border-radius: 10px;" +
+        "font-size: 11px;" +
+        "font-weight: 900;" +
+        "box-shadow: 0 4px 8px rgba(34, 197, 94, 0.4);" +
+        "cursor: pointer;" +
+        '">AGGIORNA</button>' +
+        '<button type="button" id="btn-remote-exit" style="' +
+        "background: linear-gradient(135deg, #ef4444, #dc2626);" +
+        "border: 1px solid rgba(239, 68, 68, 0.3);" +
+        "color: white;" +
+        "padding: 6px 12px;" +
+        "border-radius: 10px;" +
+        "font-size: 11px;" +
+        "font-weight: 900;" +
+        "box-shadow: 0 4px 8px rgba(239, 68, 68, 0.4);" +
+        "cursor: pointer;" +
+        '">ESCI</button>' +
+        "</div></div>" +
+        '<div id="digital-module-focus-bar" class="digital-module-focus-bar">' +
+        '<button type="button" class="digital-focus-close-btn" onclick="window.closeDigitalModuleFocus()">CHIUDI</button>' +
+        '<span id="digital-focus-title" class="digital-focus-title"></span>' +
+        "</div>" +
+        '<div id="digital-cards-grid" class="digital-cards-wrap" style="' +
+        "display: grid;" +
+        "grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));" +
+        "gap: 25px;" +
+        "width: 100%;" +
+        "align-items: start;" +
+        "padding: 25px;" +
+        "background: rgba(255,255,255,0.02);" +
+        "border-radius: 24px;" +
+        "backdrop-filter: blur(10px);" +
+        '">' +
+        (cardsHTML || "") +
+        "</div>"
+      );
+    }
+
+    let prefRef = null;
+    let refreshHandler = null;
+
+    function wireButtons() {
+      const r = document.getElementById("btn-remote-refresh");
+      const x = document.getElementById("btn-remote-exit");
+      if (r && typeof refreshHandler === "function") {
+        r.onclick = refreshHandler;
+      }
+      if (x) {
+        x.onclick = exitRemote;
+      }
+    }
+
+    let containerDelegateBound = false;
+    function bindCardZoomOnce() {
+      const root = document.getElementById("digital-preview-container");
+      if (!root || containerDelegateBound) return;
+      containerDelegateBound = true;
+      root.addEventListener("click", function (e) {
+        const grid = root.querySelector("#digital-cards-grid");
+        if (!grid || !grid.contains(e.target)) return;
+        const card = e.target.closest(".digital-card");
+        if (!card || !grid.contains(card)) return;
+        if (root.classList.contains("digital-focus-active") && card.classList.contains("digital-card--expanded")) return;
+        window.expandDigitalModule(card);
+      });
+      root.addEventListener("keydown", function (e) {
+        if (e.key !== "Escape") return;
+        if (!root.classList.contains("digital-focus-active")) return;
+        e.preventDefault();
+        window.closeDigitalModuleFocus();
+      });
+    }
+
+    function renderFromData(d) {
+      const when = d.updatedAt ? new Date(d.updatedAt).toLocaleString("it-IT") : "—";
+      linkSlot.innerHTML =
+        '<div class="remote-link-row">' +
+        "<span>Apri o condividi questo link (cliccabile):</span><br />" +
+        '<a id="remote-page-link" href="#">caricamento…</a> ' +
+        '<button type="button" id="btn-copy-link">Copia link</button>' +
+        '<div class="remote-status">Sola lettura · Turno: ' +
+        (d.shiftLabel || "—") +
+        " · Ultimo aggiornamento: " +
+        when +
+        "</div></div>";
+      const pageA = document.getElementById("remote-page-link");
+      if (pageA) {
+        pageA.href = pageUrl;
+        pageA.textContent = pageUrl;
+      }
+
+      document.getElementById("btn-copy-link").addEventListener("click", async function () {
+        try {
+          await navigator.clipboard.writeText(pageUrl);
+          this.textContent = "Copiato!";
+          setTimeout(() => (this.textContent = "Copia link"), 2000);
+        } catch (_) {
+          prompt("Copia manualmente:", pageUrl);
+        }
+      });
+
+      document.getElementById("digital-preview-container").classList.remove("digital-focus-active");
+      bodyEl.innerHTML = buildMainMarkup(d.cardsHTML || "");
+      wireButtons();
+      bindCardZoomOnce();
+    }
 
     if (!shareKey) {
-      metaEl.textContent =
-        "Parametro ?k= mancante nell URL. In ServiceHub apri Digital e premi LINK REMOTO per generare il link.";
+      linkSlot.innerHTML =
+        '<div class="remote-link-row">Parametro <code>?k=</code> mancante. In ServiceHub apri <strong>Digital</strong> e premi <strong>LINK REMOTO</strong>.</div>';
     } else {
       let app;
       try {
@@ -58,39 +261,43 @@
         app = initializeApp(DEFAULT_FIREBASE_CONFIG, "digital-remote-viewer");
       }
       const db = getFirestore(app);
-      const pref = doc(db, "artifacts", appIdParam, "publicDigital", shareKey);
-      onSnapshot(
-        pref,
-        (snap) => {
+      prefRef = doc(db, "artifacts", appIdParam, "publicDigital", shareKey);
+
+      refreshHandler = async function () {
+        const btn = document.getElementById("btn-remote-refresh");
+        if (btn) btn.textContent = "…";
+        try {
+          const snap = await getDoc(prefRef);
           if (!snap.exists()) {
-            metaEl.textContent =
-              "Nessun report pubblicato per questo link. Verifica il link o pubblica di nuovo dall app operatore.";
-            mount.innerHTML = "";
+            alert("Nessun dato su questo link. Pubblica di nuovo dall app operatore.");
             return;
           }
-          const d = snap.data();
-          const when = d.updatedAt
-            ? new Date(d.updatedAt).toLocaleString("it-IT")
-            : "—";
-          metaEl.textContent =
-            "Sola lettura · Turno: " +
-            (d.shiftLabel || "—") +
-            " · Ultimo aggiornamento: " +
-            when;
-          mount.innerHTML =
-            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;padding:8px 15px;background:linear-gradient(135deg,rgba(255,255,255,0.1),rgba(255,255,255,0.05));border-radius:12px;border:1px solid rgba(255,255,255,0.2);">' +
-            '<div style="font-size:16px;font-weight:700;letter-spacing:0.5px;background:linear-gradient(45deg,#3b82f6,#8b5cf6,#ec4899);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;">DIGITAL REPORT HD</div>' +
-            "</div>" +
-            '<div id="digital-cards-grid" class="digital-cards-wrap" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:25px;width:100%;align-items:start;padding:25px;background:rgba(255,255,255,0.02);border-radius:24px;backdrop-filter:blur(10px);">' +
-            (d.cardsHTML || "") +
-            "</div>";
+          renderFromData(snap.data());
+        } catch (err) {
+          alert("Aggiornamento non riuscito: " + (err && err.message));
+        } finally {
+          const b = document.getElementById("btn-remote-refresh");
+          if (b) b.textContent = "AGGIORNA";
+        }
+      };
+
+      onSnapshot(
+        prefRef,
+        (snap) => {
+          if (!snap.exists()) {
+            linkSlot.innerHTML =
+              '<div class="remote-link-row">Nessun report per questo link. Verifica l URL o chiedi all operatore di ripubblicare.</div>';
+            bodyEl.innerHTML = "";
+            return;
+          }
+          renderFromData(snap.data());
         },
         (err) => {
-          metaEl.textContent =
-            "Errore Firestore: " +
+          linkSlot.innerHTML =
+            '<div class="remote-link-row">Errore Firestore: ' +
             (err && err.message) +
-            " · Controlla le regole di sicurezza (file firestore-public-digital.rules.txt).";
-          mount.innerHTML = "";
+            " · Controlla le regole (publicDigital).</div>";
+          bodyEl.innerHTML = "";
         }
       );
     }

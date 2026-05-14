@@ -8230,29 +8230,35 @@ window.openDigitalPreview = () => {
     (function wireDigitalLinkRemotoButton() {
         const linkRemotoBtn = digitalContainer.querySelector("#btn-digital-link-remoto");
         if (!linkRemotoBtn) return;
-        linkRemotoBtn.onclick = function (ev) {
+        linkRemotoBtn.onclick = async function (ev) {
             ev.preventDefault();
             ev.stopPropagation();
             const label = linkRemotoBtn.textContent || "LINK REMOTO";
             linkRemotoBtn.disabled = true;
             linkRemotoBtn.textContent = "…";
-            Promise.resolve()
-                .then(function () {
-                    return window.publishDigitalRemoteReport();
-                })
-                .catch(function (err) {
-                    console.error("[ServiceHub] LINK REMOTO click:", err);
-                    var msg = err && err.message ? err.message : String(err);
-                    if (typeof window.__serviceHubFlashToast === "function") {
-                        window.__serviceHubFlashToast("LINK REMOTO: " + msg, true);
-                    } else {
+            try {
+                await Promise.race([
+                    window.publishDigitalRemoteReport(),
+                    new Promise(function (_, rej) {
+                        setTimeout(function () {
+                            rej(new Error("Timeout 35s: rete lenta o Firebase non risponde. Il link può essere già in modale."));
+                        }, 35000);
+                    })
+                ]);
+            } catch (err) {
+                console.error("[ServiceHub] LINK REMOTO click:", err);
+                var msg = err && err.message ? err.message : String(err);
+                if (typeof window.__serviceHubFlashToast === "function") {
+                    window.__serviceHubFlashToast("LINK REMOTO: " + msg, true);
+                } else {
+                    try {
                         alert("LINK REMOTO: " + msg);
-                    }
-                })
-                .then(function () {
-                    linkRemotoBtn.disabled = false;
-                    linkRemotoBtn.textContent = label;
-                });
+                    } catch (_) {}
+                }
+            } finally {
+                linkRemotoBtn.disabled = false;
+                linkRemotoBtn.textContent = label;
+            }
         };
     })();
 
@@ -8389,6 +8395,35 @@ window.pushPublicDigitalSnapshotQuiet = async function () {
     }
 };
 
+/** Evita attese infinite su getDoc/setDoc (tablet / rete instabile). */
+window.__serviceHubWithTimeout = function (promise, ms, tag) {
+    var label = tag || "Operazione";
+    return Promise.race([
+        Promise.resolve(promise),
+        new Promise(function (_, rej) {
+            setTimeout(function () {
+                rej(new Error(label + " timeout (" + ms + " ms)"));
+            }, ms);
+        })
+    ]);
+};
+
+/** Aggiorna la riga stato cloud nella modale link remoto (se ancora aperta). */
+window.__serviceHubUpdateDigitalRemoteCloudLine = function (text, kind) {
+    try {
+        var el = document.getElementById("sh-digital-remote-cloud-line");
+        if (!el) return;
+        el.textContent = String(text || "");
+        if (kind === "ok") {
+            el.style.color = "#86efac";
+        } else if (kind === "err") {
+            el.style.color = "#fecaca";
+        } else {
+            el.style.color = "#fde047";
+        }
+    } catch (_) {}
+};
+
 /** Messaggio temporaneo in cima allo schermo (PWA / tablet spesso non mostrano alert). */
 window.__serviceHubFlashToast = function (message, isError) {
     try {
@@ -8444,10 +8479,9 @@ window.__serviceHubCopyTextWithFallback = async function (text) {
 
 /** Modale con URL completo selezionabile: così da tablet si può sempre copiare / incollare.
  *  @param {string} href URL completo del Digital remoto
- *  @param {{ publishOk?: boolean }} [options] se publishOk === false mostra avviso (pubblicazione cloud fallita ma il link resta utile) */
+ *  @param {{ publishOk?: boolean, cloudPending?: boolean }} [options] publishOk===false = banner rosso; cloudPending = riga stato sincronizzazione */
 window.__serviceHubShowDigitalRemoteLinkModal = function (href, options) {
     options = options || {};
-    const publishOk = options.publishOk !== false;
     const hrefSafe = String(href || "").trim() || String(window.location.origin || "") + "/digital-view.html";
     const prev = document.getElementById("sh-digital-remote-link-modal");
     if (prev) prev.remove();
@@ -8469,12 +8503,21 @@ window.__serviceHubShowDigitalRemoteLinkModal = function (href, options) {
         e.stopPropagation();
     };
     let publishWarnEl = null;
-    if (!publishOk) {
+    if (options.publishOk === false) {
         publishWarnEl = document.createElement("p");
         publishWarnEl.style.cssText =
             "margin:0 0 12px;padding:11px 13px;border-radius:11px;background:rgba(127,29,29,0.42);border:1px solid rgba(248,113,113,0.55);color:#fecaca;font-size:12px;font-weight:700;line-height:1.45;";
         publishWarnEl.textContent =
             "La pubblicazione sul cloud non è riuscita (controlla le regole Firestore per publicDigital o riprova). Il link qui sotto è comunque quello da usare: dopo aver sistemato, salva di nuovo dall'app.";
+    }
+    var cloudLine = null;
+    if (options.cloudPending) {
+        cloudLine = document.createElement("p");
+        cloudLine.id = "sh-digital-remote-cloud-line";
+        cloudLine.style.cssText =
+            "margin:0 0 12px;padding:10px 12px;border-radius:10px;background:rgba(30,58,138,0.45);border:1px solid rgba(96,165,250,0.4);color:#fde047;font-size:12px;font-weight:800;line-height:1.4;";
+        cloudLine.textContent =
+            "Connessione a Firebase in corso per pubblicare il Digital sul cloud…";
     }
     intro.innerHTML =
         "Usa il campo qui sotto per <strong>copiare e incollare</strong> su altri dispositivi. Il report remoto si aggiorna da solo dopo ogni salvataggio dall'app operatore. Se il copia automatico non funziona, tieni premuto sul testo e scegli «Copia».";
@@ -8545,6 +8588,7 @@ window.__serviceHubShowDigitalRemoteLinkModal = function (href, options) {
     row.appendChild(btnClose);
     card.appendChild(h);
     if (publishWarnEl) card.appendChild(publishWarnEl);
+    if (cloudLine) card.appendChild(cloudLine);
     card.appendChild(intro);
     card.appendChild(ta);
     card.appendChild(status);
@@ -8578,15 +8622,26 @@ window.publishDigitalRemoteReport = async () => {
         const metaRef = doc(db, "artifacts", appId, "sharedDial", "meta");
         let shareKey = null;
         try {
-            const metaSnap = await getDoc(metaRef);
-            if (metaSnap.exists() && metaSnap.data().digitalShareKey) {
-                shareKey = metaSnap.data().digitalShareKey;
-            }
+            shareKey = sessionStorage.getItem("servicehub_digital_share_key");
         } catch (_) {}
         if (!shareKey) {
             try {
-                shareKey = sessionStorage.getItem("servicehub_digital_share_key");
-            } catch (_) {}
+                var metaSnap;
+                if (typeof window.__serviceHubWithTimeout === "function") {
+                    metaSnap = await window.__serviceHubWithTimeout(
+                        getDoc(metaRef),
+                        6000,
+                        "Lettura chiave Digital su Firebase"
+                    );
+                } else {
+                    metaSnap = await getDoc(metaRef);
+                }
+                if (metaSnap.exists() && metaSnap.data().digitalShareKey) {
+                    shareKey = metaSnap.data().digitalShareKey;
+                }
+            } catch (e) {
+                console.warn("[ServiceHub] publishDigitalRemoteReport meta:", e && e.message);
+            }
         }
         if (!shareKey) {
             shareKey =
@@ -8594,36 +8649,17 @@ window.publishDigitalRemoteReport = async () => {
                     ? crypto.randomUUID()
                     : "k" + Date.now() + "-" + Math.random().toString(16).slice(2);
         }
-        try {
-            await setDoc(
-                metaRef,
-                { digitalShareKey: shareKey, digitalShareUpdatedAt: new Date().toISOString() },
-                { merge: true }
-            );
-        } catch (_) {}
-        try {
-            sessionStorage.setItem("servicehub_digital_share_key", shareKey);
-        } catch (_) {}
-        let pushed = false;
-        try {
-            pushed = !!(await window.pushPublicDigitalSnapshotQuiet());
-        } catch (e) {
-            console.warn("[ServiceHub] publishDigitalRemoteReport push:", e);
-            pushed = false;
-        }
         const u = new URL("digital-view.html", window.location.href);
         u.searchParams.set("k", shareKey);
         u.searchParams.set("app", appId);
-        u.searchParams.set("dv", "10");
+        u.searchParams.set("dv", "11");
         const href = u.href;
-        if (!pushed) {
-            console.warn(
-                "[ServiceHub] publishDigitalRemoteReport: pubblicazione publicDigital fallita; mostro comunque il link."
-            );
-        }
+
         if (typeof window.__serviceHubShowDigitalRemoteLinkModal === "function") {
             try {
-                window.__serviceHubShowDigitalRemoteLinkModal(href, { publishOk: pushed });
+                window.__serviceHubShowDigitalRemoteLinkModal(href, {
+                    cloudPending: true
+                });
             } catch (modalErr) {
                 console.error("[ServiceHub] modale link remoto:", modalErr);
                 if (typeof window.__serviceHubFlashToast === "function") {
@@ -8636,27 +8672,70 @@ window.publishDigitalRemoteReport = async () => {
                     prompt("Copia questo link (Digital remoto):", href);
                 } catch (_) {}
             }
-        } else {
-            try {
-                await navigator.clipboard.writeText(href);
-                if (typeof window.__serviceHubFlashToast === "function") {
-                    window.__serviceHubFlashToast(
-                        (pushed ? "" : "Pubblicazione cloud non riuscita. ") +
-                            "Link copiato negli appunti.",
-                        !pushed
-                    );
-                }
-                try {
-                    alert(
-                        (pushed ? "" : "Attenzione: pubblicazione cloud non riuscita.\n\n") +
-                            "Link remoto copiato negli appunti.\n\n" +
-                            href
-                    );
-                } catch (_) {}
-            } catch (_) {
-                try {
-                    prompt("Copia questo link (Digital remoto):", href);
-                } catch (_) {}
+        }
+
+        try {
+            if (typeof window.__serviceHubWithTimeout === "function") {
+                await window.__serviceHubWithTimeout(
+                    setDoc(
+                        metaRef,
+                        {
+                            digitalShareKey: shareKey,
+                            digitalShareUpdatedAt: new Date().toISOString()
+                        },
+                        { merge: true }
+                    ),
+                    10000,
+                    "Salvataggio chiave Digital (meta)"
+                );
+            } else {
+                await setDoc(
+                    metaRef,
+                    {
+                        digitalShareKey: shareKey,
+                        digitalShareUpdatedAt: new Date().toISOString()
+                    },
+                    { merge: true }
+                );
+            }
+        } catch (e) {
+            console.warn("[ServiceHub] publishDigitalRemoteReport setDoc meta:", e && e.message);
+        }
+        try {
+            sessionStorage.setItem("servicehub_digital_share_key", shareKey);
+        } catch (_) {}
+
+        let pushed = false;
+        try {
+            if (typeof window.__serviceHubWithTimeout === "function") {
+                pushed = !!(await window.__serviceHubWithTimeout(
+                    window.pushPublicDigitalSnapshotQuiet(),
+                    22000,
+                    "Pubblicazione Digital su publicDigital"
+                ));
+            } else {
+                pushed = !!(await window.pushPublicDigitalSnapshotQuiet());
+            }
+        } catch (e) {
+            console.warn("[ServiceHub] publishDigitalRemoteReport push:", e && e.message);
+            pushed = false;
+        }
+        if (!pushed) {
+            console.warn(
+                "[ServiceHub] publishDigitalRemoteReport: pubblicazione publicDigital non riuscita (il link in modale resta valido)."
+            );
+        }
+        if (typeof window.__serviceHubUpdateDigitalRemoteCloudLine === "function") {
+            if (pushed) {
+                window.__serviceHubUpdateDigitalRemoteCloudLine(
+                    "Pubblicazione cloud completata. Il Digital remoto riceverà gli aggiornamenti dopo i salvataggi.",
+                    "ok"
+                );
+            } else {
+                window.__serviceHubUpdateDigitalRemoteCloudLine(
+                    "ATTENZIONE: il cloud non si è aggiornato (rete, timeout o regole Firestore). Il link qui sopra è comunque quello da usare sugli altri dispositivi.",
+                    "err"
+                );
             }
         }
     } catch (e) {

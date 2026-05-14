@@ -7036,6 +7036,451 @@ window.expandDigitalModule = function (cardEl) {
     } catch (e) { /* ignore */ }
 };
 
+window.buildDigitalCardsHTML = function() {
+        // LOGICA ORDINE FLESSIBILE CON BLOCCO AMBIENTE 1 (come nel Report Preview)
+        const ambiente1Inviato = document.getElementById('sec-amb') !== null;
+        const ambiente2Inviato = document.getElementById('sec-ambiente2') !== null;
+        const tankStatuses = window.getTankStatusesForPreview();
+        const hasTankData = tankStatuses && tankStatuses.length > 0;
+        
+        // LOGICA ORDINE DINAMICO (identica al Report Preview)
+        let orderedModules = [];
+        
+        // Aggiungi Ambiente 1 se presente
+        if (ambiente1Inviato) {
+            orderedModules.push('sec-amb');
+        }
+        
+        // Aggiungi Ambiente 2 se presente
+        if (ambiente2Inviato) {
+            orderedModules.push('sec-ambiente2');
+        }
+        
+        // LOGICA POSIZIONE GESTIONE SERBATOI
+        if (hasTankData) {
+            const insertPosition = (ambiente1Inviato && ambiente2Inviato) ? 2 : 1;
+            orderedModules.splice(insertPosition, 0, 'GESTIONE_SERBATOI_SPECIAL');
+        }
+        
+        // Calcola i trend dei livelli
+        const tankTrends = window.getTankLevelTrend();
+        const hasTrendData = tankTrends && tankTrends.length > 0;
+        const hasEnoughHistory = window.savedHistory && Array.isArray(window.savedHistory) && window.savedHistory.length >= 2;
+        
+        // AGGIUNGI IL MODULO TREND SOLO SE CI SONO DATI VALIDI
+        if (hasTrendData && hasEnoughHistory) {
+            const tankIndex = orderedModules.includes('GESTIONE_SERBATOI_SPECIAL') ? orderedModules.indexOf('GESTIONE_SERBATOI_SPECIAL') + 1 : 0;
+            orderedModules.splice(tankIndex, 0, 'TREND_SPECIAL');
+        }
+        
+        // Aggiungi tutti gli altri moduli VISIBILI (non solo hiddenModules)
+        const hiddenModules = window.hiddenModules || [];
+        // Prendi tutti i moduli disponibili nell'applicazione
+        const allModuleIds = [
+            'sec-amb', 'sec-ambiente2', 'sec-acqua', 'sec-pozzi', 'sec-caldaia', 
+            'sec-scam', 'sec-filtra', 'sec-bluedown', 'sec-aria', 'sec-azoto', 
+            'sec-chpp', 'sec-well'
+        ];
+        // Filtra solo i moduli che esistono nel DOM e non sono già in orderedModules
+        const otherModules = allModuleIds.filter(id => {
+            const element = document.getElementById(id);
+            return element && !orderedModules.includes(id) && !hiddenModules.includes(id);
+        });
+        
+        if (hasTankData && !orderedModules.includes('GESTIONE_SERBATOI_SPECIAL')) {
+            orderedModules.push('GESTIONE_SERBATOI_SPECIAL');
+        }
+        
+        orderedModules.push(...otherModules);
+        
+        // Mappa i nomi delle schede correttamente
+        const getCardTitle = (moduleId) => {
+            const titleMap = {
+                'sec-amb': 'AMBIENTE',
+                'sec-ambiente2': 'ZONA NORD ED ALTRI',
+                'sec-acqua': 'ACQUA',
+                'sec-pozzi': 'POZZI',
+                'sec-caldaia': 'CALDAIA',
+                'sec-scam': 'SCAM',
+                'sec-filtra': 'FILTRA',
+                'sec-bluedown': 'BLUEDOWN',
+                'sec-aria': 'ARIA',
+                'sec-azoto': 'AZOTO',
+                'sec-chpp': 'CHPP',
+                'sec-well': 'CALDAIE / POZZI',
+                'GESTIONE_SERBATOI_SPECIAL': 'GESTIONE SERBATOI',
+                'TREND_SPECIAL': 'TREND LIVELLI'
+            };
+            
+            return titleMap[moduleId] || "";
+        };
+        
+        // Genera le card digitali con gli stessi dati del Report Preview
+        const cardsHTML = orderedModules.length > 0 
+            ? orderedModules.map((moduleId, index) => {
+                const cardTitle = getCardTitle(moduleId);
+                if (!cardTitle) return '';
+                
+                const titleHTML = `
+                    <div class="digital-card-title" style="
+                        font-size: 17px;
+                        font-weight: 800;
+                        color: #60a5fa;
+                        margin-bottom: 14px;
+                        text-transform: uppercase;
+                        letter-spacing: 0.12em;
+                        border-bottom: 1px solid rgba(96, 165, 250, 0.35);
+                        padding-bottom: 8px;
+                    ">
+                        ${cardTitle}
+                    </div>
+                `;
+                
+                // Genera il contenuto identico al Report Preview
+                let contentHTML = '';
+                
+                if (moduleId === 'GESTIONE_SERBATOI_SPECIAL') {
+                    // Stesso codice del Report Preview per GESTIONE SERBATOI
+                    contentHTML = '<div class="digital-rows">';
+                    tankStatuses.forEach(tank => {
+                        contentHTML += `<div class="digital-row digital-row--tank"><span class="digital-row-label">${tank.tank}</span><span class="digital-row-value digital-row-value--text">${tank.mode}</span></div>`;
+                    });
+                    contentHTML += '</div>';
+                } else if (moduleId === 'TREND_SPECIAL') {
+                    const startTime = tankTrends.length > 0 ? tankTrends[0].startTime : '--:--';
+                    const endTime = tankTrends.length > 0 ? tankTrends[tankTrends.length - 1].endTime : '--:--';
+                    
+                    contentHTML = `<div style="font-size: 13px; font-weight: 650; text-transform: uppercase; color: #fff; border-bottom: 0.5px solid rgba(255,255,255,0.5); padding-bottom: 6px; margin-bottom: 8px; letter-spacing: 0.3px;">
+                        TREND ${startTime} -> ${endTime}
+                    </div>
+                    <div style="display: flex; flex-direction: column;">`;
+                    
+                    let analisiTitleShown = false;
+                    
+                    tankTrends.forEach(trend => {
+                        const color = trend.rising ? '#059669' : '#dc2626'; // Verde se sale, rosso se scende
+                        const arrow = trend.rising ? 'up' : 'down';
+                        // Usa la funzione di mappatura per ottenere il nome reale del serbatoio
+                        const tankName = window.getTankName(trend.tank);
+                        let displayName = (tankName === 'TK 8092') ? tankName : (tankName === 'TK 8093') ? 'BACINO<br>TK 8093' : (tankName.startsWith('TK') && tankName !== 'TK 8092' && tankName !== 'TK 8093') ? 'BACINO<br>' + tankName : tankName;
+                        // Rimuovi la parola "analisi" se presente come prefisso
+                        displayName = displayName.replace(/^ANALISI\s*/i, '').replace(/\s*ANALISI$/i, '');
+                        // Calcola la differenza
+                        const difference = Math.abs(trend.end - trend.start);
+                        const diffText = trend.rising ? `+${difference}` : `-${difference}`;
+                        
+                        // Controlla se è un'analisi e mostra il titolo una sola volta
+                        const isAnalisi = ['COD', 'COND', 'O2 MBR1', 'O2 MBR2', 'CONO', 'COD NUOVO', 'COD VECCHIO'].includes(tankName);
+                        if (isAnalisi && !analisiTitleShown) {
+                            contentHTML += `<div style="font-size: 11px; font-weight: 600; text-transform: uppercase; color: #fff; border-bottom: 0.3px dashed rgba(255,255,255,0.3); padding-bottom: 3px; margin: 8px 0 5px 0; letter-spacing: 0.2px;">ANALISI</div>`;
+                            analisiTitleShown = true;
+                        }
+                        
+                        contentHTML += `<div style="display: flex; align-items: center; padding: 4px 0; border-bottom: 0.1px solid rgba(255,255,255,0.2); font-size: 12px;">
+                            <!-- Nome serbatoio -->
+                            <span style="font-weight: 600; text-transform: uppercase; color: #fff; width: 50px; flex-shrink: 0;">${displayName}</span>
+                            
+                            <!-- Livello iniziale -->
+                            <span style="font-weight: 600; color: #fff; width: 25px; text-align: center; margin-left: 2px;">${trend.start}</span>
+                            
+                            <!-- Separatore -->
+                            <span style="margin: 0 3px; color: #fff; font-weight: 700;">-></span>
+                            
+                            <!-- Livello finale -->
+                            <span style="font-weight: 600; color: #fff; width: 25px; text-align: center;">${trend.end}</span>
+                            
+                            <!-- Separatore più grande -->
+                            <span style="margin: 0 8px; color: #fff; font-weight: 700;">|</span>
+                            
+                            <!-- Differenza più grande e visibile -->
+                            <span style="font-weight: 800; color: ${color}; font-size: 14px; margin-left: 5px; flex-shrink: 0;">${arrow} ${diffText}</span>
+                        </div>`;
+                    });
+                    contentHTML += '</div>';
+                } else {
+                    // USA LA STESSA LOGICA DEL REPORT PREVIEW PER ESTRARRE I DATI
+                    const sec = document.getElementById(moduleId); 
+                    if (!sec) return;
+                    
+                    let rows = []; 
+                    
+                    // LOGICA SPECIFICA PER BLOWDOWN (come nel Report Preview)
+                    if (moduleId === 'sec-bluedown') {
+                        // Raggruppa per compressore
+                        const compressors = sec.querySelectorAll('.bd-column');
+                        compressors.forEach(comp => {
+                            const header = comp.querySelector('.status-header.compact');
+                            if (header) {
+                                let sigla = header.innerHTML.split('<br>')[0].trim();
+                                const match = sigla.match(/(\d+)([A-Z])/);
+                                if (match) {
+                                    sigla = `MK ${match[1]}/${match[2]}`;
+                                }
+                                
+                                // Stato del compressore
+                                rows.push({ 
+                                    label: sigla,
+                                    val: header.innerText.includes('MARCIA') ? 'MARCIA' : 'FERMO',
+                                    isStatus: true,
+                                    active: header.innerText.includes('MARCIA')
+                                });
+                            }
+                            
+                            // Valori di questo compressore in ordine
+                            comp.querySelectorAll('.bd-input-row').forEach(row => {
+                                const label = row.querySelector('.bd-label')?.innerText || "";
+                                const input = row.querySelector('input');
+                                if (input && input.value !== "") {
+                                    rows.push({
+                                        label: label,
+                                        val: input.value,
+                                        isStatus: false
+                                    });
+                                }
+                            });
+                        });
+                    } else if (moduleId === 'sec-well') {
+                        // LOGICA PER POZZI/CALDAIE - SG9400A, SG9400D e POZZI (come nel Report Preview)
+                        const statusA = document.getElementById('stat-mk-A');
+                        const statusD = document.getElementById('stat-mk-D');
+                        
+                        // SG 9400A
+                        if (statusA) {
+                            rows.push({ 
+                                label: 'SG 9400A',
+                                val: statusA.innerText.includes('MARCIA') ? 'MARCIA' : 'FERMO',
+                                isStatus: true,
+                                active: statusA.innerText.includes('MARCIA')
+                            });
+                            
+                            // PROD sotto SG 9400A
+                            const prodA = document.getElementById('inp-a-prod');
+                            if (prodA && prodA.value !== "") {
+                                rows.push({
+                                    label: 'PROD',
+                                    val: prodA.value,
+                                    isStatus: false
+                                });
+                            }
+                            
+                            // COND sotto SG 9400A
+                            const condA = document.getElementById('inp-a-cond');
+                            if (condA && condA.value !== "") {
+                                rows.push({
+                                    label: 'COND',
+                                    val: condA.value,
+                                    isStatus: false
+                                });
+                            }
+                        }
+                        
+                        // SG 9400D
+                        if (statusD) {
+                            rows.push({ 
+                                label: 'SG 9400D',
+                                val: statusD.innerText.includes('MARCIA') ? 'MARCIA' : 'FERMO',
+                                isStatus: true,
+                                active: statusD.innerText.includes('MARCIA')
+                            });
+                            
+                            // PROD sotto SG 9400D
+                            const prodD = document.getElementById('inp-d-prod');
+                            if (prodD && prodD.value !== "") {
+                                rows.push({
+                                    label: 'PROD',
+                                    val: prodD.value,
+                                    isStatus: false
+                                });
+                            }
+                            
+                            // COND sotto SG 9400D
+                            const condD = document.getElementById('inp-d-cond');
+                            if (condD && condD.value !== "") {
+                                rows.push({
+                                    label: 'COND',
+                                    val: condD.value,
+                                    isStatus: false
+                                });
+                            }
+                        }
+                        
+                        // POZZI
+                        const pozzi = [
+                            { id: 'stat-well-2', label: 'POZZO 2' },
+                            { id: 'stat-well-3', label: 'POZZO 3' },
+                            { id: 'stat-well-4', label: 'POZZO 4' },
+                            { id: 'stat-well-5', label: 'POZZO 5' }
+                        ];
+                        pozzi.forEach(pozzo => {
+                            const statusEl = document.getElementById(pozzo.id);
+                            if (statusEl) {
+                                rows.push({
+                                    label: pozzo.label,
+                                    val: statusEl.innerText.includes('MARCIA') ? 'MARCIA' : 'FERMO',
+                                    isStatus: true,
+                                    active: statusEl.innerText.includes('MARCIA')
+                                });
+                            }
+                        });
+                    } else {
+                        // LOGICA COMPLETA DEL REPORT PREVIEW PER ALTRI MODULI
+                        // STATUS (fix duplicati + formato corretto)
+                        sec.querySelectorAll('.status-cell-btn, .status-header.compact').forEach(st => { 
+                            if (st.classList.contains('compact')) {
+                                let sigla = st.innerHTML.split('<br>')[0].trim();
+
+                                // formato tipo 10500A → MK 10500/A
+                                const match = sigla.match(/(\d+)([A-Z])/);
+                                if (match) {
+                                    sigla = `MK ${match[1]}/${match[2]}`;
+                                }
+
+                                rows.push({ 
+                                    label: sigla,
+                                    val: st.innerText.includes('MARCIA') ? 'MARCIA' : 'FERMO',
+                                    isStatus: true,
+                                    active: st.innerText.includes('MARCIA')
+                                });
+                            } else {
+                                const label = st.closest('tr')?.querySelector('.cell-label-main')?.innerText || "STATO";
+
+                                rows.push({ 
+                                    label: label,
+                                    val: st.innerText,
+                                    isStatus: true,
+                                    active: st.innerText === "MARCIA"
+                                });
+                            }
+                        });
+
+                        // INPUT per altri moduli
+                        sec.querySelectorAll('input').forEach(inp => { 
+                            if(inp.value !== "") { 
+                                let label = inp.closest('tr, .amb-row, .bd-input-row')
+                                    ?.querySelector('.cell-label-main, .amb-label, .bd-label')
+                                    ?.innerText || "VALORE";
+
+                                // PER AMBIENTE 2: APPLICA LA STESSA LOGICA DI getTankStatusesForPreview!
+                                if (moduleId === 'sec-ambiente2') {
+                                    // Per Ambiente 2, ricostruisci il label completo da tutti i div interni
+                                    const labelDiv = inp.closest('tr, .amb-row, .bd-input-row')
+                                        ?.querySelector('.amb-label');
+                                    if (labelDiv) {
+                                        const divs = labelDiv.querySelectorAll('div');
+                                        if (divs.length > 1) {
+                                            label = Array.from(divs).map(div => div.innerText).join(' ');
+
+                                            // FIX BACINO TK8092 / TK8093
+                                            label = label.replace('BACINO TK 8092', 'BACINO<br>TK 8092');
+                                            label = label.replace('BACINO TK 8093', 'BACINO<br>TK 8093');
+                                        }
+                                    }
+                                    
+                                    // CONVERSIONE DIRETTA: TK8092-2 → TK8092
+                                    if (label === 'TK8092-2' || label === 'TK 8092-2') {
+                                        label = 'TK8092';
+                                    }
+                                    
+                                    // Applica la logica per TK8092/8093
+                                    if (label === 'TK8092' || label === 'TK 8092') {
+                                        label = 'TK 8092'; // NON è un bacino
+                                    } else if (label === 'TK8093' || label === 'TK 8093') {
+                                        label = 'BACINO<br>TK 8093';
+                                    } else if (label.startsWith('TK') && label !== 'TK8092' && label !== 'TK 8092' && label !== 'TK8066' && label !== 'TK 8066') {
+                                        label = 'BACINO<br>' + label;
+                                    }
+                                    
+                                    // RIMUOVI COMPLETAMENTE IL "-2" DAL NOME FINALE
+                                    label = label.replace('TK 8092-2', 'TK 8092').replace('TK8092-2', 'TK8092');
+                                }
+                                
+                                // PER L'OSMOSI: usa il valore con frecce per il report
+                                let val = inp.value;
+                                if (inp.id === 'inp-osmosi' && inp.getAttribute('data-report-value')) {
+                                    val = inp.getAttribute('data-report-value');
+                                }
+                                
+                                // Correzione per modulo ACQUA: prendi il label corretto
+                                if (inp.id === 'inp-tk9201') {
+                                    label = 'TK 9201';
+                                }        
+                                rows.push({ label: label, val: val, isStatus: false }); 
+                            }
+                        });
+                    }
+                    
+                    // Righe lista (no doppi riquadri tabella): sigla a sinistra, valore grande a destra
+                    contentHTML = '<div class="digital-rows">';
+                    rows.forEach(row => {
+                        if (row.isStatus) {
+                            const statusClass = row.active ? 'bg-marcia' : 'bg-fermo';
+                            contentHTML += `<div class="digital-row digital-row--status">`;
+                            contentHTML += `<span class="digital-row-label">${row.label}</span>`;
+                            contentHTML += `<div class="status-cell-btn ${statusClass}" style="display: inline-flex; align-items: center; justify-content: center; padding: 8px 14px; border-radius: 10px; font-size: 12px; font-weight: 800; text-align: center; letter-spacing: 0.04em;">${row.val}</div>`;
+                            contentHTML += '</div>';
+                        } else {
+                            contentHTML += `<div class="digital-row">`;
+                            contentHTML += `<span class="digital-row-label">${row.label}</span>`;
+                            contentHTML += `<span class="digital-row-value">${row.val}</span>`;
+                            contentHTML += '</div>';
+                        }
+                    });
+                    contentHTML += '</div>';
+                }
+                
+                if (!contentHTML.trim()) return '';
+                
+                return `
+                <div class="digital-card" data-module-id="${moduleId}" tabindex="0" role="button" aria-label="Apri anteprima ingrandita ${cardTitle}" style="
+                    background: linear-gradient(155deg, #1e293b 0%, #273549 45%, #334155 100%);
+                    border: 1px solid rgba(96, 165, 250, 0.22);
+                    border-radius: 20px;
+                    padding: 20px;
+                    box-shadow: 0 16px 48px rgba(0,0,0,0.35),
+                               0 0 0 1px rgba(255,255,255,0.04) inset;
+                    min-height: 200px;
+                    height: auto;
+                    overflow: visible;
+                    position: relative;
+                    transform: translateY(0);
+                    transition: all 0.3s ease;
+                    animation: slideInUp 0.6s ease-out ${index * 0.1}s both;
+                    word-wrap: break-word;
+                    hyphens: auto;
+                    cursor: pointer;
+                    outline: none;
+                ">
+                    <div class="digital-card-surface" style="
+                        background: rgba(15, 23, 42, 0.35);
+                        border-radius: 14px;
+                        padding: 18px 16px;
+                        backdrop-filter: blur(12px);
+                        border: 1px solid rgba(148, 163, 184, 0.08);
+                        height: 100%;
+                        overflow: auto;
+                    ">
+                        <div class="digital-card-zoom-cols">
+                            <div class="digital-card-title-col">
+                                ${titleHTML}
+                            </div>
+                            <div class="digital-card-body-col" style="
+                                font-size: 14px;
+                                line-height: 1.45;
+                                color: #e2e8f0;
+                                font-weight: 500;
+                            ">
+                                ${contentHTML}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            }).filter(card => card !== '').join('')
+            : '<div style="grid-column:1/-1; text-align:center; padding:40px; font-size:18px; opacity:0.7;">NESSUN DATO DISPONIBILE</div>';
+        
+        return cardsHTML;
+    };
+
 window.openDigitalPreview = () => {
     try {
         // CREA elemento SEPARATO per Digital Preview
@@ -7060,450 +7505,8 @@ window.openDigitalPreview = () => {
             document.body.appendChild(digitalContainer);
         }
         
-        const now = new Date();
-    const currentShiftText = document.getElementById('current-shift-label')?.innerText || '';
-    
-    // LOGICA ORDINE FLESSIBILE CON BLOCCO AMBIENTE 1 (come nel Report Preview)
-    const ambiente1Inviato = document.getElementById('sec-amb') !== null;
-    const ambiente2Inviato = document.getElementById('sec-ambiente2') !== null;
-    const tankStatuses = window.getTankStatusesForPreview();
-    const hasTankData = tankStatuses && tankStatuses.length > 0;
-    
-    // LOGICA ORDINE DINAMICO (identica al Report Preview)
-    let orderedModules = [];
-    
-    // Aggiungi Ambiente 1 se presente
-    if (ambiente1Inviato) {
-        orderedModules.push('sec-amb');
-    }
-    
-    // Aggiungi Ambiente 2 se presente
-    if (ambiente2Inviato) {
-        orderedModules.push('sec-ambiente2');
-    }
-    
-    // LOGICA POSIZIONE GESTIONE SERBATOI
-    if (hasTankData) {
-        const insertPosition = (ambiente1Inviato && ambiente2Inviato) ? 2 : 1;
-        orderedModules.splice(insertPosition, 0, 'GESTIONE_SERBATOI_SPECIAL');
-    }
-    
-    // Calcola i trend dei livelli
-    const tankTrends = window.getTankLevelTrend();
-    const hasTrendData = tankTrends && tankTrends.length > 0;
-    const hasEnoughHistory = window.savedHistory && Array.isArray(window.savedHistory) && window.savedHistory.length >= 2;
-    
-    // AGGIUNGI IL MODULO TREND SOLO SE CI SONO DATI VALIDI
-    if (hasTrendData && hasEnoughHistory) {
-        const tankIndex = orderedModules.includes('GESTIONE_SERBATOI_SPECIAL') ? orderedModules.indexOf('GESTIONE_SERBATOI_SPECIAL') + 1 : 0;
-        orderedModules.splice(tankIndex, 0, 'TREND_SPECIAL');
-    }
-    
-    // Aggiungi tutti gli altri moduli VISIBILI (non solo hiddenModules)
-    const hiddenModules = window.hiddenModules || [];
-    // Prendi tutti i moduli disponibili nell'applicazione
-    const allModuleIds = [
-        'sec-amb', 'sec-ambiente2', 'sec-acqua', 'sec-pozzi', 'sec-caldaia', 
-        'sec-scam', 'sec-filtra', 'sec-bluedown', 'sec-aria', 'sec-azoto', 
-        'sec-chpp', 'sec-well'
-    ];
-    // Filtra solo i moduli che esistono nel DOM e non sono già in orderedModules
-    const otherModules = allModuleIds.filter(id => {
-        const element = document.getElementById(id);
-        return element && !orderedModules.includes(id) && !hiddenModules.includes(id);
-    });
-    
-    if (hasTankData && !orderedModules.includes('GESTIONE_SERBATOI_SPECIAL')) {
-        orderedModules.push('GESTIONE_SERBATOI_SPECIAL');
-    }
-    
-    orderedModules.push(...otherModules);
-    
-    // Mappa i nomi delle schede correttamente
-    const getCardTitle = (moduleId) => {
-        const titleMap = {
-            'sec-amb': 'AMBIENTE',
-            'sec-ambiente2': 'ZONA NORD ED ALTRI',
-            'sec-acqua': 'ACQUA',
-            'sec-pozzi': 'POZZI',
-            'sec-caldaia': 'CALDAIA',
-            'sec-scam': 'SCAM',
-            'sec-filtra': 'FILTRA',
-            'sec-bluedown': 'BLUEDOWN',
-            'sec-aria': 'ARIA',
-            'sec-azoto': 'AZOTO',
-            'sec-chpp': 'CHPP',
-            'sec-well': 'CALDAIE / POZZI',
-            'GESTIONE_SERBATOI_SPECIAL': 'GESTIONE SERBATOI',
-            'TREND_SPECIAL': 'TREND LIVELLI'
-        };
-        
-        return titleMap[moduleId] || "";
-    };
-    
-    // Genera le card digitali con gli stessi dati del Report Preview
-    const cardsHTML = orderedModules.length > 0 
-        ? orderedModules.map((moduleId, index) => {
-            const cardTitle = getCardTitle(moduleId);
-            if (!cardTitle) return '';
-            
-            const titleHTML = `
-                <div class="digital-card-title" style="
-                    font-size: 17px;
-                    font-weight: 800;
-                    color: #60a5fa;
-                    margin-bottom: 14px;
-                    text-transform: uppercase;
-                    letter-spacing: 0.12em;
-                    border-bottom: 1px solid rgba(96, 165, 250, 0.35);
-                    padding-bottom: 8px;
-                ">
-                    ${cardTitle}
-                </div>
-            `;
-            
-            // Genera il contenuto identico al Report Preview
-            let contentHTML = '';
-            
-            if (moduleId === 'GESTIONE_SERBATOI_SPECIAL') {
-                // Stesso codice del Report Preview per GESTIONE SERBATOI
-                contentHTML = '<div class="digital-rows">';
-                tankStatuses.forEach(tank => {
-                    contentHTML += `<div class="digital-row digital-row--tank"><span class="digital-row-label">${tank.tank}</span><span class="digital-row-value digital-row-value--text">${tank.mode}</span></div>`;
-                });
-                contentHTML += '</div>';
-            } else if (moduleId === 'TREND_SPECIAL') {
-                const startTime = tankTrends.length > 0 ? tankTrends[0].startTime : '--:--';
-                const endTime = tankTrends.length > 0 ? tankTrends[tankTrends.length - 1].endTime : '--:--';
-                
-                contentHTML = `<div style="font-size: 13px; font-weight: 650; text-transform: uppercase; color: #fff; border-bottom: 0.5px solid rgba(255,255,255,0.5); padding-bottom: 6px; margin-bottom: 8px; letter-spacing: 0.3px;">
-                    TREND ${startTime} -> ${endTime}
-                </div>
-                <div style="display: flex; flex-direction: column;">`;
-                
-                let analisiTitleShown = false;
-                
-                tankTrends.forEach(trend => {
-                    const color = trend.rising ? '#059669' : '#dc2626'; // Verde se sale, rosso se scende
-                    const arrow = trend.rising ? 'up' : 'down';
-                    // Usa la funzione di mappatura per ottenere il nome reale del serbatoio
-                    const tankName = window.getTankName(trend.tank);
-                    let displayName = (tankName === 'TK 8092') ? tankName : (tankName === 'TK 8093') ? 'BACINO<br>TK 8093' : (tankName.startsWith('TK') && tankName !== 'TK 8092' && tankName !== 'TK 8093') ? 'BACINO<br>' + tankName : tankName;
-                    // Rimuovi la parola "analisi" se presente come prefisso
-                    displayName = displayName.replace(/^ANALISI\s*/i, '').replace(/\s*ANALISI$/i, '');
-                    // Calcola la differenza
-                    const difference = Math.abs(trend.end - trend.start);
-                    const diffText = trend.rising ? `+${difference}` : `-${difference}`;
-                    
-                    // Controlla se è un'analisi e mostra il titolo una sola volta
-                    const isAnalisi = ['COD', 'COND', 'O2 MBR1', 'O2 MBR2', 'CONO', 'COD NUOVO', 'COD VECCHIO'].includes(tankName);
-                    if (isAnalisi && !analisiTitleShown) {
-                        contentHTML += `<div style="font-size: 11px; font-weight: 600; text-transform: uppercase; color: #fff; border-bottom: 0.3px dashed rgba(255,255,255,0.3); padding-bottom: 3px; margin: 8px 0 5px 0; letter-spacing: 0.2px;">ANALISI</div>`;
-                        analisiTitleShown = true;
-                    }
-                    
-                    contentHTML += `<div style="display: flex; align-items: center; padding: 4px 0; border-bottom: 0.1px solid rgba(255,255,255,0.2); font-size: 12px;">
-                        <!-- Nome serbatoio -->
-                        <span style="font-weight: 600; text-transform: uppercase; color: #fff; width: 50px; flex-shrink: 0;">${displayName}</span>
-                        
-                        <!-- Livello iniziale -->
-                        <span style="font-weight: 600; color: #fff; width: 25px; text-align: center; margin-left: 2px;">${trend.start}</span>
-                        
-                        <!-- Separatore -->
-                        <span style="margin: 0 3px; color: #fff; font-weight: 700;">-></span>
-                        
-                        <!-- Livello finale -->
-                        <span style="font-weight: 600; color: #fff; width: 25px; text-align: center;">${trend.end}</span>
-                        
-                        <!-- Separatore più grande -->
-                        <span style="margin: 0 8px; color: #fff; font-weight: 700;">|</span>
-                        
-                        <!-- Differenza più grande e visibile -->
-                        <span style="font-weight: 800; color: ${color}; font-size: 14px; margin-left: 5px; flex-shrink: 0;">${arrow} ${diffText}</span>
-                    </div>`;
-                });
-                contentHTML += '</div>';
-            } else {
-                // USA LA STESSA LOGICA DEL REPORT PREVIEW PER ESTRARRE I DATI
-                const sec = document.getElementById(moduleId); 
-                if (!sec) return;
-                
-                let rows = []; 
-                
-                // LOGICA SPECIFICA PER BLOWDOWN (come nel Report Preview)
-                if (moduleId === 'sec-bluedown') {
-                    // Raggruppa per compressore
-                    const compressors = sec.querySelectorAll('.bd-column');
-                    compressors.forEach(comp => {
-                        const header = comp.querySelector('.status-header.compact');
-                        if (header) {
-                            let sigla = header.innerHTML.split('<br>')[0].trim();
-                            const match = sigla.match(/(\d+)([A-Z])/);
-                            if (match) {
-                                sigla = `MK ${match[1]}/${match[2]}`;
-                            }
-                            
-                            // Stato del compressore
-                            rows.push({ 
-                                label: sigla,
-                                val: header.innerText.includes('MARCIA') ? 'MARCIA' : 'FERMO',
-                                isStatus: true,
-                                active: header.innerText.includes('MARCIA')
-                            });
-                        }
-                        
-                        // Valori di questo compressore in ordine
-                        comp.querySelectorAll('.bd-input-row').forEach(row => {
-                            const label = row.querySelector('.bd-label')?.innerText || "";
-                            const input = row.querySelector('input');
-                            if (input && input.value !== "") {
-                                rows.push({
-                                    label: label,
-                                    val: input.value,
-                                    isStatus: false
-                                });
-                            }
-                        });
-                    });
-                } else if (moduleId === 'sec-well') {
-                    // LOGICA PER POZZI/CALDAIE - SG9400A, SG9400D e POZZI (come nel Report Preview)
-                    const statusA = document.getElementById('stat-mk-A');
-                    const statusD = document.getElementById('stat-mk-D');
-                    
-                    // SG 9400A
-                    if (statusA) {
-                        rows.push({ 
-                            label: 'SG 9400A',
-                            val: statusA.innerText.includes('MARCIA') ? 'MARCIA' : 'FERMO',
-                            isStatus: true,
-                            active: statusA.innerText.includes('MARCIA')
-                        });
-                        
-                        // PROD sotto SG 9400A
-                        const prodA = document.getElementById('inp-a-prod');
-                        if (prodA && prodA.value !== "") {
-                            rows.push({
-                                label: 'PROD',
-                                val: prodA.value,
-                                isStatus: false
-                            });
-                        }
-                        
-                        // COND sotto SG 9400A
-                        const condA = document.getElementById('inp-a-cond');
-                        if (condA && condA.value !== "") {
-                            rows.push({
-                                label: 'COND',
-                                val: condA.value,
-                                isStatus: false
-                            });
-                        }
-                    }
-                    
-                    // SG 9400D
-                    if (statusD) {
-                        rows.push({ 
-                            label: 'SG 9400D',
-                            val: statusD.innerText.includes('MARCIA') ? 'MARCIA' : 'FERMO',
-                            isStatus: true,
-                            active: statusD.innerText.includes('MARCIA')
-                        });
-                        
-                        // PROD sotto SG 9400D
-                        const prodD = document.getElementById('inp-d-prod');
-                        if (prodD && prodD.value !== "") {
-                            rows.push({
-                                label: 'PROD',
-                                val: prodD.value,
-                                isStatus: false
-                            });
-                        }
-                        
-                        // COND sotto SG 9400D
-                        const condD = document.getElementById('inp-d-cond');
-                        if (condD && condD.value !== "") {
-                            rows.push({
-                                label: 'COND',
-                                val: condD.value,
-                                isStatus: false
-                            });
-                        }
-                    }
-                    
-                    // POZZI
-                    const pozzi = [
-                        { id: 'stat-well-2', label: 'POZZO 2' },
-                        { id: 'stat-well-3', label: 'POZZO 3' },
-                        { id: 'stat-well-4', label: 'POZZO 4' },
-                        { id: 'stat-well-5', label: 'POZZO 5' }
-                    ];
-                    pozzi.forEach(pozzo => {
-                        const statusEl = document.getElementById(pozzo.id);
-                        if (statusEl) {
-                            rows.push({
-                                label: pozzo.label,
-                                val: statusEl.innerText.includes('MARCIA') ? 'MARCIA' : 'FERMO',
-                                isStatus: true,
-                                active: statusEl.innerText.includes('MARCIA')
-                            });
-                        }
-                    });
-                } else {
-                    // LOGICA COMPLETA DEL REPORT PREVIEW PER ALTRI MODULI
-                    // STATUS (fix duplicati + formato corretto)
-                    sec.querySelectorAll('.status-cell-btn, .status-header.compact').forEach(st => { 
-                        if (st.classList.contains('compact')) {
-                            let sigla = st.innerHTML.split('<br>')[0].trim();
+        const cardsHTML = window.buildDigitalCardsHTML();
 
-                            // formato tipo 10500A → MK 10500/A
-                            const match = sigla.match(/(\d+)([A-Z])/);
-                            if (match) {
-                                sigla = `MK ${match[1]}/${match[2]}`;
-                            }
-
-                            rows.push({ 
-                                label: sigla,
-                                val: st.innerText.includes('MARCIA') ? 'MARCIA' : 'FERMO',
-                                isStatus: true,
-                                active: st.innerText.includes('MARCIA')
-                            });
-                        } else {
-                            const label = st.closest('tr')?.querySelector('.cell-label-main')?.innerText || "STATO";
-
-                            rows.push({ 
-                                label: label,
-                                val: st.innerText,
-                                isStatus: true,
-                                active: st.innerText === "MARCIA"
-                            });
-                        }
-                    });
-
-                    // INPUT per altri moduli
-                    sec.querySelectorAll('input').forEach(inp => { 
-                        if(inp.value !== "") { 
-                            let label = inp.closest('tr, .amb-row, .bd-input-row')
-                                ?.querySelector('.cell-label-main, .amb-label, .bd-label')
-                                ?.innerText || "VALORE";
-
-                            // PER AMBIENTE 2: APPLICA LA STESSA LOGICA DI getTankStatusesForPreview!
-                            if (moduleId === 'sec-ambiente2') {
-                                // Per Ambiente 2, ricostruisci il label completo da tutti i div interni
-                                const labelDiv = inp.closest('tr, .amb-row, .bd-input-row')
-                                    ?.querySelector('.amb-label');
-                                if (labelDiv) {
-                                    const divs = labelDiv.querySelectorAll('div');
-                                    if (divs.length > 1) {
-                                        label = Array.from(divs).map(div => div.innerText).join(' ');
-
-                                        // FIX BACINO TK8092 / TK8093
-                                        label = label.replace('BACINO TK 8092', 'BACINO<br>TK 8092');
-                                        label = label.replace('BACINO TK 8093', 'BACINO<br>TK 8093');
-                                    }
-                                }
-                                
-                                // CONVERSIONE DIRETTA: TK8092-2 → TK8092
-                                if (label === 'TK8092-2' || label === 'TK 8092-2') {
-                                    label = 'TK8092';
-                                }
-                                
-                                // Applica la logica per TK8092/8093
-                                if (label === 'TK8092' || label === 'TK 8092') {
-                                    label = 'TK 8092'; // NON è un bacino
-                                } else if (label === 'TK8093' || label === 'TK 8093') {
-                                    label = 'BACINO<br>TK 8093';
-                                } else if (label.startsWith('TK') && label !== 'TK8092' && label !== 'TK 8092' && label !== 'TK8066' && label !== 'TK 8066') {
-                                    label = 'BACINO<br>' + label;
-                                }
-                                
-                                // RIMUOVI COMPLETAMENTE IL "-2" DAL NOME FINALE
-                                label = label.replace('TK 8092-2', 'TK 8092').replace('TK8092-2', 'TK8092');
-                            }
-                            
-                            // PER L'OSMOSI: usa il valore con frecce per il report
-                            let val = inp.value;
-                            if (inp.id === 'inp-osmosi' && inp.getAttribute('data-report-value')) {
-                                val = inp.getAttribute('data-report-value');
-                            }
-                            
-                            // Correzione per modulo ACQUA: prendi il label corretto
-                            if (inp.id === 'inp-tk9201') {
-                                label = 'TK 9201';
-                            }        
-                            rows.push({ label: label, val: val, isStatus: false }); 
-                        }
-                    });
-                }
-                
-                // Righe lista (no doppi riquadri tabella): sigla a sinistra, valore grande a destra
-                contentHTML = '<div class="digital-rows">';
-                rows.forEach(row => {
-                    if (row.isStatus) {
-                        const statusClass = row.active ? 'bg-marcia' : 'bg-fermo';
-                        contentHTML += `<div class="digital-row digital-row--status">`;
-                        contentHTML += `<span class="digital-row-label">${row.label}</span>`;
-                        contentHTML += `<div class="status-cell-btn ${statusClass}" style="display: inline-flex; align-items: center; justify-content: center; padding: 8px 14px; border-radius: 10px; font-size: 12px; font-weight: 800; text-align: center; letter-spacing: 0.04em;">${row.val}</div>`;
-                        contentHTML += '</div>';
-                    } else {
-                        contentHTML += `<div class="digital-row">`;
-                        contentHTML += `<span class="digital-row-label">${row.label}</span>`;
-                        contentHTML += `<span class="digital-row-value">${row.val}</span>`;
-                        contentHTML += '</div>';
-                    }
-                });
-                contentHTML += '</div>';
-            }
-            
-            if (!contentHTML.trim()) return '';
-            
-            return `
-            <div class="digital-card" data-module-id="${moduleId}" tabindex="0" role="button" aria-label="Apri anteprima ingrandita ${cardTitle}" style="
-                background: linear-gradient(155deg, #1e293b 0%, #273549 45%, #334155 100%);
-                border: 1px solid rgba(96, 165, 250, 0.22);
-                border-radius: 20px;
-                padding: 20px;
-                box-shadow: 0 16px 48px rgba(0,0,0,0.35),
-                           0 0 0 1px rgba(255,255,255,0.04) inset;
-                min-height: 200px;
-                height: auto;
-                overflow: visible;
-                position: relative;
-                transform: translateY(0);
-                transition: all 0.3s ease;
-                animation: slideInUp 0.6s ease-out ${index * 0.1}s both;
-                word-wrap: break-word;
-                hyphens: auto;
-                cursor: pointer;
-                outline: none;
-            ">
-                <div class="digital-card-surface" style="
-                    background: rgba(15, 23, 42, 0.35);
-                    border-radius: 14px;
-                    padding: 18px 16px;
-                    backdrop-filter: blur(12px);
-                    border: 1px solid rgba(148, 163, 184, 0.08);
-                    height: 100%;
-                    overflow: auto;
-                ">
-                    <div class="digital-card-zoom-cols">
-                        <div class="digital-card-title-col">
-                            ${titleHTML}
-                        </div>
-                        <div class="digital-card-body-col" style="
-                            font-size: 14px;
-                            line-height: 1.45;
-                            color: #e2e8f0;
-                            font-weight: 500;
-                        ">
-                            ${contentHTML}
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `;
-        }).filter(card => card !== '').join('')
-        : '<div style="grid-column:1/-1; text-align:center; padding:40px; font-size:18px; opacity:0.7;">NESSUN DATO DISPONIBILE</div>';
-    
     // Inserisci contenuto nel container SEPARATO
     digitalContainer.innerHTML = `
         <style>
@@ -7738,6 +7741,21 @@ window.openDigitalPreview = () => {
                     AGGIORNA
                 </button>
 
+                <button type="button" onclick="window.publishDigitalRemoteReport()" style="
+                    background: linear-gradient(135deg, #6366f1, #4f46e5);
+                    border: 1px solid rgba(99, 102, 241, 0.45);
+                    color: white;
+                    padding: 6px 12px;
+                    border-radius: 10px;
+                    font-size: 11px;
+                    font-weight: 900;
+                    box-shadow: 0 4px 8px rgba(79, 70, 229, 0.35);
+                    transition: all 0.3s ease;
+                    cursor: pointer;
+                ">
+                    LINK REMOTO
+                </button>
+
                 <button onclick="window.closeDigitalPreview()" style="
                     background: linear-gradient(135deg, #ef4444, #dc2626);
                     border: 1px solid rgba(239, 68, 68, 0.3);
@@ -7818,6 +7836,51 @@ window.closeDigitalPreview = () => {
         }
         digitalContainer.style.display = 'none';
         digitalContainer.classList.remove('active');
+    }
+};
+
+window.publishDigitalRemoteReport = async () => {
+    if (!db || !user || !user.uid) {
+        alert('Serve il cloud attivo (LED verde). Accedi e riprova.');
+        return;
+    }
+    let cardsHTML;
+    try {
+        cardsHTML = window.buildDigitalCardsHTML();
+    } catch (e) {
+        alert('Errore generazione Digital: ' + (e && e.message));
+        return;
+    }
+    let shareKey = sessionStorage.getItem('servicehub_digital_share_key');
+    if (!shareKey) {
+        shareKey = (typeof crypto !== 'undefined' && crypto.randomUUID)
+            ? crypto.randomUUID()
+            : 'k' + Date.now() + '-' + Math.random().toString(16).slice(2);
+        sessionStorage.setItem('servicehub_digital_share_key', shareKey);
+    }
+    const shiftLabel = document.getElementById('current-shift-label')?.innerText?.trim() || '';
+    try {
+        await setDoc(
+            doc(db, 'artifacts', appId, 'publicDigital', shareKey),
+            {
+                ownerUid: user.uid,
+                updatedAt: new Date().toISOString(),
+                shiftLabel,
+                cardsHTML
+            }
+        );
+        const u = new URL('digital-view.html', window.location.href);
+        u.searchParams.set('k', shareKey);
+        u.searchParams.set('app', appId);
+        const href = u.href;
+        try {
+            await navigator.clipboard.writeText(href);
+            alert('Link remoto copiato negli appunti.\n\nApribile da un altro PC o tablet (solo lettura). Ogni nuova pubblicazione da questo browser aggiorna lo stesso link in tempo reale.\n\n' + href);
+        } catch (_) {
+            prompt('Copia questo link (accesso remoto Digital):', href);
+        }
+    } catch (e) {
+        alert('Pubblicazione su Firestore non riuscita: ' + (e && e.message) + '\n\nAggiungi le regole per publicDigital (vedi firestore-public-digital.rules.txt nella cartella del progetto).');
     }
 };
 

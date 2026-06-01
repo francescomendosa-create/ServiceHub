@@ -512,6 +512,7 @@ window.colorPreviewNumber = function(tankName, value) {
         tailwind.config = { darkMode: 'class' }
     </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
@@ -10784,7 +10785,7 @@ window.convertToHtml = async () => {
 
     <div id="smart-capture-loading" class="smart-capture-loading">
         <i class="fas fa-spinner fa-spin text-3xl text-violet-400"></i>
-        <span>Analisi intelligente in corso…</span>
+        <span id="smart-capture-loading-msg">Analisi intelligente in corso…</span>
     </div>
 
     <!-- Modale Gestione Report -->
@@ -12131,10 +12132,12 @@ window.applyAlarmLevelFillToField = function (el, forceMin) {
     }
 };
 
-// --- ACQUISIZIONE INTELLIGENTE (OCR + GEMINI VISION) ---
+// --- ACQUISIZIONE INTELLIGENTE (OCR LOCALE TESSERACT + GEMINI FALLBACK) ---
 window._smartCapturePending = null;
 window._smartCaptureStream = null;
 window._smartCapturePhotoData = null;
+window._tesseractWorker = null;
+window._tesseractWorkerInit = null;
 
 window.toggleSmartCaptureMenu = function() {
     const menu = document.getElementById('smart-capture-menu');
@@ -12201,14 +12204,253 @@ window.parseSmartCaptureJson = function(rawText) {
     }
 };
 
-window.runSmartCaptureAnalysis = async function(imageData) {
-    const fields = window.buildSmartCaptureFieldMap();
-    if (!fields.length) throw new Error('Nessun campo mappabile trovato nell\'interfaccia.');
+window.setSmartCaptureLoadingMessage = function(msg) {
+    const msgEl = document.getElementById('smart-capture-loading-msg');
+    if (msgEl && msg) msgEl.textContent = msg;
+};
 
+window.ensureTesseractWorker = async function() {
+    if (window._tesseractWorker) return window._tesseractWorker;
+    if (window._tesseractWorkerInit) return window._tesseractWorkerInit;
+    if (typeof Tesseract === 'undefined') {
+        throw new Error('Motore OCR locale non caricato. Ricarica la pagina.');
+    }
+    window._tesseractWorkerInit = (async function() {
+        window.setSmartCaptureLoadingMessage('Caricamento OCR offline…');
+        const worker = await Tesseract.createWorker('ita', 1, {
+            workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
+            langPath: 'https://tessdata.projectnaptha.com/4.0.0',
+            corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core-simd-lstm.wasm.js',
+            logger: function(m) {
+                if (m.status === 'loading language traineddata') {
+                    window.setSmartCaptureLoadingMessage('Download dizionario italiano…');
+                }
+            }
+        });
+        window._tesseractWorker = worker;
+        window._tesseractWorkerInit = null;
+        return worker;
+    })();
+    return window._tesseractWorkerInit;
+};
+
+window.preprocessImageForOcr = function(dataUrl) {
+    return new Promise(function(resolve, reject) {
+        const img = new Image();
+        img.onload = function() {
+            const maxW = 1600;
+            let w = img.width;
+            let h = img.height;
+            if (w > maxW) {
+                h = Math.round(h * maxW / w);
+                w = maxW;
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, w, h);
+            const imgData = ctx.getImageData(0, 0, w, h);
+            const d = imgData.data;
+            for (let i = 0; i < d.length; i += 4) {
+                const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+                const v = g > 145 ? 255 : (g < 85 ? 0 : g);
+                d[i] = d[i + 1] = d[i + 2] = v;
+            }
+            ctx.putImageData(imgData, 0, 0);
+            resolve(canvas.toDataURL('image/jpeg', 0.9));
+        };
+        img.onerror = function() { reject(new Error('Immagine non valida.')); };
+        img.src = dataUrl;
+    });
+};
+
+window.normalizeSiglaKey = function(s) {
+    return String(s || '').toUpperCase()
+        .replace(/[·•|]/g, ' ')
+        .replace(/[^\w\s./-]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+};
+
+window.buildSiglaPatterns = function(field) {
+    const label = window.normalizeSiglaKey(field.label);
+    const set = new Set();
+    if (!label) return [];
+    set.add(label);
+    set.add(label.replace(/\s+/g, ''));
+
+    String(field.label || '').split(/[·•]/).forEach(function(part) {
+        const p = window.normalizeSiglaKey(part);
+        if (p) {
+            set.add(p);
+            set.add(p.replace(/\s+/g, ''));
+        }
+    });
+
+    const mkMatch = label.match(/MK\s*(\d+)\s*([A-Z])?/);
+    if (mkMatch) {
+        set.add('MK ' + mkMatch[1] + (mkMatch[2] || ''));
+        set.add('MK' + mkMatch[1] + (mkMatch[2] || ''));
+        if (mkMatch[2]) set.add(mkMatch[1] + mkMatch[2]);
+    }
+
+    const tankMatch = label.match(/^(S|TK|D|SG)\s*(\d+[A-Z]?)/);
+    if (tankMatch) {
+        set.add(tankMatch[1] + ' ' + tankMatch[2]);
+        set.add(tankMatch[1] + tankMatch[2]);
+    }
+
+    return Array.from(set).filter(function(p) { return p.length >= 2; }).sort(function(a, b) { return b.length - a.length; });
+};
+
+window.extractValueNearMatch = function(text, index, patternLen) {
+    const after = text.slice(index + patternLen, index + patternLen + 48);
+    const m = after.match(/^\s*[:\-=\s]*(\d+[.,]\d+|\d+)/);
+    if (m) return m[1].replace(',', '.');
+    const before = text.slice(Math.max(0, index - 24), index);
+    const m2 = before.match(/(\d+[.,]\d+|\d+)\s*$/);
+    if (m2) return m2[1].replace(',', '.');
+    return null;
+};
+
+window.isValidOcrValue = function(value) {
+    return /^\d+([.]\d+)?$/.test(String(value || '').replace(',', '.'));
+};
+
+window.matchReadingsFromOcrText = function(ocrText, fields) {
+    const normalizedText = window.normalizeSiglaKey(ocrText).replace(/\n/g, ' ');
+    const lines = String(ocrText).split(/\r?\n/).map(function(l) { return l.trim(); }).filter(Boolean);
+    const readings = [];
+    const usedIds = new Set();
+
+    function addReading(field, value, confidence, source) {
+        if (!field || !field.id || usedIds.has(field.id)) return;
+        const v = String(value || '').replace(',', '.').trim();
+        if (!window.isValidOcrValue(v)) return;
+        readings.push({
+            id: field.id,
+            value: v,
+            confidence: confidence || 'media',
+            source: source || field.label
+        });
+        usedIds.add(field.id);
+    }
+
+    for (let i = 0; i < lines.length - 1; i++) {
+        const lineNorm = window.normalizeSiglaKey(lines[i]);
+        const valMatch = lines[i + 1].match(/^(\d+[.,]\d+|\d+)\s*$/);
+        if (!valMatch) continue;
+        const value = valMatch[1].replace(',', '.');
+        fields.forEach(function(field) {
+            if (usedIds.has(field.id)) return;
+            const patterns = window.buildSiglaPatterns(field);
+            for (let pi = 0; pi < patterns.length; pi++) {
+                const p = patterns[pi];
+                const compact = p.replace(/\s+/g, '');
+                const lineCompact = lineNorm.replace(/\s+/g, '');
+                if (lineNorm.indexOf(p) >= 0 || lineCompact.indexOf(compact) >= 0) {
+                    addReading(field, value, p.length >= 5 ? 'alta' : 'media', lines[i]);
+                    break;
+                }
+            }
+        });
+    }
+
+    lines.forEach(function(line) {
+        const lineUp = window.normalizeSiglaKey(line);
+        fields.forEach(function(field) {
+            if (usedIds.has(field.id)) return;
+            const patterns = window.buildSiglaPatterns(field);
+            for (let pi = 0; pi < patterns.length; pi++) {
+                const p = patterns[pi];
+                const esc = p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s*');
+                const re = new RegExp(esc + '\\s*[:\\-=]?\\s*(\\d+[.,]\\d+|\\d+)', 'i');
+                const m = lineUp.match(re);
+                if (m) {
+                    addReading(field, m[1], p.length >= 5 ? 'alta' : 'media', p);
+                    break;
+                }
+            }
+        });
+    });
+
+    fields.forEach(function(field) {
+        if (usedIds.has(field.id)) return;
+        const patterns = window.buildSiglaPatterns(field).filter(function(p) { return p.length >= 5; });
+        for (let pi = 0; pi < patterns.length; pi++) {
+            const p = patterns[pi];
+            const esc = p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s*');
+            const idx = normalizedText.search(new RegExp(esc, 'i'));
+            if (idx >= 0) {
+                const val = window.extractValueNearMatch(normalizedText, idx, p.length);
+                if (val) {
+                    addReading(field, val, 'media', p);
+                    break;
+                }
+            }
+        }
+    });
+
+    return {
+        readings: readings,
+        engine: 'local',
+        notes: 'OCR locale offline (Tesseract) · ' + readings.length + ' letture'
+    };
+};
+
+window.localSmartCaptureGoodEnough = function(result) {
+    const readings = (result && result.readings) || [];
+    if (readings.length >= 2) return true;
+    if (readings.length === 1 && readings[0].confidence === 'alta') return true;
+    return false;
+};
+
+window.mergeSmartCaptureResults = function(localResult, cloudResult) {
+    const byId = {};
+    (localResult && localResult.readings || []).forEach(function(r) {
+        if (r && r.id) byId[r.id] = r;
+    });
+    (cloudResult && cloudResult.readings || []).forEach(function(r) {
+        if (!r || !r.id) return;
+        if (!byId[r.id] || r.confidence === 'alta') byId[r.id] = r;
+    });
+    const merged = Object.keys(byId).map(function(k) { return byId[k]; });
+    return {
+        readings: merged,
+        engine: 'hybrid',
+        notes: 'OCR locale + Gemini · ' + merged.length + ' letture'
+    };
+};
+
+window.runLocalSmartCaptureOcr = async function(imageData, fields) {
+    const worker = await window.ensureTesseractWorker();
+    const raw = imageData.data || '';
+    const dataUrl = raw.indexOf(',') >= 0 ? raw : 'data:image/jpeg;base64,' + raw;
+    window.setSmartCaptureLoadingMessage('Preparazione immagine…');
+    const preprocessed = await window.preprocessImageForOcr(dataUrl);
+    window.setSmartCaptureLoadingMessage('OCR locale in corso…');
+
+    const result = await worker.recognize(preprocessed, {}, {
+        logger: function(m) {
+            if (m.status === 'recognizing text') {
+                window.setSmartCaptureLoadingMessage('OCR locale ' + Math.round((m.progress || 0) * 100) + '%…');
+            }
+        }
+    });
+
+    const text = result.data && result.data.text ? result.data.text : '';
+    console.log('OCR locale testo grezzo:', text.slice(0, 500));
+    if (!text.trim()) {
+        return { readings: [], engine: 'local', notes: 'OCR locale: nessun testo rilevato.' };
+    }
+    return window.matchReadingsFromOcrText(text, fields);
+};
+
+window.runGeminiSmartCaptureOcr = async function(imageData, fields) {
     const catalog = fields.slice(0, 220).map(function(f) {
         return { id: f.id, sigla: f.label, sezione: f.section };
     });
-
     const promptOcr =
         'Sei un sistema OCR per un impianto industriale. Analizza l\'immagine allegata (foto di display, quadro, scheda o report cartaceo). ' +
         'Trova sigle/etichette e valori numerici o testuali associati. Abbina ogni valore al campo corretto usando SOLO gli id del catalogo JSON qui sotto. ' +
@@ -12220,14 +12462,61 @@ window.runSmartCaptureAnalysis = async function(imageData) {
     const res = await window.callGeminiAPI(promptOcr, false, imageData);
     const parsed = window.parseSmartCaptureJson(res);
     if (!parsed || !Array.isArray(parsed.readings)) {
-        throw new Error('Impossibile interpretare la risposta OCR. Riprova con foto più nitida.');
+        throw new Error('Impossibile interpretare la risposta cloud.');
     }
+    parsed.engine = 'cloud';
+    parsed.notes = (parsed.notes ? parsed.notes + ' · ' : '') + 'Gemini Vision';
     return parsed;
 };
 
-window.setSmartCaptureLoading = function(active) {
+window.runSmartCaptureAnalysis = async function(imageData) {
+    const fields = window.buildSmartCaptureFieldMap();
+    if (!fields.length) throw new Error('Nessun campo mappabile trovato nell\'interfaccia.');
+
+    const isPdf = imageData && imageData.type === 'application/pdf';
+    let localResult = null;
+
+    if (!isPdf) {
+        try {
+            localResult = await window.runLocalSmartCaptureOcr(imageData, fields);
+            if (window.localSmartCaptureGoodEnough(localResult)) {
+                return localResult;
+            }
+        } catch (e) {
+            console.warn('OCR locale fallito:', e && e.message);
+            localResult = localResult || { readings: [] };
+        }
+    }
+
+    try {
+        window.setSmartCaptureLoadingMessage('Analisi cloud (Gemini)…');
+        const cloudResult = await window.runGeminiSmartCaptureOcr(imageData, fields);
+        if (localResult && (localResult.readings || []).length) {
+            return window.mergeSmartCaptureResults(localResult, cloudResult);
+        }
+        return cloudResult;
+    } catch (cloudErr) {
+        console.warn('Gemini OCR fallito:', cloudErr && cloudErr.message);
+        if (localResult && (localResult.readings || []).length) {
+            localResult.notes = 'Solo OCR locale (cloud non disponibile) · ' + localResult.readings.length + ' letture';
+            return localResult;
+        }
+        if (isPdf) {
+            throw new Error('PDF richiede connessione per Gemini. Prova con una foto JPG/PNG.');
+        }
+        throw new Error(
+            (localResult && localResult.readings && localResult.readings.length === 0)
+                ? 'Nessuna lettura trovata. Prova foto più nitida, oppure verifica la connessione per Gemini.'
+                : (cloudErr && cloudErr.message ? cloudErr.message : 'Analisi non riuscita.')
+        );
+    }
+};
+
+window.setSmartCaptureLoading = function(active, message) {
     const el = document.getElementById('smart-capture-loading');
     if (el) el.classList.toggle('active', !!active);
+    if (active && message) window.setSmartCaptureLoadingMessage(message);
+    if (!active) window.setSmartCaptureLoadingMessage('Analisi intelligente in corso…');
 };
 
 window.smartCaptureFromFile = function() {

@@ -507,7 +507,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-capture-ui3';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-rapportini';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -1799,6 +1799,9 @@ window.colorPreviewNumber = function(tankName, value) {
                         'Salvataggio sul cloud rifiutato (regole Firestore). I dati restano su questo dispositivo; gli altri non li vedono. Pubblica in Firebase il file firestore.rules del repository (progetto ' + pid + ').'
                     );
                 }
+            }
+            if (typeof window.saveActiveRapportinoFromUI === 'function') {
+                try { window.saveActiveRapportinoFromUI(); } catch (_) {}
             }
         };
 
@@ -3735,6 +3738,12 @@ window.updateStoricoButton = async function() {
 
             updateDeviceInfo(); 
             setInterval(updateDeviceInfo, 60000);
+
+            setTimeout(function() {
+                if (typeof window.ensureRapportiniInitialized === 'function') {
+                    window.ensureRapportiniInitialized();
+                }
+            }, 1200);
             
             // ✅ CRITICO: Inizializza listener per sincronizzazione allarmi dopo auth
             setTimeout(() => {
@@ -5202,6 +5211,274 @@ window.updateStoricoButton = async function() {
             }
         }
 
+        window.RAPPORTINI_STORAGE_KEY = 'servicehub_rapportini_v1';
+        window.RAPPORTINI_SECTION_IDS = ['sec-chpp', 'sec-well', 'sec-amb', 'sec-ambiente2', 'sec-acqua', 'sec-scam', 'sec-filtra', 'sec-bluedown', 'sec-aria', 'sec-azoto'];
+        window._rapportiniPendingId = null;
+
+        window.loadRapportiniStore = function() {
+            try {
+                const raw = localStorage.getItem(window.RAPPORTINI_STORAGE_KEY);
+                if (!raw) return null;
+                const parsed = JSON.parse(raw);
+                if (!parsed || !parsed.items) return null;
+                return parsed;
+            } catch (e) {
+                return null;
+            }
+        };
+
+        window.saveRapportiniStore = function(store) {
+            try {
+                localStorage.setItem(window.RAPPORTINI_STORAGE_KEY, JSON.stringify(store));
+                window.__rapportiniStore = store;
+            } catch (e) {
+                console.warn('[ServiceHub] save rapportini:', e);
+            }
+        };
+
+        window.captureSectionsLayout = function() {
+            const layout = {};
+            (window.RAPPORTINI_SECTION_IDS || []).forEach(function(id) {
+                const el = document.getElementById(id);
+                if (el) layout[id] = el.classList.contains('col-expanded') ? 'expanded' : 'collapsed';
+            });
+            return layout;
+        };
+
+        window.applySectionsLayout = function(layout) {
+            if (!layout) return;
+            Object.keys(layout).forEach(function(id) {
+                const el = document.getElementById(id);
+                if (!el) return;
+                if (layout[id] === 'expanded') {
+                    el.classList.remove('col-collapsed');
+                    el.classList.add('col-expanded');
+                } else {
+                    el.classList.remove('col-expanded');
+                    el.classList.add('col-collapsed');
+                }
+            });
+        };
+
+        window.buildEmptyPlantSnapshot = function() {
+            const data = {
+                shift: document.getElementById('current-shift-label')?.innerText?.trim() || '',
+                lastUpdate: new Date().toISOString(),
+                tankStatuses: {}
+            };
+            document.querySelectorAll('input').forEach(function(input) {
+                if (input.id) data[input.id] = '';
+            });
+            document.querySelectorAll('.status-cell-btn').forEach(function(btn) {
+                if (btn.id && btn.id !== 'numpad-tank-btn') {
+                    data[btn.id] = { text: 'FERMO', class: 'status-cell-btn bg-fermo', style: '' };
+                }
+            });
+            document.querySelectorAll('.status-header.compact').forEach(function(h) {
+                if (!h.id) return;
+                const compId = h.id.replace('h', '');
+                const sigla = h.innerText.split('\n')[0];
+                data[h.id] = {
+                    text: sigla + '<br><small id="t' + compId + '" class="text-[10px] tracking-wide">FERMO</small>',
+                    class: 'status-header compact bg-fermo',
+                    style: ''
+                };
+            });
+            if (document.getElementById('vwt-label-text')) {
+                data['vwt-label-text'] = { text: 'WWT', class: 'vwt-label-dynamic', style: '' };
+            }
+            if (document.getElementById('osmosi-label-text')) {
+                data['osmosi-label-text'] = { text: 'OSMOSI', class: 'osmosi-label-dynamic', style: '' };
+            }
+            return data;
+        };
+
+        window.captureRapportinoSnapshot = function() {
+            const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
+            const data = { shift: currentShift, lastUpdate: new Date().toISOString() };
+            document.querySelectorAll('input').forEach(function(input) {
+                if (input.id) data[input.id] = input.value;
+            });
+            document.querySelectorAll('.status-cell-btn, .status-header, .vwt-label-dynamic, .osmosi-label-dynamic').forEach(function(btn) {
+                if (btn.id && btn.id !== 'numpad-tank-btn') {
+                    data[btn.id] = {
+                        text: btn.innerHTML,
+                        class: btn.className,
+                        style: btn.getAttribute('style') || ''
+                    };
+                }
+            });
+            if (window.tankStatuses) {
+                try { data.tankStatuses = JSON.parse(JSON.stringify(window.tankStatuses)); } catch (_) { data.tankStatuses = window.tankStatuses; }
+            }
+            return {
+                data: data,
+                hiddenModules: (window.hiddenModules || hiddenModules || []).slice(),
+                sectionsLayout: window.captureSectionsLayout(),
+                manualShift: manualShift || null,
+                updatedAt: new Date().toISOString()
+            };
+        };
+
+        window.captureEmptyRapportinoSnapshot = function(layoutFrom, hiddenFrom) {
+            return {
+                data: window.buildEmptyPlantSnapshot(),
+                hiddenModules: Array.isArray(hiddenFrom) ? hiddenFrom.slice() : [],
+                sectionsLayout: layoutFrom ? JSON.parse(JSON.stringify(layoutFrom)) : window.captureSectionsLayout(),
+                manualShift: null,
+                updatedAt: new Date().toISOString()
+            };
+        };
+
+        window.ensureRapportiniInitialized = function() {
+            let store = window.loadRapportiniStore();
+            if (!store || !store.items || !store.items.generale) {
+                const snap = window.captureRapportinoSnapshot();
+                store = {
+                    activeId: 'generale',
+                    items: {
+                        generale: Object.assign({ id: 'generale', name: 'Generale' }, snap),
+                        notturno: Object.assign(
+                            { id: 'notturno', name: 'Notturno' },
+                            window.captureEmptyRapportinoSnapshot(snap.sectionsLayout, snap.hiddenModules)
+                        )
+                    }
+                };
+                window.saveRapportiniStore(store);
+            } else if (!store.items.notturno) {
+                const base = store.items[store.activeId] || store.items.generale;
+                store.items.notturno = Object.assign(
+                    { id: 'notturno', name: 'Notturno' },
+                    window.captureEmptyRapportinoSnapshot(base && base.sectionsLayout, base && base.hiddenModules)
+                );
+                window.saveRapportiniStore(store);
+            }
+            if (!store.activeId) store.activeId = 'generale';
+            window.__rapportiniStore = store;
+            window.updateRapportinoSettingsButton();
+            return store;
+        };
+
+        window.saveActiveRapportinoFromUI = function() {
+            const store = window.loadRapportiniStore();
+            if (!store || !store.activeId || !store.items[store.activeId]) return;
+            const snap = window.captureRapportinoSnapshot();
+            const name = store.items[store.activeId].name || store.activeId;
+            store.items[store.activeId] = Object.assign({ id: store.activeId, name: name }, snap);
+            window.saveRapportiniStore(store);
+        };
+
+        window.applyRapportinoItem = function(item) {
+            if (!item) return;
+            if (item.manualShift !== undefined) manualShift = item.manualShift;
+            hiddenModules = (item.hiddenModules || []).slice();
+            window.hiddenModules = hiddenModules;
+            window.applySectionsLayout(item.sectionsLayout);
+            updateModulesVisibility();
+            applyData(item.data, { forceRemotePlant: true });
+            updateBoilerInputs();
+            if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
+            if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
+            if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
+        };
+
+        window.switchToRapportino = async function(id) {
+            window.ensureRapportiniInitialized();
+            const store = window.loadRapportiniStore();
+            if (!store || !store.items[id]) return;
+            if (store.activeId !== id) {
+                window.saveActiveRapportinoFromUI();
+                store.activeId = id;
+                window.saveRapportiniStore(store);
+                window.applyRapportinoItem(store.items[id]);
+                if (typeof window.saveData === 'function') await window.saveData(true);
+                if (typeof window.saveSettings === 'function') await window.saveSettings();
+            }
+            window._rapportiniPendingId = id;
+            window.updateRapportinoSettingsButton();
+            if (typeof window.renderRapportiniList === 'function') window.renderRapportiniList();
+        };
+
+        window.updateRapportinoSettingsButton = function() {
+            const store = window.loadRapportiniStore();
+            const el = document.getElementById('active-rapportino-name');
+            if (!el || !store) return;
+            const active = store.items[store.activeId];
+            el.textContent = active && active.name ? active.name : 'Generale';
+        };
+
+        window.openRapportiniModal = function() {
+            window.ensureRapportiniInitialized();
+            const store = window.loadRapportiniStore();
+            window._rapportiniPendingId = store ? store.activeId : 'generale';
+            window.renderRapportiniList();
+            const modal = document.getElementById('rapportini-modal');
+            if (modal) modal.classList.add('active');
+        };
+
+        window.closeRapportiniModal = function() {
+            const modal = document.getElementById('rapportini-modal');
+            if (modal) modal.classList.remove('active');
+        };
+
+        window.selectRapportinoPending = function(id) {
+            window._rapportiniPendingId = id;
+            window.renderRapportiniList();
+        };
+
+        window.renameRapportino = function(id) {
+            const store = window.loadRapportiniStore();
+            if (!store || !store.items[id]) return;
+            const current = store.items[id].name || id;
+            const next = prompt('Nome rapportino:', current);
+            if (next === null) return;
+            const trimmed = String(next).trim();
+            if (!trimmed) {
+                alert('Il nome non può essere vuoto.');
+                return;
+            }
+            store.items[id].name = trimmed;
+            window.saveRapportiniStore(store);
+            window.updateRapportinoSettingsButton();
+            window.renderRapportiniList();
+        };
+
+        window.renderRapportiniList = function() {
+            const list = document.getElementById('rapportini-list');
+            if (!list) return;
+            const store = window.loadRapportiniStore();
+            if (!store || !store.items) return;
+            const pending = window._rapportiniPendingId || store.activeId;
+            const ids = Object.keys(store.items);
+            ids.sort(function(a, b) {
+                if (a === 'generale') return -1;
+                if (b === 'generale') return 1;
+                return String(store.items[a].name).localeCompare(String(store.items[b].name), 'it');
+            });
+            list.innerHTML = ids.map(function(rid) {
+                const item = store.items[rid];
+                const isActive = store.activeId === rid;
+                const isPending = pending === rid;
+                const modCount = (item.hiddenModules || []).length;
+                const modHint = modCount ? (' · ' + modCount + ' moduli inviati') : ' · tutte le schede';
+                return '<div class="rapportino-row ' + (isPending ? 'rapportino-row-pending' : '') + ' rounded-xl border-2 ' + (isPending ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/30' : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800') + ' p-4 flex items-center gap-3 cursor-pointer" onclick="window.selectRapportinoPending(\'' + rid + '\')">' +
+                    '<div class="w-3 h-3 rounded-full shrink-0 ' + (isActive ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600') + '"></div>' +
+                    '<div class="flex-1 min-w-0">' +
+                    '<div class="font-black uppercase text-sm text-slate-900 dark:text-white truncate">' + (item.name || rid) + '</div>' +
+                    '<div class="text-[9px] font-bold text-slate-500 uppercase mt-0.5">' + (isActive ? 'Attivo' : 'Disponibile') + modHint + '</div>' +
+                    '</div>' +
+                    '<button type="button" class="shrink-0 px-3 py-2 rounded-lg bg-slate-200 dark:bg-slate-700 text-[9px] font-black uppercase text-slate-800 dark:text-white" onclick="event.stopPropagation(); window.renameRapportino(\'' + rid + '\')">Rinomina</button>' +
+                    '</div>';
+            }).join('');
+        };
+
+        window.applySelectedRapportino = async function() {
+            const id = window._rapportiniPendingId;
+            if (!id) return;
+            await window.switchToRapportino(id);
+            window.closeRapportiniModal();
+        };
+
         /** Lettura forzata plant dal server (aggira cache SDK / tab in background / rete difficile). */
         window.__pullPlantFromServerNow = function () {
             if (!db || !user || !user.uid) return Promise.resolve();
@@ -5611,6 +5888,8 @@ window.updateStoricoButton = async function() {
 
     document.getElementById('settings-modal').classList.add('active');
     if (typeof window.loadGeminiKeySettings === 'function') window.loadGeminiKeySettings();
+    if (typeof window.ensureRapportiniInitialized === 'function') window.ensureRapportiniInitialized();
+    if (typeof window.updateRapportinoSettingsButton === 'function') window.updateRapportinoSettingsButton();
     
     // SE SIAMO IN MODIFICA, METTI SALVA A INTERMITTENZA
     if (window.isEditingArchive && window.editingArchiveId) {
@@ -5637,6 +5916,7 @@ window.updateStoricoButton = async function() {
         if (typeof window.resetTesseractWorker === 'function') window.resetTesseractWorker();
         if (typeof window.stopSmartCaptureStream === 'function') window.stopSmartCaptureStream();
         if (typeof window.closeSmartCaptureCamera === 'function') window.closeSmartCaptureCamera(false);
+        if (typeof window.closeRapportiniModal === 'function') window.closeRapportiniModal();
         const settingsSheet = document.querySelector('.settings-sheet');
         if (settingsSheet) {
             settingsSheet.style.overflow = '';
@@ -9810,6 +10090,9 @@ window.convertToHtml = async () => {
         #app-update-modal.active { display: flex; visibility: visible; background: rgba(0,0,0,0.82); backdrop-filter: blur(6px); }
         .management-sheet { transform: translateY(100%); width: 100%; height: 75vh; border-radius: 32px 32px 0 0; background: var(--bg-modal); border: 3px solid var(--border-main); border-bottom: none; transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.1); overflow: hidden; display: flex; flex-direction: column; }
         #management-modal.active .management-sheet, #archive-list-modal.active .management-sheet { transform: translateY(0); }
+        #rapportini-modal { z-index: 10075; }
+        #rapportini-modal.active { background: rgba(0,0,0,0.65); backdrop-filter: blur(4px); visibility: visible; pointer-events: auto; }
+        .rapportino-row-pending { box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.35); }
 
         .meter-btn { width: 60px; height: 60px; display: flex; align-items: center; justify-content: center; font-size: 32px; font-weight: 800; color: white; border-radius: 20px; transition: all 0.15s ease; border-bottom: 4px solid rgba(0,0,0,0.3); }
         .meter-btn:active { transform: translateY(2px); border-bottom-width: 1px; }
@@ -10721,6 +11004,13 @@ window.convertToHtml = async () => {
             </div>
             <div class="p-8 flex flex-col gap-4 grow bg-white dark:bg-slate-950 overflow-y-auto" onclick="event.stopPropagation()">
                 <div>
+                    <p class="text-[9px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-400 mb-2 text-center">Rapportino</p>
+                    <button type="button" id="btn-active-rapportino" onclick="window.openRapportiniModal()" class="w-full bg-emerald-600 text-white font-black p-5 rounded-[24px] border-b-4 border-emerald-900 flex flex-col items-center justify-center gap-1 outline-none active:scale-95 transition-all">
+                        <span id="active-rapportino-name" class="text-[14px] uppercase tracking-wide">Generale</span>
+                        <span class="text-[9px] font-bold opacity-80 normal-case">Tocca per cambiare rapportino</span>
+                    </button>
+                </div>
+                <div>
                     <p class="text-[9px] font-black uppercase tracking-widest text-blue-600 dark:text-blue-400 mb-2 text-center">Dati / archivio</p>
                     <div class="grid grid-cols-2 gap-3">
                         <button onclick="window.archiveCurrentData()" id="btn-archive-now" class="bg-blue-600 text-white font-black p-5 rounded-[24px] border-b-4 border-blue-900 flex flex-col items-center justify-center gap-2 outline-none">
@@ -10914,6 +11204,17 @@ window.convertToHtml = async () => {
     </div>
     
     <!-- Altri Modali -->
+    <div id="rapportini-modal" class="modal-overlay" onclick="if(event.target === this) window.closeRapportiniModal()">
+        <div class="modal-content-centered bg-white dark:bg-slate-900 max-w-md" onclick="event.stopPropagation()">
+            <div class="p-4 bg-emerald-700 text-white font-black italic text-lg text-center uppercase tracking-wide">Rapportini</div>
+            <p class="text-[9px] font-bold text-slate-500 dark:text-slate-400 text-center px-4 py-2 uppercase">Ogni rapportino salva schede, valori e moduli inviati</p>
+            <div id="rapportini-list" class="px-4 pb-2 flex flex-col gap-2 max-h-[45vh] overflow-y-auto"></div>
+            <div class="p-4 border-t border-slate-200 dark:border-slate-700 flex flex-col gap-2">
+                <button type="button" id="btn-rapportini-apply" onclick="window.applySelectedRapportino()" class="w-full bg-emerald-600 text-white font-black py-4 rounded-xl uppercase border-b-4 border-emerald-900 active:scale-95">Applica tutto</button>
+                <button type="button" onclick="window.closeRapportiniModal()" class="w-full bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-white font-black py-3 rounded-xl uppercase active:scale-95">Chiudi</button>
+            </div>
+        </div>
+    </div>
     <div id="shift-modal" class="modal-overlay" onclick="if(event.target === this) window.closeShiftPopup()">
         <div class="modal-content-centered bg-white dark:bg-slate-900" onclick="event.stopPropagation()">
             <div class="p-4 bg-slate-900 text-white font-black italic text-lg text-center">CAMBIO TURNO</div>

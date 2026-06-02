@@ -507,7 +507,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.02-v24';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.02-v25';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -11011,7 +11011,27 @@ window.convertToHtml = async () => {
         window._swRegistration = null;
         window._updateModalShown = false;
 
+        window.isAndroidDevice = function() {
+            return /Android/i.test(navigator.userAgent);
+        };
+
+        window.reloadAppAfterUpdate = function() {
+            if (window.isAndroidDevice()) {
+                try {
+                    const u = new URL(location.href);
+                    u.searchParams.set('_cv', Date.now());
+                    location.replace(u.pathname + u.search + u.hash);
+                } catch (e) {
+                    location.reload();
+                }
+            } else {
+                location.reload();
+            }
+        };
+
         window.showAppUpdateModal = function(remoteBuild) {
+            const appliedAt = parseInt(sessionStorage.getItem('servicehub_update_applied') || '0', 10);
+            if (appliedAt && (Date.now() - appliedAt) < 45000) return;
             if (window._updateModalShown) return;
             window._updateModalShown = true;
             const modal = document.getElementById('app-update-modal');
@@ -11027,26 +11047,32 @@ window.convertToHtml = async () => {
             const btn = document.getElementById('app-update-ok-btn');
             const modal = document.getElementById('app-update-modal');
             if (btn) { btn.disabled = true; btn.textContent = 'Aggiornamento…'; }
+            sessionStorage.setItem('servicehub_update_applied', String(Date.now()));
             if (window._swRegistration && window._swRegistration.waiting) {
                 window._swRegistration.waiting.postMessage('SKIP_WAITING');
             }
             let reloaded = false;
+            const doReload = function() {
+                if (reloaded) return;
+                reloaded = true;
+                window.reloadAppAfterUpdate();
+            };
             if ('serviceWorker' in navigator) {
                 navigator.serviceWorker.addEventListener('controllerchange', function() {
-                    if (reloaded) return;
-                    reloaded = true;
-                    window.location.reload();
+                    setTimeout(doReload, window.isAndroidDevice() ? 400 : 150);
                 }, { once: true });
             }
             setTimeout(function() {
                 if (modal) modal.classList.remove('active');
                 window._updateModalShown = false;
-                if (!reloaded) window.location.reload();
-            }, 600);
+                if (!reloaded) doReload();
+            }, window.isAndroidDevice() ? 1200 : 600);
         };
 
         window.checkForAppUpdateFromNetwork = async function() {
             try {
+                const appliedAt = parseInt(sessionStorage.getItem('servicehub_update_applied') || '0', 10);
+                if (appliedAt && (Date.now() - appliedAt) < 45000) return;
                 let href = location.href.split('?')[0].split('#')[0];
                 if (!/\.html$/i.test(href)) href = href.replace(/\/?$/, '/') + 'index.html';
                 const url = href + '?buildcheck=' + Date.now();
@@ -11056,6 +11082,8 @@ window.convertToHtml = async () => {
                 const m = html.match(/SERVICEHUB_BUILD\s*=\s*['"]([^'"]+)['"]/);
                 if (m && m[1] && m[1] !== window.SERVICEHUB_BUILD) {
                     window.showAppUpdateModal(m[1]);
+                } else if (m && m[1] && m[1] === window.SERVICEHUB_BUILD) {
+                    sessionStorage.removeItem('servicehub_update_applied');
                 }
             } catch (e) {
                 console.warn('[ServiceHub] check update:', e);
@@ -11080,9 +11108,10 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 try {
-                    if (/[?&]_shv=/.test(location.search)) {
+                    if (/[?&](_shv=|_cv=)/.test(location.search)) {
                         const u = new URL(location.href);
                         u.searchParams.delete('_shv');
+                        u.searchParams.delete('_cv');
                         u.searchParams.delete('buildcheck');
                         history.replaceState(null, '', u.pathname + (u.search || '') + u.hash);
                     }
@@ -12961,11 +12990,17 @@ window.compressImageForGemini = function(imageData, maxWidth) {
 window.callGeminiDcsOcr = async function(promptText, imageData) {
     const CHIAVE_AI = window.getGeminiApiKey();
     if (!CHIAVE_AI) throw new Error('Nessuna chiave Gemini.');
-    const prepared = await window.compressImageForGemini(imageData, 1280);
+    const isAndroid = /Android/i.test(navigator.userAgent);
+    let prepared = imageData;
+    if (!isAndroid) {
+        prepared = await window.compressImageForGemini(imageData, 1280);
+    }
     const raw = prepared.data || prepared;
     const base64 = raw.indexOf(',') >= 0 ? raw.split(',')[1] : raw;
-    const mimeType = prepared.type || 'image/jpeg';
-    if (!base64 || base64.length < 20) throw new Error('Foto non valida.');
+    let mimeType = (prepared.type || imageData.type || 'image/jpeg').toLowerCase();
+    if (mimeType === 'image/jpg') mimeType = 'image/jpeg';
+    if (mimeType.indexOf('image/') !== 0) mimeType = 'image/jpeg';
+    if (!base64 || base64.length < 100) throw new Error('Foto non valida o troppo piccola.');
     const modelli = ['gemini-2.5-flash-lite', 'gemini-2.0-flash-lite'];
     const parts = [
         { inline_data: { mime_type: mimeType, data: base64 } },
@@ -13355,28 +13390,64 @@ window.runDcsAcquaCapture = function(imageData) {
 
 window.runDcsUnifiedCapture = async function(imageData) {
     const prompt = window.buildGeminiDcsUnifiedPrompt();
+    const isAndroid = /Android/i.test(navigator.userAgent);
     let raw = '';
-    let engine = 'gemini-dcs-fast';
-    try {
-        raw = await window.withOcrTimeout(
-            window.callGeminiDcsOcr(prompt, imageData),
-            30000,
-            'Analisi DCS in timeout.'
-        );
-    } catch (e1) {
-        console.warn('DCS fast OCR:', e1);
-        throw e1;
+    let engine = isAndroid ? 'gemini-dcs-android' : 'gemini-dcs-fast';
+
+    async function callPrimary() {
+        if (isAndroid) {
+            return window.callGeminiTankOcr(prompt, imageData);
+        }
+        return window.callGeminiDcsOcr(prompt, imageData);
     }
 
-    const json = window.parseSmartCaptureJson(raw);
-    let hintedProfile = json && window.normalizeDcsProfileId(json.tipo);
-    if (!hintedProfile) hintedProfile = window.classifyDcsProfileFromText(raw);
-    if (!hintedProfile && json && json.stati_pozzi) hintedProfile = 'dcs-overview-strumenti';
+    try {
+        raw = await window.withOcrTimeout(callPrimary(), isAndroid ? 55000 : 30000, 'Analisi DCS in timeout.');
+    } catch (e1) {
+        console.warn('DCS primary OCR:', e1);
+        try {
+            raw = await window.withOcrTimeout(window.callGeminiTankOcr(prompt, imageData), 55000, 'Analisi DCS in timeout.');
+            engine = 'gemini-dcs-fallback';
+        } catch (e2) {
+            throw e1;
+        }
+    }
 
-    const best = window.pickBestDcsExtraction(raw, hintedProfile);
-    let profileId = best.profileId;
-    const readings = best.readings;
-    if (!readings.length && hintedProfile) profileId = hintedProfile;
+    function extractAll(r) {
+        const json = window.parseSmartCaptureJson(r);
+        let hintedProfile = json && window.normalizeDcsProfileId(json.tipo);
+        if (!hintedProfile) hintedProfile = window.classifyDcsProfileFromText(r);
+        if (!hintedProfile && json && json.stati_pozzi) hintedProfile = 'dcs-overview-strumenti';
+        const best = window.pickBestDcsExtraction(r, hintedProfile);
+        return { json: json, profileId: best.profileId, readings: best.readings, hintedProfile: hintedProfile };
+    }
+
+    let extracted = extractAll(raw);
+
+    if (!extracted.readings.length) {
+        try {
+            window.setSmartCaptureLoadingMessage && window.setSmartCaptureLoadingMessage('Secondo tentativo analisi foto…');
+            const raw2 = await window.withOcrTimeout(
+                window.callGeminiAPI(prompt, false, imageData),
+                55000,
+                'timeout'
+            );
+            if (raw2) {
+                const ex2 = extractAll(raw2);
+                if (ex2.readings.length > extracted.readings.length) {
+                    raw = raw2;
+                    extracted = ex2;
+                    engine = 'gemini-dcs-retry';
+                }
+            }
+        } catch (e3) {
+            console.warn('DCS retry API:', e3);
+        }
+    }
+
+    const profileId = extracted.readings.length ? extracted.profileId : (extracted.hintedProfile || extracted.profileId);
+    const readings = extracted.readings;
+    const json = extracted.json;
 
     if (readings.length || json) window.rememberDcsCapture(raw, readings, json, profileId);
     const prof = window.getDcsProfile(profileId);
@@ -13387,6 +13458,7 @@ window.runDcsUnifiedCapture = async function(imageData) {
     const parts = [];
     if (levelCount) parts.push(levelCount + ' livelli');
     if (statusCount) parts.push(statusCount + ' pozzi');
+    const errHint = (!readings.length && raw && raw.length < 30) ? ' — risposta AI vuota, riprova' : '';
     return {
         readings: readings,
         engine: engine,
@@ -13398,7 +13470,7 @@ window.runDcsUnifiedCapture = async function(imageData) {
         _fullRaw: raw,
         notes: parts.length
             ? ('DCS ' + profileLabel + ' · ' + parts.join(' · ') + ' · ' + catSize + ' in catalogo')
-            : ('DCS ' + profileLabel + ' · nessun dato — correggi manualmente')
+            : ('DCS ' + profileLabel + ' · nessun dato' + errHint + ' — inserisci manualmente')
     };
 };
 

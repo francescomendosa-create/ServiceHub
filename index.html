@@ -545,6 +545,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 auth = getAuth(app);
                 db = getFirestore(app);
                 window.__SERVICEHUB_FIREBASE_PROJECT = firebaseConfig.projectId || '';
+                window.__SERVICEHUB_FIREBASE_API_KEY = firebaseConfig.apiKey;
                 console.log('[ServiceHub] Firebase attivo, progetto:', firebaseConfig.projectId);
             } else {
                 console.warn('[ServiceHub] Firebase non configurato: modalità solo-locale (localStorage).');
@@ -5597,6 +5598,7 @@ window.updateStoricoButton = async function() {
     }
     
     document.getElementById('settings-modal').classList.add('active');
+    if (typeof window.loadGeminiKeySettings === 'function') window.loadGeminiKeySettings();
     
     // RESET TOTALMENTE AGGRESSIVO DOPO L'APERTURA
     requestAnimationFrame(() => {
@@ -10687,6 +10689,16 @@ window.convertToHtml = async () => {
                     </div>
                     <input type="file" id="smart-capture-file-input" accept="image/*,.pdf,application/pdf" style="display:none;">
                 </div>
+                <div class="p-5 rounded-[24px] border-2 border-blue-200 dark:border-blue-900 bg-blue-50 dark:bg-slate-900">
+                    <p class="text-[10px] font-black text-blue-700 dark:text-blue-300 uppercase tracking-widest mb-2">Chiave Gemini AI</p>
+                    <input type="password" id="settings-gemini-key" autocomplete="off" placeholder="AIzaSy… o AQ.… (AI Studio)" class="w-full p-3 rounded-xl border-2 border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white text-sm font-mono mb-2" oninput="window.updateGeminiKeyStatus()">
+                    <p id="settings-gemini-key-hint" class="text-[9px] text-slate-500 font-bold mb-3 uppercase">Copia da aistudio.google.com/apikey (AIzaSy… o nuovo formato AQ.…)</p>
+                    <div class="flex gap-2">
+                        <button type="button" onclick="window.saveGeminiApiKey()" class="flex-1 bg-blue-600 text-white font-black py-3 rounded-xl uppercase text-[11px] border-b-4 border-blue-900 active:scale-95 transition-all">Salva chiave</button>
+                        <button type="button" onclick="window.testGeminiApiKey()" class="flex-1 bg-slate-700 text-white font-black py-3 rounded-xl uppercase text-[11px] border-b-4 border-slate-900 active:scale-95 transition-all">Test</button>
+                    </div>
+                    <p id="settings-gemini-status" class="text-[9px] font-bold mt-2 text-center uppercase text-slate-400">Nessuna chiave salvata</p>
+                </div>
                 <div class="flex justify-between items-center p-5 mt-4 rounded-[24px] border-2 border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900" onclick="window.toggleDarkMode()">
                     <div class="font-black uppercase text-lg text-slate-900 dark:text-white tracking-tighter">Modalità Scura</div>
                     <div id="theme-toggle-bg" class="w-16 h-9 bg-slate-300 rounded-full relative p-1.5 transition-colors"><div id="theme-toggle-dot" class="w-6 h-6 bg-white rounded-full transition-transform"></div></div>
@@ -12488,27 +12500,37 @@ window.runSmartCaptureAnalysis = async function(imageData) {
         }
     }
 
+    const skipCloud = window.SMART_CAPTURE_FORCE_LOCAL === true
+        || window.__geminiUnavailable === true
+        || sessionStorage.getItem('servicehub_gemini_skip') === '1';
+
+    if (skipCloud && !isPdf) {
+        if (localResult && (localResult.readings || []).length) {
+            localResult.notes = 'Solo OCR locale · ' + localResult.readings.length + ' letture';
+            return localResult;
+        }
+        throw new Error('Nessuna lettura trovata con OCR locale. Prova foto più nitida con sigle visibili.');
+    }
+
     try {
         window.setSmartCaptureLoadingMessage('Analisi cloud (Gemini)…');
         const cloudResult = await window.runGeminiSmartCaptureOcr(imageData, fields);
+        window.__geminiUnavailable = false;
         if (localResult && (localResult.readings || []).length) {
             return window.mergeSmartCaptureResults(localResult, cloudResult);
         }
         return cloudResult;
     } catch (cloudErr) {
         console.warn('Gemini OCR fallito:', cloudErr && cloudErr.message);
+        window.__geminiUnavailable = true;
         if (localResult && (localResult.readings || []).length) {
-            localResult.notes = 'Solo OCR locale (cloud non disponibile) · ' + localResult.readings.length + ' letture';
+            localResult.notes = 'Solo OCR locale (Gemini non disponibile) · ' + localResult.readings.length + ' letture';
             return localResult;
         }
         if (isPdf) {
-            throw new Error('PDF richiede connessione per Gemini. Prova con una foto JPG/PNG.');
+            throw new Error('PDF richiede Gemini attivo. Abilita Generative Language API su servicehub-18309 oppure usa una foto JPG/PNG.');
         }
-        throw new Error(
-            (localResult && localResult.readings && localResult.readings.length === 0)
-                ? 'Nessuna lettura trovata. Prova foto più nitida, oppure verifica la connessione per Gemini.'
-                : (cloudErr && cloudErr.message ? cloudErr.message : 'Analisi non riuscita.')
-        );
+        throw cloudErr;
     }
 };
 
@@ -12744,13 +12766,131 @@ window.applySmartCaptureResults = function() {
     alert(applied ? ('Applicate ' + applied + ' letture.') : 'Nessun campo aggiornato.');
 };
 
-// --- INTEGRAZIONE GEMINI AI: STABILE, VOCALE E ULTRA-RAPIDA ---
+// --- INTEGRAZIONE GEMINI AI (chiave solo da Impostazioni, mai hardcoded) ---
+window.getGeminiApiKey = function() {
+    const custom = localStorage.getItem('servicehub_gemini_api_key');
+    return (custom && custom.trim()) ? custom.trim() : '';
+};
+
+window.loadGeminiKeySettings = function() {
+    const input = document.getElementById('settings-gemini-key');
+    const saved = localStorage.getItem('servicehub_gemini_api_key') || '';
+    if (input) {
+        input.value = saved;
+        input.type = saved ? 'password' : 'text';
+    }
+    window.updateGeminiKeyStatus();
+};
+
+window.updateGeminiKeyStatus = function() {
+    const input = document.getElementById('settings-gemini-key');
+    const status = document.getElementById('settings-gemini-status');
+    const hint = document.getElementById('settings-gemini-key-hint');
+    if (!status) return;
+    const val = (input && input.value || '').trim();
+    const saved = (localStorage.getItem('servicehub_gemini_api_key') || '').trim();
+    if (!val && !saved) {
+        status.textContent = 'Nessuna chiave salvata';
+        status.className = 'text-[9px] font-bold mt-2 text-center uppercase text-slate-400';
+    } else if (val && !/^(AIza|AQ\.)/i.test(val)) {
+        status.textContent = 'Formato sospetto — usa chiave da aistudio.google.com/apikey';
+        status.className = 'text-[9px] font-bold mt-2 text-center uppercase text-amber-600';
+        if (hint) hint.className = 'text-[9px] text-amber-600 font-bold mb-3 uppercase';
+    } else if (saved) {
+        status.textContent = 'Chiave salvata (' + saved.slice(0, 8) + '…)';
+        status.className = 'text-[9px] font-bold mt-2 text-center uppercase text-emerald-600';
+        if (hint) hint.className = 'text-[9px] text-slate-500 font-bold mb-3 uppercase';
+    }
+};
+
+window.saveGeminiApiKey = function() {
+    const input = document.getElementById('settings-gemini-key');
+    if (!input) return;
+    const key = input.value.trim();
+    if (!key) {
+        localStorage.removeItem('servicehub_gemini_api_key');
+        sessionStorage.removeItem('servicehub_gemini_skip');
+        window.__geminiUnavailable = false;
+        window.updateGeminiKeyStatus();
+        alert('Chiave Gemini rimossa.');
+        return;
+    }
+    if (!/^(AIza|AQ\.)/i.test(key)) {
+        if (!confirm('Formato chiave insolito. Salvarla comunque?')) return;
+    }
+    localStorage.setItem('servicehub_gemini_api_key', key);
+    sessionStorage.removeItem('servicehub_gemini_skip');
+    window.__geminiUnavailable = false;
+    input.type = 'password';
+    window.updateGeminiKeyStatus();
+    alert('Chiave Gemini salvata.');
+};
+
+window.testGeminiApiKey = async function() {
+    const input = document.getElementById('settings-gemini-key');
+    const status = document.getElementById('settings-gemini-status');
+    const key = ((input && input.value) || localStorage.getItem('servicehub_gemini_api_key') || '').trim();
+    if (!key) {
+        alert('Inserisci e salva prima la chiave Gemini.');
+        return;
+    }
+    if (status) {
+        status.textContent = 'Test in corso…';
+        status.className = 'text-[9px] font-bold mt-2 text-center uppercase text-blue-500';
+    }
+    const prev = localStorage.getItem('servicehub_gemini_api_key');
+    localStorage.setItem('servicehub_gemini_api_key', key);
+    try {
+        const res = await window.callGeminiAPI('Rispondi solo con la parola OK.', false);
+        if (status) {
+            status.textContent = 'Gemini OK: ' + String(res).slice(0, 40);
+            status.className = 'text-[9px] font-bold mt-2 text-center uppercase text-emerald-600';
+        }
+        alert('Gemini funziona.');
+    } catch (e) {
+        if (status) {
+            status.textContent = window.formatGeminiError(e && e.message);
+            status.className = 'text-[9px] font-bold mt-2 text-center uppercase text-red-500';
+        }
+        alert('Test fallito:\n' + window.formatGeminiError(e && e.message));
+    } finally {
+        if (prev) localStorage.setItem('servicehub_gemini_api_key', prev);
+        else if (!input || !input.value.trim()) localStorage.removeItem('servicehub_gemini_api_key');
+        window.updateGeminiKeyStatus();
+    }
+};
+
+window.formatGeminiError = function(message) {
+    const msg = String(message || '');
+    if (/API_KEY_HTTP_REFERRER_BLOCKED|referer.*blocked/i.test(msg)) {
+        return 'Gemini: chiave API con restrizioni dominio. In Google Cloud Console → Credenziali → API key, aggiungi questo sito (es. https://*.github.io/*) oppure usa la chiave del progetto servicehub-18309.';
+    }
+    if (/SERVICE_DISABLED|has not been used in project|API has not been enabled/i.test(msg)) {
+        return 'Gemini API non attiva sul progetto ServiceHub. Abilitala qui: https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com?project=servicehub-18309';
+    }
+    if (/API_KEY_SERVICE_BLOCKED|blocked.*generativelanguage/i.test(msg)) {
+        return 'La chiave Firebase non può chiamare Gemini (è limitata a Firebase). Crea una API key dedicata in Google Cloud con "Generative Language API" abilitata e salvala in Impostazioni, oppure in console: localStorage.setItem("servicehub_gemini_api_key","TUA_CHIAVE").';
+    }
+    if (/API key not valid|INVALID_ARGUMENT.*API key/i.test(msg)) {
+        return 'Chiave Gemini non valida. Verifica la API key nel progetto Google Cloud servicehub-18309.';
+    }
+    if (/quota|RESOURCE_EXHAUSTED|rate limit|limit: 0/i.test(msg)) {
+        return 'Gemini: quota esaurita su questo modello. L\'app userà gemini-2.5-flash-lite. Riprova tra un minuto o controlla il piano su ai.google.dev.';
+    }
+    return msg || 'Errore Gemini sconosciuto.';
+};
+
 window.callGeminiAPI = async function(promptText, isChat = false, imageData = null) {
-    const CHIAVE_AI = "AIzaSyAtPjZZgkYYd_VI74cEkW57LF9u3adD4O8";
-    // Con allegati multimodali: modelli con visione/documento per primi; solo testo: Flash leggeri
+    const CHIAVE_AI = window.getGeminiApiKey();
+    if (!CHIAVE_AI) {
+        throw new Error('Nessuna chiave Gemini. Vai in Impostazioni → Chiave Gemini AI e incollala da aistudio.google.com/apikey');
+    }
+    // Modelli con quota free tier attiva (2026); evitare gemini-2.0-flash (quota 0 su molti progetti)
     const modelli2026 = imageData
-        ? ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
-        : ["gemini-1.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-flash"];
+        ? ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash-lite"]
+        : ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash-lite"];
+
+    let lastGeminiError = '';
 
     // Carica memoria AI da Firestore o localStorage
     let memoriaAI = "";
@@ -12945,10 +13085,12 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
             const data = await response.json();
 
             if (data.error) {
-                console.warn("Gemini API:", nomeModello, data.error.message || data.error);
+                lastGeminiError = data.error.message || JSON.stringify(data.error);
+                console.warn("Gemini API:", nomeModello, lastGeminiError);
                 continue;
             }
             if (!response.ok) {
+                lastGeminiError = 'HTTP ' + response.status + ' su ' + nomeModello;
                 console.warn("Gemini HTTP:", response.status, nomeModello);
                 continue;
             }
@@ -12980,13 +13122,18 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
                     }
                     testoRisposta = testoRisposta.replace(/\[SCRIVI_NOTE:.*?\]/g, "").trim();
                 }
+                window.__geminiUnavailable = false;
+                window.__geminiLastError = '';
                 return testoRisposta;
             }
         } catch (e) {
-            console.warn('Gemini tentativo modello fallito:', nomeModello, e && e.message);
+            lastGeminiError = e && e.message ? e.message : String(e);
+            console.warn('Gemini tentativo modello fallito:', nomeModello, lastGeminiError);
         }
     }
-    throw new Error('Connessione instabile o modelli non disponibili. Riprova tra un momento.');
+    window.__geminiLastError = lastGeminiError;
+    window.__geminiUnavailable = true;
+    throw new Error(window.formatGeminiError(lastGeminiError) || 'Connessione instabile o modelli non disponibili. Riprova tra un momento.');
 };
 
 // --- FIX PANNELLO, INVIO E VOCALE ---

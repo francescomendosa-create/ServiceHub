@@ -507,7 +507,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.02-v8';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.02-v9';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -12315,39 +12315,121 @@ window.TANK_GRID_SLOTS = [
     { key: 'riga2_dx', id: 'tk101', label: 'TK 101' }
 ];
 
+window.TANK_CAPTURE_SECTIONS = ['sec-amb', 'sec-ambiente2', 'sec-acqua'];
+
+window.collectRapportinoTankFields = function() {
+    const fields = [];
+    const seen = new Set();
+    const skipLabels = /^(WWT|Analisi|OSMOSI|Inserisci analisi)$/i;
+
+    function addField(id, label, section) {
+        const clean = String(label || '').replace(/\s+/g, ' ').trim();
+        if (!id || !clean || seen.has(id) || skipLabels.test(clean)) return;
+        fields.push({ id: id, label: clean, section: section || 'Serbatoi' });
+        seen.add(id);
+    }
+
+    window.TANK_CAPTURE_SECTIONS.forEach(function(secId) {
+        const sec = document.getElementById(secId);
+        if (!sec) return;
+        const sectionName = (sec.querySelector('.v-label-text') || {}).innerText || secId;
+        const section = String(sectionName).trim();
+
+        sec.querySelectorAll('.amb-row').forEach(function(row) {
+            const labelEl = row.querySelector('.amb-label');
+            const input = row.querySelector('input[type="tel"]');
+            if (!labelEl || !input || !input.id || input.readOnly) return;
+            let label = '';
+            labelEl.querySelectorAll('div').forEach(function(d) {
+                const t = (d.innerText || '').trim();
+                if (t) label = label ? (label + ' ' + t) : t;
+            });
+            if (!label) label = (labelEl.innerText || '').trim().replace(/\n/g, ' ');
+            addField(input.id, label, section);
+        });
+
+        sec.querySelectorAll('tr').forEach(function(tr) {
+            const labelTd = tr.querySelector('.cell-label-main');
+            const input = tr.querySelector('input[type="tel"]');
+            if (labelTd && input && input.id && !input.readOnly) {
+                addField(input.id, labelTd.innerText.trim(), section);
+            }
+        });
+    });
+
+    return fields;
+};
+
+window.buildTankCaptureFieldMap = function() {
+    const live = window.collectRapportinoTankFields();
+    if (live.length) return live;
+    return (window.TANK_CAPTURE_FIELDS || []).map(function(f) {
+        return { id: f.id, label: f.label, section: 'Serbatoi' };
+    });
+};
+
+window.invalidateTankLabelMap = function() {
+    window._tankLabelToId = null;
+};
+
 window.getTankLabelToIdMap = function() {
-    if (window._tankLabelToId) return window._tankLabelToId;
+    const fields = window.buildTankCaptureFieldMap();
     const m = {};
-    window.TANK_CAPTURE_FIELDS.forEach(function(f) {
-        m[window.normalizeSiglaKey(f.label).replace(/\s/g, '')] = f.id;
+    fields.forEach(function(f) {
+        window.buildSiglaPatterns(f).forEach(function(p) {
+            const k = p.replace(/\s/g, '');
+            if (k && (!m[k] || k.length > (m[k + '_len'] || 0))) {
+                m[k] = f.id;
+                m[k + '_len'] = k.length;
+            }
+        });
         m[f.id] = f.id;
     });
-    m.TK9000 = 'inp-tk9000';
-    m.TK9201 = 'inp-tk9201';
-    m.S133 = 'inp-s133';
-    m.TK101 = 'tk101';
-    window._tankLabelToId = m;
+    Object.keys(m).forEach(function(k) {
+        if (k.endsWith('_len')) delete m[k];
+    });
     return m;
 };
 
-window.resolveTankIdFromLabel = function(siglaText) {
+window.resolveTankIdFromLabel = function(siglaText, fields) {
+    fields = fields || window.buildTankCaptureFieldMap();
     const k = window.normalizeSiglaKey(siglaText).replace(/\s/g, '');
     if (!k) return null;
+
     const map = window.getTankLabelToIdMap();
     if (map[k]) return map[k];
-    if (/TK9000/.test(k)) return 'inp-tk9000';
-    if (/TK9201/.test(k)) return 'inp-tk9201';
-    if (/S133/.test(k)) return 'inp-s133';
-    if (/TK101/.test(k) && !/TK10000/.test(k)) return 'tk101';
-    if (/TK9204/.test(k)) return 'inp-tk9204';
-    if (/TK9205/.test(k)) return 'inp-tk9205';
-    if (/TK10000/.test(k)) return 'inp-tk10000';
-    return null;
+
+    let bestId = null;
+    let bestLen = 0;
+    fields.forEach(function(f) {
+        window.buildSiglaPatterns(f).forEach(function(p) {
+            const pk = p.replace(/\s/g, '');
+            if (!pk || pk.length < 3) return;
+            if (pk === k || k === pk) {
+                if (pk.length > bestLen) { bestId = f.id; bestLen = pk.length; }
+            }
+        });
+    });
+    if (bestId) return bestId;
+
+    fields.forEach(function(f) {
+        window.buildSiglaPatterns(f).forEach(function(p) {
+            const pk = p.replace(/\s/g, '');
+            if (pk.length < 4) return;
+            if ((k.indexOf(pk) >= 0 || pk.indexOf(k) >= 0) && pk.length > bestLen) {
+                bestId = f.id;
+                bestLen = pk.length;
+            }
+        });
+    });
+    return bestId;
 };
 
-window.parseGeminiTankPairsJson = function(json) {
+window.parseGeminiTankPairsJson = function(json, fields) {
+    fields = fields || window.buildTankCaptureFieldMap();
+    const fieldIds = new Set(fields.map(function(f) { return f.id; }));
     if (!json) return [];
-    let pairs = json.coppie || json.pairs || json.serbatoi;
+    let pairs = json.coppie || json.pairs || json.serbatoi || json.readings;
     if (!pairs && Array.isArray(json)) pairs = json;
     if (!Array.isArray(pairs)) return [];
     const readings = [];
@@ -12359,14 +12441,17 @@ window.parseGeminiTankPairsJson = function(json) {
         if (val != null && typeof val === 'number') val = String(val);
         val = window.fixOcrDigitValue(val);
         if (!window.isValidOcrValue(val)) return;
-        const id = window.resolveTankIdFromLabel(sigla);
+        let id = p.campo_id || p.field_id || p.campo || null;
+        if (id && !fieldIds.has(id)) id = null;
+        if (!id) id = window.resolveTankIdFromLabel(sigla, fields);
         if (!id || used.has(id)) return;
         used.add(id);
+        const field = fields.find(function(f) { return f.id === id; });
         readings.push({
             id: id,
             value: val,
             confidence: p.certezza || p.confidence || 'alta',
-            source: String(sigla).trim() || id,
+            source: String(sigla).trim() || (field ? field.label : id),
             method: 'coppia'
         });
     });
@@ -12471,23 +12556,24 @@ window.parseGeminiTankGridJson = function(json) {
     return readings;
 };
 
-window.normalizeGeminiTankReadings = function(rawReadings) {
+window.normalizeGeminiTankReadings = function(rawReadings, fields) {
+    fields = fields || window.buildTankCaptureFieldMap();
     const out = [];
     const used = new Set();
     (rawReadings || []).forEach(function(r) {
         if (!r || r.value == null) return;
         const val = window.fixOcrDigitValue(r.value);
         if (!window.isValidOcrValue(val)) return;
-        let id = r.id;
+        let id = r.campo_id || r.field_id || r.id;
+        if (id && !fields.find(function(f) { return f.id === id; })) {
+            id = window.resolveTankIdFromLabel(id, fields);
+        }
         if (r.label || r.sigla) {
-            const fromLabel = window.resolveTankIdFromLabel(r.label || r.sigla);
+            const fromLabel = window.resolveTankIdFromLabel(r.label || r.sigla, fields);
             if (fromLabel) id = fromLabel;
         }
-        if (id && !window.getTankLabelToIdMap()[id] && !window.TANK_CAPTURE_FIELDS.find(function(f) { return f.id === id; })) {
-            id = window.resolveTankIdFromLabel(id);
-        }
         if (!id || used.has(id)) return;
-        const field = window.TANK_CAPTURE_FIELDS.find(function(f) { return f.id === id; });
+        const field = fields.find(function(f) { return f.id === id; });
         if (!field) return;
         used.add(id);
         out.push({ id: id, value: val, confidence: r.confidence || 'alta', source: field.label });
@@ -12495,7 +12581,7 @@ window.normalizeGeminiTankReadings = function(rawReadings) {
     return out;
 };
 
-window.buildTankCaptureFieldMap = function() {
+window.buildTankCaptureFieldMapLegacy = function() {
     return window.TANK_CAPTURE_FIELDS.map(function(f) {
         return { id: f.id, label: f.label, section: 'Serbatoi' };
     });
@@ -12515,71 +12601,10 @@ window.fixOcrTankText = function(raw) {
 };
 
 window.matchTankReadingsFromOcrText = function(ocrText, fields) {
+    fields = fields || window.buildTankCaptureFieldMap();
     const fixed = window.fixOcrTankText(ocrText);
-    const textSpaced = window.normalizeSiglaKey(fixed).replace(/\s+/g, ' ');
-    const compact = textSpaced.replace(/\s/g, '');
-    const readings = [];
-    const usedIds = new Set();
-
-    function add(id, val, conf) {
-        if (usedIds.has(id)) return;
-        let v = window.fixOcrDigitValue(val);
-        if (!window.isValidOcrValue(v)) return;
-        const f = (fields || []).find(function(x) { return x.id === id; });
-        readings.push({
-            id: id,
-            value: v,
-            confidence: conf || 'alta',
-            source: f ? f.label : id
-        });
-        usedIds.add(id);
-    }
-
-    const inlinePatterns = [
-        { id: 'inp-tk9000', re: /TK\s*9\s*0\s*0\s*0\s*[:\-=]?\s*(\d+[.,]\d+|\d+)/gi },
-        { id: 'inp-tk9201', re: /TK\s*9\s*2\s*0\s*1\s*[:\-=]?\s*(\d+[.,]\d+|\d+)/gi },
-        { id: 'inp-s133', re: /S\s*1\s*3\s*3\s*[:\-=]?\s*(\d+[.,]\d+|\d+)/gi },
-        { id: 'tk101', re: /TK\s*1\s*0\s*1\b\s*[:\-=]?\s*(\d+[.,]\d+|\d+)/gi },
-        { id: 'inp-tk9204', re: /TK\s*9\s*2\s*0\s*4\s*[:\-=]?\s*(\d+[.,]\d+|\d+)/gi },
-        { id: 'inp-tk9205', re: /TK\s*9\s*2\s*0\s*5\s*[:\-=]?\s*(\d+[.,]\d+|\d+)/gi },
-        { id: 'inp-tk10000', re: /TK\s*1\s*0\s*0\s*0\s*0\s*[:\-=]?\s*(\d+[.,]\d+|\d+)/gi }
-    ];
-
-    inlinePatterns.forEach(function(d) {
-        d.re.lastIndex = 0;
-        const m = d.re.exec(textSpaced);
-        if (m) add(d.id, m[1], 'alta');
-    });
-
-    [
-        { id: 'inp-tk9000', token: 'TK9000' },
-        { id: 'inp-tk9201', token: 'TK9201' },
-        { id: 'inp-s133', token: 'S133' },
-        { id: 'tk101', token: 'TK101' },
-        { id: 'inp-tk9204', token: 'TK9204' },
-        { id: 'inp-tk9205', token: 'TK9205' },
-        { id: 'inp-tk10000', token: 'TK10000' }
-    ].forEach(function(d) {
-        if (usedIds.has(d.id)) return;
-        const idx = compact.indexOf(d.token);
-        if (idx < 0) return;
-        const after = compact.slice(idx + d.token.length).replace(/^[^\d]*/, '');
-        const nm = after.match(/^(\d+[.,]?\d*)/);
-        if (nm) add(d.id, nm[1], 'media');
-    });
-
-    String(fixed).split(/\r?\n/).forEach(function(line) {
-        const ln = window.normalizeSiglaKey(line);
-        const valMatch = line.match(/(\d+[.,]\d+|\d+)\s*$/);
-        if (!valMatch) return;
-        const val = valMatch[1];
-        if (/TK\s*9\s*0\s*0\s*0|TK9000/i.test(ln)) add('inp-tk9000', val, 'media');
-        else if (/TK\s*9\s*2\s*0\s*1|TK9201/i.test(ln)) add('inp-tk9201', val, 'media');
-        else if (/S\s*1\s*3\s*3|S133/i.test(ln)) add('inp-s133', val, 'media');
-        else if (/TK\s*1\s*0\s*1\b|TK101/i.test(ln)) add('tk101', val, 'media');
-    });
-
-    return readings;
+    const parsed = window.matchReadingsFromOcrText(fixed, fields);
+    return parsed && parsed.readings ? parsed.readings : [];
 };
 
 window.applySmartCaptureDirectly = function(parsed) {
@@ -12679,7 +12704,8 @@ window.parseSmartCaptureJson = function(rawText) {
     return null;
 };
 
-window.parseGeminiTankPairsFromRaw = function(rawText) {
+window.parseGeminiTankPairsFromRaw = function(rawText, fields) {
+    fields = fields || window.buildTankCaptureFieldMap();
     if (!rawText) return [];
     const readings = [];
     const used = new Set();
@@ -12689,7 +12715,7 @@ window.parseGeminiTankPairsFromRaw = function(rawText) {
         const sigla = m[1];
         let val = window.fixOcrDigitValue(m[2]);
         if (!window.isValidOcrValue(val)) continue;
-        const id = window.resolveTankIdFromLabel(sigla);
+        const id = window.resolveTankIdFromLabel(sigla, fields);
         if (!id || used.has(id)) continue;
         used.add(id);
         readings.push({ id: id, value: val, confidence: 'media', source: sigla, method: 'regex' });
@@ -12698,17 +12724,18 @@ window.parseGeminiTankPairsFromRaw = function(rawText) {
 };
 
 window.extractTankReadingsFromGeminiRaw = function(raw, fields) {
+    fields = fields || window.buildTankCaptureFieldMap();
     if (!raw) return [];
     const json = window.parseSmartCaptureJson(raw);
-    let pairs = window.parseGeminiTankPairsJson(json);
-    if (!pairs.length) pairs = window.parseGeminiTankPairsFromRaw(raw);
+    let pairs = window.parseGeminiTankPairsJson(json, fields);
+    if (!pairs.length) pairs = window.parseGeminiTankPairsFromRaw(raw, fields);
     let grid = [];
     if (json && (json.riga1_sx || json.riga1_dx || json.riga2_sx || json.riga2_dx)) {
         grid = window.parseGeminiTankGridJson(json);
     }
     let legacy = [];
     if (json && Array.isArray(json.readings)) {
-        legacy = window.normalizeGeminiTankReadings(json.readings);
+        legacy = window.normalizeGeminiTankReadings(json.readings, fields);
     }
     const text = window.matchTankReadingsFromOcrText(raw, fields);
     let readings = window.reconcileTankOcrReadings(
@@ -12782,25 +12809,39 @@ window.runTesseractOcrPass = async function(worker, imageDataUrl, params) {
     return (result && result.data && result.data.text) ? result.data.text : '';
 };
 
-window.buildGeminiTankCapturePrompt = function() {
-    return 'Compito: leggere SOLO dalla FOTO i livelli del quadro serbatoi (non inventare, non usare dati esterni).\n\n' +
-        'Il quadro ha coppie ripetute: [SIGLA] [LIV] [SIGLA] [LIV] su due righe.\n' +
-        'Esempio riga 1: TK 9000 | numero | TK 9201 | numero\n' +
-        'Esempio riga 2: S 133   | numero | TK 101  | numero\n\n' +
-        'PROCEDURA OBBLIGATORIA (per ogni sigla che vedi):\n' +
-        '1) Individua il TESTO della sigla (es. "TK 9000").\n' +
-        '2) Guarda SOLO la cella LIV immediatamente A DESTRA di quella sigla.\n' +
-        '3) Copia il numero di quella cella — NON il numero sotto un\'altra sigla.\n' +
-        '4) TK 9000 e TK 9201 sono affiancati: il livello di TK 9000 è a destra di TK 9000, NON a destra di TK 9201.\n' +
-        '5) Stessa regola per S 133 e TK 101 sulla riga sotto.\n\n' +
+window.buildGeminiTankCapturePrompt = function(fields) {
+    fields = fields || window.buildTankCaptureFieldMap();
+    const elenco = fields.map(function(f) {
+        return '- "' + f.label + '" → campo_id "' + f.id + '" (' + f.section + ')';
+    }).join('\n');
+    const esempio = fields.slice(0, 3).map(function(f) {
+        return '{"sigla_visibile":"' + f.label + '","livello_a_destra":"12.3","campo_id":"' + f.id + '"}';
+    }).join(',');
+
+    return 'Leggi dalla FOTO i valori numerici (livelli) accanto alle SIGLE visibili.\n\n' +
+        'SIGLE presenti nel rapportino — abbina per analogia (stessa sigla in foto e nel rapportino):\n' +
+        elenco + '\n\n' +
+        'REGOLE:\n' +
+        '1) Per ogni sigla visibile in foto, leggi il numero accanto (cella LIV a destra, o valore sulla stessa riga).\n' +
+        '2) Se la sigla in foto corrisponde a una dell\'elenco, usa il campo_id indicato (Ambiente 1, Ambiente 2 o Acqua).\n' +
+        '3) Esempi: foto "TK 8066" → inp-tk8066; foto "S 819" → inp-s819; foto "TK 9201" → inp-tk9201.\n' +
+        '4) Non inventare: solo sigle visibili in foto e presenti nell\'elenco.\n' +
+        '5) Se TK/S/A affiancati, il numero va alla sigla corretta, non a quella vicina.\n\n' +
         'Rispondi SOLO JSON valido (niente markdown):\n' +
-        '{"coppie":[' +
-        '{"sigla_visibile":"TK 9000","livello_a_destra":"12.3"},' +
-        '{"sigla_visibile":"TK 9201","livello_a_destra":"45.6"},' +
-        '{"sigla_visibile":"S 133","livello_a_destra":"8.1"},' +
-        '{"sigla_visibile":"TK 101","livello_a_destra":"3.2"}' +
-        ']}\n' +
-        'Includi solo sigle realmente visibili. Decimali con il punto.';
+        '{"coppie":[' + esempio + ']}\n' +
+        'Includi solo coppie reali dalla foto. Decimali con il punto.';
+};
+
+window.sortTankFieldsForDisplay = function(fields) {
+    const order = ['AMBIENTE 1', 'AMBIENTE 2', 'ACQUA'];
+    return fields.slice().sort(function(a, b) {
+        const sa = String(a.section || '').toUpperCase();
+        const sb = String(b.section || '').toUpperCase();
+        const ia = order.indexOf(sa);
+        const ib = order.indexOf(sb);
+        if (ia !== ib) return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+        return String(a.label).localeCompare(String(b.label), 'it');
+    });
 };
 
 window.callGeminiTankOcr = async function(promptText, imageData) {
@@ -12859,7 +12900,7 @@ window.callGeminiTankOcr = async function(promptText, imageData) {
 };
 
 window.runGeminiSmartCaptureOcr = async function(imageData, fields) {
-    const prompt = window.buildGeminiTankCapturePrompt();
+    const prompt = window.buildGeminiTankCapturePrompt(fields);
     let raw = '';
     let engine = 'gemini';
 
@@ -12995,10 +13036,16 @@ window.buildSiglaPatterns = function(field) {
         if (mkMatch[2]) set.add(mkMatch[1] + mkMatch[2]);
     }
 
-    const tankMatch = label.match(/^(S|TK|D|SG)\s*(\d+[A-Z]?)/);
+    const tankMatch = label.match(/^(S|TK|D|SG|A|SF)\s*(\d+[A-Z]?)/);
     if (tankMatch) {
         set.add(tankMatch[1] + ' ' + tankMatch[2]);
         set.add(tankMatch[1] + tankMatch[2]);
+    }
+
+    const anyTk = label.match(/TK\s*(\d+[A-Z]?)/);
+    if (anyTk) {
+        set.add('TK ' + anyTk[1]);
+        set.add('TK' + anyTk[1]);
     }
 
     return Array.from(set).filter(function(p) { return p.length >= 2; }).sort(function(a, b) { return b.length - a.length; });
@@ -13564,9 +13611,15 @@ window.showSmartCaptureConfirm = function(parsed) {
         if (r && r.id && r.value != null) readingMap[r.id] = String(r.value).trim();
     });
 
-    const displayOrder = tankMode ? window.TANK_GRID_SLOTS.map(function(s) {
-        return fields.find(function(f) { return f.id === s.id; }) || { id: s.id, label: s.label, section: 'Serbatoi' };
-    }) : fields;
+    const displayOrder = tankMode ? (function() {
+        const sorted = window.sortTankFieldsForDisplay(fields);
+        const withVal = sorted.filter(function(f) { return readingMap[f.id]; });
+        if (withVal.length) {
+            const ids = new Set(withVal.map(function(f) { return f.id; }));
+            return withVal.concat(sorted.filter(function(f) { return !ids.has(f.id); }));
+        }
+        return sorted;
+    })() : fields;
     const rows = tankMode ? displayOrder : (parsed.readings || []).map(function(r) {
         return fieldMap[r.id] || { id: r.id, label: r.id, section: '' };
     }).filter(function(f, i, arr) {
@@ -13590,7 +13643,7 @@ window.showSmartCaptureConfirm = function(parsed) {
     if (parsed && parsed.notes && hint) {
         hint.textContent = parsed.notes + ' — correggi se necessario';
     } else if (hint) {
-        hint.textContent = 'Confronta la foto: il numero deve essere nella cella LIV subito a destra della sigla, non della vicina';
+        hint.textContent = 'Ogni sigla letta dalla foto va nel campo corrispondente del rapportino (Ambiente 1 / 2 / Acqua)';
     }
 
     modal.classList.add('active');

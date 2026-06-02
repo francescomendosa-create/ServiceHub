@@ -507,7 +507,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.02-v10';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.02-v11';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -12315,35 +12315,191 @@ window.TANK_GRID_SLOTS = [
     { key: 'riga2_dx', id: 'tk101', label: 'TK 101' }
 ];
 
-// Profilo DCS: tabella SERBATOIO | DESCRIZIONE | LIV.MAX | LIVELLO (mm) — solo scheda Acqua
-window.DCS_ACQUA_PROFILE = {
-    id: 'dcs-acqua',
-    name: 'DCS Scheda Acqua',
-    layout: 'dcs-table',
-    unit: 'mm',
-    detectHints: ['SERBATOIO', 'DESCRIZIONE', 'LIVELLO', 'LIV.MAX'],
-    targets: [
-        {
-            fieldId: 'inp-tk9000',
-            label: 'TK 9000',
-            dcsLabel: 'TK - 9000',
-            description: 'ACQUA GREZZA',
-            tokens: ['TK9000', 'TK-9000', 'TK 9000']
-        },
-        {
-            fieldId: 'inp-tk9201',
-            label: 'TK 9201',
-            dcsLabel: 'TK - 9201',
-            description: 'ACQUA DEMI',
-            tokens: ['TK9201', 'TK-9201', 'TK 9201']
+// Profilo DCS + memoria locale (sigla + descrizione → scheda Acqua)
+window.DCS_KNOWLEDGE_STORAGE_KEY = 'servicehub_dcs_knowledge';
+
+window.getDefaultDcsKnowledge = function() {
+    return {
+        version: 1,
+        profiles: {
+            'dcs-acqua': {
+                id: 'dcs-acqua',
+                name: 'DCS Scheda Acqua',
+                layout: 'dcs-table',
+                unit: 'mm',
+                futureSheet: 'scheda-serbatoi-acqua-dcs',
+                columns: {
+                    serbatoio: 'SERBATOIO',
+                    descrizione: 'DESCRIZIONE',
+                    livello: 'LIVELLO',
+                    livMax: 'LIV.MAX',
+                    eu: 'E.U.'
+                },
+                detectHints: ['SERBATOIO', 'DESCRIZIONE', 'LIVELLO', 'LIV.MAX', 'ACQUA GREZZA', 'ACQUA DEMI'],
+                targets: [
+                    {
+                        fieldId: 'inp-tk9000',
+                        label: 'TK 9000',
+                        dcsLabel: 'TK - 9000',
+                        description: 'ACQUA GREZZA',
+                        descriptions: ['ACQUA GREZZA', 'ACQUA GREZZA '],
+                        tokens: ['TK9000', 'TK-9000', 'TK 9000', 'TK - 9000'],
+                        role: 'acqua-grezza'
+                    },
+                    {
+                        fieldId: 'inp-tk9201',
+                        label: 'TK 9201',
+                        dcsLabel: 'TK - 9201',
+                        description: 'ACQUA DEMI',
+                        descriptions: ['ACQUA DEMI', 'ACQUA DEMI '],
+                        tokens: ['TK9201', 'TK-9201', 'TK 9201', 'TK - 9201'],
+                        role: 'acqua-demi'
+                    }
+                ],
+                lastCapture: null,
+                learnedFrom: 'schermo DCS tabella serbatoi'
+            }
         }
-    ]
+    };
 };
 
-window.getDcsAcquaCaptureFields = function() {
-    return window.DCS_ACQUA_PROFILE.targets.map(function(t) {
-        return { id: t.fieldId, label: t.label, section: 'ACQUA · DCS' };
+window.mergeDcsKnowledge = function(base, saved) {
+    const out = JSON.parse(JSON.stringify(base));
+    if (!saved || !saved.profiles) return out;
+    Object.keys(saved.profiles).forEach(function(pid) {
+        if (!out.profiles[pid]) {
+            out.profiles[pid] = saved.profiles[pid];
+            return;
+        }
+        const bp = out.profiles[pid];
+        const sp = saved.profiles[pid];
+        if (sp.lastCapture) bp.lastCapture = sp.lastCapture;
+        if (sp.learnedFrom) bp.learnedFrom = sp.learnedFrom;
+        if (sp.targets && bp.targets) {
+            sp.targets.forEach(function(st) {
+                const t = bp.targets.find(function(x) { return x.fieldId === st.fieldId; });
+                if (t) {
+                    if (st.lastLevel != null) t.lastLevel = st.lastLevel;
+                    if (st.lastSeenAt) t.lastSeenAt = st.lastSeenAt;
+                    if (st.description) t.description = st.description;
+                    if (st.descriptions) t.descriptions = st.descriptions;
+                }
+            });
+        }
     });
+    return out;
+};
+
+window.loadDcsKnowledge = function() {
+    try {
+        const raw = localStorage.getItem(window.DCS_KNOWLEDGE_STORAGE_KEY);
+        if (!raw) return window.getDefaultDcsKnowledge();
+        return window.mergeDcsKnowledge(window.getDefaultDcsKnowledge(), JSON.parse(raw));
+    } catch (e) {
+        console.warn('DCS knowledge load:', e);
+        return window.getDefaultDcsKnowledge();
+    }
+};
+
+window.saveDcsKnowledge = function(knowledge) {
+    try {
+        localStorage.setItem(window.DCS_KNOWLEDGE_STORAGE_KEY, JSON.stringify(knowledge));
+    } catch (e) {
+        console.warn('DCS knowledge save:', e);
+    }
+};
+
+window.getDcsAcquaProfile = function() {
+    const k = window.loadDcsKnowledge();
+    return k.profiles['dcs-acqua'] || window.getDefaultDcsKnowledge().profiles['dcs-acqua'];
+};
+
+window.DCS_ACQUA_PROFILE = window.getDcsAcquaProfile();
+
+window.getDcsAcquaCaptureFields = function() {
+    return window.getDcsAcquaProfile().targets.map(function(t) {
+        return {
+            id: t.fieldId,
+            label: t.label + ' · ' + t.description,
+            section: 'ACQUA · DCS',
+            description: t.description
+        };
+    });
+};
+
+window.getDcsAcquaTankRegistry = function() {
+    return window.getDcsAcquaProfile().targets.map(function(t) {
+        return {
+            fieldId: t.fieldId,
+            label: t.label,
+            description: t.description,
+            dcsLabel: t.dcsLabel,
+            role: t.role,
+            unit: window.getDcsAcquaProfile().unit || 'mm',
+            lastLevel: t.lastLevel != null ? t.lastLevel : null,
+            lastSeenAt: t.lastSeenAt || null
+        };
+    });
+};
+
+window.resolveDcsAcquaTarget = function(siglaText, descrizioneText) {
+    const profile = window.getDcsAcquaProfile();
+    const descNorm = window.normalizeSiglaKey(descrizioneText || '');
+    const sigCompact = window.normalizeSiglaKey(siglaText || '').replace(/\s/g, '');
+
+    let best = null;
+    let bestScore = 0;
+
+    profile.targets.forEach(function(t) {
+        let score = 0;
+        const labels = [t.description].concat(t.descriptions || []);
+        labels.forEach(function(d) {
+            const dn = window.normalizeSiglaKey(d);
+            if (!dn || !descNorm) return;
+            if (descNorm === dn) score = Math.max(score, 100);
+            else if (descNorm.indexOf(dn) >= 0 || dn.indexOf(descNorm) >= 0) score = Math.max(score, 80);
+        });
+        (t.tokens || []).forEach(function(tok) {
+            const tk = String(tok).replace(/\s/g, '').toUpperCase();
+            if (sigCompact && (sigCompact === tk || sigCompact.indexOf(tk) >= 0 || tk.indexOf(sigCompact) >= 0)) {
+                score = Math.max(score, 70);
+            }
+        });
+        if (sigCompact === 'TK9000' && t.fieldId === 'inp-tk9000') score = Math.max(score, 90);
+        if (sigCompact === 'TK9201' && t.fieldId === 'inp-tk9201') score = Math.max(score, 90);
+        if (score > bestScore) {
+            bestScore = score;
+            best = t;
+        }
+    });
+    return bestScore >= 70 ? best : null;
+};
+
+window.rememberDcsAcquaCapture = function(raw, readings) {
+    if (!readings || !readings.length) return;
+    const k = window.loadDcsKnowledge();
+    const p = k.profiles['dcs-acqua'];
+    if (!p) return;
+
+    const now = new Date().toISOString();
+    p.lastCapture = {
+        at: now,
+        readings: readings.map(function(r) {
+            return { fieldId: r.id, value: r.value, source: r.source || '' };
+        }),
+        rawPreview: String(raw || '').slice(0, 400)
+    };
+
+    readings.forEach(function(r) {
+        const t = p.targets.find(function(x) { return x.fieldId === r.id; });
+        if (t) {
+            t.lastLevel = r.value;
+            t.lastSeenAt = now;
+        }
+    });
+
+    window.saveDcsKnowledge(k);
+    window.DCS_ACQUA_PROFILE = p;
 };
 
 window.isDcsAcquaTableText = function(text) {
@@ -12351,27 +12507,75 @@ window.isDcsAcquaTableText = function(text) {
     if (!t) return false;
     const hasHeader = /SERBATOIO/.test(t) && /LIVELLO/.test(t);
     const hasTk = /TK\s*[-–]?\s*9000/.test(t) || /TK\s*[-–]?\s*9201/.test(t);
-    return hasHeader && hasTk;
+    const hasDesc = /ACQUA\s*GREZZA/.test(t) || /ACQUA\s*DEMI/.test(t);
+    return hasHeader && (hasTk || hasDesc);
 };
 
 window.buildGeminiDcsAcquaPrompt = function() {
-    const p = window.DCS_ACQUA_PROFILE;
-    return 'Foto di uno SCHERMO DCS con tabella a colonne:\n' +
-        'SERBATOIO | DESCRIZIONE | LIV.MAX | E.U. (mm) | LIVELLO | grafico\n\n' +
-        'COMPITO: leggere SOLO 2 righe per la scheda Acqua del rapportino. IGNORA tutti gli altri serbatoi (TK 10000, TK 10604, V-9203, ecc.).\n\n' +
-        'Riga 1: colonna SERBATOIO "TK - 9000" (descrizione ACQUA GREZZA) → numero nella colonna LIVELLO (mm, es. 6031.7) → campo_id "' + p.targets[0].fieldId + '"\n' +
-        'Riga 2: colonna SERBATOIO "TK - 9201" (descrizione ACQUA DEMI) → numero nella colonna LIVELLO (mm, es. 7275.0) → campo_id "' + p.targets[1].fieldId + '"\n\n' +
-        'REGOLE CRITICHE:\n' +
-        '- Copia il valore dalla colonna LIVELLO, NON da LIV.MAX.\n' +
-        '- "TK - 9000" nel DCS = TK 9000 nel rapportino; "TK - 9201" = TK 9201.\n' +
-        '- Non scambiare i due valori: ogni numero resta sulla sua riga.\n' +
-        '- Se una riga non è visibile, omettila.\n\n' +
-        'Rispondi SOLO JSON (niente markdown):\n' +
-        '{"tipo":"dcs-acqua","coppie":[' +
-        '{"sigla_visibile":"TK - 9000","livello":"6031.7","campo_id":"inp-tk9000","descrizione":"ACQUA GREZZA"},' +
-        '{"sigla_visibile":"TK - 9201","livello":"7275.0","campo_id":"inp-tk9201","descrizione":"ACQUA DEMI"}' +
+    const p = window.getDcsAcquaProfile();
+    const memory = p.targets.map(function(t) {
+        let line = '- SERBATOIO "' + t.dcsLabel + '" | DESCRIZIONE "' + t.description + '" → rapportino ' +
+            t.label + ' (campo_id "' + t.fieldId + '")';
+        if (t.lastLevel != null) {
+            line += ' · ultima lettura memorizzata: ' + t.lastLevel + ' ' + (p.unit || 'mm');
+        }
+        return line;
+    }).join('\n');
+
+    return 'Foto SCHERMO DCS — tabella: SERBATOIO | DESCRIZIONE | LIV.MAX | E.U. | LIVELLO (mm) | grafico\n\n' +
+        'MEMORIA IMPIANTO (usa sigla E descrizione per riconoscere le righe utili):\n' +
+        memory + '\n\n' +
+        'COMPITO: estrai SOLO le 2 righe utili per la scheda Acqua. IGNORA tutti gli altri serbatoi nella tabella.\n' +
+        'Riconosci le righe anche dalla colonna DESCRIZIONE:\n' +
+        '- "ACQUA GREZZA" = TK 9000 (inp-tk9000)\n' +
+        '- "ACQUA DEMI" = TK 9201 (inp-tk9201)\n\n' +
+        'REGOLE:\n' +
+        '- Valore dalla colonna LIVELLO (mm), NON LIV.MAX.\n' +
+        '- Non scambiare GREZZA e DEMI.\n' +
+        '- Includi sempre descrizione e campo_id nel JSON.\n\n' +
+        'JSON (senza markdown):\n' +
+        '{"tipo":"dcs-acqua","memorizza":true,"coppie":[' +
+        '{"sigla_visibile":"TK - 9000","descrizione":"ACQUA GREZZA","livello":"6031.7","campo_id":"inp-tk9000"},' +
+        '{"sigla_visibile":"TK - 9201","descrizione":"ACQUA DEMI","livello":"7275.0","campo_id":"inp-tk9201"}' +
         ']}\n' +
-        'Decimali con il punto. Valori in millimetri come sullo schermo.';
+        'Solo righe visibili. Decimali con il punto.';
+};
+
+window.parseDcsAcquaPairsFromJson = function(json, fields) {
+    if (!json) return [];
+    let pairs = json.coppie || json.pairs;
+    if (!Array.isArray(pairs)) return [];
+    const readings = [];
+    const used = new Set();
+    const allowed = new Set((fields || []).map(function(f) { return f.id; }));
+
+    pairs.forEach(function(p) {
+        if (!p) return;
+        const sigla = p.sigla_visibile || p.sigla || '';
+        const desc = p.descrizione || p.description || p.desc || '';
+        let val = p.livello != null ? p.livello : (p.livello_a_destra != null ? p.livello_a_destra : p.value);
+        if (val != null && typeof val === 'number') val = String(val);
+        val = window.fixOcrDigitValue(val);
+        if (!window.isValidOcrValue(val)) return;
+
+        let id = p.campo_id || p.field_id;
+        if (id && !allowed.has(id)) id = null;
+        const target = window.resolveDcsAcquaTarget(sigla, desc);
+        if (target) id = target.fieldId;
+        if (!id) id = window.resolveTankIdFromLabel(sigla || desc, fields);
+        if (!id || !allowed.has(id) || used.has(id)) return;
+
+        used.add(id);
+        const t = window.getDcsAcquaProfile().targets.find(function(x) { return x.fieldId === id; });
+        readings.push({
+            id: id,
+            value: val,
+            confidence: (desc && target) ? 'alta' : 'media',
+            source: (t ? t.label + ' · ' + t.description : sigla || desc),
+            method: desc ? 'dcs-descrizione' : 'dcs-sigla'
+        });
+    });
+    return readings;
 };
 
 window.parseDcsAcquaFromText = function(rawText) {
@@ -12379,10 +12583,14 @@ window.parseDcsAcquaFromText = function(rawText) {
     const text = String(rawText || '');
     const readings = [];
     const used = new Set();
+
     const rowRes = [
-        { id: 'inp-tk9000', re: /TK\s*[-–]?\s*9000\b[\s\S]{0,180}?(\d{3,5}[.,]\d{0,2}|\d{3,5})/i },
-        { id: 'inp-tk9201', re: /TK\s*[-–]?\s*9201\b[\s\S]{0,180}?(\d{3,5}[.,]\d{0,2}|\d{3,5})/i }
+        { id: 'inp-tk9000', re: /TK\s*[-–]?\s*9000\b[\s\S]{0,200}?(\d{3,5}[.,]\d{0,2}|\d{3,5})/i },
+        { id: 'inp-tk9201', re: /TK\s*[-–]?\s*9201\b[\s\S]{0,200}?(\d{3,5}[.,]\d{0,2}|\d{3,5})/i },
+        { id: 'inp-tk9000', re: /ACQUA\s*GREZZA[\s\S]{0,160}?(\d{3,5}[.,]\d{0,2}|\d{3,5})/i },
+        { id: 'inp-tk9201', re: /ACQUA\s*DEMI\b[\s\S]{0,160}?(\d{3,5}[.,]\d{0,2}|\d{3,5})/i }
     ];
+
     rowRes.forEach(function(row) {
         if (used.has(row.id)) return;
         const m = row.re.exec(text);
@@ -12394,9 +12602,9 @@ window.parseDcsAcquaFromText = function(rawText) {
         readings.push({
             id: row.id,
             value: val,
-            confidence: 'media',
+            confidence: /ACQUA/i.test(row.re.source) ? 'alta' : 'media',
             source: field ? field.label : row.id,
-            method: 'dcs-testo'
+            method: /ACQUA/i.test(row.re.source) ? 'dcs-descrizione' : 'dcs-testo'
         });
     });
     return readings;
@@ -12408,12 +12616,10 @@ window.extractDcsAcquaReadings = function(raw, fields) {
     const json = window.parseSmartCaptureJson(raw);
     let readings = [];
 
-    if (json && (json.tipo === 'dcs-acqua' || window.isDcsAcquaTableText(raw))) {
-        readings = window.parseGeminiTankPairsJson(json, fields).filter(function(r) {
-            return allowed.has(r.id);
-        });
+    if (json && (json.tipo === 'dcs-acqua' || json.coppie)) {
+        readings = window.parseDcsAcquaPairsFromJson(json, fields);
     }
-    if (!readings.length && json && json.coppie) {
+    if (!readings.length && json && window.isDcsAcquaTableText(raw)) {
         readings = window.parseGeminiTankPairsJson(json, fields).filter(function(r) {
             return allowed.has(r.id);
         });
@@ -12464,17 +12670,27 @@ window.runDcsAcquaCapture = async function(imageData) {
                 raw = raw2;
                 readings = window.extractDcsAcquaReadings(raw2, fields);
             }
-        } catch (e2) { /* fallback già tentato */ }
+        } catch (e2) { /* fallback */ }
     }
+
+    if (readings.length) {
+        window.rememberDcsAcquaCapture(raw, readings);
+    }
+
+    const prof = window.getDcsAcquaProfile();
+    const memNote = prof.lastCapture && prof.lastCapture.at
+        ? ' · memoria aggiornata'
+        : '';
 
     return {
         readings: readings,
         engine: engine,
         profile: 'dcs-acqua',
+        tankRegistry: window.getDcsAcquaTankRegistry(),
         rawTextPreview: String(raw).slice(0, 300),
         notes: readings.length
-            ? ('DCS Scheda Acqua · TK 9000 + TK 9201 · ' + readings.length + ' livelli (mm)')
-            : 'DCS Acqua · nessun livello TK 9000/9201 trovato'
+            ? ('DCS Acqua · GREZZA + DEMI (sigla o descrizione) · ' + readings.length + ' livelli (mm)' + memNote)
+            : 'DCS Acqua · cerca ACQUA GREZZA / ACQUA DEMI o TK 9000 / TK 9201'
     };
 };
 
@@ -13816,7 +14032,7 @@ window.showSmartCaptureConfirm = function(parsed) {
         hint.textContent = parsed.notes + ' — correggi se necessario';
     } else if (hint) {
         hint.textContent = isDcsAcqua
-            ? 'DCS: valori colonna LIVELLO (mm) → TK 9000 e TK 9201 in scheda Acqua'
+            ? 'DCS: riconosci ACQUA GREZZA → TK 9000, ACQUA DEMI → TK 9201 (valori LIVELLO mm). Dati memorizzati per la futura scheda dedicata.'
             : 'Ogni sigla letta dalla foto va nel campo corrispondente del rapportino (Ambiente 1 / 2 / Acqua)';
     }
 

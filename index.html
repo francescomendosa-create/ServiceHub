@@ -507,7 +507,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.02-v7';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.02-v8';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -12356,6 +12356,7 @@ window.parseGeminiTankPairsJson = function(json) {
         if (!p) return;
         const sigla = p.sigla_visibile || p.sigla || p.label || p.tk || '';
         let val = p.livello_a_destra != null ? p.livello_a_destra : (p.livello != null ? p.livello : (p.liv != null ? p.liv : p.value));
+        if (val != null && typeof val === 'number') val = String(val);
         val = window.fixOcrDigitValue(val);
         if (!window.isValidOcrValue(val)) return;
         const id = window.resolveTankIdFromLabel(sigla);
@@ -12453,6 +12454,7 @@ window.parseGeminiTankGridJson = function(json) {
         const cell = json[slot.key];
         if (!cell) return;
         let val = cell.livello != null ? cell.livello : (cell.liv != null ? cell.liv : cell.value);
+        if (val != null && typeof val === 'number') val = String(val);
         val = window.fixOcrDigitValue(val);
         if (!window.isValidOcrValue(val)) return;
         let id = slot.id;
@@ -12663,12 +12665,64 @@ window.parseSmartCaptureJson = function(rawText) {
     const start = text.indexOf('{');
     const end = text.lastIndexOf('}');
     if (start >= 0 && end > start) text = text.slice(start, end + 1);
-    try {
-        return JSON.parse(text);
-    } catch (e) {
-        console.warn('JSON OCR non valido:', e, rawText);
-        return null;
+    const attempts = [
+        text,
+        text.replace(/,\s*([\]}])/g, '$1'),
+        text.replace(/'/g, '"')
+    ];
+    for (let i = 0; i < attempts.length; i++) {
+        try {
+            return JSON.parse(attempts[i]);
+        } catch (e) { /* retry */ }
     }
+    console.warn('JSON OCR non valido:', rawText);
+    return null;
+};
+
+window.parseGeminiTankPairsFromRaw = function(rawText) {
+    if (!rawText) return [];
+    const readings = [];
+    const used = new Set();
+    const re = /"(?:sigla_visibile|sigla|label)"\s*:\s*"([^"]+)"\s*,\s*"(?:livello_a_destra|livello|liv|value)"\s*:\s*"?([\d]+[.,]?[\d]*)"?/gi;
+    let m;
+    while ((m = re.exec(String(rawText))) !== null) {
+        const sigla = m[1];
+        let val = window.fixOcrDigitValue(m[2]);
+        if (!window.isValidOcrValue(val)) continue;
+        const id = window.resolveTankIdFromLabel(sigla);
+        if (!id || used.has(id)) continue;
+        used.add(id);
+        readings.push({ id: id, value: val, confidence: 'media', source: sigla, method: 'regex' });
+    }
+    return readings;
+};
+
+window.extractTankReadingsFromGeminiRaw = function(raw, fields) {
+    if (!raw) return [];
+    const json = window.parseSmartCaptureJson(raw);
+    let pairs = window.parseGeminiTankPairsJson(json);
+    if (!pairs.length) pairs = window.parseGeminiTankPairsFromRaw(raw);
+    let grid = [];
+    if (json && (json.riga1_sx || json.riga1_dx || json.riga2_sx || json.riga2_dx)) {
+        grid = window.parseGeminiTankGridJson(json);
+    }
+    let legacy = [];
+    if (json && Array.isArray(json.readings)) {
+        legacy = window.normalizeGeminiTankReadings(json.readings);
+    }
+    const text = window.matchTankReadingsFromOcrText(raw, fields);
+    let readings = window.reconcileTankOcrReadings(
+        pairs.length ? pairs : legacy,
+        grid,
+        text
+    );
+    if (!readings.length) {
+        readings = window.mergeOcrReadingLists(window.mergeOcrReadingLists(pairs, grid), text);
+    }
+    if (!readings.length) {
+        readings = window.mergeOcrReadingLists(legacy, text);
+    }
+    return readings;
 };
 
 window.setSmartCaptureLoadingMessage = function(msg) {
@@ -12752,9 +12806,9 @@ window.buildGeminiTankCapturePrompt = function() {
 window.callGeminiTankOcr = async function(promptText, imageData) {
     const CHIAVE_AI = window.getGeminiApiKey();
     if (!CHIAVE_AI) throw new Error('Nessuna chiave Gemini.');
-    const raw = imageData.data || '';
+    const raw = imageData && imageData.data ? imageData.data : (typeof imageData === 'string' ? imageData : '');
     const base64 = raw.indexOf(',') >= 0 ? raw.split(',')[1] : raw;
-    const mimeType = imageData.type || 'image/jpeg';
+    const mimeType = (imageData && imageData.type) || 'image/jpeg';
     if (!base64 || base64.length < 20) throw new Error('Foto non valida.');
     const modelli = ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash-lite'];
     const parts = [
@@ -12770,7 +12824,7 @@ window.callGeminiTankOcr = async function(promptText, imageData) {
             const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + nomeModello + ':generateContent?key=' + CHIAVE_AI;
             const body = {
                 contents: [{ parts: parts }],
-                generationConfig: { temperature: 0, maxOutputTokens: 1024 }
+                generationConfig: { temperature: 0.1, maxOutputTokens: 2048 }
             };
             const response = await fetch(url, {
                 method: 'POST',
@@ -12784,9 +12838,19 @@ window.callGeminiTankOcr = async function(promptText, imageData) {
                 lastErr = data.error.message || JSON.stringify(data.error);
                 continue;
             }
-            const part0 = data.candidates && data.candidates[0] && data.candidates[0].content &&
-                data.candidates[0].content.parts && data.candidates[0].content.parts[0];
-            if (part0 && part0.text) return part0.text;
+            if (!response.ok) {
+                lastErr = 'HTTP ' + response.status + ' su ' + nomeModello;
+                continue;
+            }
+            const cand = data.candidates && data.candidates[0];
+            const partsOut = cand && cand.content && cand.content.parts;
+            if (partsOut && partsOut.length) {
+                const text = partsOut.map(function(p) { return p.text || ''; }).join('').trim();
+                if (text) return text;
+            }
+            if (cand && cand.finishReason) {
+                lastErr = 'Risposta vuota (' + cand.finishReason + ')';
+            }
         } catch (e) {
             lastErr = e && e.message ? e.message : String(e);
         }
@@ -12795,40 +12859,58 @@ window.callGeminiTankOcr = async function(promptText, imageData) {
 };
 
 window.runGeminiSmartCaptureOcr = async function(imageData, fields) {
-    const raw = await window.withOcrTimeout(
-        window.callGeminiTankOcr(window.buildGeminiTankCapturePrompt(), imageData),
-        55000,
-        'Analisi AI in timeout. Riprova tra poco.'
-    );
-    const json = window.parseSmartCaptureJson(raw);
-    const pairReadings = window.parseGeminiTankPairsJson(json);
-    let gridReadings = [];
-    if (json && (json.riga1_sx || json.riga1_dx || json.riga2_sx || json.riga2_dx)) {
-        gridReadings = window.parseGeminiTankGridJson(json);
+    const prompt = window.buildGeminiTankCapturePrompt();
+    let raw = '';
+    let engine = 'gemini';
+
+    try {
+        raw = await window.withOcrTimeout(
+            window.callGeminiTankOcr(prompt, imageData),
+            55000,
+            'Analisi AI in timeout. Riprova tra poco.'
+        );
+    } catch (errTank) {
+        console.warn('Gemini tank OCR dedicato:', errTank);
+        try {
+            raw = await window.withOcrTimeout(
+                window.callGeminiAPI(prompt, false, imageData),
+                55000,
+                'Analisi AI in timeout. Riprova tra poco.'
+            );
+            engine = 'gemini-legacy';
+        } catch (errLegacy) {
+            throw errLegacy;
+        }
     }
-    let legacyReadings = [];
-    if (json && Array.isArray(json.readings)) {
-        legacyReadings = window.normalizeGeminiTankReadings(json.readings);
-    }
-    const textReadings = window.matchTankReadingsFromOcrText(raw, fields);
-    let readings = window.reconcileTankOcrReadings(
-        pairReadings.length ? pairReadings : legacyReadings,
-        gridReadings,
-        textReadings
-    );
+
+    let readings = window.extractTankReadingsFromGeminiRaw(raw, fields);
+
     if (!readings.length) {
-        readings = gridReadings.length ? gridReadings : textReadings;
+        try {
+            const raw2 = await window.withOcrTimeout(
+                window.callGeminiAPI(prompt, false, imageData),
+                45000,
+                'timeout'
+            );
+            if (raw2) {
+                raw = raw2;
+                engine = 'gemini-legacy';
+                readings = window.extractTankReadingsFromGeminiRaw(raw2, fields);
+            }
+        } catch (e2) {
+            console.warn('Secondo tentativo Gemini:', e2);
+        }
     }
 
     const lowConf = readings.filter(function(r) { return r.confidence === 'bassa'; }).length;
     let notes = readings.length
-        ? ('AI · lettura per sigla (LIV a destra) · ' + readings.length + ' livelli')
-        : 'AI · nessun livello trovato';
-    if (lowConf) notes += ' · verifica ' + lowConf + ' valori dubbi sulla foto';
+        ? ('AI · ' + readings.length + ' livelli · controlla sigla e numero sulla foto')
+        : 'AI · nessun livello nella risposta — inserisci manualmente o riprova';
+    if (lowConf) notes += ' · ' + lowConf + ' dubbi';
 
     return {
         readings: readings,
-        engine: 'gemini',
+        engine: engine,
         rawTextPreview: String(raw).slice(0, 300),
         notes: notes
     };
@@ -13160,11 +13242,19 @@ window.runSmartCaptureAnalysis = async function(imageData) {
         hint = '\n\nTesto rilevato:\n' + localResult.rawTextPreview.trim().slice(0, 120);
     }
 
-    const noGemini = !geminiKey ? '\n\nSuggerimento: salva la chiave Gemini in Impostazioni per letture più precise.' : '';
+    const noGemini = !geminiKey ? '\n\nSuggerimento: salva la chiave Gemini in Impostazioni.' : '';
+
+    if (tankMode) {
+        return {
+            readings: [],
+            engine: 'none',
+            rawTextPreview: (localResult.rawTextPreview || '').trim(),
+            notes: 'Nessun livello rilevato nella foto' + hint + noGemini + ' — inserisci manualmente'
+        };
+    }
 
     throw new Error(
-        'Non ho trovato livelli serbatoi nella foto.' + hint + noGemini +
-        '\n\nPuoi correggere i valori manualmente nella schermata di conferma se appare.'
+        'Non ho trovato livelli serbatoi nella foto.' + hint + noGemini
     );
 };
 
@@ -13267,10 +13357,7 @@ window.runSmartCaptureOnFile = async function(file) {
     } catch (err) {
         if (!window._smartCaptureAbort) {
             if (window._smartCaptureTankMode) {
-                window.finishSmartCapture({
-                    readings: [],
-                    notes: 'Lettura automatica non riuscita — inserisci i livelli manualmente'
-                });
+                window.finishSmartCapture(window.buildSmartCaptureFailureResult(err));
             } else {
                 alert('Acquisizione: ' + (err && err.message ? err.message : String(err)));
             }
@@ -13278,6 +13365,19 @@ window.runSmartCaptureOnFile = async function(file) {
     } finally {
         window.setSmartCaptureLoading(false);
     }
+};
+
+window.buildSmartCaptureFailureResult = function(err) {
+    const photo = window._smartCapturePhotoData;
+    const photoUrl = photo && (photo.data || photo);
+    const msg = err && err.message ? String(err.message) : '';
+    return {
+        readings: [],
+        photoDataUrl: photoUrl || null,
+        notes: msg
+            ? ('Lettura automatica: ' + msg.slice(0, 120) + ' — inserisci manualmente')
+            : 'Lettura automatica non riuscita — inserisci i livelli manualmente'
+    };
 };
 
 window.openNativeCameraCapture = function() {
@@ -13424,14 +13524,10 @@ window.useSmartCapturePhoto = async function() {
         window.finishSmartCapture(parsed);
     } catch (err) {
         if (!window._smartCaptureAbort) {
-            window.finishSmartCapture({
-                readings: [],
-                notes: 'Lettura automatica non riuscita — inserisci i livelli manualmente'
-            });
+            window.finishSmartCapture(window.buildSmartCaptureFailureResult(err));
         }
     } finally {
         window.setSmartCaptureLoading(false);
-        window._smartCapturePhotoData = null;
     }
 };
 
@@ -13504,6 +13600,7 @@ window.closeSmartCaptureConfirm = function(reopenSettings) {
     const modal = document.getElementById('smart-capture-confirm-modal');
     if (modal) modal.classList.remove('active');
     window._smartCapturePending = null;
+    window._smartCapturePhotoData = null;
     if (reopenSettings !== false) {
         const settings = document.getElementById('settings-modal');
         if (settings) settings.classList.add('active');

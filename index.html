@@ -507,7 +507,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.02-v9';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.02-v10';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -12315,6 +12315,169 @@ window.TANK_GRID_SLOTS = [
     { key: 'riga2_dx', id: 'tk101', label: 'TK 101' }
 ];
 
+// Profilo DCS: tabella SERBATOIO | DESCRIZIONE | LIV.MAX | LIVELLO (mm) — solo scheda Acqua
+window.DCS_ACQUA_PROFILE = {
+    id: 'dcs-acqua',
+    name: 'DCS Scheda Acqua',
+    layout: 'dcs-table',
+    unit: 'mm',
+    detectHints: ['SERBATOIO', 'DESCRIZIONE', 'LIVELLO', 'LIV.MAX'],
+    targets: [
+        {
+            fieldId: 'inp-tk9000',
+            label: 'TK 9000',
+            dcsLabel: 'TK - 9000',
+            description: 'ACQUA GREZZA',
+            tokens: ['TK9000', 'TK-9000', 'TK 9000']
+        },
+        {
+            fieldId: 'inp-tk9201',
+            label: 'TK 9201',
+            dcsLabel: 'TK - 9201',
+            description: 'ACQUA DEMI',
+            tokens: ['TK9201', 'TK-9201', 'TK 9201']
+        }
+    ]
+};
+
+window.getDcsAcquaCaptureFields = function() {
+    return window.DCS_ACQUA_PROFILE.targets.map(function(t) {
+        return { id: t.fieldId, label: t.label, section: 'ACQUA · DCS' };
+    });
+};
+
+window.isDcsAcquaTableText = function(text) {
+    const t = String(text || '').toUpperCase();
+    if (!t) return false;
+    const hasHeader = /SERBATOIO/.test(t) && /LIVELLO/.test(t);
+    const hasTk = /TK\s*[-–]?\s*9000/.test(t) || /TK\s*[-–]?\s*9201/.test(t);
+    return hasHeader && hasTk;
+};
+
+window.buildGeminiDcsAcquaPrompt = function() {
+    const p = window.DCS_ACQUA_PROFILE;
+    return 'Foto di uno SCHERMO DCS con tabella a colonne:\n' +
+        'SERBATOIO | DESCRIZIONE | LIV.MAX | E.U. (mm) | LIVELLO | grafico\n\n' +
+        'COMPITO: leggere SOLO 2 righe per la scheda Acqua del rapportino. IGNORA tutti gli altri serbatoi (TK 10000, TK 10604, V-9203, ecc.).\n\n' +
+        'Riga 1: colonna SERBATOIO "TK - 9000" (descrizione ACQUA GREZZA) → numero nella colonna LIVELLO (mm, es. 6031.7) → campo_id "' + p.targets[0].fieldId + '"\n' +
+        'Riga 2: colonna SERBATOIO "TK - 9201" (descrizione ACQUA DEMI) → numero nella colonna LIVELLO (mm, es. 7275.0) → campo_id "' + p.targets[1].fieldId + '"\n\n' +
+        'REGOLE CRITICHE:\n' +
+        '- Copia il valore dalla colonna LIVELLO, NON da LIV.MAX.\n' +
+        '- "TK - 9000" nel DCS = TK 9000 nel rapportino; "TK - 9201" = TK 9201.\n' +
+        '- Non scambiare i due valori: ogni numero resta sulla sua riga.\n' +
+        '- Se una riga non è visibile, omettila.\n\n' +
+        'Rispondi SOLO JSON (niente markdown):\n' +
+        '{"tipo":"dcs-acqua","coppie":[' +
+        '{"sigla_visibile":"TK - 9000","livello":"6031.7","campo_id":"inp-tk9000","descrizione":"ACQUA GREZZA"},' +
+        '{"sigla_visibile":"TK - 9201","livello":"7275.0","campo_id":"inp-tk9201","descrizione":"ACQUA DEMI"}' +
+        ']}\n' +
+        'Decimali con il punto. Valori in millimetri come sullo schermo.';
+};
+
+window.parseDcsAcquaFromText = function(rawText) {
+    const fields = window.getDcsAcquaCaptureFields();
+    const text = String(rawText || '');
+    const readings = [];
+    const used = new Set();
+    const rowRes = [
+        { id: 'inp-tk9000', re: /TK\s*[-–]?\s*9000\b[\s\S]{0,180}?(\d{3,5}[.,]\d{0,2}|\d{3,5})/i },
+        { id: 'inp-tk9201', re: /TK\s*[-–]?\s*9201\b[\s\S]{0,180}?(\d{3,5}[.,]\d{0,2}|\d{3,5})/i }
+    ];
+    rowRes.forEach(function(row) {
+        if (used.has(row.id)) return;
+        const m = row.re.exec(text);
+        if (!m) return;
+        let val = window.fixOcrDigitValue(m[1]);
+        if (!window.isValidOcrValue(val)) return;
+        const field = fields.find(function(f) { return f.id === row.id; });
+        used.add(row.id);
+        readings.push({
+            id: row.id,
+            value: val,
+            confidence: 'media',
+            source: field ? field.label : row.id,
+            method: 'dcs-testo'
+        });
+    });
+    return readings;
+};
+
+window.extractDcsAcquaReadings = function(raw, fields) {
+    fields = fields || window.getDcsAcquaCaptureFields();
+    const allowed = new Set(fields.map(function(f) { return f.id; }));
+    const json = window.parseSmartCaptureJson(raw);
+    let readings = [];
+
+    if (json && (json.tipo === 'dcs-acqua' || window.isDcsAcquaTableText(raw))) {
+        readings = window.parseGeminiTankPairsJson(json, fields).filter(function(r) {
+            return allowed.has(r.id);
+        });
+    }
+    if (!readings.length && json && json.coppie) {
+        readings = window.parseGeminiTankPairsJson(json, fields).filter(function(r) {
+            return allowed.has(r.id);
+        });
+    }
+    if (!readings.length) {
+        readings = window.parseDcsAcquaFromText(raw);
+    }
+    if (!readings.length && window.isDcsAcquaTableText(raw)) {
+        readings = window.matchTankReadingsFromOcrText(raw, fields).filter(function(r) {
+            return allowed.has(r.id);
+        });
+    }
+    return readings;
+};
+
+window.runDcsAcquaCapture = async function(imageData) {
+    const fields = window.getDcsAcquaCaptureFields();
+    const prompt = window.buildGeminiDcsAcquaPrompt();
+    let raw = '';
+    let engine = 'gemini-dcs-acqua';
+
+    try {
+        raw = await window.withOcrTimeout(
+            window.callGeminiTankOcr(prompt, imageData),
+            55000,
+            'Analisi DCS in timeout.'
+        );
+    } catch (e1) {
+        console.warn('DCS acqua OCR dedicato:', e1);
+        raw = await window.withOcrTimeout(
+            window.callGeminiAPI(prompt, false, imageData),
+            55000,
+            'Analisi DCS in timeout.'
+        );
+        engine = 'gemini-dcs-legacy';
+    }
+
+    let readings = window.extractDcsAcquaReadings(raw, fields);
+
+    if (!readings.length) {
+        try {
+            const raw2 = await window.withOcrTimeout(
+                window.callGeminiAPI(prompt, false, imageData),
+                45000,
+                'timeout'
+            );
+            if (raw2) {
+                raw = raw2;
+                readings = window.extractDcsAcquaReadings(raw2, fields);
+            }
+        } catch (e2) { /* fallback già tentato */ }
+    }
+
+    return {
+        readings: readings,
+        engine: engine,
+        profile: 'dcs-acqua',
+        rawTextPreview: String(raw).slice(0, 300),
+        notes: readings.length
+            ? ('DCS Scheda Acqua · TK 9000 + TK 9201 · ' + readings.length + ' livelli (mm)')
+            : 'DCS Acqua · nessun livello TK 9000/9201 trovato'
+    };
+};
+
 window.TANK_CAPTURE_SECTIONS = ['sec-amb', 'sec-ambiente2', 'sec-acqua'];
 
 window.collectRapportinoTankFields = function() {
@@ -13251,7 +13414,7 @@ window.runLocalSmartCaptureOcr = async function(imageData, fields) {
 window.runSmartCaptureAnalysis = async function(imageData) {
     const tankMode = !!window._smartCaptureTankMode;
     const fields = tankMode ? window.buildTankCaptureFieldMap() : window.buildSmartCaptureFieldMap();
-    if (!fields.length) throw new Error('Nessun campo mappabile trovato nell\'interfaccia.');
+    if (!fields.length && !tankMode) throw new Error('Nessun campo mappabile trovato nell\'interfaccia.');
 
     if (imageData && imageData.type === 'application/pdf') {
         throw new Error('I PDF non sono supportati. Usa una foto JPG/PNG.');
@@ -13259,6 +13422,17 @@ window.runSmartCaptureAnalysis = async function(imageData) {
 
     const geminiKey = window.getGeminiApiKey && window.getGeminiApiKey();
     if (geminiKey && window.SMART_CAPTURE_PREFER_GEMINI && !window._smartCaptureAbort) {
+        if (tankMode) {
+            try {
+                window.setSmartCaptureLoadingMessage('Analisi DCS scheda Acqua…');
+                const dcsResult = await window.runDcsAcquaCapture(imageData);
+                if (dcsResult.readings && dcsResult.readings.length) {
+                    return dcsResult;
+                }
+            } catch (errDcs) {
+                console.warn('DCS acqua capture:', errDcs);
+            }
+        }
         try {
             window.setSmartCaptureLoadingMessage('Analisi AI foto…');
             const geminiResult = await window.runGeminiSmartCaptureOcr(imageData, fields);
@@ -13596,8 +13770,12 @@ window.showSmartCaptureConfirm = function(parsed) {
     if (settings) settings.classList.remove('active');
 
     const tankMode = !!window._smartCaptureTankMode;
+    const isDcsAcqua = parsed && parsed.profile === 'dcs-acqua';
     const fieldMap = {};
-    const fields = tankMode ? window.buildTankCaptureFieldMap() : window.buildSmartCaptureFieldMap();
+    let fields = tankMode ? window.buildTankCaptureFieldMap() : window.buildSmartCaptureFieldMap();
+    if (isDcsAcqua) {
+        fields = window.getDcsAcquaCaptureFields();
+    }
     fields.forEach(function(f) { fieldMap[f.id] = f; });
 
     const readingMap = {};
@@ -13605,7 +13783,7 @@ window.showSmartCaptureConfirm = function(parsed) {
         if (r && r.id && r.value != null) readingMap[r.id] = String(r.value).trim();
     });
 
-    const displayOrder = tankMode ? (function() {
+    const displayOrder = (tankMode && isDcsAcqua) ? fields : (tankMode ? (function() {
         const sorted = window.sortTankFieldsForDisplay(fields);
         const withVal = sorted.filter(function(f) { return readingMap[f.id]; });
         if (withVal.length) {
@@ -13613,7 +13791,7 @@ window.showSmartCaptureConfirm = function(parsed) {
             return withVal.concat(sorted.filter(function(f) { return !ids.has(f.id); }));
         }
         return sorted;
-    })() : fields;
+    })() : fields);
     const rows = tankMode ? displayOrder : (parsed.readings || []).map(function(r) {
         return fieldMap[r.id] || { id: r.id, label: r.id, section: '' };
     }).filter(function(f, i, arr) {
@@ -13637,7 +13815,9 @@ window.showSmartCaptureConfirm = function(parsed) {
     if (parsed && parsed.notes && hint) {
         hint.textContent = parsed.notes + ' — correggi se necessario';
     } else if (hint) {
-        hint.textContent = 'Ogni sigla letta dalla foto va nel campo corrispondente del rapportino (Ambiente 1 / 2 / Acqua)';
+        hint.textContent = isDcsAcqua
+            ? 'DCS: valori colonna LIVELLO (mm) → TK 9000 e TK 9201 in scheda Acqua'
+            : 'Ogni sigla letta dalla foto va nel campo corrispondente del rapportino (Ambiente 1 / 2 / Acqua)';
     }
 
     modal.classList.add('active');

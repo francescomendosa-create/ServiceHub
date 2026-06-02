@@ -507,7 +507,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.02-v6';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.02-v7';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -10841,6 +10841,10 @@ window.convertToHtml = async () => {
                 <h3 class="font-black uppercase text-lg">Conferma livelli</h3>
                 <button type="button" onclick="window.closeSmartCaptureConfirm()" class="bg-red-600 rounded-xl w-10 h-10 font-black">X</button>
             </div>
+            <div id="smart-capture-confirm-photo-wrap" class="hidden mb-3 rounded-xl overflow-hidden border border-slate-600 max-h-28">
+                <img id="smart-capture-confirm-photo" alt="Foto quadro" class="w-full object-contain max-h-28 bg-black">
+            </div>
+            <p class="text-[10px] text-amber-400/90 font-bold uppercase mb-2 text-center">Confronta ogni numero con la cella LIV accanto alla sigla sulla foto</p>
             <div id="smart-capture-confirm-list" class="overflow-y-auto grow text-sm mb-2"></div>
             <p id="smart-capture-confirm-hint" class="text-[10px] text-slate-400 font-bold uppercase mb-4 text-center">Controlla e correggi i valori prima di applicare</p>
             <div class="flex gap-3">
@@ -12341,6 +12345,106 @@ window.resolveTankIdFromLabel = function(siglaText) {
     return null;
 };
 
+window.parseGeminiTankPairsJson = function(json) {
+    if (!json) return [];
+    let pairs = json.coppie || json.pairs || json.serbatoi;
+    if (!pairs && Array.isArray(json)) pairs = json;
+    if (!Array.isArray(pairs)) return [];
+    const readings = [];
+    const used = new Set();
+    pairs.forEach(function(p) {
+        if (!p) return;
+        const sigla = p.sigla_visibile || p.sigla || p.label || p.tk || '';
+        let val = p.livello_a_destra != null ? p.livello_a_destra : (p.livello != null ? p.livello : (p.liv != null ? p.liv : p.value));
+        val = window.fixOcrDigitValue(val);
+        if (!window.isValidOcrValue(val)) return;
+        const id = window.resolveTankIdFromLabel(sigla);
+        if (!id || used.has(id)) return;
+        used.add(id);
+        readings.push({
+            id: id,
+            value: val,
+            confidence: p.certezza || p.confidence || 'alta',
+            source: String(sigla).trim() || id,
+            method: 'coppia'
+        });
+    });
+    return readings;
+};
+
+window.detectAndFixTankRowSwap = function(readings, textReadings) {
+    if (!readings || !textReadings || !textReadings.length) {
+        return { readings: readings || [], fixed: false };
+    }
+    function valOf(list, id) {
+        const r = list.find(function(x) { return x.id === id; });
+        return r && r.value != null ? String(r.value).replace(',', '.').trim() : null;
+    }
+    const out = readings.map(function(r) { return Object.assign({}, r); });
+    let fixed = false;
+    [
+        ['inp-tk9000', 'inp-tk9201'],
+        ['inp-s133', 'tk101']
+    ].forEach(function(pair) {
+        const idA = pair[0];
+        const idB = pair[1];
+        const vA = valOf(out, idA);
+        const vB = valOf(out, idB);
+        const tA = valOf(textReadings, idA);
+        const tB = valOf(textReadings, idB);
+        if (!vA || !vB || !tA || !tB || vA === vB) return;
+        if (vA === tB && vB === tA) {
+            out.forEach(function(r) {
+                if (r.id === idA) r.value = tA;
+                if (r.id === idB) r.value = tB;
+                if (r.id === idA || r.id === idB) r.confidence = 'media';
+            });
+            fixed = true;
+        }
+    });
+    return { readings: out, fixed: fixed };
+};
+
+window.reconcileTankOcrReadings = function(pairReadings, gridReadings, textReadings) {
+    const order = [
+        { list: pairReadings, weight: 3, label: 'coppia sigla→LIV' },
+        { list: textReadings, weight: 2, label: 'testo' },
+        { list: gridReadings, weight: 1, label: 'griglia' }
+    ];
+    const best = {};
+    order.forEach(function(src) {
+        (src.list || []).forEach(function(r) {
+            if (!r || !r.id || r.value == null) return;
+            const prev = best[r.id];
+            if (!prev || src.weight > prev.weight) {
+                best[r.id] = Object.assign({}, r, { weight: src.weight, method: r.method || src.label });
+            } else if (prev.weight === src.weight && String(prev.value) !== String(r.value)) {
+                best[r.id]._conflict = true;
+            }
+        });
+    });
+    const out = [];
+    Object.keys(best).forEach(function(id) {
+        const r = best[id];
+        out.push({
+            id: id,
+            value: r.value,
+            confidence: r._conflict ? 'bassa' : (r.confidence || 'alta'),
+            source: r.source,
+            method: r.method
+        });
+    });
+    const swapCheck = window.detectAndFixTankRowSwap(out, textReadings);
+    if (swapCheck.fixed) {
+        swapCheck.readings.forEach(function(r) {
+            if (r.id === 'inp-tk9000' || r.id === 'inp-tk9201' || r.id === 'inp-s133' || r.id === 'tk101') {
+                r.source = (r.source || '') + ' · correzione scambio riga';
+            }
+        });
+    }
+    return swapCheck.readings;
+};
+
 window.parseGeminiTankGridJson = function(json) {
     if (!json || typeof json !== 'object') return [];
     const readings = [];
@@ -12377,7 +12481,7 @@ window.normalizeGeminiTankReadings = function(rawReadings) {
             const fromLabel = window.resolveTankIdFromLabel(r.label || r.sigla);
             if (fromLabel) id = fromLabel;
         }
-        if (id && !window.TANK_LABEL_TO_ID[id] && !window.TANK_CAPTURE_FIELDS.find(function(f) { return f.id === id; })) {
+        if (id && !window.getTankLabelToIdMap()[id] && !window.TANK_CAPTURE_FIELDS.find(function(f) { return f.id === id; })) {
             id = window.resolveTankIdFromLabel(id);
         }
         if (!id || used.has(id)) return;
@@ -12625,49 +12729,108 @@ window.runTesseractOcrPass = async function(worker, imageDataUrl, params) {
 };
 
 window.buildGeminiTankCapturePrompt = function() {
-    return 'Sei un operatore che legge il QUADRO SERBATOI da una foto.\n\n' +
-        'LAYOUT FISSO (tabella 2 colonne: TK | LIV | TK | LIV):\n' +
-        '┌─────────────┬─────────────┐\n' +
-        '│ TK 9000 │ LIV │ TK 9201 │ LIV │  riga1_sx = TK9000, riga1_dx = TK9201\n' +
-        '│ S 133   │ LIV │ TK 101  │ LIV │  riga2_sx = S133,   riga2_dx = TK101\n' +
-        '└─────────────┴─────────────┘\n\n' +
-        'REGOLE CRITICHE:\n' +
-        '1) Il numero LIV va nella cella SUBITO A DESTRA della SUA sigla (non della sigla vicina).\n' +
-        '2) TK 9000 e TK 9201 sono sulla STESSA RIGA ma colonne diverse: NON scambiarli.\n' +
-        '3) S 133 è a SINISTRA sulla seconda riga; TK 101 a DESTRA sulla seconda riga.\n' +
-        '4) Leggi solo numeri di livello (es. 12.5 o 12,5), non le sigle come valori.\n\n' +
-        'Rispondi SOLO con JSON (senza markdown), usa questa struttura:\n' +
-        '{"riga1_sx":{"sigla":"TK 9000","livello":"12.3"},"riga1_dx":{"sigla":"TK 9201","livello":"45.6"},' +
-        '"riga2_sx":{"sigla":"S 133","livello":"8.1"},"riga2_dx":{"sigla":"TK 101","livello":"3.2"}}\n' +
-        'Ometti celle non visibili. Punto per i decimali.';
+    return 'Compito: leggere SOLO dalla FOTO i livelli del quadro serbatoi (non inventare, non usare dati esterni).\n\n' +
+        'Il quadro ha coppie ripetute: [SIGLA] [LIV] [SIGLA] [LIV] su due righe.\n' +
+        'Esempio riga 1: TK 9000 | numero | TK 9201 | numero\n' +
+        'Esempio riga 2: S 133   | numero | TK 101  | numero\n\n' +
+        'PROCEDURA OBBLIGATORIA (per ogni sigla che vedi):\n' +
+        '1) Individua il TESTO della sigla (es. "TK 9000").\n' +
+        '2) Guarda SOLO la cella LIV immediatamente A DESTRA di quella sigla.\n' +
+        '3) Copia il numero di quella cella — NON il numero sotto un\'altra sigla.\n' +
+        '4) TK 9000 e TK 9201 sono affiancati: il livello di TK 9000 è a destra di TK 9000, NON a destra di TK 9201.\n' +
+        '5) Stessa regola per S 133 e TK 101 sulla riga sotto.\n\n' +
+        'Rispondi SOLO JSON valido (niente markdown):\n' +
+        '{"coppie":[' +
+        '{"sigla_visibile":"TK 9000","livello_a_destra":"12.3"},' +
+        '{"sigla_visibile":"TK 9201","livello_a_destra":"45.6"},' +
+        '{"sigla_visibile":"S 133","livello_a_destra":"8.1"},' +
+        '{"sigla_visibile":"TK 101","livello_a_destra":"3.2"}' +
+        ']}\n' +
+        'Includi solo sigle realmente visibili. Decimali con il punto.';
+};
+
+window.callGeminiTankOcr = async function(promptText, imageData) {
+    const CHIAVE_AI = window.getGeminiApiKey();
+    if (!CHIAVE_AI) throw new Error('Nessuna chiave Gemini.');
+    const raw = imageData.data || '';
+    const base64 = raw.indexOf(',') >= 0 ? raw.split(',')[1] : raw;
+    const mimeType = imageData.type || 'image/jpeg';
+    if (!base64 || base64.length < 20) throw new Error('Foto non valida.');
+    const modelli = ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash-lite'];
+    const parts = [
+        { inline_data: { mime_type: mimeType, data: base64 } },
+        { text: promptText }
+    ];
+    let lastErr = '';
+    for (let i = 0; i < modelli.length; i++) {
+        const nomeModello = modelli[i];
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(function() { controller.abort(); }, 55000);
+            const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + nomeModello + ':generateContent?key=' + CHIAVE_AI;
+            const body = {
+                contents: [{ parts: parts }],
+                generationConfig: { temperature: 0, maxOutputTokens: 1024 }
+            };
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+            const data = await response.json();
+            if (data.error) {
+                lastErr = data.error.message || JSON.stringify(data.error);
+                continue;
+            }
+            const part0 = data.candidates && data.candidates[0] && data.candidates[0].content &&
+                data.candidates[0].content.parts && data.candidates[0].content.parts[0];
+            if (part0 && part0.text) return part0.text;
+        } catch (e) {
+            lastErr = e && e.message ? e.message : String(e);
+        }
+    }
+    throw new Error(window.formatGeminiError(lastErr) || 'Lettura foto non disponibile.');
 };
 
 window.runGeminiSmartCaptureOcr = async function(imageData, fields) {
     const raw = await window.withOcrTimeout(
-        window.callGeminiAPI(window.buildGeminiTankCapturePrompt(), false, imageData),
+        window.callGeminiTankOcr(window.buildGeminiTankCapturePrompt(), imageData),
         55000,
         'Analisi AI in timeout. Riprova tra poco.'
     );
     const json = window.parseSmartCaptureJson(raw);
-    let readings = [];
-
+    const pairReadings = window.parseGeminiTankPairsJson(json);
+    let gridReadings = [];
     if (json && (json.riga1_sx || json.riga1_dx || json.riga2_sx || json.riga2_dx)) {
-        readings = window.parseGeminiTankGridJson(json);
+        gridReadings = window.parseGeminiTankGridJson(json);
     }
-    if (!readings.length && json && Array.isArray(json.readings)) {
-        readings = window.normalizeGeminiTankReadings(json.readings);
+    let legacyReadings = [];
+    if (json && Array.isArray(json.readings)) {
+        legacyReadings = window.normalizeGeminiTankReadings(json.readings);
     }
+    const textReadings = window.matchTankReadingsFromOcrText(raw, fields);
+    let readings = window.reconcileTankOcrReadings(
+        pairReadings.length ? pairReadings : legacyReadings,
+        gridReadings,
+        textReadings
+    );
     if (!readings.length) {
-        readings = window.matchTankReadingsFromOcrText(raw, fields);
+        readings = gridReadings.length ? gridReadings : textReadings;
     }
+
+    const lowConf = readings.filter(function(r) { return r.confidence === 'bassa'; }).length;
+    let notes = readings.length
+        ? ('AI · lettura per sigla (LIV a destra) · ' + readings.length + ' livelli')
+        : 'AI · nessun livello trovato';
+    if (lowConf) notes += ' · verifica ' + lowConf + ' valori dubbi sulla foto';
 
     return {
         readings: readings,
         engine: 'gemini',
         rawTextPreview: String(raw).slice(0, 300),
-        notes: readings.length
-            ? ('AI Gemini · ' + readings.length + ' livelli · controlla sigla e numero')
-            : 'AI Gemini · nessun livello trovato'
+        notes: notes
     };
 };
 
@@ -13030,7 +13193,11 @@ window.setSmartCaptureLoading = function(active, message) {
 
 window.finishSmartCapture = function(parsed) {
     window.setSmartCaptureLoading(false);
-    window.showSmartCaptureConfirm(parsed || { readings: [], notes: '' });
+    const p = parsed || { readings: [], notes: '' };
+    if (window._smartCapturePhotoData && !p.photoDataUrl) {
+        p.photoDataUrl = window._smartCapturePhotoData;
+    }
+    window.showSmartCaptureConfirm(p);
 };
 
 window.smartCaptureFromFile = function() {
@@ -13273,7 +13440,20 @@ window.showSmartCaptureConfirm = function(parsed) {
     const list = document.getElementById('smart-capture-confirm-list');
     const modal = document.getElementById('smart-capture-confirm-modal');
     const hint = document.getElementById('smart-capture-confirm-hint');
+    const photoWrap = document.getElementById('smart-capture-confirm-photo-wrap');
+    const photoImg = document.getElementById('smart-capture-confirm-photo');
     if (!list || !modal) return;
+
+    const photoUrl = parsed && (parsed.photoDataUrl || parsed.imagePreview);
+    if (photoWrap && photoImg) {
+        if (photoUrl) {
+            photoImg.src = photoUrl;
+            photoWrap.classList.remove('hidden');
+        } else {
+            photoImg.removeAttribute('src');
+            photoWrap.classList.add('hidden');
+        }
+    }
 
     const settings = document.getElementById('settings-modal');
     if (settings) settings.classList.remove('active');
@@ -13305,15 +13485,16 @@ window.showSmartCaptureConfirm = function(parsed) {
         const val = readingMap[f.id] || '';
         const conf = (parsed.readings || []).find(function(r) { return r.id === f.id; });
         const confTxt = conf && conf.confidence ? ' · ' + conf.confidence : '';
+        const warnLow = conf && conf.confidence === 'bassa' ? ' style="color:#fbbf24;"' : '';
         return '<div class="smart-capture-row">' +
-            '<span><strong>' + f.label + '</strong><br><span style="color:#94a3b8;font-size:10px;">' + (f.section || 'Serbatoi') + confTxt + '</span></span>' +
+            '<span><strong' + warnLow + '>' + f.label + '</strong><br><span style="color:#94a3b8;font-size:10px;">' + (f.section || 'Serbatoi') + confTxt + '</span></span>' +
             '<input type="tel" inputmode="decimal" data-field-id="' + f.id + '" value="' + val + '" placeholder="—"></div>';
     }).join('');
 
     if (parsed && parsed.notes && hint) {
         hint.textContent = parsed.notes + ' — correggi se necessario';
     } else if (hint) {
-        hint.textContent = 'Verifica: ogni numero deve essere sotto la sigla giusta (TK9000 a sinistra, TK9201 a destra)';
+        hint.textContent = 'Confronta la foto: il numero deve essere nella cella LIV subito a destra della sigla, non della vicina';
     }
 
     modal.classList.add('active');

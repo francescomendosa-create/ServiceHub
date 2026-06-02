@@ -5648,6 +5648,8 @@ window.updateStoricoButton = async function() {
     document.getElementById('settings-modal').classList.remove('active');
     const smartMenu = document.getElementById('smart-capture-menu');
     if (smartMenu) smartMenu.classList.remove('open');
+    window.stopSmartCaptureStream && window.stopSmartCaptureStream();
+    window.closeSmartCaptureCamera && window.closeSmartCaptureCamera();
     // NASCONDI LE GUIDE QUANDO CHIUDI LE IMPOSTAZIONI
     window.hideAllGuides();
 };
@@ -9745,10 +9747,25 @@ window.convertToHtml = async () => {
         #smart-capture-menu { max-height: 0; overflow: hidden; opacity: 0; transition: max-height 0.25s ease, opacity 0.2s ease, margin 0.25s ease; margin-top: 0; }
         #smart-capture-menu.open { max-height: 180px; opacity: 1; margin-top: 8px; }
         #smart-capture-camera-modal { z-index: 10050; }
-        #smart-capture-camera-modal.active { background: rgba(0,0,0,0.92); backdrop-filter: blur(4px); visibility: visible; }
-        #smart-capture-camera-modal .camera-sheet { width: 100%; max-width: 520px; background: #0f172a; border-radius: 24px; overflow: hidden; border: 2px solid #334155; }
-        #smart-capture-video { width: 100%; max-height: 62vh; object-fit: cover; background: #000; display: block; }
-        #smart-capture-preview-img { width: 100%; max-height: 62vh; object-fit: contain; background: #000; display: none; }
+        #smart-capture-camera-modal.active { background: #000; backdrop-filter: none; visibility: visible; }
+        #smart-capture-camera-modal.active .camera-sheet {
+            width: 100%; max-width: none; height: 100%; max-height: 100dvh;
+            background: #000; border-radius: 0; border: none;
+            display: flex; flex-direction: column;
+        }
+        #smart-capture-camera-wrap {
+            flex: 1; min-height: 45vh; position: relative; background: #000;
+            display: flex; align-items: center; justify-content: center; overflow: hidden;
+        }
+        #smart-capture-video {
+            width: 100%; height: 100%; min-height: 45vh;
+            object-fit: cover; background: #000; display: block;
+            transform: translateZ(0); -webkit-transform: translateZ(0);
+        }
+        #smart-capture-preview-img {
+            width: 100%; height: 100%; min-height: 45vh;
+            object-fit: contain; background: #000; display: none;
+        }
         #smart-capture-confirm-modal { z-index: 10055; }
         #smart-capture-confirm-modal.active { background: rgba(0,0,0,0.75); backdrop-filter: blur(5px); visibility: visible; }
         .smart-capture-row { display: flex; justify-content: space-between; gap: 8px; padding: 8px 0; border-bottom: 1px solid #334155; font-size: 12px; }
@@ -10762,23 +10779,25 @@ window.convertToHtml = async () => {
         </div>
     </div>
 
-    <!-- Acquisizione intelligente: fotocamera -->
+    <!-- Acquisizione intelligente: fotocamera (Android/desktop; iPhone usa fotocamera nativa) -->
     <div id="smart-capture-camera-modal" class="modal-overlay" onclick="if(event.target === this) window.closeSmartCaptureCamera()">
         <div class="camera-sheet" onclick="event.stopPropagation()">
-            <div class="px-5 py-4 flex justify-between items-center border-b border-slate-700">
+            <div class="px-5 py-4 flex justify-between items-center border-b border-slate-700 shrink-0">
                 <div class="text-white font-black uppercase text-sm tracking-wide">Inquadra le letture</div>
                 <button type="button" onclick="window.closeSmartCaptureCamera()" class="bg-red-600 text-white rounded-xl w-10 h-10 font-black">X</button>
             </div>
-            <video id="smart-capture-video" autoplay playsinline muted></video>
-            <img id="smart-capture-preview-img" alt="Anteprima acquisizione">
-            <div class="p-4 flex gap-3">
+            <div id="smart-capture-camera-wrap">
+                <video id="smart-capture-video" autoplay playsinline muted webkit-playsinline></video>
+                <img id="smart-capture-preview-img" alt="Anteprima acquisizione">
+            </div>
+            <div class="p-4 flex gap-3 shrink-0 bg-slate-900">
                 <button type="button" id="smart-capture-shutter" onclick="window.captureSmartCaptureFrame()" class="flex-1 bg-violet-600 text-white font-black py-4 rounded-2xl uppercase border-b-4 border-violet-900 active:scale-95 transition-all">Scatta</button>
                 <button type="button" id="smart-capture-retry" onclick="window.retrySmartCaptureCamera()" class="hidden flex-1 bg-slate-700 text-white font-black py-4 rounded-2xl uppercase border-b-4 border-slate-900 active:scale-95 transition-all">Rifai</button>
                 <button type="button" id="smart-capture-use-photo" onclick="window.useSmartCapturePhoto()" class="hidden flex-1 bg-emerald-600 text-white font-black py-4 rounded-2xl uppercase border-b-4 border-emerald-900 active:scale-95 transition-all">Usa foto</button>
             </div>
-            <p class="text-[10px] text-slate-400 font-bold px-5 pb-4 uppercase text-center">OCR offline — inquadra display o scheda con sigle e valori, poi scatta.</p>
         </div>
     </div>
+    <input type="file" id="smart-capture-native-input" accept="image/*" capture="environment" style="display:none;">
 
     <!-- Conferma letture OCR -->
     <div id="smart-capture-confirm-modal" class="modal-overlay" onclick="if(event.target === this) window.closeSmartCaptureConfirm()">
@@ -12572,7 +12591,9 @@ window._smartCaptureAbort = false;
 
 window.cancelSmartCaptureLoading = function() {
     window._smartCaptureAbort = true;
-    window.resetTesseractWorker();
+    window.resetTesseractWorker && window.resetTesseractWorker();
+    window.stopSmartCaptureStream && window.stopSmartCaptureStream();
+    window.closeSmartCaptureCamera && window.closeSmartCaptureCamera();
     window.setSmartCaptureLoading(false);
 };
 
@@ -12593,20 +12614,8 @@ window.smartCaptureFromFile = function() {
     input.onchange = async function() {
         const file = input.files && input.files[0];
         if (!file) return;
-        try {
-            window.setSmartCaptureLoading(true);
-            const imageData = await window.fileToSmartCaptureData(file);
-            if (window._smartCaptureAbort) return;
-            const parsed = await window.runSmartCaptureAnalysis(imageData);
-            if (window._smartCaptureAbort) return;
-            window.showSmartCaptureConfirm(parsed);
-        } catch (err) {
-            if (!window._smartCaptureAbort) {
-                alert('Acquisizione: ' + (err && err.message ? err.message : String(err)));
-            }
-        } finally {
-            window.setSmartCaptureLoading(false);
-        }
+        input.value = '';
+        window.runSmartCaptureOnFile(file);
     };
     input.click();
 };
@@ -12624,9 +12633,70 @@ window.fileToSmartCaptureData = function(file) {
     });
 };
 
+window.isIosDevice = function() {
+    return /iPhone|iPad|iPod/i.test(navigator.userAgent)
+        || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+};
+
+window.stopSmartCaptureStream = function() {
+    if (window._smartCaptureStream) {
+        window._smartCaptureStream.getTracks().forEach(function(t) {
+            try { t.stop(); t.enabled = false; } catch (e) {}
+        });
+        window._smartCaptureStream = null;
+    }
+    const video = document.getElementById('smart-capture-video');
+    if (video) {
+        try {
+            video.pause();
+            video.srcObject = null;
+            video.removeAttribute('src');
+            video.load();
+        } catch (e) {}
+    }
+};
+
+window.runSmartCaptureOnFile = async function(file) {
+    if (!file) return;
+    try {
+        window.setSmartCaptureLoading(true);
+        const imageData = await window.fileToSmartCaptureData(file);
+        if (window._smartCaptureAbort) return;
+        const parsed = await window.runSmartCaptureAnalysis(imageData);
+        if (window._smartCaptureAbort) return;
+        window.showSmartCaptureConfirm(parsed);
+    } catch (err) {
+        if (!window._smartCaptureAbort) {
+            alert('Acquisizione: ' + (err && err.message ? err.message : String(err)));
+        }
+    } finally {
+        window.setSmartCaptureLoading(false);
+    }
+};
+
+window.openNativeCameraCapture = function() {
+    window.stopSmartCaptureStream();
+    window.closeSmartCaptureCamera();
+    let input = document.getElementById('smart-capture-native-input');
+    if (!input) return;
+    input.value = '';
+    input.onchange = function() {
+        const file = input.files && input.files[0];
+        input.value = '';
+        window.runSmartCaptureOnFile(file);
+    };
+    input.click();
+};
+
 window.smartCaptureFromCamera = async function() {
     const menu = document.getElementById('smart-capture-menu');
     if (menu) menu.classList.remove('open');
+
+    if (window.isIosDevice()) {
+        window.openNativeCameraCapture();
+        return;
+    }
+
     window._smartCapturePhotoData = null;
     const modal = document.getElementById('smart-capture-camera-modal');
     const video = document.getElementById('smart-capture-video');
@@ -12635,69 +12705,57 @@ window.smartCaptureFromCamera = async function() {
     const retry = document.getElementById('smart-capture-retry');
     const useBtn = document.getElementById('smart-capture-use-photo');
     if (!modal || !video) {
-        window.smartCaptureFromFile();
+        window.openNativeCameraCapture();
         return;
     }
 
     if (preview) { preview.style.display = 'none'; preview.src = ''; }
-    if (video) video.style.display = 'block';
+    if (video) { video.style.display = 'block'; }
     if (shutter) shutter.classList.remove('hidden');
     if (retry) retry.classList.add('hidden');
     if (useBtn) useBtn.classList.add('hidden');
 
+    document.getElementById('settings-modal').classList.remove('active');
     modal.classList.add('active');
+    document.body.classList.add('smart-capture-camera-open');
 
     try {
-        if (window._smartCaptureStream) {
-            window._smartCaptureStream.getTracks().forEach(function(t) { t.stop(); });
-        }
+        window.stopSmartCaptureStream();
+        video.setAttribute('playsinline', 'true');
+        video.setAttribute('webkit-playsinline', 'true');
+        video.muted = true;
+        video.playsInline = true;
+
         const stream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+            video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
             audio: false
         });
         window._smartCaptureStream = stream;
         video.srcObject = stream;
+        await new Promise(function(resolve) {
+            if (video.readyState >= 2) resolve();
+            else video.onloadedmetadata = resolve;
+        });
         await video.play();
     } catch (err) {
-        modal.classList.remove('active');
-        const fallback = document.createElement('input');
-        fallback.type = 'file';
-        fallback.accept = 'image/*';
-        fallback.capture = 'environment';
-        fallback.style.display = 'none';
-        document.body.appendChild(fallback);
-        fallback.onchange = async function() {
-            const file = fallback.files && fallback.files[0];
-            document.body.removeChild(fallback);
-            if (!file) return;
-            try {
-                window.setSmartCaptureLoading(true);
-                const imageData = await window.fileToSmartCaptureData(file);
-                if (window._smartCaptureAbort) return;
-                const parsed = await window.runSmartCaptureAnalysis(imageData);
-                if (window._smartCaptureAbort) return;
-                window.showSmartCaptureConfirm(parsed);
-            } catch (e2) {
-                if (!window._smartCaptureAbort) {
-                    alert('Fotocamera: ' + (e2 && e2.message ? e2.message : String(e2)));
-                }
-            } finally {
-                window.setSmartCaptureLoading(false);
-            }
-        };
-        fallback.click();
+        window.closeSmartCaptureCamera();
+        window.openNativeCameraCapture();
     }
 };
 
-window.closeSmartCaptureCamera = function() {
+window.closeSmartCaptureCamera = function(reopenSettings) {
     const modal = document.getElementById('smart-capture-camera-modal');
     if (modal) modal.classList.remove('active');
-    if (window._smartCaptureStream) {
-        window._smartCaptureStream.getTracks().forEach(function(t) { t.stop(); });
-        window._smartCaptureStream = null;
+    document.body.classList.remove('smart-capture-camera-open');
+    window.stopSmartCaptureStream();
+    window._smartCapturePhotoData = null;
+    if (reopenSettings !== false) {
+        const settings = document.getElementById('settings-modal');
+        const loading = document.getElementById('smart-capture-loading');
+        if (settings && !(loading && loading.classList.contains('active'))) {
+            settings.classList.add('active');
+        }
     }
-    const video = document.getElementById('smart-capture-video');
-    if (video) video.srcObject = null;
 };
 
 window.captureSmartCaptureFrame = function() {
@@ -12708,13 +12766,21 @@ window.captureSmartCaptureFrame = function() {
     const useBtn = document.getElementById('smart-capture-use-photo');
     if (!video || !preview) return;
 
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+    if (!w || !h) {
+        alert('Anteprima non pronta. Attendi un secondo o usa Importa da file.');
+        return;
+    }
+
     const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth || 1280;
-    canvas.height = video.videoHeight || 720;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext('2d').drawImage(video, 0, 0, w, h);
     const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
     window._smartCapturePhotoData = { data: dataUrl, type: 'image/jpeg', name: 'camera.jpg' };
+
+    window.stopSmartCaptureStream();
 
     preview.src = dataUrl;
     preview.style.display = 'block';
@@ -12724,23 +12790,17 @@ window.captureSmartCaptureFrame = function() {
     if (useBtn) useBtn.classList.remove('hidden');
 };
 
-window.retrySmartCaptureCamera = function() {
+window.retrySmartCaptureCamera = async function() {
     window._smartCapturePhotoData = null;
-    const video = document.getElementById('smart-capture-video');
     const preview = document.getElementById('smart-capture-preview-img');
-    const shutter = document.getElementById('smart-capture-shutter');
-    const retry = document.getElementById('smart-capture-retry');
-    const useBtn = document.getElementById('smart-capture-use-photo');
     if (preview) { preview.style.display = 'none'; preview.src = ''; }
-    if (video) video.style.display = 'block';
-    if (shutter) shutter.classList.remove('hidden');
-    if (retry) retry.classList.add('hidden');
-    if (useBtn) useBtn.classList.add('hidden');
+    window.stopSmartCaptureStream();
+    await window.smartCaptureFromCamera();
 };
 
 window.useSmartCapturePhoto = async function() {
     if (!window._smartCapturePhotoData) return;
-    window.closeSmartCaptureCamera();
+    window.closeSmartCaptureCamera(false);
     try {
         window.setSmartCaptureLoading(true);
         if (window._smartCaptureAbort) return;

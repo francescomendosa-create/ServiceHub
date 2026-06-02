@@ -507,7 +507,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.02-v23';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.02-v24';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -14973,6 +14973,33 @@ window.applySmartCaptureResults = function() {
 };
 
 // --- INTEGRAZIONE GEMINI AI (chiave solo da Impostazioni, mai hardcoded) ---
+window.normalizeGeminiApiKey = function(raw) {
+    if (raw == null) return '';
+    let k = String(raw)
+        .replace(/[\u200B-\u200D\uFEFF\u00A0]/g, '')
+        .replace(/\s+/g, '')
+        .trim();
+    k = k.replace(/^["'`]+|["'`]+$/g, '');
+    const m = k.match(/AIza[0-9A-Za-z\-_]{30,}/);
+    if (m) k = m[0];
+    return k;
+};
+
+window.validateGeminiApiKey = function(key) {
+    key = window.normalizeGeminiApiKey(key);
+    if (!key) return { ok: false, reason: 'Chiave vuota.' };
+    if (!/^AIza[0-9A-Za-z\-_]{30,}$/.test(key)) {
+        return { ok: false, reason: 'Formato non valido. Deve iniziare con AIza… (copia da aistudio.google.com/apikey).' };
+    }
+    return { ok: true, key: key };
+};
+
+window.geminiKeyPreview = function(key) {
+    key = window.normalizeGeminiApiKey(key);
+    if (key.length < 8) return '—';
+    return key.slice(0, 4) + '…' + key.slice(-4) + ' (' + key.length + ' car.)';
+};
+
 window.setGeminiKeyInputMasked = function(masked) {
     const input = document.getElementById('settings-gemini-key');
     if (input) input.classList.toggle('gemini-key-masked', !!masked);
@@ -15036,16 +15063,16 @@ window.applyGeminiKeyFromPasteDialog = function() {
     const area = document.getElementById('gemini-paste-area');
     const input = document.getElementById('settings-gemini-key');
     if (!area || !input) return;
-    const key = String(area.value || '').trim();
-    if (!key) {
-        alert('Incolla prima la chiave nel riquadro.');
+    const check = window.validateGeminiApiKey(area.value);
+    if (!check.ok) {
+        alert(check.reason);
         return;
     }
-    input.value = key;
+    input.value = check.key;
     window.setGeminiKeyInputMasked(false);
     window.updateGeminiKeyStatus();
     window.closeGeminiKeyPasteDialog();
-    window.setGeminiKeyStatusLine('Incollata — tocca Salva', '#3b82f6');
+    window.setGeminiKeyStatusLine('Incollata (' + check.key.length + ' car.) — tocca Salva', '#3b82f6');
 };
 
 window.pasteGeminiApiKey = async function() {
@@ -15055,12 +15082,17 @@ window.pasteGeminiApiKey = async function() {
     try {
         if (navigator.clipboard && navigator.clipboard.readText) {
             const text = await navigator.clipboard.readText();
-            const key = String(text || '').trim();
-            if (key) {
-                input.value = key;
+            const check = window.validateGeminiApiKey(text);
+            if (check.ok) {
+                input.value = check.key;
                 input.focus();
                 window.updateGeminiKeyStatus();
-                window.setGeminiKeyStatusLine('Incollata — tocca Salva', '#3b82f6');
+                window.setGeminiKeyStatusLine('Incollata (' + check.key.length + ' car.) — tocca Salva', '#3b82f6');
+                return;
+            }
+            if (text && String(text).trim()) {
+                alert(check.reason);
+                window.openGeminiKeyPasteDialog();
                 return;
             }
         }
@@ -15072,18 +15104,25 @@ window.pasteGeminiApiKey = async function() {
 
 window.getGeminiApiKey = function() {
     const saved = localStorage.getItem('servicehub_gemini_api_key');
-    if (saved && saved.trim()) return saved.trim();
+    if (saved) {
+        const k = window.normalizeGeminiApiKey(saved);
+        if (k && k !== saved) {
+            try { localStorage.setItem('servicehub_gemini_api_key', k); } catch (e) {}
+        }
+        if (k) return k;
+    }
     const input = document.getElementById('settings-gemini-key');
-    const draft = (input && input.value || '').trim();
-    return draft || '';
+    return window.normalizeGeminiApiKey(input && input.value);
 };
 
 window.ensureGeminiApiKeySaved = function() {
     const input = document.getElementById('settings-gemini-key');
     if (!input) return false;
-    const key = input.value.trim();
-    if (!key) return false;
-    const prev = (localStorage.getItem('servicehub_gemini_api_key') || '').trim();
+    const check = window.validateGeminiApiKey(input.value);
+    if (!check.ok) return false;
+    const key = check.key;
+    input.value = key;
+    const prev = window.normalizeGeminiApiKey(localStorage.getItem('servicehub_gemini_api_key') || '');
     if (key === prev) return true;
     localStorage.setItem('servicehub_gemini_api_key', key);
     sessionStorage.removeItem('servicehub_gemini_skip');
@@ -15099,14 +15138,18 @@ window.isGeminiApiKeySaved = function() {
 
 window.loadGeminiKeySettings = function() {
     const input = document.getElementById('settings-gemini-key');
-    const saved = localStorage.getItem('servicehub_gemini_api_key') || '';
+    const raw = localStorage.getItem('servicehub_gemini_api_key') || '';
+    const saved = window.normalizeGeminiApiKey(raw);
+    if (saved && saved !== raw) {
+        try { localStorage.setItem('servicehub_gemini_api_key', saved); } catch (e) {}
+    }
     if (input) {
         input.value = saved;
         window.setGeminiKeyInputMasked(!!saved);
     }
     window.updateGeminiKeyStatus();
     if (saved) {
-        window.setGeminiKeyStatusLine('Chiave presente — Elimina per cambiarla', '#22c55e');
+        window.setGeminiKeyStatusLine('Chiave ' + window.geminiKeyPreview(saved) + ' — Elimina per cambiarla', '#22c55e');
     } else {
         window.setGeminiKeyStatusLine('Nessuna chiave — Incolla poi Salva', '#94a3b8');
     }
@@ -15136,8 +15179,8 @@ window.saveGeminiApiKeySilent = function() {
 window.saveGeminiApiKey = function(silent) {
     const input = document.getElementById('settings-gemini-key');
     if (!input) return false;
-    const key = input.value.trim();
-    if (!key) {
+    const raw = input.value;
+    if (!String(raw || '').trim()) {
         localStorage.removeItem('servicehub_gemini_api_key');
         sessionStorage.removeItem('servicehub_gemini_skip');
         window.__geminiUnavailable = false;
@@ -15147,12 +15190,19 @@ window.saveGeminiApiKey = function(silent) {
         if (!silent) window.setGeminiKeyStatusLine('Nessuna chiave salvata', '#94a3b8');
         return false;
     }
+    const check = window.validateGeminiApiKey(raw);
+    if (!check.ok) {
+        if (!silent) alert(check.reason);
+        return false;
+    }
+    const key = check.key;
+    input.value = key;
     localStorage.setItem('servicehub_gemini_api_key', key);
     sessionStorage.removeItem('servicehub_gemini_skip');
     window.__geminiUnavailable = false;
     window.setGeminiKeyInputMasked(true);
     window.updateGeminiKeyStatus();
-    if (!silent) window.setGeminiKeyStatusLine('Chiave salvata', '#22c55e');
+    if (!silent) window.setGeminiKeyStatusLine('Salvata · ' + window.geminiKeyPreview(key), '#22c55e');
     return true;
 };
 
@@ -15196,8 +15246,15 @@ window.testGeminiApiKey = async function() {
 
 window.formatGeminiError = function(message) {
     const msg = String(message || '');
+    if (/UNAUTHENTICATED|invalid authentication|authentication credentials|401|403.*API key/i.test(msg)) {
+        return 'Credenziali Gemini non valide su questo dispositivo.\n\n' +
+            '1) Impostazioni → Elimina → Incolla di nuovo la chiave (solo AIza… da aistudio.google.com/apikey)\n' +
+            '2) Tocca Salva — deve comparire ~39 caratteri (es. AIza…xxxx)\n' +
+            '3) NON usare la chiave Firebase del progetto\n' +
+            '4) In Google Cloud → Credenziali → la chiave deve avere "Generative Language API" e nessun blocco referrer che esclude Android/PWA';
+    }
     if (/API_KEY_HTTP_REFERRER_BLOCKED|referer.*blocked/i.test(msg)) {
-        return 'Gemini: chiave API con restrizioni dominio. In Google Cloud Console → Credenziali → API key, aggiungi questo sito (es. https://*.github.io/*) oppure usa la chiave del progetto servicehub-18309.';
+        return 'Gemini: chiave con restrizioni sito web. In Google Cloud → Credenziali → API key → Restrizioni applicazione: scegli "Nessuna" oppure aggiungi https://*.github.io/* e https://francescomendosa-create.github.io/*';
     }
     if (/SERVICE_DISABLED|has not been used in project|API has not been enabled/i.test(msg)) {
         return 'Gemini API non attiva sul progetto ServiceHub. Abilitala qui: https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com?project=servicehub-18309';

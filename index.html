@@ -9772,6 +9772,12 @@ window.convertToHtml = async () => {
         .smart-capture-row:last-child { border-bottom: none; }
         .smart-capture-loading { position: fixed; inset: 0; z-index: 10060; background: rgba(15,23,42,0.88); display: none; align-items: center; justify-content: center; flex-direction: column; gap: 16px; color: white; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; }
         .smart-capture-loading.active { display: flex; }
+        #smart-capture-guided-modal { z-index: 10058; }
+        #smart-capture-guided-modal.active { background: rgba(0,0,0,0.85); visibility: visible; }
+        #guided-photo-preview { width: 100%; max-height: 38vh; object-fit: contain; background: #000; border-radius: 12px; }
+        .guided-field-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+        .guided-field-row label { flex: 0 0 88px; font-weight: 800; font-size: 13px; color: #e2e8f0; }
+        .guided-field-row input { flex: 1; font-size: 22px; font-weight: 800; text-align: center; padding: 10px; border-radius: 12px; border: 2px solid #475569; background: #0f172a; color: #fff; }
         .management-sheet { transform: translateY(100%); width: 100%; height: 75vh; border-radius: 32px 32px 0 0; background: var(--bg-modal); border: 3px solid var(--border-main); border-bottom: none; transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.1); overflow: hidden; display: flex; flex-direction: column; }
         #management-modal.active .management-sheet, #archive-list-modal.active .management-sheet { transform: translateY(0); }
 
@@ -10701,7 +10707,7 @@ window.convertToHtml = async () => {
                         </button>
                         <button type="button" onclick="window.smartCaptureFromCamera()" class="w-full mt-2 bg-violet-50 dark:bg-violet-950 text-violet-800 dark:text-violet-200 font-black py-4 px-5 rounded-[20px] border-2 border-violet-300 dark:border-violet-700 flex items-center justify-center gap-3 outline-none active:scale-95 transition-all">
                             <i class="fas fa-camera text-violet-600"></i>
-                            <span class="text-[11px] uppercase">OCR · Fotocamera</span>
+                            <span class="text-[11px] uppercase">Foto serbatoi</span>
                         </button>
                     </div>
                     <input type="file" id="smart-capture-file-input" accept="image/*" capture="environment" style="display:none;">
@@ -10816,8 +10822,25 @@ window.convertToHtml = async () => {
 
     <div id="smart-capture-loading" class="smart-capture-loading">
         <i class="fas fa-spinner fa-spin text-3xl text-violet-400"></i>
-        <span id="smart-capture-loading-msg">OCR offline in corso…</span>
+        <span id="smart-capture-loading-msg">Elaborazione…</span>
         <button type="button" onclick="window.cancelSmartCaptureLoading()" class="mt-2 bg-red-600 text-white font-black px-6 py-3 rounded-xl uppercase text-[11px] border-b-4 border-red-900 active:scale-95">Annulla</button>
+    </div>
+
+    <!-- Inserimento guidato (foto + valori serbatoi) — funziona su iPhone senza OCR -->
+    <div id="smart-capture-guided-modal" class="modal-overlay" onclick="if(event.target === this) window.closeGuidedCaptureModal()">
+        <div class="modal-content-centered bg-slate-900 text-white p-5 rounded-[24px] border-2 border-slate-600 max-w-lg w-[94%] max-h-[92vh] flex flex-col" onclick="event.stopPropagation()">
+            <div class="flex justify-between items-center mb-3 shrink-0">
+                <h3 class="font-black uppercase text-base">Foto serbatoi</h3>
+                <button type="button" onclick="window.closeGuidedCaptureModal()" class="bg-red-600 rounded-xl w-10 h-10 font-black">X</button>
+            </div>
+            <img id="guided-photo-preview" alt="Foto serbatoi">
+            <p class="text-[10px] text-slate-400 font-bold uppercase mt-3 mb-2 text-center">Guarda la foto e inserisci i livelli</p>
+            <div id="guided-fields-list" class="overflow-y-auto grow mb-4"></div>
+            <div class="flex gap-3 shrink-0">
+                <button type="button" onclick="window.closeGuidedCaptureModal()" class="flex-1 bg-slate-700 font-black py-3 rounded-xl uppercase text-sm">Annulla</button>
+                <button type="button" onclick="window.applyGuidedCapture()" class="flex-1 bg-emerald-600 font-black py-3 rounded-xl uppercase text-sm border-b-4 border-emerald-900">Applica</button>
+            </div>
+        </div>
     </div>
 
     <!-- Modale Gestione Report -->
@@ -12164,8 +12187,72 @@ window.applyAlarmLevelFillToField = function (el, forceMin) {
     }
 };
 
-// --- ACQUISIZIONE INTELLIGENTE: SOLO OCR OFFLINE (TESSERACT, NO GEMINI) ---
+// --- ACQUISIZIONE INTELLIGENTE: FOTO + INSERIMENTO GUIDATO (no OCR su mobile) ---
 window.SMART_CAPTURE_OFFLINE_ONLY = true;
+
+window.TANK_CAPTURE_FIELDS = [
+    { id: 'inp-tk9000', label: 'TK 9000' },
+    { id: 'inp-s133', label: 'S 133' },
+    { id: 'inp-tk9201', label: 'TK 9201' },
+    { id: 'tk101', label: 'TK 101' },
+    { id: 'inp-tk9204', label: 'TK 9204' },
+    { id: 'inp-tk9205', label: 'TK 9205' },
+    { id: 'inp-tk10000', label: 'TK 10000' }
+];
+
+window.useGuidedSmartCapture = function() {
+    return true;
+};
+
+window.showGuidedCaptureModal = function(imageData) {
+    const modal = document.getElementById('smart-capture-guided-modal');
+    const preview = document.getElementById('guided-photo-preview');
+    const list = document.getElementById('guided-fields-list');
+    if (!modal || !preview || !list) return;
+
+    const dataUrl = imageData && imageData.data ? imageData.data : '';
+    preview.src = dataUrl.indexOf(',') >= 0 ? dataUrl : 'data:image/jpeg;base64,' + dataUrl;
+
+    list.innerHTML = window.TANK_CAPTURE_FIELDS.map(function(f) {
+        const cur = document.getElementById(f.id);
+        const val = cur && cur.value ? cur.value : '';
+        return '<div class="guided-field-row"><label for="guided-inp-' + f.id + '">' + f.label + '</label>' +
+            '<input type="tel" inputmode="decimal" id="guided-inp-' + f.id + '" data-field-id="' + f.id + '" value="' + val + '" placeholder="—"></div>';
+    }).join('');
+
+    document.getElementById('settings-modal').classList.remove('active');
+    modal.classList.add('active');
+
+    const first = list.querySelector('input');
+    if (first) setTimeout(function() { try { first.focus(); } catch (e) {} }, 300);
+};
+
+window.closeGuidedCaptureModal = function(reopenSettings) {
+    const modal = document.getElementById('smart-capture-guided-modal');
+    if (modal) modal.classList.remove('active');
+    if (reopenSettings !== false) {
+        const settings = document.getElementById('settings-modal');
+        if (settings) settings.classList.add('active');
+    }
+};
+
+window.applyGuidedCapture = function() {
+    let applied = 0;
+    document.querySelectorAll('#guided-fields-list input[data-field-id]').forEach(function(inp) {
+        const val = String(inp.value || '').trim();
+        if (!val) return;
+        const target = document.getElementById(inp.dataset.fieldId);
+        if (!target || target.readOnly) return;
+        target.value = val;
+        try { target.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+        applied++;
+    });
+    if (typeof window.saveData === 'function') window.saveData();
+    if (typeof window.salvaDatiGlobale === 'function') window.salvaDatiGlobale();
+    if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
+    window.closeGuidedCaptureModal(true);
+    alert(applied ? ('Applicati ' + applied + ' livelli serbatoi.') : 'Nessun valore inserito.');
+};
 window._smartCapturePending = null;
 window._smartCaptureStream = null;
 window._smartCapturePhotoData = null;
@@ -12605,8 +12692,12 @@ window.stopSmartCaptureStream = function() {
 window.runSmartCaptureOnFile = async function(file) {
     if (!file) return;
     try {
-        window.setSmartCaptureLoading(true);
         const imageData = await window.fileToSmartCaptureData(file);
+        if (window.useGuidedSmartCapture()) {
+            window.showGuidedCaptureModal(imageData);
+            return;
+        }
+        window.setSmartCaptureLoading(true);
         if (window._smartCaptureAbort) return;
         const parsed = await window.runSmartCaptureAnalysis(imageData);
         if (window._smartCaptureAbort) return;

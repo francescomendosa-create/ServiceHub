@@ -10687,7 +10687,7 @@ window.convertToHtml = async () => {
                             <span class="text-[11px] uppercase">OCR · Fotocamera</span>
                         </button>
                     </div>
-                    <input type="file" id="smart-capture-file-input" accept="image/*,.pdf,application/pdf" style="display:none;">
+                    <input type="file" id="smart-capture-file-input" accept="image/*" capture="environment" style="display:none;">
                 </div>
                 <div class="p-5 rounded-[24px] border-2 border-blue-200 dark:border-blue-900 bg-blue-50 dark:bg-slate-900">
                     <p class="text-[10px] font-black text-blue-700 dark:text-blue-300 uppercase tracking-widest mb-2">Chiave Gemini AI</p>
@@ -10776,7 +10776,7 @@ window.convertToHtml = async () => {
                 <button type="button" id="smart-capture-retry" onclick="window.retrySmartCaptureCamera()" class="hidden flex-1 bg-slate-700 text-white font-black py-4 rounded-2xl uppercase border-b-4 border-slate-900 active:scale-95 transition-all">Rifai</button>
                 <button type="button" id="smart-capture-use-photo" onclick="window.useSmartCapturePhoto()" class="hidden flex-1 bg-emerald-600 text-white font-black py-4 rounded-2xl uppercase border-b-4 border-emerald-900 active:scale-95 transition-all">Usa foto</button>
             </div>
-            <p class="text-[10px] text-slate-400 font-bold px-5 pb-4 uppercase text-center">Inquadra display o scheda con sigle e valori, poi scatta.</p>
+            <p class="text-[10px] text-slate-400 font-bold px-5 pb-4 uppercase text-center">OCR offline — inquadra display o scheda con sigle e valori, poi scatta.</p>
         </div>
     </div>
 
@@ -10797,7 +10797,7 @@ window.convertToHtml = async () => {
 
     <div id="smart-capture-loading" class="smart-capture-loading">
         <i class="fas fa-spinner fa-spin text-3xl text-violet-400"></i>
-        <span id="smart-capture-loading-msg">Analisi intelligente in corso…</span>
+        <span id="smart-capture-loading-msg">OCR offline in corso…</span>
     </div>
 
     <!-- Modale Gestione Report -->
@@ -12144,7 +12144,8 @@ window.applyAlarmLevelFillToField = function (el, forceMin) {
     }
 };
 
-// --- ACQUISIZIONE INTELLIGENTE (OCR LOCALE TESSERACT + GEMINI FALLBACK) ---
+// --- ACQUISIZIONE INTELLIGENTE: SOLO OCR OFFLINE (TESSERACT, NO GEMINI) ---
+window.SMART_CAPTURE_OFFLINE_ONLY = true;
 window._smartCapturePending = null;
 window._smartCaptureStream = null;
 window._smartCapturePhotoData = null;
@@ -12330,6 +12331,26 @@ window.isValidOcrValue = function(value) {
     return /^\d+([.]\d+)?$/.test(String(value || '').replace(',', '.'));
 };
 
+window.lineMatchesOcrPattern = function(lineNorm, lineCompact, pattern) {
+    const p = pattern;
+    const pc = p.replace(/\s+/g, '');
+    if (lineNorm.indexOf(p) >= 0 || lineCompact.indexOf(pc) >= 0) return true;
+    if (p.length < 4) return false;
+    const re = new RegExp(p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s*'), 'i');
+    if (re.test(lineNorm)) return true;
+    return false;
+};
+
+window.mergeOcrReadingLists = function(a, b) {
+    const byId = {};
+    (a || []).forEach(function(r) { if (r && r.id) byId[r.id] = r; });
+    (b || []).forEach(function(r) {
+        if (!r || !r.id) return;
+        if (!byId[r.id] || r.confidence === 'alta') byId[r.id] = r;
+    });
+    return Object.keys(byId).map(function(k) { return byId[k]; });
+};
+
 window.matchReadingsFromOcrText = function(ocrText, fields) {
     const normalizedText = window.normalizeSiglaKey(ocrText).replace(/\n/g, ' ');
     const lines = String(ocrText).split(/\r?\n/).map(function(l) { return l.trim(); }).filter(Boolean);
@@ -12338,7 +12359,8 @@ window.matchReadingsFromOcrText = function(ocrText, fields) {
 
     function addReading(field, value, confidence, source) {
         if (!field || !field.id || usedIds.has(field.id)) return;
-        const v = String(value || '').replace(',', '.').trim();
+        let v = String(value || '').replace(',', '.').trim();
+        v = v.replace(/[^\d.]/g, '');
         if (!window.isValidOcrValue(v)) return;
         readings.push({
             id: field.id,
@@ -12349,24 +12371,25 @@ window.matchReadingsFromOcrText = function(ocrText, fields) {
         usedIds.add(field.id);
     }
 
-    for (let i = 0; i < lines.length - 1; i++) {
-        const lineNorm = window.normalizeSiglaKey(lines[i]);
-        const valMatch = lines[i + 1].match(/^(\d+[.,]\d+|\d+)\s*$/);
-        if (!valMatch) continue;
-        const value = valMatch[1].replace(',', '.');
+    function tryMatchLine(line, value, confBoost) {
+        const lineNorm = window.normalizeSiglaKey(line);
+        const lineCompact = lineNorm.replace(/\s+/g, '');
         fields.forEach(function(field) {
             if (usedIds.has(field.id)) return;
             const patterns = window.buildSiglaPatterns(field);
             for (let pi = 0; pi < patterns.length; pi++) {
                 const p = patterns[pi];
-                const compact = p.replace(/\s+/g, '');
-                const lineCompact = lineNorm.replace(/\s+/g, '');
-                if (lineNorm.indexOf(p) >= 0 || lineCompact.indexOf(compact) >= 0) {
-                    addReading(field, value, p.length >= 5 ? 'alta' : 'media', lines[i]);
+                if (window.lineMatchesOcrPattern(lineNorm, lineCompact, p)) {
+                    addReading(field, value, (p.length >= 5 ? 'alta' : 'media'), line);
                     break;
                 }
             }
         });
+    }
+
+    for (let i = 0; i < lines.length - 1; i++) {
+        const valMatch = lines[i + 1].match(/^(\d+[.,]\d+|\d+)\s*$/);
+        if (valMatch) tryMatchLine(lines[i], valMatch[1], 0);
     }
 
     lines.forEach(function(line) {
@@ -12385,11 +12408,18 @@ window.matchReadingsFromOcrText = function(ocrText, fields) {
                 }
             }
         });
+        const parts = lineUp.split(/\s+/);
+        parts.forEach(function(part, idx) {
+            if (!/^\d+[.,]?\d*$/.test(part.replace(',', '.'))) return;
+            const val = part.replace(',', '.');
+            const ctx = parts.slice(Math.max(0, idx - 3), idx).join(' ');
+            if (ctx) tryMatchLine(ctx, val, 0);
+        });
     });
 
     fields.forEach(function(field) {
         if (usedIds.has(field.id)) return;
-        const patterns = window.buildSiglaPatterns(field).filter(function(p) { return p.length >= 5; });
+        const patterns = window.buildSiglaPatterns(field).filter(function(p) { return p.length >= 4; });
         for (let pi = 0; pi < patterns.length; pi++) {
             const p = patterns[pi];
             const esc = p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s*');
@@ -12407,31 +12437,8 @@ window.matchReadingsFromOcrText = function(ocrText, fields) {
     return {
         readings: readings,
         engine: 'local',
-        notes: 'OCR locale offline (Tesseract) · ' + readings.length + ' letture'
-    };
-};
-
-window.localSmartCaptureGoodEnough = function(result) {
-    const readings = (result && result.readings) || [];
-    if (readings.length >= 2) return true;
-    if (readings.length === 1 && readings[0].confidence === 'alta') return true;
-    return false;
-};
-
-window.mergeSmartCaptureResults = function(localResult, cloudResult) {
-    const byId = {};
-    (localResult && localResult.readings || []).forEach(function(r) {
-        if (r && r.id) byId[r.id] = r;
-    });
-    (cloudResult && cloudResult.readings || []).forEach(function(r) {
-        if (!r || !r.id) return;
-        if (!byId[r.id] || r.confidence === 'alta') byId[r.id] = r;
-    });
-    const merged = Object.keys(byId).map(function(k) { return byId[k]; });
-    return {
-        readings: merged,
-        engine: 'hybrid',
-        notes: 'OCR locale + Gemini · ' + merged.length + ' letture'
+        rawTextPreview: String(ocrText).slice(0, 400),
+        notes: 'OCR offline (Tesseract) · ' + readings.length + ' letture · nessuna connessione cloud'
     };
 };
 
@@ -12441,104 +12448,61 @@ window.runLocalSmartCaptureOcr = async function(imageData, fields) {
     const dataUrl = raw.indexOf(',') >= 0 ? raw : 'data:image/jpeg;base64,' + raw;
     window.setSmartCaptureLoadingMessage('Preparazione immagine…');
     const preprocessed = await window.preprocessImageForOcr(dataUrl);
-    window.setSmartCaptureLoadingMessage('OCR locale in corso…');
+    window.setSmartCaptureLoadingMessage('OCR offline in corso…');
 
-    const result = await worker.recognize(preprocessed, {}, {
-        logger: function(m) {
-            if (m.status === 'recognizing text') {
-                window.setSmartCaptureLoadingMessage('OCR locale ' + Math.round((m.progress || 0) * 100) + '%…');
+    const ocrOpts = { tessedit_pageseg_mode: '6' };
+    let mergedReadings = [];
+
+    for (let pass = 0; pass < 2; pass++) {
+        const src = pass === 0 ? preprocessed : dataUrl;
+        const result = await worker.recognize(src, ocrOpts, {
+            logger: function(m) {
+                if (m.status === 'recognizing text') {
+                    window.setSmartCaptureLoadingMessage('OCR offline ' + Math.round((m.progress || 0) * 100) + '%…');
+                }
             }
+        });
+        const text = result.data && result.data.text ? result.data.text : '';
+        if (text.trim()) {
+            const parsed = window.matchReadingsFromOcrText(text, fields);
+            mergedReadings = window.mergeOcrReadingLists(mergedReadings, parsed.readings);
         }
-    });
-
-    const text = result.data && result.data.text ? result.data.text : '';
-    console.log('OCR locale testo grezzo:', text.slice(0, 500));
-    if (!text.trim()) {
-        return { readings: [], engine: 'local', notes: 'OCR locale: nessun testo rilevato.' };
     }
-    return window.matchReadingsFromOcrText(text, fields);
-};
 
-window.runGeminiSmartCaptureOcr = async function(imageData, fields) {
-    const catalog = fields.slice(0, 220).map(function(f) {
-        return { id: f.id, sigla: f.label, sezione: f.section };
-    });
-    const promptOcr =
-        'Sei un sistema OCR per un impianto industriale. Analizza l\'immagine allegata (foto di display, quadro, scheda o report cartaceo). ' +
-        'Trova sigle/etichette e valori numerici o testuali associati. Abbina ogni valore al campo corretto usando SOLO gli id del catalogo JSON qui sotto. ' +
-        'Regole: restituisci SOLO JSON valido, senza markdown né testo extra. ' +
-        'Formato: {"readings":[{"id":"campo_id","value":"valore","confidence":"alta|media|bassa","source":"sigla vista"}],"notes":"eventuali osservazioni brevi"}. ' +
-        'Usa solo id presenti nel catalogo. Se non sei sicuro, ometti il campo. Normalizza i numeri (virgola → punto). ' +
-        'Catalogo campi:\n' + JSON.stringify(catalog);
-
-    const res = await window.callGeminiAPI(promptOcr, false, imageData);
-    const parsed = window.parseSmartCaptureJson(res);
-    if (!parsed || !Array.isArray(parsed.readings)) {
-        throw new Error('Impossibile interpretare la risposta cloud.');
-    }
-    parsed.engine = 'cloud';
-    parsed.notes = (parsed.notes ? parsed.notes + ' · ' : '') + 'Gemini Vision';
-    return parsed;
+    console.log('OCR offline:', mergedReadings.length, 'letture');
+    return {
+        readings: mergedReadings,
+        engine: 'local',
+        notes: 'OCR offline (Tesseract) · ' + mergedReadings.length + ' letture · nessuna connessione cloud'
+    };
 };
 
 window.runSmartCaptureAnalysis = async function(imageData) {
     const fields = window.buildSmartCaptureFieldMap();
     if (!fields.length) throw new Error('Nessun campo mappabile trovato nell\'interfaccia.');
 
-    const isPdf = imageData && imageData.type === 'application/pdf';
-    let localResult = null;
-
-    if (!isPdf) {
-        try {
-            localResult = await window.runLocalSmartCaptureOcr(imageData, fields);
-            if (window.localSmartCaptureGoodEnough(localResult)) {
-                return localResult;
-            }
-        } catch (e) {
-            console.warn('OCR locale fallito:', e && e.message);
-            localResult = localResult || { readings: [] };
-        }
+    if (imageData && imageData.type === 'application/pdf') {
+        throw new Error('I PDF non sono supportati. Scatta una foto JPG/PNG del display o della scheda.');
     }
 
-    const skipCloud = window.SMART_CAPTURE_FORCE_LOCAL === true
-        || window.__geminiUnavailable === true
-        || sessionStorage.getItem('servicehub_gemini_skip') === '1';
-
-    if (skipCloud && !isPdf) {
-        if (localResult && (localResult.readings || []).length) {
-            localResult.notes = 'Solo OCR locale · ' + localResult.readings.length + ' letture';
-            return localResult;
-        }
-        throw new Error('Nessuna lettura trovata con OCR locale. Prova foto più nitida con sigle visibili.');
+    const localResult = await window.runLocalSmartCaptureOcr(imageData, fields);
+    if (localResult.readings && localResult.readings.length) {
+        return localResult;
     }
 
-    try {
-        window.setSmartCaptureLoadingMessage('Analisi cloud (Gemini)…');
-        const cloudResult = await window.runGeminiSmartCaptureOcr(imageData, fields);
-        window.__geminiUnavailable = false;
-        if (localResult && (localResult.readings || []).length) {
-            return window.mergeSmartCaptureResults(localResult, cloudResult);
-        }
-        return cloudResult;
-    } catch (cloudErr) {
-        console.warn('Gemini OCR fallito:', cloudErr && cloudErr.message);
-        window.__geminiUnavailable = true;
-        if (localResult && (localResult.readings || []).length) {
-            localResult.notes = 'Solo OCR locale (Gemini non disponibile) · ' + localResult.readings.length + ' letture';
-            return localResult;
-        }
-        if (isPdf) {
-            throw new Error('PDF richiede Gemini attivo. Abilita Generative Language API su servicehub-18309 oppure usa una foto JPG/PNG.');
-        }
-        throw cloudErr;
-    }
+    throw new Error(
+        'Nessuna lettura trovata.\n\n' +
+        '• Luce buona, foto a fuoco\n' +
+        '• Sigle grandi e visibili (FIC, S 864, MK 105A…)\n' +
+        '• Prima volta: serve internet solo per scaricare il dizionario OCR (~15 MB), poi funziona offline'
+    );
 };
 
 window.setSmartCaptureLoading = function(active, message) {
     const el = document.getElementById('smart-capture-loading');
     if (el) el.classList.toggle('active', !!active);
     if (active && message) window.setSmartCaptureLoadingMessage(message);
-    if (!active) window.setSmartCaptureLoadingMessage('Analisi intelligente in corso…');
+    if (!active) window.setSmartCaptureLoadingMessage('OCR offline in corso…');
 };
 
 window.smartCaptureFromFile = function() {

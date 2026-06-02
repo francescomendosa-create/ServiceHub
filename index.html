@@ -507,7 +507,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.02-v5';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.02-v6';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -10715,7 +10715,7 @@ window.convertToHtml = async () => {
             <div class="settings-sheet-header px-8 pt-2 pb-2 flex justify-between items-center bg-slate-50 dark:bg-slate-900">
                 <div>
                     <h2 class="font-black uppercase text-3xl italic tracking-tighter text-slate-900 dark:text-white">Impostazioni</h2>
-                    <p id="app-build-tag" class="text-[9px] font-bold text-emerald-600 dark:text-emerald-400 uppercase mt-1">Build 2026-06-02-v5</p>
+                    <p id="app-build-tag" class="text-[9px] font-bold text-emerald-600 dark:text-emerald-400 uppercase mt-1">Build 2026.06.02-v6</p>
                 </div>
                 <button type="button" id="btn-close-settings" class="bg-black text-white rounded-2xl w-12 h-12 flex items-center justify-center font-black" aria-label="Chiudi impostazioni">X</button>
             </div>
@@ -12304,6 +12304,91 @@ window.TANK_CAPTURE_FIELDS = [
     { id: 'inp-tk10000', label: 'TK 10000' }
 ];
 
+window.TANK_GRID_SLOTS = [
+    { key: 'riga1_sx', id: 'inp-tk9000', label: 'TK 9000' },
+    { key: 'riga1_dx', id: 'inp-tk9201', label: 'TK 9201' },
+    { key: 'riga2_sx', id: 'inp-s133', label: 'S 133' },
+    { key: 'riga2_dx', id: 'tk101', label: 'TK 101' }
+];
+
+window.getTankLabelToIdMap = function() {
+    if (window._tankLabelToId) return window._tankLabelToId;
+    const m = {};
+    window.TANK_CAPTURE_FIELDS.forEach(function(f) {
+        m[window.normalizeSiglaKey(f.label).replace(/\s/g, '')] = f.id;
+        m[f.id] = f.id;
+    });
+    m.TK9000 = 'inp-tk9000';
+    m.TK9201 = 'inp-tk9201';
+    m.S133 = 'inp-s133';
+    m.TK101 = 'tk101';
+    window._tankLabelToId = m;
+    return m;
+};
+
+window.resolveTankIdFromLabel = function(siglaText) {
+    const k = window.normalizeSiglaKey(siglaText).replace(/\s/g, '');
+    if (!k) return null;
+    const map = window.getTankLabelToIdMap();
+    if (map[k]) return map[k];
+    if (/TK9000/.test(k)) return 'inp-tk9000';
+    if (/TK9201/.test(k)) return 'inp-tk9201';
+    if (/S133/.test(k)) return 'inp-s133';
+    if (/TK101/.test(k) && !/TK10000/.test(k)) return 'tk101';
+    if (/TK9204/.test(k)) return 'inp-tk9204';
+    if (/TK9205/.test(k)) return 'inp-tk9205';
+    if (/TK10000/.test(k)) return 'inp-tk10000';
+    return null;
+};
+
+window.parseGeminiTankGridJson = function(json) {
+    if (!json || typeof json !== 'object') return [];
+    const readings = [];
+    const used = new Set();
+    window.TANK_GRID_SLOTS.forEach(function(slot) {
+        const cell = json[slot.key];
+        if (!cell) return;
+        let val = cell.livello != null ? cell.livello : (cell.liv != null ? cell.liv : cell.value);
+        val = window.fixOcrDigitValue(val);
+        if (!window.isValidOcrValue(val)) return;
+        let id = slot.id;
+        const sigla = cell.sigla || cell.label || cell.tk || '';
+        const fromSigla = window.resolveTankIdFromLabel(sigla);
+        if (fromSigla && fromSigla !== id) {
+            console.warn('[Tank OCR] Corretto slot', slot.key, 'da', id, 'a', fromSigla, 'sigla letta:', sigla);
+            id = fromSigla;
+        }
+        if (used.has(id)) return;
+        used.add(id);
+        readings.push({ id: id, value: val, confidence: 'alta', source: slot.label });
+    });
+    return readings;
+};
+
+window.normalizeGeminiTankReadings = function(rawReadings) {
+    const out = [];
+    const used = new Set();
+    (rawReadings || []).forEach(function(r) {
+        if (!r || r.value == null) return;
+        const val = window.fixOcrDigitValue(r.value);
+        if (!window.isValidOcrValue(val)) return;
+        let id = r.id;
+        if (r.label || r.sigla) {
+            const fromLabel = window.resolveTankIdFromLabel(r.label || r.sigla);
+            if (fromLabel) id = fromLabel;
+        }
+        if (id && !window.TANK_LABEL_TO_ID[id] && !window.TANK_CAPTURE_FIELDS.find(function(f) { return f.id === id; })) {
+            id = window.resolveTankIdFromLabel(id);
+        }
+        if (!id || used.has(id)) return;
+        const field = window.TANK_CAPTURE_FIELDS.find(function(f) { return f.id === id; });
+        if (!field) return;
+        used.add(id);
+        out.push({ id: id, value: val, confidence: r.confidence || 'alta', source: field.label });
+    });
+    return out;
+};
+
 window.buildTankCaptureFieldMap = function() {
     return window.TANK_CAPTURE_FIELDS.map(function(f) {
         return { id: f.id, label: f.label, section: 'Serbatoi' };
@@ -12540,13 +12625,21 @@ window.runTesseractOcrPass = async function(worker, imageDataUrl, params) {
 };
 
 window.buildGeminiTankCapturePrompt = function() {
-    return 'Leggi i livelli (LIV) dei serbatoi da questa foto del quadro impianto.\n' +
-        'Mappa sigla → id JSON:\n' +
-        'TK 9000 → inp-tk9000\nS 133 → inp-s133\nTK 9201 → inp-tk9201\nTK 101 → tk101\n' +
-        'TK 9204 → inp-tk9204\nTK 9205 → inp-tk9205\nTK 10000 → inp-tk10000\n\n' +
-        'Rispondi SOLO con JSON valido, senza markdown:\n' +
-        '{"readings":[{"id":"inp-tk9000","value":"45.2"}]}\n' +
-        'Usa il punto per i decimali. Includi solo serbatoi visibili con certezza.';
+    return 'Sei un operatore che legge il QUADRO SERBATOI da una foto.\n\n' +
+        'LAYOUT FISSO (tabella 2 colonne: TK | LIV | TK | LIV):\n' +
+        '┌─────────────┬─────────────┐\n' +
+        '│ TK 9000 │ LIV │ TK 9201 │ LIV │  riga1_sx = TK9000, riga1_dx = TK9201\n' +
+        '│ S 133   │ LIV │ TK 101  │ LIV │  riga2_sx = S133,   riga2_dx = TK101\n' +
+        '└─────────────┴─────────────┘\n\n' +
+        'REGOLE CRITICHE:\n' +
+        '1) Il numero LIV va nella cella SUBITO A DESTRA della SUA sigla (non della sigla vicina).\n' +
+        '2) TK 9000 e TK 9201 sono sulla STESSA RIGA ma colonne diverse: NON scambiarli.\n' +
+        '3) S 133 è a SINISTRA sulla seconda riga; TK 101 a DESTRA sulla seconda riga.\n' +
+        '4) Leggi solo numeri di livello (es. 12.5 o 12,5), non le sigle come valori.\n\n' +
+        'Rispondi SOLO con JSON (senza markdown), usa questa struttura:\n' +
+        '{"riga1_sx":{"sigla":"TK 9000","livello":"12.3"},"riga1_dx":{"sigla":"TK 9201","livello":"45.6"},' +
+        '"riga2_sx":{"sigla":"S 133","livello":"8.1"},"riga2_dx":{"sigla":"TK 101","livello":"3.2"}}\n' +
+        'Ometti celle non visibili. Punto per i decimali.';
 };
 
 window.runGeminiSmartCaptureOcr = async function(imageData, fields) {
@@ -12556,33 +12649,25 @@ window.runGeminiSmartCaptureOcr = async function(imageData, fields) {
         'Analisi AI in timeout. Riprova tra poco.'
     );
     const json = window.parseSmartCaptureJson(raw);
-    const readings = [];
-    const usedIds = new Set();
+    let readings = [];
 
-    function add(id, val) {
-        if (usedIds.has(id)) return;
-        const v = window.fixOcrDigitValue(val);
-        if (!window.isValidOcrValue(v)) return;
-        const f = (fields || []).find(function(x) { return x.id === id; });
-        readings.push({ id: id, value: v, confidence: 'alta', source: f ? f.label : id });
-        usedIds.add(id);
+    if (json && (json.riga1_sx || json.riga1_dx || json.riga2_sx || json.riga2_dx)) {
+        readings = window.parseGeminiTankGridJson(json);
     }
-
-    if (json && Array.isArray(json.readings)) {
-        json.readings.forEach(function(r) {
-            if (r && r.id && r.value != null) add(r.id, r.value);
-        });
+    if (!readings.length && json && Array.isArray(json.readings)) {
+        readings = window.normalizeGeminiTankReadings(json.readings);
     }
     if (!readings.length) {
-        window.matchTankReadingsFromOcrText(raw, fields).forEach(function(r) {
-            add(r.id, r.value);
-        });
+        readings = window.matchTankReadingsFromOcrText(raw, fields);
     }
+
     return {
         readings: readings,
         engine: 'gemini',
         rawTextPreview: String(raw).slice(0, 300),
-        notes: readings.length ? ('AI Gemini · ' + readings.length + ' livelli') : 'AI Gemini · nessun livello trovato'
+        notes: readings.length
+            ? ('AI Gemini · ' + readings.length + ' livelli · controlla sigla e numero')
+            : 'AI Gemini · nessun livello trovato'
     };
 };
 
@@ -13203,7 +13288,10 @@ window.showSmartCaptureConfirm = function(parsed) {
         if (r && r.id && r.value != null) readingMap[r.id] = String(r.value).trim();
     });
 
-    const rows = tankMode ? fields : (parsed.readings || []).map(function(r) {
+    const displayOrder = tankMode ? window.TANK_GRID_SLOTS.map(function(s) {
+        return fields.find(function(f) { return f.id === s.id; }) || { id: s.id, label: s.label, section: 'Serbatoi' };
+    }) : fields;
+    const rows = tankMode ? displayOrder : (parsed.readings || []).map(function(r) {
         return fieldMap[r.id] || { id: r.id, label: r.id, section: '' };
     }).filter(function(f, i, arr) {
         return f && f.id && arr.findIndex(function(x) { return x.id === f.id; }) === i;
@@ -13225,7 +13313,7 @@ window.showSmartCaptureConfirm = function(parsed) {
     if (parsed && parsed.notes && hint) {
         hint.textContent = parsed.notes + ' — correggi se necessario';
     } else if (hint) {
-        hint.textContent = 'Controlla e correggi i valori prima di applicare';
+        hint.textContent = 'Verifica: ogni numero deve essere sotto la sigla giusta (TK9000 a sinistra, TK9201 a destra)';
     }
 
     modal.classList.add('active');

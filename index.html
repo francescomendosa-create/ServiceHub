@@ -507,7 +507,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.02-v15';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.02-v16';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -12794,7 +12794,50 @@ window.isDcsAcquaTableText = function(text) {
     const hasHeader = /SERBATOIO/.test(t) && /LIVELLO/.test(t);
     const hasTk = /TK\s*[-–]?\s*9000/.test(t) || /TK\s*[-–]?\s*9201/.test(t);
     const hasDesc = /ACQUA\s*GREZZA/.test(t) || /ACQUA\s*DEMI/.test(t);
-    return hasHeader && (hasTk || hasDesc);
+    const stoccaggio = /STOCCAGGIO\s*INTERNO/.test(t);
+    return (hasHeader && (hasTk || hasDesc)) || (stoccaggio && (hasTk || hasDesc)) ||
+        (hasTk && hasDesc);
+};
+
+window.normalizeDcsProfileId = function(tipo) {
+    const t = String(tipo || '').toLowerCase().replace(/[\s_]+/g, '-').trim();
+    if (!t) return null;
+    if (t === 'dcs-acqua' || t === 'dcs-tabella' || t === 'tabella' || t === 'acqua' || t === 'stoccaggio') return 'dcs-tabella';
+    if (t === 'dcs-vasche-api' || t === 'vasche-api' || t === 'vasche' || t === 'gestione-vasche-api') return 'dcs-vasche-api';
+    if (t === 'dcs-overview-strumenti' || t === 'overview-strumenti' || t === 'overview' || t === 'strumenti') return 'dcs-overview-strumenti';
+    return null;
+};
+
+window.classifyDcsProfileFromText = function(text) {
+    const t = String(text || '').toUpperCase();
+    if (!t) return null;
+    if (window.isDcsAcquaTableText(t)) return 'dcs-tabella';
+    if (/OVERVIEW\s*STRUMENTI/.test(t)) return 'dcs-overview-strumenti';
+    if (/GESTIONE\s*VASCHE\s*API/.test(t)) return 'dcs-vasche-api';
+    if (/POZZI\s*TORCIA/.test(t) && (/VASCHE\s*API/.test(t) || /STREAM\s*E/.test(t))) return 'dcs-overview-strumenti';
+    if (/ZONA\s*OVEST/.test(t) && /ZONA\s*SUD/.test(t)) return 'dcs-vasche-api';
+    if (/9106\s*[-–]?\s*LI/.test(t) && /9100\s*[-–]?\s*LI/.test(t)) return 'dcs-overview-strumenti';
+    return null;
+};
+
+window.buildGeminiDcsUnifiedPrompt = function() {
+    return 'Foto schermo DCS Sasol. PRIMA identifica il TIPO schermo (guarda titolo e layout), POI estrai solo i dati di quel tipo.\n\n' +
+        '=== TIPO A: dcs-tabella ===\n' +
+        'Tabella SERBATOIO | DESCRIZIONE | LIVELLO (mm). Stoccaggio interno / acqua.\n' +
+        'applica_ora SOLO: TK 9000 ACQUA GREZZA → inp-tk9000, TK 9201 ACQUA DEMI → inp-tk9201\n' +
+        'catalogo = tutte le righe visibili.\n\n' +
+        '=== TIPO B: dcs-vasche-api ===\n' +
+        'Sinottico "GESTIONE VASCHE API" — zone OVEST, NORD, SUD, riquadri Level mm.\n' +
+        'applica_ora: TK-8092/8093 bacini, TK8066, A-10605, S-817/818/813/864 (Amb.1), S-819 (Amb.2)\n' +
+        'catalogo = tutti i serbatoi visibili. Livelli negativi ammessi.\n\n' +
+        '=== TIPO C: dcs-overview-strumenti ===\n' +
+        'Titolo "Overview Strumenti" — 4 quadranti (VASCHE API, STREAM E C-TIP, POZZI TORCIA…).\n' +
+        'applica_ora livelli mm: S-148, S-817, S-818, S-846, S-854, A-10605 (Amb.1), LURGI (Amb.2)\n' +
+        'stati_pozzi: Pozzo n.2-5 ON→MARCIA OFF→FERMO (stat-well-2 … stat-well-5)\n' +
+        'catalogo = tutti gli strumenti visibili.\n\n' +
+        'REGOLE: campo "tipo" obbligatorio. Un solo tipo per foto. Decimali con punto. JSON senza markdown:\n' +
+        '{"tipo":"dcs-tabella","catalogo":[{"serbatoio":"TK - 9000","descrizione":"ACQUA GREZZA","livello":"6031.7"}],"applica_ora":[{"serbatoio":"TK - 9000","livello":"6031.7","campo_id":"inp-tk9000"}]}\n' +
+        'Per overview aggiungi "stati_pozzi":[{"pozzo":5,"stato":"ON","campo_id":"stat-well-5"}]';
 };
 
 window.buildGeminiDcsAcquaPrompt = function() {
@@ -13034,7 +13077,8 @@ window.getDcsProfileResultKey = function(profileId) {
     return 'dcs-acqua';
 };
 
-window.runDcsCaptureForProfile = async function(imageData, profileId, buildPrompt) {
+window.runDcsCaptureForProfile = async function(imageData, profileId, buildPrompt, options) {
+    options = options || {};
     const fields = window.getDcsCaptureFieldsForProfile(profileId);
     const prompt = buildPrompt();
     let raw = '';
@@ -13042,12 +13086,13 @@ window.runDcsCaptureForProfile = async function(imageData, profileId, buildPromp
     try {
         raw = await window.withOcrTimeout(window.callGeminiTankOcr(prompt, imageData), 55000, 'Analisi DCS in timeout.');
     } catch (e1) {
+        if (options.noFallback) throw e1;
         raw = await window.withOcrTimeout(window.callGeminiAPI(prompt, false, imageData), 55000, 'Analisi DCS in timeout.');
         engine = 'gemini-legacy-' + profileId;
     }
     const extractFn = window.getDcsExtractFnForProfile(profileId);
     let readings = extractFn(raw, fields);
-    if (!readings.length) {
+    if (!readings.length && !options.noRetry) {
         try {
             const raw2 = await window.withOcrTimeout(window.callGeminiAPI(prompt, false, imageData), 45000, 'timeout');
             if (raw2) { raw = raw2; readings = extractFn(raw2, fields); }
@@ -13087,6 +13132,75 @@ window.runDcsVascheApiCapture = function(imageData) {
 
 window.runDcsAcquaCapture = function(imageData) {
     return window.runDcsCaptureForProfile(imageData, 'dcs-tabella', window.buildGeminiDcsAcquaPrompt);
+};
+
+window.runDcsUnifiedCapture = async function(imageData) {
+    const prompt = window.buildGeminiDcsUnifiedPrompt();
+    let raw = '';
+    let engine = 'gemini-dcs-unified';
+    try {
+        raw = await window.withOcrTimeout(
+            window.callGeminiTankOcr(prompt, imageData),
+            55000,
+            'Analisi DCS in timeout.'
+        );
+    } catch (e1) {
+        try {
+            raw = await window.withOcrTimeout(
+                window.callGeminiAPI(prompt, false, imageData),
+                45000,
+                'Analisi DCS in timeout.'
+            );
+            engine = 'gemini-dcs-unified-legacy';
+        } catch (e2) {
+            throw e1;
+        }
+    }
+
+    const json = window.parseSmartCaptureJson(raw);
+    let profileId = json && window.normalizeDcsProfileId(json.tipo);
+    if (!profileId) profileId = window.classifyDcsProfileFromText(raw);
+    if (!profileId) profileId = 'dcs-tabella';
+
+    let extractFn = window.getDcsExtractFnForProfile(profileId);
+    let fields = window.getDcsCaptureFieldsForProfile(profileId);
+    let readings = extractFn(raw, fields);
+
+    if (!readings.length && json) {
+        const fallbacks = ['dcs-tabella', 'dcs-vasche-api', 'dcs-overview-strumenti'].filter(function(p) {
+            return p !== profileId;
+        });
+        for (let i = 0; i < fallbacks.length && !readings.length; i++) {
+            const tryId = fallbacks[i];
+            const tryReadings = window.getDcsExtractFnForProfile(tryId)(raw, window.getDcsCaptureFieldsForProfile(tryId));
+            if (tryReadings.length) {
+                readings = tryReadings;
+                profileId = tryId;
+            }
+        }
+    }
+
+    if (readings.length || json) window.rememberDcsCapture(raw, readings, json, profileId);
+    const prof = window.getDcsProfile(profileId);
+    const catSize = (prof.catalog || []).length;
+    const profileLabel = window.getDcsProfileLabel(profileId);
+    const levelCount = readings.filter(function(r) { return r.kind !== 'status'; }).length;
+    const statusCount = readings.filter(function(r) { return r.kind === 'status'; }).length;
+    const parts = [];
+    if (levelCount) parts.push(levelCount + ' livelli');
+    if (statusCount) parts.push(statusCount + ' pozzi');
+    return {
+        readings: readings,
+        engine: engine,
+        profile: window.getDcsProfileResultKey(profileId),
+        dcsTipo: json && json.tipo ? json.tipo : profileId,
+        catalogSize: catSize,
+        tankRegistry: (prof.catalog || []).slice(),
+        rawTextPreview: String(raw).slice(0, 300),
+        notes: parts.length
+            ? ('DCS ' + profileLabel + ' · ' + parts.join(' · ') + ' · ' + catSize + ' in catalogo')
+            : ('DCS ' + profileLabel + ' · catalogo ' + catSize + ' strumenti memorizzati')
+    };
 };
 
 window.parseDcsAcquaFromText = function(rawText) {
@@ -14099,53 +14213,26 @@ window.runSmartCaptureAnalysis = async function(imageData) {
     if (geminiKey && window.SMART_CAPTURE_PREFER_GEMINI && !window._smartCaptureAbort) {
         if (tankMode) {
             try {
-                window.setSmartCaptureLoadingMessage('Analisi DCS Overview Strumenti…');
-                const overviewResult = await window.runDcsOverviewStrumentiCapture(imageData);
-                const overviewRaw = overviewResult.rawTextPreview || '';
-                if ((overviewResult.readings && overviewResult.readings.length) ||
-                    overviewResult.dcsTipo === 'dcs-overview-strumenti' ||
-                    window.isDcsOverviewStrumentiText(overviewRaw)) {
-                    return overviewResult;
-                }
-            } catch (errOverview) {
-                console.warn('DCS overview strumenti capture:', errOverview);
-            }
-            try {
-                window.setSmartCaptureLoadingMessage('Analisi DCS Vasche API (Ambiente 1+2)…');
-                const vascheResult = await window.runDcsVascheApiCapture(imageData);
-                const vascheRaw = vascheResult.rawTextPreview || '';
-                if ((vascheResult.readings && vascheResult.readings.length) ||
-                    vascheResult.dcsTipo === 'dcs-vasche-api' ||
-                    window.isDcsVascheApiText(vascheRaw)) {
-                    return vascheResult;
-                }
-            } catch (errVasche) {
-                console.warn('DCS vasche API capture:', errVasche);
-            }
-            try {
-                window.setSmartCaptureLoadingMessage('Analisi DCS scheda Acqua…');
-                const dcsResult = await window.runDcsAcquaCapture(imageData);
-                const dcsRaw = dcsResult.rawTextPreview || '';
-                if ((dcsResult.readings && dcsResult.readings.length) ||
-                    dcsResult.dcsTipo === 'dcs-tabella' ||
-                    dcsResult.dcsTipo === 'dcs-acqua' ||
-                    window.isDcsAcquaTableText(dcsRaw)) {
+                window.setSmartCaptureLoadingMessage('Analisi DCS (riconoscimento automatico)…');
+                const dcsResult = await window.runDcsUnifiedCapture(imageData);
+                if (dcsResult) {
                     return dcsResult;
                 }
             } catch (errDcs) {
-                console.warn('DCS acqua capture:', errDcs);
+                console.warn('DCS unified capture:', errDcs);
             }
-        }
-        try {
-            window.setSmartCaptureLoadingMessage('Analisi AI foto…');
-            const geminiResult = await window.runGeminiSmartCaptureOcr(imageData, fields);
-            if (geminiResult.readings && geminiResult.readings.length) {
-                return geminiResult;
-            }
-        } catch (err) {
-            console.warn('Gemini smart capture:', err);
-            if (window.SMART_CAPTURE_OFFLINE_ONLY) {
-                throw new Error(window.formatGeminiError(err && err.message) || 'Analisi AI non riuscita.');
+        } else {
+            try {
+                window.setSmartCaptureLoadingMessage('Analisi AI foto…');
+                const geminiResult = await window.runGeminiSmartCaptureOcr(imageData, fields);
+                if (geminiResult.readings && geminiResult.readings.length) {
+                    return geminiResult;
+                }
+            } catch (err) {
+                console.warn('Gemini smart capture:', err);
+                if (window.SMART_CAPTURE_OFFLINE_ONLY) {
+                    throw new Error(window.formatGeminiError(err && err.message) || 'Analisi AI non riuscita.');
+                }
             }
         }
     }

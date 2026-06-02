@@ -512,7 +512,7 @@ window.colorPreviewNumber = function(tankName, value) {
         tailwind.config = { darkMode: 'class' }
     </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.4/dist/tesseract.min.js"></script>
     
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
@@ -12243,14 +12243,15 @@ window.setSmartCaptureLoadingMessage = function(msg) {
 };
 
 window.withOcrTimeout = function(promise, ms, message) {
-    return Promise.race([
-        promise,
-        new Promise(function(_, reject) {
-            setTimeout(function() {
-                reject(new Error(message || 'OCR troppo lento. Riprova con foto più piccola o connessione Wi‑Fi (solo la prima volta).'));
-            }, ms);
-        })
-    ]);
+    let timer = null;
+    const timeout = new Promise(function(_, reject) {
+        timer = setTimeout(function() {
+            reject(new Error(message || 'OCR troppo lento. Riprova con foto più vicina ai numeri.'));
+        }, ms);
+    });
+    return Promise.race([promise, timeout]).finally(function() {
+        if (timer) clearTimeout(timer);
+    });
 };
 
 window.resetTesseractWorker = async function() {
@@ -12261,78 +12262,11 @@ window.resetTesseractWorker = async function() {
     }
 };
 
-window.getTesseractCorePaths = function() {
-    return [
-        'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core-lstm.wasm.js',
-        'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core-simd-lstm.wasm.js'
-    ];
-};
-
-window.ensureTesseractWorker = async function() {
-    if (window._tesseractWorker) return window._tesseractWorker;
-    if (window._tesseractWorkerInit) return window._tesseractWorkerInit;
-
-    if (typeof Tesseract === 'undefined') {
-        throw new Error('Motore OCR non caricato. Ricarica la pagina con connessione attiva.');
-    }
-
-    const buildWorker = async function(corePath) {
-        window.setSmartCaptureLoadingMessage('Avvio motore OCR…');
-        const worker = await Tesseract.createWorker('eng', 1, {
-            workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
-            langPath: 'https://tessdata.projectnaptha.com/4.0.0',
-            corePath: corePath,
-            logger: function(m) {
-                if (!m || !m.status) return;
-                if (m.status === 'loading tesseract core') {
-                    window.setSmartCaptureLoadingMessage('Caricamento motore OCR…');
-                } else if (m.status === 'initializing tesseract') {
-                    window.setSmartCaptureLoadingMessage('Inizializzazione OCR…');
-                } else if (m.status === 'loading language traineddata') {
-                    window.setSmartCaptureLoadingMessage('Download dizionario (' + Math.round((m.progress || 0) * 100) + '%)…');
-                } else if (m.status === 'initialized language') {
-                    window.setSmartCaptureLoadingMessage('Dizionario pronto');
-                } else if (m.status === 'recognizing text') {
-                    window.setSmartCaptureLoadingMessage('Scansione ' + Math.round((m.progress || 0) * 100) + '%…');
-                }
-            }
-        });
-        await worker.setParameters({
-            tessedit_pageseg_mode: '6',
-            tessedit_char_whitelist: '0123456789.,ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz /-'
-        });
-        return worker;
-    };
-
-    window._tesseractWorkerInit = (async function() {
-        let lastErr = null;
-        for (let ci = 0; ci < window.getTesseractCorePaths().length; ci++) {
-            try {
-                const worker = await window.withOcrTimeout(
-                    buildWorker(window.getTesseractCorePaths()[ci]),
-                    120000,
-                    'Download OCR troppo lento. Usa Wi‑Fi e riprova (serve solo la prima volta).'
-                );
-                window._tesseractWorker = worker;
-                window._tesseractWorkerInit = null;
-                return worker;
-            } catch (e) {
-                lastErr = e;
-                await window.resetTesseractWorker();
-            }
-        }
-        window._tesseractWorkerInit = null;
-        throw lastErr || new Error('Impossibile avviare OCR offline.');
-    })();
-
-    return window._tesseractWorkerInit;
-};
-
-window.preprocessImageForOcr = function(dataUrl) {
+window.preprocessImageForOcr = function(dataUrl, maxW) {
+    maxW = maxW || (window.isIosDevice && window.isIosDevice() ? 640 : 960);
     return new Promise(function(resolve, reject) {
         const img = new Image();
         img.onload = function() {
-            const maxW = 1024;
             let w = img.width;
             let h = img.height;
             if (w > maxW) {
@@ -12344,15 +12278,17 @@ window.preprocessImageForOcr = function(dataUrl) {
             canvas.height = h;
             const ctx = canvas.getContext('2d');
             ctx.drawImage(img, 0, 0, w, h);
-            const imgData = ctx.getImageData(0, 0, w, h);
-            const d = imgData.data;
-            for (let i = 0; i < d.length; i += 4) {
-                const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-                const v = g > 145 ? 255 : (g < 85 ? 0 : g);
-                d[i] = d[i + 1] = d[i + 2] = v;
+            if (!window.isIosDevice || !window.isIosDevice()) {
+                const imgData = ctx.getImageData(0, 0, w, h);
+                const d = imgData.data;
+                for (let i = 0; i < d.length; i += 4) {
+                    const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+                    const v = g > 140 ? 255 : (g < 90 ? 0 : g);
+                    d[i] = d[i + 1] = d[i + 2] = v;
+                }
+                ctx.putImageData(imgData, 0, 0);
             }
-            ctx.putImageData(imgData, 0, 0);
-            resolve(canvas.toDataURL('image/jpeg', 0.9));
+            resolve(canvas.toDataURL('image/jpeg', 0.85));
         };
         img.onerror = function() { reject(new Error('Immagine non valida.')); };
         img.src = dataUrl;
@@ -12524,45 +12460,52 @@ window.matchReadingsFromOcrText = function(ocrText, fields) {
 };
 
 window.runLocalSmartCaptureOcr = async function(imageData, fields) {
-    let worker;
-    try {
-        worker = await window.ensureTesseractWorker();
-    } catch (e) {
-        await window.resetTesseractWorker();
-        throw e;
+    if (typeof Tesseract === 'undefined') {
+        throw new Error('Motore OCR non caricato. Ricarica la pagina (serve internet la prima volta).');
     }
+
+    await window.resetTesseractWorker();
+    window._smartCaptureAbort = false;
 
     const raw = imageData.data || '';
     const dataUrl = raw.indexOf(',') >= 0 ? raw : 'data:image/jpeg;base64,' + raw;
-    window.setSmartCaptureLoadingMessage('Preparazione immagine…');
+    const maxSize = window.isIosDevice && window.isIosDevice() ? 640 : 900;
+    const timeoutMs = window.isIosDevice && window.isIosDevice() ? 22000 : 50000;
+
+    window.setSmartCaptureLoadingMessage('Preparazione foto…');
     const preprocessed = await window.withOcrTimeout(
-        window.preprocessImageForOcr(dataUrl),
-        15000,
-        'Immagine troppo grande o non valida.'
+        window.preprocessImageForOcr(dataUrl, maxSize),
+        12000,
+        'Immagine troppo grande.'
     );
-    window.setSmartCaptureLoadingMessage('Scansione in corso…');
 
-    let result;
-    try {
-        result = await window.withOcrTimeout(
-            worker.recognize(preprocessed, {}, {
-                logger: function(m) {
-                    if (m && m.status === 'recognizing text') {
-                        window.setSmartCaptureLoadingMessage('Scansione ' + Math.round((m.progress || 0) * 100) + '%…');
-                    }
+    if (window._smartCaptureAbort) throw new Error('Annullato.');
+
+    window.setSmartCaptureLoadingMessage('Scansione 0%…');
+
+    const result = await window.withOcrTimeout(
+        Tesseract.recognize(preprocessed, 'eng', {
+            logger: function(m) {
+                if (!m || !m.status) return;
+                if (m.status === 'loading language traineddata') {
+                    window.setSmartCaptureLoadingMessage('Dizionario ' + Math.round((m.progress || 0) * 100) + '%…');
+                } else if (m.status === 'recognizing text') {
+                    window.setSmartCaptureLoadingMessage('Scansione ' + Math.round((m.progress || 0) * 100) + '%…');
+                } else if (m.status === 'initializing tesseract' || m.status === 'loading tesseract core') {
+                    window.setSmartCaptureLoadingMessage('Avvio OCR…');
                 }
-            }),
-            90000,
-            'Scansione troppo lenta. Prova una foto più nitida e più vicina al testo.'
-        );
-    } catch (e) {
-        await window.resetTesseractWorker();
-        throw e;
-    }
+            }
+        }),
+        timeoutMs,
+        'OCR troppo lento su questo telefono.\n\nConsigli:\n• Foto più vicina ai numeri\n• Luce migliore\n• Ritaglia solo il display\n• Poi riprova'
+    );
 
-    const text = result.data && result.data.text ? result.data.text : '';
-    console.log('OCR testo:', text.slice(0, 300));
+    if (window._smartCaptureAbort) throw new Error('Annullato.');
+
+    const text = (result && result.data && result.data.text) ? result.data.text : '';
+    console.log('OCR testo letto:', text.slice(0, 500));
     const parsed = window.matchReadingsFromOcrText(text, fields);
+    parsed.rawTextPreview = text.slice(0, 300);
     return parsed;
 };
 
@@ -12571,7 +12514,7 @@ window.runSmartCaptureAnalysis = async function(imageData) {
     if (!fields.length) throw new Error('Nessun campo mappabile trovato nell\'interfaccia.');
 
     if (imageData && imageData.type === 'application/pdf') {
-        throw new Error('I PDF non sono supportati. Scatta una foto JPG/PNG del display o della scheda.');
+        throw new Error('I PDF non sono supportati. Usa una foto JPG/PNG.');
     }
 
     const localResult = await window.runLocalSmartCaptureOcr(imageData, fields);
@@ -12579,11 +12522,13 @@ window.runSmartCaptureAnalysis = async function(imageData) {
         return localResult;
     }
 
+    let hint = '';
+    if (localResult.rawTextPreview && localResult.rawTextPreview.trim()) {
+        hint = '\n\nTesto letto (parziale):\n' + localResult.rawTextPreview.trim().slice(0, 120);
+    }
+
     throw new Error(
-        'Nessuna lettura trovata.\n\n' +
-        '• Luce buona, foto a fuoco\n' +
-        '• Sigle grandi e visibili (FIC, S 864, MK 105A…)\n' +
-        '• Prima volta: serve internet solo per scaricare il dizionario OCR (~15 MB), poi funziona offline'
+        'Nessuna sigla abbinate alla foto.' + hint + '\n\nProva: foto più dritta, numeri e sigle (FIC, S864…) ben visibili.'
     );
 };
 
@@ -12593,8 +12538,9 @@ window.cancelSmartCaptureLoading = function() {
     window._smartCaptureAbort = true;
     window.resetTesseractWorker && window.resetTesseractWorker();
     window.stopSmartCaptureStream && window.stopSmartCaptureStream();
-    window.closeSmartCaptureCamera && window.closeSmartCaptureCamera();
+    window.closeSmartCaptureCamera && window.closeSmartCaptureCamera(false);
     window.setSmartCaptureLoading(false);
+    alert('OCR annullato.');
 };
 
 window.setSmartCaptureLoading = function(active, message) {

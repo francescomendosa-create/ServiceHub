@@ -3,7 +3,7 @@
 // NON facciamo cache offline aggressiva per evitare di servire versioni stantie
 // del index.html: l'app si aggiorna automaticamente a ogni reload.
 
-const CACHE_NAME = 'servicehub-shell-v33';
+const CACHE_NAME = 'servicehub-shell-restore-v1';
 
 self.addEventListener('message', (event) => {
   if (event && event.data === 'SKIP_WAITING') self.skipWaiting();
@@ -40,17 +40,6 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
   const shellBasenames = ['sh-icon-192.png', 'sh-icon-512.png', 'sh-touch.png', 'sh-favicon.png', 'manifest.json'];
   const isShellAsset = shellBasenames.some((b) => url.pathname.endsWith('/' + b) || url.pathname.endsWith(b));
-
-  const isNavigate = req.mode === 'navigate' ||
-    url.pathname.endsWith('index.html') ||
-    /\/$/.test(url.pathname);
-
-  if (isNavigate) {
-    event.respondWith(
-      fetch(new Request(req.url, { cache: 'no-store' })).catch(function() { return caches.match(req); })
-    );
-    return;
-  }
 
   if (isShellAsset) {
     event.respondWith(

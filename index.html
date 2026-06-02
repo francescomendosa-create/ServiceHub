@@ -9798,12 +9798,12 @@ window.convertToHtml = async () => {
             width: 100%; height: 100%; min-height: 45vh;
             object-fit: contain; background: #000; display: none;
         }
-        #smart-capture-confirm-modal { z-index: 10055; }
+        #smart-capture-confirm-modal { z-index: 10085; }
         #smart-capture-confirm-modal.active { background: rgba(0,0,0,0.75); backdrop-filter: blur(5px); visibility: visible; }
         .smart-capture-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid #334155; font-size: 12px; }
         .smart-capture-row input { width: 96px; font-size: 20px; font-weight: 800; text-align: center; padding: 8px; border-radius: 10px; border: 2px solid #475569; background: #0f172a; color: #34d399; }
         .smart-capture-row:last-child { border-bottom: none; }
-        .smart-capture-loading { position: fixed; inset: 0; z-index: 10060; background: rgba(15,23,42,0.88); display: none; align-items: center; justify-content: center; flex-direction: column; gap: 16px; color: white; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; }
+        .smart-capture-loading { position: fixed; inset: 0; z-index: 10080; background: rgba(15,23,42,0.88); display: none; align-items: center; justify-content: center; flex-direction: column; gap: 16px; color: white; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; }
         .smart-capture-loading.active { display: flex; }
         .management-sheet { transform: translateY(100%); width: 100%; height: 75vh; border-radius: 32px 32px 0 0; background: var(--bg-modal); border: 3px solid var(--border-main); border-bottom: none; transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.1); overflow: hidden; display: flex; flex-direction: column; }
         #management-modal.active .management-sheet, #archive-list-modal.active .management-sheet { transform: translateY(0); }
@@ -12844,6 +12844,10 @@ window.setSmartCaptureLoading = function(active, message) {
     if (active) window._smartCaptureAbort = false;
     const el = document.getElementById('smart-capture-loading');
     if (el) el.classList.toggle('active', !!active);
+    if (active) {
+        const settings = document.getElementById('settings-modal');
+        if (settings) settings.classList.remove('active');
+    }
     if (active && message) window.setSmartCaptureLoadingMessage(message);
     if (!active) window.setSmartCaptureLoadingMessage('Scansione serbatoi in corso…');
 };
@@ -12857,6 +12861,7 @@ window.smartCaptureFromFile = function() {
     const menu = document.getElementById('smart-capture-menu');
     if (menu) menu.classList.remove('open');
     window._smartCaptureTankMode = true;
+    window.ensureGeminiApiKeySaved && window.ensureGeminiApiKeySaved();
     const input = document.getElementById('smart-capture-file-input');
     if (!input) return;
     input.value = '';
@@ -12908,6 +12913,7 @@ window.stopSmartCaptureStream = function() {
 window.runSmartCaptureOnFile = async function(file) {
     if (!file) return;
     window._smartCaptureTankMode = true;
+    window.ensureGeminiApiKeySaved && window.ensureGeminiApiKeySaved();
     try {
         window.setSmartCaptureLoading(true);
         const imageData = await window.fileToSmartCaptureData(file);
@@ -12933,13 +12939,19 @@ window.runSmartCaptureOnFile = async function(file) {
 
 window.openNativeCameraCapture = function() {
     window.stopSmartCaptureStream();
-    window.closeSmartCaptureCamera();
+    window.closeSmartCaptureCamera(false);
+    const settings = document.getElementById('settings-modal');
+    if (settings) settings.classList.remove('active');
     let input = document.getElementById('smart-capture-native-input');
     if (!input) return;
     input.value = '';
     input.onchange = function() {
         const file = input.files && input.files[0];
         input.value = '';
+        if (!file) {
+            if (settings) settings.classList.add('active');
+            return;
+        }
         window.runSmartCaptureOnFile(file);
     };
     input.click();
@@ -12949,6 +12961,7 @@ window.smartCaptureFromCamera = async function() {
     const menu = document.getElementById('smart-capture-menu');
     if (menu) menu.classList.remove('open');
     window._smartCaptureTankMode = true;
+    window.ensureGeminiApiKeySaved && window.ensureGeminiApiKeySaved();
 
     if (window.isIosDevice()) {
         window.openNativeCameraCapture();
@@ -13086,6 +13099,9 @@ window.showSmartCaptureConfirm = function(parsed) {
     const hint = document.getElementById('smart-capture-confirm-hint');
     if (!list || !modal) return;
 
+    const settings = document.getElementById('settings-modal');
+    if (settings) settings.classList.remove('active');
+
     const tankMode = !!window._smartCaptureTankMode;
     const fieldMap = {};
     const fields = tankMode ? window.buildTankCaptureFieldMap() : window.buildSmartCaptureFieldMap();
@@ -13124,10 +13140,14 @@ window.showSmartCaptureConfirm = function(parsed) {
     modal.classList.add('active');
 };
 
-window.closeSmartCaptureConfirm = function() {
+window.closeSmartCaptureConfirm = function(reopenSettings) {
     const modal = document.getElementById('smart-capture-confirm-modal');
     if (modal) modal.classList.remove('active');
     window._smartCapturePending = null;
+    if (reopenSettings !== false) {
+        const settings = document.getElementById('settings-modal');
+        if (settings) settings.classList.add('active');
+    }
 };
 
 window.applySmartCaptureResults = function() {
@@ -13171,8 +13191,30 @@ window.applySmartCaptureResults = function() {
 
 // --- INTEGRAZIONE GEMINI AI (chiave solo da Impostazioni, mai hardcoded) ---
 window.getGeminiApiKey = function() {
-    const custom = localStorage.getItem('servicehub_gemini_api_key');
-    return (custom && custom.trim()) ? custom.trim() : '';
+    const saved = localStorage.getItem('servicehub_gemini_api_key');
+    if (saved && saved.trim()) return saved.trim();
+    const input = document.getElementById('settings-gemini-key');
+    const draft = (input && input.value || '').trim();
+    return draft || '';
+};
+
+window.ensureGeminiApiKeySaved = function() {
+    const input = document.getElementById('settings-gemini-key');
+    if (!input) return false;
+    const key = input.value.trim();
+    if (!key) return false;
+    const prev = (localStorage.getItem('servicehub_gemini_api_key') || '').trim();
+    if (key === prev) return true;
+    localStorage.setItem('servicehub_gemini_api_key', key);
+    sessionStorage.removeItem('servicehub_gemini_skip');
+    window.__geminiUnavailable = false;
+    input.type = 'password';
+    window.updateGeminiKeyStatus();
+    return true;
+};
+
+window.isGeminiApiKeySaved = function() {
+    return !!(localStorage.getItem('servicehub_gemini_api_key') || '').trim();
 };
 
 window.loadGeminiKeySettings = function() {
@@ -13199,10 +13241,16 @@ window.updateGeminiKeyStatus = function() {
         status.textContent = 'Formato sospetto — usa chiave da aistudio.google.com/apikey';
         status.className = 'text-[9px] font-bold mt-2 text-center uppercase text-amber-600';
         if (hint) hint.className = 'text-[9px] text-amber-600 font-bold mb-3 uppercase';
-    } else if (saved) {
-        status.textContent = 'Chiave salvata (' + saved.slice(0, 8) + '…)';
+    } else if (saved && val === saved) {
+        status.textContent = '✓ Chiave salvata (' + saved.slice(0, 8) + '…)';
         status.className = 'text-[9px] font-bold mt-2 text-center uppercase text-emerald-600';
         if (hint) hint.className = 'text-[9px] text-slate-500 font-bold mb-3 uppercase';
+    } else if (val && !saved) {
+        status.textContent = 'Chiave inserita — premi SALVA CHIAVE (o usa Foto serbatoi: si salva da sola)';
+        status.className = 'text-[9px] font-bold mt-2 text-center uppercase text-amber-600';
+    } else if (val && saved && val !== saved) {
+        status.textContent = 'Chiave modificata — premi SALVA CHIAVE';
+        status.className = 'text-[9px] font-bold mt-2 text-center uppercase text-amber-600';
     }
 };
 
@@ -13226,7 +13274,7 @@ window.saveGeminiApiKey = function() {
     window.__geminiUnavailable = false;
     input.type = 'password';
     window.updateGeminiKeyStatus();
-    alert('Chiave Gemini salvata.');
+    alert('Chiave Gemini salvata ✓\n\nPrimi caratteri: ' + key.slice(0, 8) + '…');
 };
 
 window.testGeminiApiKey = async function() {
@@ -13243,22 +13291,28 @@ window.testGeminiApiKey = async function() {
     }
     const prev = localStorage.getItem('servicehub_gemini_api_key');
     localStorage.setItem('servicehub_gemini_api_key', key);
+    let testOk = false;
     try {
-        const res = await window.callGeminiAPI('Rispondi solo con la parola OK.', false);
+        await window.callGeminiAPI('Rispondi solo con la parola OK.', false);
+        testOk = true;
+        localStorage.setItem('servicehub_gemini_api_key', key);
+        if (input) input.type = 'password';
         if (status) {
-            status.textContent = 'Gemini OK: ' + String(res).slice(0, 40);
+            status.textContent = '✓ Gemini OK · chiave salvata';
             status.className = 'text-[9px] font-bold mt-2 text-center uppercase text-emerald-600';
         }
-        alert('Gemini funziona.');
+        alert('Gemini funziona ✓\nChiave salvata automaticamente.');
     } catch (e) {
+        if (!testOk) {
+            if (prev) localStorage.setItem('servicehub_gemini_api_key', prev);
+            else localStorage.removeItem('servicehub_gemini_api_key');
+        }
         if (status) {
             status.textContent = window.formatGeminiError(e && e.message);
             status.className = 'text-[9px] font-bold mt-2 text-center uppercase text-red-500';
         }
         alert('Test fallito:\n' + window.formatGeminiError(e && e.message));
     } finally {
-        if (prev) localStorage.setItem('servicehub_gemini_api_key', prev);
-        else if (!input || !input.value.trim()) localStorage.removeItem('servicehub_gemini_api_key');
         window.updateGeminiKeyStatus();
     }
 };

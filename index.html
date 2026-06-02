@@ -507,7 +507,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-rapportini3';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-notturno-filtra';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -5209,6 +5209,9 @@ window.updateStoricoButton = async function() {
             if (window.refreshAllTankLevelArrows) {
                 window.refreshAllTankLevelArrows();
             }
+            if (typeof window.restoreNotturnoFiltraAfterApplyData === 'function') {
+                window.restoreNotturnoFiltraAfterApplyData(data);
+            }
         }
 
         window.RAPPORTINI_STORAGE_KEY = 'servicehub_rapportini_v2';
@@ -5313,6 +5316,19 @@ window.updateStoricoButton = async function() {
             return { modules: {} };
         };
 
+        window.buildNotturnoRapportinoConfig = function() {
+            return {
+                modules: {
+                    'sec-filtra': {
+                        enabled: true,
+                        title: 'FILTRA',
+                        layout: 'turni-produzione',
+                        stepCount: 2
+                    }
+                }
+            };
+        };
+
         window.isRapportinoModuleEnabled = function(secId, schedeConfig) {
             const mod = schedeConfig && schedeConfig.modules && schedeConfig.modules[secId];
             return !!(mod && mod.enabled !== false);
@@ -5368,6 +5384,9 @@ window.updateStoricoButton = async function() {
                 });
             });
             window.updateRapportiniRowBlocksVisibility();
+            if (typeof window.syncFiltraPanelForActiveRapportino === 'function') {
+                window.syncFiltraPanelForActiveRapportino();
+            }
         };
 
         window.updateRapportiniRowBlocksVisibility = function() {
@@ -5401,10 +5420,15 @@ window.updateStoricoButton = async function() {
                     }
                     changed = true;
                 }
-                if (rid === 'notturno' && item.schedeConfig && item.schedeConfig.modules) {
-                    const keys = Object.keys(item.schedeConfig.modules);
-                    if (keys.length > 0 && keys.every(function(k) { return item.schedeConfig.modules[k].enabled; })) {
-                        item.schedeConfig = window.buildEmptyRapportinoConfig();
+                if (rid === 'notturno') {
+                    const filtra = item.schedeConfig && item.schedeConfig.modules && item.schedeConfig.modules['sec-filtra'];
+                    if (!filtra || filtra.layout !== 'turni-produzione') {
+                        item.schedeConfig = window.buildNotturnoRapportinoConfig();
+                        changed = true;
+                    }
+                    if (!item.data) item.data = {};
+                    if (!item.data._nottFiltraSteps) {
+                        item.data._nottFiltraSteps = 2;
                         changed = true;
                     }
                 }
@@ -5550,10 +5574,11 @@ window.updateStoricoButton = async function() {
                     activeId: 'generale',
                     items: {
                         generale: Object.assign({ id: 'generale', name: 'Generale', schedeConfig: fullCfg }, snap),
-                        notturno: Object.assign(
-                            { id: 'notturno', name: 'Notturno', schedeConfig: window.buildEmptyRapportinoConfig() },
-                            window.captureEmptyRapportinoSnapshot(null, [])
-                        )
+                        notturno: (function() {
+                            var snap = window.captureEmptyRapportinoSnapshot(null, window.RAPPORTINI_SECTION_IDS.filter(function(sid) { return sid !== 'sec-filtra'; }));
+                            snap.data._nottFiltraSteps = 2;
+                            return Object.assign({ id: 'notturno', name: 'Notturno', schedeConfig: window.buildNotturnoRapportinoConfig() }, snap);
+                        })()
                     }
                 };
                 window.saveRapportiniStore(store);
@@ -5561,10 +5586,11 @@ window.updateStoricoButton = async function() {
                 store = window.migrateRapportiniSchedeConfig(store);
             }
             if (!store.items.notturno) {
-                store.items.notturno = Object.assign(
-                    { id: 'notturno', name: 'Notturno', schedeConfig: window.buildEmptyRapportinoConfig() },
-                    window.captureEmptyRapportinoSnapshot(null, [])
-                );
+                (function() {
+                    var snap = window.captureEmptyRapportinoSnapshot(null, window.RAPPORTINI_SECTION_IDS.filter(function(sid) { return sid !== 'sec-filtra'; }));
+                    snap.data._nottFiltraSteps = 2;
+                    store.items.notturno = Object.assign({ id: 'notturno', name: 'Notturno', schedeConfig: window.buildNotturnoRapportinoConfig() }, snap);
+                })();
                 window.saveRapportiniStore(store);
             }
             if (!store.activeId) store.activeId = 'generale';
@@ -5600,6 +5626,8 @@ window.updateStoricoButton = async function() {
             if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
             if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
             if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
+            if (typeof window.syncFiltraPanelForActiveRapportino === 'function') window.syncFiltraPanelForActiveRapportino();
+            if (typeof window.refreshNotturnoFiltraTotals === 'function') window.refreshNotturnoFiltraTotals();
         };
 
         window.switchToRapportino = async function(id) {
@@ -6048,6 +6076,248 @@ window.updateStoricoButton = async function() {
                 if (typeof window.saveData === 'function') await window.saveData(true);
             }
             alert('Rapportino «' + (store.items[id].name || id) + '» salvato.');
+        };
+
+        window._notturnoTimeInputId = null;
+        window.NOTT_FILTRA_DEFAULT_START = 'ORA INIZIO';
+        window.NOTT_FILTRA_DEFAULT_END = 'ORA FINE';
+
+        window.parseNotturnoTimeToMinutes = function(t) {
+            if (!t || typeof t !== 'string') return null;
+            const m = t.trim().match(/^(\d{1,2}):(\d{2})$/);
+            if (!m) return null;
+            const h = parseInt(m[1], 10);
+            const min = parseInt(m[2], 10);
+            if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+            return h * 60 + min;
+        };
+
+        window.formatNotturnoMinutes = function(totalMin) {
+            if (totalMin == null || isNaN(totalMin) || totalMin < 0) return '—';
+            const h = Math.floor(totalMin / 60);
+            const m = Math.round(totalMin % 60);
+            if (m === 0) return h + ' h';
+            return h + ' h ' + m + ' min';
+        };
+
+        window.getNotturnoFiltraStepCount = function() {
+            const cfg = window.getActiveRapportinoSchedeConfig();
+            const mod = cfg && cfg.modules && cfg.modules['sec-filtra'];
+            if (mod && mod.stepCount) return Math.max(1, parseInt(mod.stepCount, 10) || 2);
+            const store = window.loadRapportiniStore();
+            const active = store && store.activeId && store.items[store.activeId];
+            if (active && active.data && active.data._nottFiltraSteps) {
+                return Math.max(1, parseInt(active.data._nottFiltraSteps, 10) || 2);
+            }
+            return 2;
+        };
+
+        window.setNotturnoFiltraStepCount = function(n) {
+            const count = Math.max(1, parseInt(n, 10) || 2);
+            const store = window.loadRapportiniStore();
+            if (!store || store.activeId !== 'notturno' || !store.items.notturno) return count;
+            const item = store.items.notturno;
+            if (!item.schedeConfig) item.schedeConfig = window.buildNotturnoRapportinoConfig();
+            if (!item.schedeConfig.modules['sec-filtra']) {
+                item.schedeConfig.modules['sec-filtra'] = { enabled: true, title: 'FILTRA', layout: 'turni-produzione', stepCount: count };
+            } else {
+                item.schedeConfig.modules['sec-filtra'].stepCount = count;
+            }
+            if (!item.data) item.data = {};
+            item.data._nottFiltraSteps = count;
+            window.saveRapportiniStore(store);
+            return count;
+        };
+
+        window.isNotturnoFiltraLayoutActive = function() {
+            const store = window.loadRapportiniStore();
+            if (!store || store.activeId !== 'notturno') return false;
+            const cfg = store.items.notturno && store.items.notturno.schedeConfig;
+            const mod = cfg && cfg.modules && cfg.modules['sec-filtra'];
+            return !!(mod && mod.enabled !== false && mod.layout === 'turni-produzione');
+        };
+
+        window.syncFiltraPanelForActiveRapportino = function() {
+            const isNott = window.isNotturnoFiltraLayoutActive();
+            const std = document.getElementById('filtra-panel-standard');
+            const ntt = document.getElementById('filtra-panel-notturno');
+            const sec = document.getElementById('sec-filtra');
+            if (std) std.style.display = isNott ? 'none' : 'flex';
+            if (ntt) {
+                if (isNott) {
+                    ntt.style.display = 'flex';
+                    window.renderNotturnoFiltraPanel();
+                    if (sec && sec.style.display !== 'none') {
+                        sec.classList.remove('col-collapsed');
+                        sec.classList.add('col-expanded');
+                    }
+                } else {
+                    ntt.style.display = 'none';
+                }
+            }
+        };
+
+        window.renderNotturnoFiltraPanel = function() {
+            const panel = document.getElementById('filtra-panel-notturno');
+            if (!panel || !window.isNotturnoFiltraLayoutActive()) return;
+            const steps = window.getNotturnoFiltraStepCount();
+            let cols = '';
+            for (let i = 0; i < steps; i++) {
+                const sid = 'nott-f-s' + i;
+                cols += '<div class="nott-filtra-step-col" data-step="' + i + '">' +
+                    '<button type="button" class="nott-f-time-btn" id="' + sid + '-start-btn" data-time-for="' + sid + '-start" onclick="window.openNotturnoTimePicker(\'' + sid + '-start\')">' + window.NOTT_FILTRA_DEFAULT_START + '</button>' +
+                    '<input type="hidden" id="' + sid + '-start" value="">' +
+                    '<span class="nott-f-prod-lbl">Prod. iniziale</span>' +
+                    '<input type="tel" class="nott-f-prod-inp" id="' + sid + '-pi" inputmode="decimal" placeholder="—" oninput="window.refreshNotturnoFiltraTotals()" onchange="window.saveData()">' +
+                    '<button type="button" class="nott-f-time-btn" id="' + sid + '-end-btn" data-time-for="' + sid + '-end" onclick="window.openNotturnoTimePicker(\'' + sid + '-end\')">' + window.NOTT_FILTRA_DEFAULT_END + '</button>' +
+                    '<input type="hidden" id="' + sid + '-end" value="">' +
+                    '<span class="nott-f-prod-lbl">Prod. finale</span>' +
+                    '<input type="tel" class="nott-f-prod-inp" id="' + sid + '-pf" inputmode="decimal" placeholder="—" oninput="window.refreshNotturnoFiltraTotals()" onchange="window.saveData()">' +
+                    '</div>';
+            }
+            panel.innerHTML =
+                '<div class="nott-filtra-grid">' + cols + '</div>' +
+                '<button type="button" class="nott-f-add-step" onclick="window.addNotturnoFiltraStep()">+ Aggiungi step (ora inizio / fine)</button>' +
+                '<div class="nott-f-totals">' +
+                '<div class="nott-f-total-box"><div class="nott-f-total-lbl">Ora totale</div><div class="nott-f-total-val" id="nott-f-ora-totale">—</div></div>' +
+                '<div class="nott-f-total-box"><div class="nott-f-total-lbl">Produzione totale</div><div class="nott-f-total-val" id="nott-f-prod-totale">—</div></div>' +
+                '</div>';
+            window.syncNotturnoFiltraTimeButtonsFromInputs();
+            window.refreshNotturnoFiltraTotals();
+        };
+
+        window.syncNotturnoFiltraTimeButtonsFromInputs = function() {
+            document.querySelectorAll('#filtra-panel-notturno .nott-f-time-btn').forEach(function(btn) {
+                const hid = document.getElementById(btn.getAttribute('data-time-for'));
+                const val = hid && hid.value ? hid.value.trim() : '';
+                const isEnd = btn.id && btn.id.indexOf('-end-btn') >= 0;
+                const def = isEnd ? window.NOTT_FILTRA_DEFAULT_END : window.NOTT_FILTRA_DEFAULT_START;
+                if (val) {
+                    btn.textContent = val;
+                    btn.classList.add('has-value');
+                } else {
+                    btn.textContent = def;
+                    btn.classList.remove('has-value');
+                }
+            });
+        };
+
+        window.openNotturnoTimePicker = function(hiddenInputId) {
+            const hid = document.getElementById(hiddenInputId);
+            if (!hid) return;
+            window._notturnoTimeInputId = hiddenInputId;
+            const inp = document.getElementById('notturno-time-input');
+            const modal = document.getElementById('notturno-time-modal');
+            if (inp) inp.value = hid.value || '';
+            if (modal) modal.classList.add('active');
+        };
+
+        window.closeNotturnoTimePicker = function() {
+            const modal = document.getElementById('notturno-time-modal');
+            if (modal) modal.classList.remove('active');
+            window._notturnoTimeInputId = null;
+        };
+
+        window.confirmNotturnoTimePicker = function() {
+            const hidId = window._notturnoTimeInputId;
+            const inp = document.getElementById('notturno-time-input');
+            if (!hidId || !inp) {
+                window.closeNotturnoTimePicker();
+                return;
+            }
+            const val = inp.value;
+            if (!val) {
+                alert('Seleziona un orario.');
+                return;
+            }
+            const hid = document.getElementById(hidId);
+            if (hid) hid.value = val;
+            window.syncNotturnoFiltraTimeButtonsFromInputs();
+            window.refreshNotturnoFiltraTotals();
+            window.closeNotturnoTimePicker();
+            if (typeof window.saveData === 'function') window.saveData();
+        };
+
+        window.clearNotturnoTimePicker = function() {
+            const hidId = window._notturnoTimeInputId;
+            if (hidId) {
+                const hid = document.getElementById(hidId);
+                if (hid) hid.value = '';
+            }
+            window.syncNotturnoFiltraTimeButtonsFromInputs();
+            window.refreshNotturnoFiltraTotals();
+            window.closeNotturnoTimePicker();
+            if (typeof window.saveData === 'function') window.saveData();
+        };
+
+        window.calcNotturnoStepHours = function(startStr, endStr) {
+            const s = window.parseNotturnoTimeToMinutes(startStr);
+            const e = window.parseNotturnoTimeToMinutes(endStr);
+            if (s == null || e == null) return 0;
+            let diff = e - s;
+            if (diff < 0) diff += 24 * 60;
+            return diff / 60;
+        };
+
+        window.refreshNotturnoFiltraTotals = function() {
+            if (!window.isNotturnoFiltraLayoutActive()) return;
+            const steps = window.getNotturnoFiltraStepCount();
+            let totalHours = 0;
+            let totalProd = 0;
+            for (let i = 0; i < steps; i++) {
+                const sid = 'nott-f-s' + i;
+                const startEl = document.getElementById(sid + '-start');
+                const endEl = document.getElementById(sid + '-end');
+                const piEl = document.getElementById(sid + '-pi');
+                const pfEl = document.getElementById(sid + '-pf');
+                totalHours += window.calcNotturnoStepHours(
+                    startEl ? startEl.value : '',
+                    endEl ? endEl.value : ''
+                );
+                const pi = piEl && piEl.value !== '' ? parseFloat(String(piEl.value).replace(',', '.')) : NaN;
+                const pf = pfEl && pfEl.value !== '' ? parseFloat(String(pfEl.value).replace(',', '.')) : NaN;
+                if (!isNaN(pi) && !isNaN(pf)) totalProd += (pf - pi);
+            }
+            const oraEl = document.getElementById('nott-f-ora-totale');
+            const prodEl = document.getElementById('nott-f-prod-totale');
+            if (oraEl) {
+                const mins = Math.round(totalHours * 60);
+                oraEl.textContent = totalHours > 0 ? window.formatNotturnoMinutes(mins) : '—';
+            }
+            if (prodEl) {
+                prodEl.textContent = totalProd !== 0 ? (totalProd > 0 ? '+' : '') + Math.round(totalProd) : '—';
+            }
+            const store = window.loadRapportiniStore();
+            if (store && store.activeId === 'notturno' && store.items.notturno) {
+                if (!store.items.notturno.data) store.items.notturno.data = {};
+                store.items.notturno.data._nottFiltraOraTot = totalHours;
+                store.items.notturno.data._nottFiltraProdTot = totalProd;
+            }
+        };
+
+        window.addNotturnoFiltraStep = function() {
+            const next = window.getNotturnoFiltraStepCount() + 1;
+            window.setNotturnoFiltraStepCount(next);
+            window.renderNotturnoFiltraPanel();
+            if (typeof window.saveData === 'function') window.saveData();
+        };
+
+        window.restoreNotturnoFiltraAfterApplyData = function(data) {
+            if (!data || !window.isNotturnoFiltraLayoutActive()) return;
+            const steps = data._nottFiltraSteps ? Math.max(1, parseInt(data._nottFiltraSteps, 10)) : window.getNotturnoFiltraStepCount();
+            if (data._nottFiltraSteps) window.setNotturnoFiltraStepCount(steps);
+            window.renderNotturnoFiltraPanel();
+            for (let i = 0; i < steps; i++) {
+                const sid = 'nott-f-s' + i;
+                ['-start', '-end', '-pi', '-pf'].forEach(function(suf) {
+                    const key = sid + suf;
+                    if (data[key] === undefined) return;
+                    const el = document.getElementById(key);
+                    if (el) el.value = data[key] != null ? String(data[key]) : '';
+                });
+            }
+            window.syncNotturnoFiltraTimeButtonsFromInputs();
+            window.refreshNotturnoFiltraTotals();
         };
 
         /** Lettura forzata plant dal server (aggira cache SDK / tab in background / rete difficile). */
@@ -10544,6 +10814,23 @@ window.convertToHtml = async () => {
         .row-block { display: flex; width: 100%; border-bottom: 2px solid var(--border-main); align-items: stretch; overflow: hidden; }
         .col-expanded { flex: 1 1 0% !important; min-width: 0 !important; }
         .col-collapsed { flex: 0 0 46px !important; min-width: 46px !important; }
+        .filtra-panel-grow { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+        .filtra-panel-grow table { flex: 1; }
+        #filtra-panel-notturno { flex: 1; display: none; flex-direction: column; min-width: 0; padding: 6px; gap: 6px; overflow-x: auto; }
+        .nott-filtra-grid { display: flex; flex-direction: row; gap: 4px; min-width: min-content; }
+        .nott-filtra-step-col { flex: 1 1 0; min-width: 72px; display: flex; flex-direction: column; gap: 4px; }
+        .nott-f-time-btn { width: 100%; min-height: 36px; padding: 4px 2px; border: 2px solid #065f46; border-radius: 8px; background: #ecfdf5; color: #064e3b; font-size: 9px; font-weight: 800; text-transform: uppercase; line-height: 1.1; cursor: pointer; touch-action: manipulation; }
+        .dark .nott-f-time-btn { background: #064e3b; color: #ecfdf5; border-color: #34d399; }
+        .nott-f-time-btn.has-value { background: #065f46; color: #fff; font-size: 11px; }
+        .nott-f-prod-lbl { font-size: 8px; font-weight: 800; text-transform: uppercase; text-align: center; color: #64748b; }
+        .nott-f-prod-inp { width: 100%; min-height: 40px; border: 2px solid var(--border-main); border-radius: 8px; text-align: center; font-size: 12px; font-weight: 800; background: var(--bg-card); color: var(--text-main); }
+        .nott-f-totals { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 4px; }
+        .nott-f-total-box { border: 2px solid #065f46; border-radius: 10px; padding: 8px 6px; text-align: center; background: #f0fdf4; }
+        .dark .nott-f-total-box { background: #022c22; }
+        .nott-f-total-lbl { font-size: 8px; font-weight: 800; text-transform: uppercase; color: #065f46; }
+        .nott-f-total-val { font-size: 16px; font-weight: 900; color: #064e3b; margin-top: 2px; }
+        .dark .nott-f-total-val { color: #6ee7b7; }
+        .nott-f-add-step { width: 100%; margin-top: 4px; padding: 10px; border-radius: 10px; background: #065f46; color: #fff; font-size: 10px; font-weight: 800; text-transform: uppercase; border: none; }
         .main-header { background-color: #000; color: white; padding: 0 12px; display: flex; justify-content: space-between; align-items: center; height: 60px; }
         input { width: 100%; height: 100%; border: none; text-align: center; font-weight: 800; background: transparent; outline: none; color: var(--text-main); }
         table { width: 100%; border-collapse: collapse; table-layout: fixed; height: 100%; }
@@ -11533,7 +11820,10 @@ window.convertToHtml = async () => {
             </div>
             <div id="sec-filtra" class="col-section col-collapsed">
                 <div class="v-label-container" style="background-color: #065f46;" ontouchstart="window.startPress(event, 'sec-filtra')" ontouchmove="window.movePress(event)" ontouchend="window.endPress(event, 'sec-filtra')" onmousedown="window.startPress(event, 'sec-filtra')" onmouseup="window.endPress(event, 'sec-filtra')"><span class="v-label-text" id="lbl-sec-filtra">FILTRA</span></div>
-                <table><tr class="th-bg"><td>PARAM</td><td>VAL</td></tr><tr><td class="cell-label-main">STATO</td><td><div id="stat-f" class="status-cell-btn bg-fermo" onclick="window.toggleStatus('stat-f')">FERMO</div></td></tr><tr><td class="cell-label-main">CICLO</td><td><input type="tel" id="f-ciclo" onchange="window.saveData()"></td></tr><tr><td class="cell-label-main">COND</td><td><input type="tel" id="f-cond" onchange="window.saveData()"></td></tr></table>
+                <div id="filtra-panel-standard" class="filtra-panel-grow">
+                    <table><tr class="th-bg"><td>PARAM</td><td>VAL</td></tr><tr><td class="cell-label-main">STATO</td><td><div id="stat-f" class="status-cell-btn bg-fermo" onclick="window.toggleStatus('stat-f')">FERMO</div></td></tr><tr><td class="cell-label-main">CICLO</td><td><input type="tel" id="f-ciclo" onchange="window.saveData()"></td></tr><tr><td class="cell-label-main">COND</td><td><input type="tel" id="f-cond" onchange="window.saveData()"></td></tr></table>
+                </div>
+                <div id="filtra-panel-notturno"></div>
             </div>
         </div>
 
@@ -11821,6 +12111,17 @@ window.convertToHtml = async () => {
                     <button type="button" onclick="window.saveRapportinoModifica()" class="w-full bg-emerald-600 text-white font-black py-4 rounded-xl uppercase border-b-4 border-emerald-900 active:scale-95">Salva rapportino</button>
                     <button type="button" onclick="window.rapportinoManagerShowList()" class="w-full bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-white font-black py-3 rounded-xl uppercase active:scale-95">Indietro</button>
                 </div>
+            </div>
+        </div>
+    </div>
+    <div id="notturno-time-modal" class="modal-overlay" onclick="if(event.target === this) window.closeNotturnoTimePicker()">
+        <div class="modal-content-centered bg-white dark:bg-slate-900 max-w-sm w-[88%]" onclick="event.stopPropagation()">
+            <div class="p-4 bg-emerald-800 text-white font-black text-center uppercase text-sm">Imposta orario</div>
+            <div class="p-6 flex flex-col items-center gap-4">
+                <input type="time" id="notturno-time-input" class="w-full text-2xl font-black text-center py-4 rounded-xl border-2 border-emerald-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-white">
+                <button type="button" onclick="window.confirmNotturnoTimePicker()" class="w-full bg-emerald-600 text-white font-black py-4 rounded-xl uppercase border-b-4 border-emerald-900 active:scale-95">Conferma</button>
+                <button type="button" onclick="window.clearNotturnoTimePicker()" class="w-full bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white font-black py-3 rounded-xl uppercase text-[10px] active:scale-95">Rimuovi orario</button>
+                <button type="button" onclick="window.closeNotturnoTimePicker()" class="w-full text-slate-500 font-bold py-2 uppercase text-[10px]">Annulla</button>
             </div>
         </div>
     </div>

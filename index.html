@@ -9800,7 +9800,8 @@ window.convertToHtml = async () => {
         }
         #smart-capture-confirm-modal { z-index: 10055; }
         #smart-capture-confirm-modal.active { background: rgba(0,0,0,0.75); backdrop-filter: blur(5px); visibility: visible; }
-        .smart-capture-row { display: flex; justify-content: space-between; gap: 8px; padding: 8px 0; border-bottom: 1px solid #334155; font-size: 12px; }
+        .smart-capture-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid #334155; font-size: 12px; }
+        .smart-capture-row input { width: 96px; font-size: 20px; font-weight: 800; text-align: center; padding: 8px; border-radius: 10px; border: 2px solid #475569; background: #0f172a; color: #34d399; }
         .smart-capture-row:last-child { border-bottom: none; }
         .smart-capture-loading { position: fixed; inset: 0; z-index: 10060; background: rgba(15,23,42,0.88); display: none; align-items: center; justify-content: center; flex-direction: column; gap: 16px; color: white; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; }
         .smart-capture-loading.active { display: flex; }
@@ -10733,7 +10734,7 @@ window.convertToHtml = async () => {
                         </button>
                         <button type="button" onclick="window.smartCaptureFromCamera()" class="w-full mt-2 bg-violet-50 dark:bg-violet-950 text-violet-800 dark:text-violet-200 font-black py-4 px-5 rounded-[20px] border-2 border-violet-300 dark:border-violet-700 flex items-center justify-center gap-3 outline-none active:scale-95 transition-all">
                             <i class="fas fa-camera text-violet-600"></i>
-                            <span class="text-[11px] uppercase">Foto serbatoi · OCR auto</span>
+                            <span class="text-[11px] uppercase">Foto serbatoi · AI/OCR</span>
                         </button>
                     </div>
                     <input type="file" id="smart-capture-file-input" accept="image/*" capture="environment" style="display:none;">
@@ -10835,10 +10836,11 @@ window.convertToHtml = async () => {
     <div id="smart-capture-confirm-modal" class="modal-overlay" onclick="if(event.target === this) window.closeSmartCaptureConfirm()">
         <div class="modal-content-centered bg-slate-900 text-white p-6 rounded-[24px] border-2 border-slate-700 max-w-lg w-[92%] max-h-[80vh] flex flex-col" onclick="event.stopPropagation()">
             <div class="flex justify-between items-center mb-4">
-                <h3 class="font-black uppercase text-lg">Letture rilevate</h3>
+                <h3 class="font-black uppercase text-lg">Conferma livelli</h3>
                 <button type="button" onclick="window.closeSmartCaptureConfirm()" class="bg-red-600 rounded-xl w-10 h-10 font-black">X</button>
             </div>
-            <div id="smart-capture-confirm-list" class="overflow-y-auto grow text-sm mb-4"></div>
+            <div id="smart-capture-confirm-list" class="overflow-y-auto grow text-sm mb-2"></div>
+            <p id="smart-capture-confirm-hint" class="text-[10px] text-slate-400 font-bold uppercase mb-4 text-center">Controlla e correggi i valori prima di applicare</p>
             <div class="flex gap-3">
                 <button type="button" onclick="window.closeSmartCaptureConfirm()" class="flex-1 bg-slate-700 font-black py-3 rounded-xl uppercase">Annulla</button>
                 <button type="button" onclick="window.applySmartCaptureResults()" class="flex-1 bg-emerald-600 font-black py-3 rounded-xl uppercase border-b-4 border-emerald-900">Applica</button>
@@ -12196,8 +12198,9 @@ window.applyAlarmLevelFillToField = function (el, forceMin) {
     }
 };
 
-// --- ACQUISIZIONE INTELLIGENTE: OCR AUTO SERBATOI ---
-window.SMART_CAPTURE_OFFLINE_ONLY = true;
+// --- ACQUISIZIONE INTELLIGENTE: GEMINI VISION + OCR + CONFERMA ---
+window.SMART_CAPTURE_OFFLINE_ONLY = false;
+window.SMART_CAPTURE_PREFER_GEMINI = true;
 window._smartCaptureTankMode = false;
 
 window.TANK_CAPTURE_FIELDS = [
@@ -12238,7 +12241,7 @@ window.matchTankReadingsFromOcrText = function(ocrText, fields) {
 
     function add(id, val, conf) {
         if (usedIds.has(id)) return;
-        let v = String(val || '').replace(',', '.').replace(/[^\d.]/g, '');
+        let v = window.fixOcrDigitValue(val);
         if (!window.isValidOcrValue(v)) return;
         const f = (fields || []).find(function(x) { return x.id === id; });
         readings.push({
@@ -12431,24 +12434,80 @@ window.ensureTesseractWorker = async function() {
         });
         await worker.loadLanguage('eng');
         await worker.initialize('eng');
-        await worker.setParameters({
-            tessedit_pageseg_mode: '6',
-            tessedit_char_whitelist: '0123456789.,TKSGtksg- '
-        });
         window._tesseractWorker = worker;
         return worker;
     })();
     return window._tesseractWorkerInit;
 };
 
-window.preprocessImageForOcr = function(dataUrl, maxW) {
-    maxW = maxW || (window.isIosDevice && window.isIosDevice() ? 640 : 960);
+window.runTesseractOcrPass = async function(worker, imageDataUrl, params) {
+    await worker.setParameters(Object.assign({
+        tessedit_pageseg_mode: '11'
+    }, params || {}));
+    const result = await worker.recognize(imageDataUrl);
+    return (result && result.data && result.data.text) ? result.data.text : '';
+};
+
+window.buildGeminiTankCapturePrompt = function() {
+    return 'Leggi i livelli (LIV) dei serbatoi da questa foto del quadro impianto.\n' +
+        'Mappa sigla → id JSON:\n' +
+        'TK 9000 → inp-tk9000\nS 133 → inp-s133\nTK 9201 → inp-tk9201\nTK 101 → tk101\n' +
+        'TK 9204 → inp-tk9204\nTK 9205 → inp-tk9205\nTK 10000 → inp-tk10000\n\n' +
+        'Rispondi SOLO con JSON valido, senza markdown:\n' +
+        '{"readings":[{"id":"inp-tk9000","value":"45.2"}]}\n' +
+        'Usa il punto per i decimali. Includi solo serbatoi visibili con certezza.';
+};
+
+window.runGeminiSmartCaptureOcr = async function(imageData, fields) {
+    const raw = await window.withOcrTimeout(
+        window.callGeminiAPI(window.buildGeminiTankCapturePrompt(), false, imageData),
+        55000,
+        'Analisi AI in timeout. Riprova tra poco.'
+    );
+    const json = window.parseSmartCaptureJson(raw);
+    const readings = [];
+    const usedIds = new Set();
+
+    function add(id, val) {
+        if (usedIds.has(id)) return;
+        const v = window.fixOcrDigitValue(val);
+        if (!window.isValidOcrValue(v)) return;
+        const f = (fields || []).find(function(x) { return x.id === id; });
+        readings.push({ id: id, value: v, confidence: 'alta', source: f ? f.label : id });
+        usedIds.add(id);
+    }
+
+    if (json && Array.isArray(json.readings)) {
+        json.readings.forEach(function(r) {
+            if (r && r.id && r.value != null) add(r.id, r.value);
+        });
+    }
+    if (!readings.length) {
+        window.matchTankReadingsFromOcrText(raw, fields).forEach(function(r) {
+            add(r.id, r.value);
+        });
+    }
+    return {
+        readings: readings,
+        engine: 'gemini',
+        rawTextPreview: String(raw).slice(0, 300),
+        notes: readings.length ? ('AI Gemini · ' + readings.length + ' livelli') : 'AI Gemini · nessun livello trovato'
+    };
+};
+
+window.preprocessImageForOcr = function(dataUrl, maxW, mode) {
+    maxW = maxW || 1200;
+    mode = mode || 'soft';
     return new Promise(function(resolve, reject) {
         const img = new Image();
         img.onload = function() {
             let w = img.width;
             let h = img.height;
-            if (w > maxW) {
+            const targetW = w < 1000 ? Math.min(1200, Math.max(w, 1000)) : w;
+            if (targetW > w && w < 2400) {
+                h = Math.round(h * targetW / w);
+                w = targetW;
+            } else if (w > maxW) {
                 h = Math.round(h * maxW / w);
                 w = maxW;
             }
@@ -12456,22 +12515,33 @@ window.preprocessImageForOcr = function(dataUrl, maxW) {
             canvas.width = w;
             canvas.height = h;
             const ctx = canvas.getContext('2d');
-            ctx.filter = 'contrast(1.3) brightness(1.05)';
+            ctx.filter = mode === 'binary' ? 'contrast(1.45) brightness(1.08)' : 'contrast(1.15) brightness(1.02)';
             ctx.drawImage(img, 0, 0, w, h);
             ctx.filter = 'none';
-            const imgData = ctx.getImageData(0, 0, w, h);
-            const d = imgData.data;
-            for (let i = 0; i < d.length; i += 4) {
-                const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-                const v = g > 130 ? 255 : (g < 85 ? 0 : g);
-                d[i] = d[i + 1] = d[i + 2] = v;
+            if (mode === 'binary') {
+                const imgData = ctx.getImageData(0, 0, w, h);
+                const d = imgData.data;
+                for (let i = 0; i < d.length; i += 4) {
+                    const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+                    const v = g > 125 ? 255 : (g < 95 ? 0 : g);
+                    d[i] = d[i + 1] = d[i + 2] = v;
+                }
+                ctx.putImageData(imgData, 0, 0);
             }
-            ctx.putImageData(imgData, 0, 0);
-            resolve(canvas.toDataURL('image/jpeg', 0.85));
+            resolve(canvas.toDataURL('image/jpeg', 0.92));
         };
         img.onerror = function() { reject(new Error('Immagine non valida.')); };
         img.src = dataUrl;
     });
+};
+
+window.preprocessImageVariantsForOcr = async function(dataUrl) {
+    const isMobile = window.isIosDevice && window.isIosDevice();
+    const maxW = isMobile ? 1100 : 1400;
+    return [
+        await window.preprocessImageForOcr(dataUrl, maxW, 'soft'),
+        await window.preprocessImageForOcr(dataUrl, Math.min(maxW, 960), 'binary')
+    ];
 };
 
 window.normalizeSiglaKey = function(s) {
@@ -12524,7 +12594,25 @@ window.extractValueNearMatch = function(text, index, patternLen) {
 };
 
 window.isValidOcrValue = function(value) {
-    return /^\d+([.]\d+)?$/.test(String(value || '').replace(',', '.'));
+    const v = String(value || '').replace(',', '.');
+    if (!/^\d+([.]\d+)?$/.test(v)) return false;
+    const n = parseFloat(v);
+    if (!isFinite(n) || n < 0 || n > 99999) return false;
+    return true;
+};
+
+window.fixOcrDigitValue = function(value) {
+    let v = String(value || '').trim();
+    v = v.replace(/,/g, '.');
+    v = v.replace(/[OoQ]/g, '0');
+    v = v.replace(/[Il|]/g, '1');
+    v = v.replace(/[Zz]/g, '2');
+    v = v.replace(/[Ss\$]/g, '5');
+    v = v.replace(/[Bb]/g, '8');
+    v = v.replace(/[^\d.]/g, '');
+    const parts = v.split('.');
+    if (parts.length > 2) v = parts[0] + '.' + parts.slice(1).join('');
+    return v;
 };
 
 window.lineMatchesOcrPattern = function(lineNorm, lineCompact, pattern) {
@@ -12555,8 +12643,7 @@ window.matchReadingsFromOcrText = function(ocrText, fields) {
 
     function addReading(field, value, confidence, source) {
         if (!field || !field.id || usedIds.has(field.id)) return;
-        let v = String(value || '').replace(',', '.').trim();
-        v = v.replace(/[^\d.]/g, '');
+        let v = window.fixOcrDigitValue(value);
         if (!window.isValidOcrValue(v)) return;
         readings.push({
             id: field.id,
@@ -12647,33 +12734,39 @@ window.runLocalSmartCaptureOcr = async function(imageData, fields) {
 
     const raw = imageData.data || '';
     const dataUrl = raw.indexOf(',') >= 0 ? raw : 'data:image/jpeg;base64,' + raw;
-    const maxSize = window.isIosDevice && window.isIosDevice() ? 720 : 960;
-    const timeoutMs = window.isIosDevice && window.isIosDevice() ? 28000 : 55000;
+    const timeoutMs = window.isIosDevice && window.isIosDevice() ? 32000 : 60000;
 
     window.setSmartCaptureLoadingMessage('Preparazione foto…');
-    const preprocessed = await window.withOcrTimeout(
-        window.preprocessImageForOcr(dataUrl, maxSize),
-        12000,
-        'Immagine troppo grande.'
+    const variants = await window.withOcrTimeout(
+        window.preprocessImageVariantsForOcr(dataUrl),
+        15000,
+        'Immagine non elaborabile.'
     );
 
     if (window._smartCaptureAbort) throw new Error('Annullato.');
 
-    window.setSmartCaptureLoadingMessage('Scansione 0%…');
+    window.setSmartCaptureLoadingMessage('Scansione OCR…');
 
-    let result;
+    let combinedText = '';
     try {
         const worker = await window.withOcrTimeout(
             window.ensureTesseractWorker(),
             35000,
-            'Avvio OCR troppo lento. Chiudi altre app e riprova.'
+            'Avvio OCR lento. Riprova.'
         );
         if (window._smartCaptureAbort) throw new Error('Annullato.');
-        result = await window.withOcrTimeout(
-            worker.recognize(preprocessed),
-            timeoutMs,
-            'OCR troppo lento.\n\nConsigli:\n• Foto più vicina al quadro serbatoi\n• Luce migliore\n• Inquadra TK 9000, S 133, TK 9201'
-        );
+
+        for (let vi = 0; vi < variants.length; vi++) {
+            window.setSmartCaptureLoadingMessage('Scansione passaggio ' + (vi + 1) + '/' + variants.length + '…');
+            const passText = await window.withOcrTimeout(
+                window.runTesseractOcrPass(worker, variants[vi], vi === 0
+                    ? { tessedit_pageseg_mode: '11' }
+                    : { tessedit_pageseg_mode: '6', tessedit_char_whitelist: '0123456789.,TKS tks- ' }),
+                Math.floor(timeoutMs / variants.length),
+                'OCR in timeout.'
+            );
+            combinedText += '\n' + passText;
+        }
     } catch (err) {
         await window.resetTesseractWorker();
         throw err;
@@ -12681,13 +12774,15 @@ window.runLocalSmartCaptureOcr = async function(imageData, fields) {
 
     if (window._smartCaptureAbort) throw new Error('Annullato.');
 
-    const text = (result && result.data && result.data.text) ? result.data.text : '';
+    const text = combinedText.trim();
     console.log('OCR testo letto:', text.slice(0, 500));
     const parsed = window.matchReadingsFromOcrText(text, fields);
     const tankReadings = window.matchTankReadingsFromOcrText(text, fields);
     parsed.readings = window.mergeOcrReadingLists(parsed.readings, tankReadings);
     parsed.rawTextPreview = text.slice(0, 300);
     parsed._fullText = text;
+    parsed.engine = 'local';
+    parsed.notes = 'OCR offline · ' + parsed.readings.length + ' livelli';
     return parsed;
 };
 
@@ -12700,22 +12795,37 @@ window.runSmartCaptureAnalysis = async function(imageData) {
         throw new Error('I PDF non sono supportati. Usa una foto JPG/PNG.');
     }
 
+    const geminiKey = window.getGeminiApiKey && window.getGeminiApiKey();
+    if (geminiKey && window.SMART_CAPTURE_PREFER_GEMINI && !window._smartCaptureAbort) {
+        try {
+            window.setSmartCaptureLoadingMessage('Analisi AI foto…');
+            const geminiResult = await window.runGeminiSmartCaptureOcr(imageData, fields);
+            if (geminiResult.readings && geminiResult.readings.length) {
+                return geminiResult;
+            }
+        } catch (err) {
+            console.warn('Gemini smart capture:', err);
+            if (window.SMART_CAPTURE_OFFLINE_ONLY) {
+                throw new Error(window.formatGeminiError(err && err.message) || 'Analisi AI non riuscita.');
+            }
+        }
+    }
+
     const localResult = await window.runLocalSmartCaptureOcr(imageData, fields);
     if (localResult.readings && localResult.readings.length) {
-        localResult.notes = 'OCR · ' + localResult.readings.length + ' livelli serbatoi rilevati';
         return localResult;
     }
 
     let hint = '';
     if (localResult.rawTextPreview && localResult.rawTextPreview.trim()) {
-        hint = '\n\nTesto letto:\n' + localResult.rawTextPreview.trim().slice(0, 150);
+        hint = '\n\nTesto rilevato:\n' + localResult.rawTextPreview.trim().slice(0, 120);
     }
 
+    const noGemini = !geminiKey ? '\n\nSuggerimento: salva la chiave Gemini in Impostazioni per letture più precise.' : '';
+
     throw new Error(
-        (tankMode
-            ? 'Non ho riconosciuto i livelli (TK 9000, S 133, TK 9201…).'
-            : 'Nessuna sigla abbinate alla foto.') + hint +
-        '\n\nProva: foto più dritta, sigle e numeri ben visibili.'
+        'Non ho trovato livelli serbatoi nella foto.' + hint + noGemini +
+        '\n\nPuoi correggere i valori manualmente nella schermata di conferma se appare.'
     );
 };
 
@@ -12740,19 +12850,7 @@ window.setSmartCaptureLoading = function(active, message) {
 
 window.finishSmartCapture = function(parsed) {
     window.setSmartCaptureLoading(false);
-    const applied = window.applySmartCaptureDirectly(parsed);
-    if (applied) {
-        const lines = [];
-        (parsed.readings || []).forEach(function(r) {
-            const el = document.getElementById(r.id);
-            if (!el || el.value !== String(r.value).trim()) return;
-            const f = window.TANK_CAPTURE_FIELDS.find(function(t) { return t.id === r.id; });
-            lines.push((f ? f.label : r.id) + ': ' + r.value);
-        });
-        alert('Applicati ' + applied + ' livelli automaticamente:\n\n' + lines.join('\n'));
-    } else {
-        window.showSmartCaptureConfirm(parsed);
-    }
+    window.showSmartCaptureConfirm(parsed || { readings: [], notes: '' });
 };
 
 window.smartCaptureFromFile = function() {
@@ -12819,7 +12917,14 @@ window.runSmartCaptureOnFile = async function(file) {
         window.finishSmartCapture(parsed);
     } catch (err) {
         if (!window._smartCaptureAbort) {
-            alert('Acquisizione: ' + (err && err.message ? err.message : String(err)));
+            if (window._smartCaptureTankMode) {
+                window.finishSmartCapture({
+                    readings: [],
+                    notes: 'Lettura automatica non riuscita — inserisci i livelli manualmente'
+                });
+            } else {
+                alert('Acquisizione: ' + (err && err.message ? err.message : String(err)));
+            }
         }
     } finally {
         window.setSmartCaptureLoading(false);
@@ -12963,7 +13068,10 @@ window.useSmartCapturePhoto = async function() {
         window.finishSmartCapture(parsed);
     } catch (err) {
         if (!window._smartCaptureAbort) {
-            alert('OCR: ' + (err && err.message ? err.message : String(err)));
+            window.finishSmartCapture({
+                readings: [],
+                notes: 'Lettura automatica non riuscita — inserisci i livelli manualmente'
+            });
         }
     } finally {
         window.setSmartCaptureLoading(false);
@@ -12972,31 +13080,45 @@ window.useSmartCapturePhoto = async function() {
 };
 
 window.showSmartCaptureConfirm = function(parsed) {
-    window._smartCapturePending = parsed;
+    window._smartCapturePending = parsed || { readings: [] };
     const list = document.getElementById('smart-capture-confirm-list');
     const modal = document.getElementById('smart-capture-confirm-modal');
+    const hint = document.getElementById('smart-capture-confirm-hint');
     if (!list || !modal) return;
 
+    const tankMode = !!window._smartCaptureTankMode;
     const fieldMap = {};
-    window.buildSmartCaptureFieldMap().forEach(function(f) { fieldMap[f.id] = f; });
+    const fields = tankMode ? window.buildTankCaptureFieldMap() : window.buildSmartCaptureFieldMap();
+    fields.forEach(function(f) { fieldMap[f.id] = f; });
 
-    const readings = (parsed.readings || []).filter(function(r) {
-        return r && r.id && r.value != null && String(r.value).trim() !== '' && fieldMap[r.id];
+    const readingMap = {};
+    (parsed && parsed.readings || []).forEach(function(r) {
+        if (r && r.id && r.value != null) readingMap[r.id] = String(r.value).trim();
     });
 
-    if (!readings.length) {
-        alert('Nessuna lettura riconosciuta con certezza. Prova con foto più luminosa e sigle visibili.');
-        return;
+    const rows = tankMode ? fields : (parsed.readings || []).map(function(r) {
+        return fieldMap[r.id] || { id: r.id, label: r.id, section: '' };
+    }).filter(function(f, i, arr) {
+        return f && f.id && arr.findIndex(function(x) { return x.id === f.id; }) === i;
+    });
+
+    if (!rows.length && tankMode) {
+        fields.forEach(function(f) { rows.push(f); });
     }
 
-    list.innerHTML = readings.map(function(r) {
-        const meta = fieldMap[r.id];
-        const conf = r.confidence ? ' · ' + r.confidence : '';
-        return '<div class="smart-capture-row"><span><strong>' + (meta ? meta.label : r.id) + '</strong><br><span style="color:#94a3b8;font-size:10px;">' + (meta ? meta.section : r.id) + conf + '</span></span><span style="font-weight:800;color:#34d399;">' + String(r.value) + '</span></div>';
+    list.innerHTML = rows.map(function(f) {
+        const val = readingMap[f.id] || '';
+        const conf = (parsed.readings || []).find(function(r) { return r.id === f.id; });
+        const confTxt = conf && conf.confidence ? ' · ' + conf.confidence : '';
+        return '<div class="smart-capture-row">' +
+            '<span><strong>' + f.label + '</strong><br><span style="color:#94a3b8;font-size:10px;">' + (f.section || 'Serbatoi') + confTxt + '</span></span>' +
+            '<input type="tel" inputmode="decimal" data-field-id="' + f.id + '" value="' + val + '" placeholder="—"></div>';
     }).join('');
 
-    if (parsed.notes) {
-        list.innerHTML += '<p style="margin-top:12px;font-size:11px;color:#94a3b8;">' + String(parsed.notes) + '</p>';
+    if (parsed && parsed.notes && hint) {
+        hint.textContent = parsed.notes + ' — correggi se necessario';
+    } else if (hint) {
+        hint.textContent = 'Controlla e correggi i valori prima di applicare';
     }
 
     modal.classList.add('active');
@@ -13009,16 +13131,28 @@ window.closeSmartCaptureConfirm = function() {
 };
 
 window.applySmartCaptureResults = function() {
-    const parsed = window._smartCapturePending;
-    if (!parsed || !Array.isArray(parsed.readings)) {
-        window.closeSmartCaptureConfirm();
+    const parsed = window._smartCapturePending || { readings: [] };
+    const readings = [];
+    document.querySelectorAll('#smart-capture-confirm-list input[data-field-id]').forEach(function(inp) {
+        const val = String(inp.value || '').trim();
+        if (!val) return;
+        const v = window.fixOcrDigitValue(val);
+        if (!window.isValidOcrValue(v)) return;
+        readings.push({ id: inp.dataset.fieldId, value: v });
+    });
+
+    if (!readings.length) {
+        alert('Inserisci almeno un livello oppure annulla.');
         return;
     }
 
-    const fieldIds = new Set(window.buildSmartCaptureFieldMap().map(function(f) { return f.id; }));
+    const fieldIds = new Set(
+        (window._smartCaptureTankMode ? window.buildTankCaptureFieldMap() : window.buildSmartCaptureFieldMap())
+            .map(function(f) { return f.id; })
+    );
     let applied = 0;
 
-    parsed.readings.forEach(function(r) {
+    readings.forEach(function(r) {
         if (!r || !r.id || !fieldIds.has(r.id)) return;
         const el = document.getElementById(r.id);
         if (!el || el.readOnly) return;
@@ -13032,7 +13166,7 @@ window.applySmartCaptureResults = function() {
     if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
 
     window.closeSmartCaptureConfirm();
-    alert(applied ? ('Applicate ' + applied + ' letture.') : 'Nessun campo aggiornato.');
+    alert(applied ? ('Applicati ' + applied + ' livelli serbatoi.') : 'Nessun campo aggiornato.');
 };
 
 // --- INTEGRAZIONE GEMINI AI (chiave solo da Impostazioni, mai hardcoded) ---

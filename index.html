@@ -507,7 +507,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-rapportini2';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-rapportini3';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -5683,7 +5683,7 @@ window.updateStoricoButton = async function() {
                 const modCount = (item.hiddenModules || []).length;
                 const modHint = schedeN
                     ? (' · ' + schedeN + ' schede')
-                    : ' · nessuna scheda (usa Modifica)';
+                    : ' · nessuna scheda';
                 return '<div class="rapportino-row ' + (isPending ? 'rapportino-row-pending' : '') + ' rounded-xl border-2 ' + (isPending ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/30' : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800') + ' p-4 flex items-center gap-3 cursor-pointer" onclick="window.selectRapportinoPending(\'' + rid + '\')">' +
                     '<div class="w-3 h-3 rounded-full shrink-0 ' + (isActive ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600') + '"></div>' +
                     '<div class="flex-1 min-w-0">' +
@@ -5710,31 +5710,175 @@ window.updateStoricoButton = async function() {
             }
         };
 
-        window.openRapportinoModifica = function(rapportinoId) {
-            window.ensureRapportiniInitialized();
+        window.isCustomRapportinoScheda = function(secId) {
+            return String(secId || '').indexOf('rsched-') === 0;
+        };
+
+        window.mergeRapportinoFieldsFromDom = function(savedFields, domFields) {
+            const byId = {};
+            (savedFields || []).forEach(function(f) {
+                if (f && f.id) byId[f.id] = f;
+            });
+            return (domFields || []).map(function(df) {
+                const prev = byId[df.id];
+                if (prev) {
+                    return {
+                        id: df.id,
+                        label: prev.label || df.label,
+                        enabled: prev.enabled !== false,
+                        kind: df.kind || prev.kind
+                    };
+                }
+                return df;
+            }).concat((savedFields || []).filter(function(f) {
+                return f && f.id && f.kind === 'custom' && !(domFields || []).some(function(d) { return d.id === f.id; });
+            }));
+        };
+
+        window.prepareRapportinoEditorDraft = function(id) {
             const store = window.loadRapportiniStore();
-            if (!store) return;
-            const id = rapportinoId || store.activeId || 'generale';
-            const item = store.items[id];
-            if (!item) return;
-            window._rapportiniModificaId = id;
-            if (!item.schedeConfig) {
-                item.schedeConfig = id === 'generale'
-                    ? window.buildFullRapportinoConfigFromDOM()
-                    : window.buildEmptyRapportinoConfig();
+            const item = store && store.items[id];
+            if (!item) return { modules: {} };
+            let draft = window.cloneRapportinoConfig(item.schedeConfig || { modules: {} });
+            if (!draft.modules) draft.modules = {};
+            if (id === 'generale') {
+                const fromDom = window.buildFullRapportinoConfigFromDOM();
+                window.RAPPORTINI_TAB_META.forEach(function(tab) {
+                    const domMod = fromDom.modules[tab.id];
+                    const prev = draft.modules[tab.id];
+                    draft.modules[tab.id] = {
+                        enabled: prev ? prev.enabled !== false : true,
+                        title: (prev && prev.title) || domMod.title,
+                        fields: window.mergeRapportinoFieldsFromDom(prev && prev.fields, domMod.fields)
+                    };
+                });
             }
-            window._rapportiniModificaDraft = window.cloneRapportinoConfig(item.schedeConfig);
-            window.renderRapportinoModificaList();
-            const modal = document.getElementById('rapportino-modifica-modal');
+            return draft;
+        };
+
+        window.rapportinoManagerShowList = function() {
+            const listView = document.getElementById('rapportino-manager-list-view');
+            const editorView = document.getElementById('rapportino-manager-editor-view');
             const title = document.getElementById('rapportino-modifica-title');
-            if (title) title.textContent = 'Modifica — ' + (item.name || id);
+            if (listView) listView.classList.remove('hidden');
+            if (editorView) editorView.classList.add('hidden');
+            if (title) title.textContent = 'Aggiungi schede e sigle';
+            window.renderRapportinoManagerList();
+        };
+
+        window.rapportinoManagerShowEditor = function() {
+            const listView = document.getElementById('rapportino-manager-list-view');
+            const editorView = document.getElementById('rapportino-manager-editor-view');
+            if (listView) listView.classList.add('hidden');
+            if (editorView) editorView.classList.remove('hidden');
+        };
+
+        window.openRapportinoManager = function() {
+            window.ensureRapportiniInitialized();
+            window._rapportiniModificaId = null;
+            window._rapportiniModificaDraft = null;
+            window.rapportinoManagerShowList();
+            const modal = document.getElementById('rapportino-modifica-modal');
             if (modal) modal.classList.add('active');
         };
 
-        window.closeRapportinoModifica = function() {
+        window.closeRapportinoManager = function() {
             const modal = document.getElementById('rapportino-modifica-modal');
             if (modal) modal.classList.remove('active');
             window._rapportiniModificaDraft = null;
+            window._rapportiniModificaId = null;
+            window.rapportinoManagerShowList();
+        };
+
+        window.closeRapportinoModifica = function() {
+            window.closeRapportinoManager();
+        };
+
+        window.renderRapportinoManagerList = function() {
+            const list = document.getElementById('rapportino-manager-rapportini-list');
+            if (!list) return;
+            const store = window.loadRapportiniStore();
+            if (!store || !store.items) return;
+            const ids = Object.keys(store.items);
+            ids.sort(function(a, b) {
+                if (a === 'generale') return -1;
+                if (b === 'generale') return 1;
+                if (a === 'notturno') return -1;
+                if (b === 'notturno') return 1;
+                return String(store.items[a].name).localeCompare(String(store.items[b].name), 'it');
+            });
+            list.innerHTML = ids.map(function(rid) {
+                const item = store.items[rid];
+                const schedeN = window.countRapportinoEnabledSchede(item.schedeConfig);
+                const hint = schedeN ? (schedeN + ' schede attive') : 'Nessuna scheda — tocca per aggiungere';
+                return '<button type="button" class="w-full text-left rounded-xl border-2 border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 mb-2 active:scale-[0.98]" onclick="window.openRapportinoEditor(\'' + rid + '\')">' +
+                    '<div class="font-black uppercase text-sm text-slate-900 dark:text-white">' + window.escRapportinoHtml(item.name || rid) + '</div>' +
+                    '<div class="text-[9px] font-bold text-slate-500 uppercase mt-1">' + hint + ' · Tocca per schede e sigle</div>' +
+                    '</button>';
+            }).join('') || '<p class="text-center text-slate-400 font-bold text-xs py-4">Nessun rapportino</p>';
+        };
+
+        window.createNewRapportino = function() {
+            const name = prompt('Nome del nuovo rapportino:');
+            if (name === null) return;
+            const trimmed = String(name).trim();
+            if (!trimmed) {
+                alert('Il nome non può essere vuoto.');
+                return;
+            }
+            const store = window.loadRapportiniStore();
+            if (!store) return;
+            const id = 'rapp-' + Date.now();
+            store.items[id] = Object.assign(
+                { id: id, name: trimmed, schedeConfig: window.buildEmptyRapportinoConfig() },
+                window.captureEmptyRapportinoSnapshot(null, [])
+            );
+            window.saveRapportiniStore(store);
+            window.openRapportinoEditor(id);
+        };
+
+        window.openRapportinoEditor = function(rapportinoId) {
+            window.ensureRapportiniInitialized();
+            const store = window.loadRapportiniStore();
+            if (!store || !store.items[rapportinoId]) return;
+            const item = store.items[rapportinoId];
+            window._rapportiniModificaId = rapportinoId;
+            window._rapportiniModificaDraft = window.prepareRapportinoEditorDraft(rapportinoId);
+            window.rapportinoManagerShowEditor();
+            const title = document.getElementById('rapportino-modifica-title');
+            const sub = document.getElementById('rapportino-editor-subtitle');
+            if (title) title.textContent = item.name || rapportinoId;
+            if (sub) sub.textContent = 'Attiva le schede, modifica i nomi e le sigle';
+            window.renderRapportinoModificaList();
+        };
+
+        window.openRapportinoModifica = function(rapportinoId) {
+            if (rapportinoId) {
+                window.openRapportinoManager();
+                window.openRapportinoEditor(rapportinoId);
+            } else {
+                window.openRapportinoManager();
+            }
+        };
+
+        window.openRapportinoManagerForPending = function() {
+            window.closeRapportiniModal();
+            window.openRapportinoManager();
+            if (window._rapportiniPendingId) {
+                window.openRapportinoEditor(window._rapportiniPendingId);
+            }
+        };
+
+        window.openRapportinoModificaForPending = function() {
+            window.openRapportinoManagerForPending();
+        };
+
+        window.getRapportinoEditorSchedaOrder = function(draft) {
+            const keys = Object.keys(draft.modules || {});
+            const plant = window.RAPPORTINI_TAB_META.map(function(t) { return t.id; }).filter(function(k) { return keys.indexOf(k) >= 0; });
+            const custom = keys.filter(function(k) { return plant.indexOf(k) < 0; });
+            const missingPlant = window.RAPPORTINI_TAB_META.map(function(t) { return t.id; }).filter(function(k) { return keys.indexOf(k) < 0; });
+            return plant.concat(custom).concat(missingPlant);
         };
 
         window.toggleRapportinoModificaScheda = function(secId) {
@@ -5743,13 +5887,14 @@ window.updateStoricoButton = async function() {
             if (!draft.modules[secId]) {
                 const lblEl = document.getElementById('lbl-' + secId);
                 const tabMeta = window.RAPPORTINI_TAB_META.find(function(t) { return t.id === secId; });
+                const isPlant = !!(tabMeta || document.getElementById(secId));
                 draft.modules[secId] = {
                     enabled: true,
                     title: (lblEl && lblEl.innerText.trim()) || (tabMeta && tabMeta.name) || secId,
-                    fields: window.collectFieldsForRapportinoSection(secId)
+                    fields: isPlant ? window.collectFieldsForRapportinoSection(secId) : []
                 };
             } else {
-                draft.modules[secId].enabled = !draft.modules[secId].enabled;
+                draft.modules[secId].enabled = draft.modules[secId].enabled === false;
             }
             window.renderRapportinoModificaList();
         };
@@ -5759,39 +5904,108 @@ window.updateStoricoButton = async function() {
             if (el) el.classList.toggle('hidden');
         };
 
+        window.addCustomSchedaToDraft = function() {
+            const draft = window._rapportiniModificaDraft;
+            if (!draft) return;
+            const name = prompt('Nome della nuova scheda:');
+            if (name === null) return;
+            const trimmed = String(name).trim();
+            if (!trimmed) {
+                alert('Il nome della scheda non può essere vuoto.');
+                return;
+            }
+            const secId = 'rsched-' + Date.now();
+            draft.modules[secId] = { enabled: true, title: trimmed, fields: [], custom: true };
+            window.renderRapportinoModificaList();
+            window.toggleRapportinoModificaExpand(secId);
+        };
+
+        window.addSiglaToScheda = function(secId) {
+            const draft = window._rapportiniModificaDraft;
+            if (!draft || !draft.modules[secId]) return;
+            const label = prompt('Nome sigla:');
+            if (label === null) return;
+            const trimmed = String(label).trim();
+            if (!trimmed) {
+                alert('Il nome della sigla non può essere vuoto.');
+                return;
+            }
+            if (!draft.modules[secId].fields) draft.modules[secId].fields = [];
+            draft.modules[secId].fields.push({
+                id: 'rsig-' + Date.now(),
+                label: trimmed,
+                enabled: true,
+                kind: 'custom'
+            });
+            const panel = document.getElementById('rapportino-mod-fields-' + secId);
+            if (panel) panel.classList.remove('hidden');
+            window.renderRapportinoModificaList();
+            if (panel) panel.classList.remove('hidden');
+        };
+
+        window.removeSiglaFromScheda = function(secId, idx) {
+            const draft = window._rapportiniModificaDraft;
+            if (!draft || !draft.modules[secId] || !draft.modules[secId].fields) return;
+            draft.modules[secId].fields.splice(idx, 1);
+            window.renderRapportinoModificaList();
+        };
+
+        window.deleteSchedaFromDraft = function(secId) {
+            const draft = window._rapportiniModificaDraft;
+            if (!draft || !draft.modules[secId]) return;
+            if (!window.isCustomRapportinoScheda(secId)) {
+                draft.modules[secId].enabled = false;
+            } else {
+                delete draft.modules[secId];
+            }
+            window.renderRapportinoModificaList();
+        };
+
         window.renderRapportinoModificaList = function() {
             const list = document.getElementById('rapportino-modifica-list');
             const draft = window._rapportiniModificaDraft;
             if (!list || !draft) return;
-            const html = window.RAPPORTINI_TAB_META.map(function(tab) {
-                const mod = draft.modules[tab.id];
+            const order = window.getRapportinoEditorSchedaOrder(draft);
+            const html = order.map(function(secId) {
+                const tabMeta = window.RAPPORTINI_TAB_META.find(function(t) { return t.id === secId; });
+                const mod = draft.modules[secId];
+                const inDraft = !!mod;
                 const enabled = mod && mod.enabled !== false;
-                const title = (mod && mod.title) || tab.name;
+                const title = (mod && mod.title) || (tabMeta && tabMeta.name) || secId;
+                const isCustom = window.isCustomRapportinoScheda(secId);
                 const fields = (mod && mod.fields && mod.fields.length)
                     ? mod.fields
-                    : (enabled ? window.collectFieldsForRapportinoSection(tab.id) : []);
-                if (enabled && (!mod || !mod.fields || !mod.fields.length)) {
-                    if (!draft.modules[tab.id]) draft.modules[tab.id] = { enabled: true, title: title, fields: [] };
-                    draft.modules[tab.id].fields = fields;
+                    : (enabled && tabMeta ? window.collectFieldsForRapportinoSection(secId) : []);
+                if (enabled && inDraft && tabMeta && (!mod.fields || !mod.fields.length)) {
+                    mod.fields = window.collectFieldsForRapportinoSection(secId);
                 }
+                const safeSec = secId.replace(/'/g, "\\'");
                 const fieldsHtml = fields.map(function(f, idx) {
-                    const fid = tab.id + '-f-' + idx;
                     return '<div class="flex items-center gap-2 py-1.5 border-b border-slate-100 dark:border-slate-700 last:border-0">' +
-                        '<input type="checkbox" class="rapportino-field-enabled w-4 h-4 shrink-0" data-sec="' + tab.id + '" data-idx="' + idx + '" ' + (f.enabled !== false ? 'checked' : '') + ' onchange="window.syncRapportinoModificaFieldEnabled(\'' + tab.id + '\',' + idx + ', this.checked)">' +
-                        '<input type="text" class="rapportino-field-label flex-1 min-w-0 px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-[11px] font-bold uppercase" data-sec="' + tab.id + '" data-idx="' + idx + '" value="' + window.escRapportinoHtml(f.label) + '">' +
+                        '<input type="checkbox" class="rapportino-field-enabled w-4 h-4 shrink-0" data-sec="' + secId + '" data-idx="' + idx + '" ' + (f.enabled !== false ? 'checked' : '') + ' onchange="window.syncRapportinoModificaFieldEnabled(\'' + safeSec + '\',' + idx + ', this.checked)">' +
+                        '<input type="text" class="rapportino-field-label flex-1 min-w-0 px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-[11px] font-bold uppercase" data-sec="' + secId + '" data-idx="' + idx + '" value="' + window.escRapportinoHtml(f.label) + '">' +
+                        (f.kind === 'custom' ? '<button type="button" class="shrink-0 w-7 h-7 rounded-lg bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 font-black text-xs" onclick="window.removeSiglaFromScheda(\'' + safeSec + '\',' + idx + ')">×</button>' : '') +
                         '</div>';
                 }).join('');
-                return '<div class="rounded-xl border-2 ' + (enabled ? 'border-emerald-400 bg-emerald-50/50 dark:bg-emerald-950/20' : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800') + ' overflow-hidden mb-2">' +
-                    '<div class="flex items-center gap-2 p-3">' +
-                    '<input type="checkbox" class="w-5 h-5 shrink-0" ' + (enabled ? 'checked' : '') + ' onchange="window.toggleRapportinoModificaScheda(\'' + tab.id + '\')">' +
-                    '<input type="text" class="rapportino-scheda-title flex-1 min-w-0 px-2 py-1 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-[11px] font-black uppercase" data-sec="' + tab.id + '" value="' + window.escRapportinoHtml(title) + '" ' + (enabled ? '' : 'disabled') + '>' +
-                    '<button type="button" class="shrink-0 px-2 py-1 text-[9px] font-black uppercase bg-slate-200 dark:bg-slate-700 rounded-lg" onclick="window.toggleRapportinoModificaExpand(\'' + tab.id + '\')">Sigle</button>' +
+                const addSiglaBtn = inDraft && enabled
+                    ? '<button type="button" class="w-full mt-2 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-[9px] font-black uppercase text-slate-700 dark:text-slate-200" onclick="window.addSiglaToScheda(\'' + safeSec + '\')">+ Aggiungi sigla</button>'
+                    : '';
+                const deleteBtn = inDraft && (isCustom || !tabMeta)
+                    ? '<button type="button" class="shrink-0 px-2 py-1 text-[9px] font-black uppercase bg-red-100 dark:bg-red-900/40 text-red-700 rounded-lg" onclick="window.deleteSchedaFromDraft(\'' + safeSec + '\')">' + (isCustom ? 'Elimina' : 'Escludi') + '</button>'
+                    : '';
+                return '<div class="rounded-xl border-2 ' + (enabled && inDraft ? 'border-emerald-400 bg-emerald-50/50 dark:bg-emerald-950/20' : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800') + ' overflow-hidden mb-2">' +
+                    '<div class="flex items-center gap-2 p-3 flex-wrap">' +
+                    '<input type="checkbox" class="w-5 h-5 shrink-0" ' + (enabled && inDraft ? 'checked' : '') + ' onchange="window.toggleRapportinoModificaScheda(\'' + safeSec + '\')">' +
+                    '<input type="text" class="rapportino-scheda-title flex-1 min-w-0 px-2 py-1 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-[11px] font-black uppercase" data-sec="' + secId + '" value="' + window.escRapportinoHtml(title) + '" ' + (enabled && inDraft ? '' : 'disabled') + '>' +
+                    '<button type="button" class="shrink-0 px-2 py-1 text-[9px] font-black uppercase bg-slate-200 dark:bg-slate-700 rounded-lg" onclick="window.toggleRapportinoModificaExpand(\'' + safeSec + '\')">Sigle (' + fields.length + ')</button>' +
+                    deleteBtn +
                     '</div>' +
-                    '<div id="rapportino-mod-fields-' + tab.id + '" class="' + (enabled ? '' : 'hidden') + ' px-3 pb-3">' +
-                    (fieldsHtml || '<p class="text-[9px] text-slate-400 font-bold uppercase py-2">Nessuna sigla</p>') +
+                    '<div id="rapportino-mod-fields-' + secId + '" class="hidden px-3 pb-3">' +
+                    (fieldsHtml || '<p class="text-[9px] text-slate-400 font-bold uppercase py-2">Nessuna sigla — aggiungine una sotto</p>') +
+                    addSiglaBtn +
                     '</div></div>';
             }).join('');
-            list.innerHTML = html || '<p class="text-center text-slate-400 font-bold text-xs py-4">Nessuna scheda</p>';
+            list.innerHTML = html || '<p class="text-center text-slate-400 font-bold text-xs py-4">Nessuna scheda — usa «+ Aggiungi scheda»</p>';
         };
 
         window.syncRapportinoModificaFieldEnabled = function(secId, idx, checked) {
@@ -5800,43 +6014,40 @@ window.updateStoricoButton = async function() {
             if (draft.modules[secId].fields[idx]) draft.modules[secId].fields[idx].enabled = !!checked;
         };
 
+        window.syncRapportinoModificaFromDomInputs = function() {
+            const draft = window._rapportiniModificaDraft;
+            if (!draft) return;
+            const list = document.getElementById('rapportino-modifica-list');
+            if (!list) return;
+            list.querySelectorAll('.rapportino-scheda-title').forEach(function(inp) {
+                const secId = inp.getAttribute('data-sec');
+                if (!secId || !draft.modules[secId]) return;
+                draft.modules[secId].title = inp.value.trim() || secId;
+            });
+            list.querySelectorAll('.rapportino-field-label').forEach(function(inp) {
+                const secId = inp.getAttribute('data-sec');
+                const idx = parseInt(inp.getAttribute('data-idx'), 10);
+                if (!secId || !draft.modules[secId] || !draft.modules[secId].fields[idx]) return;
+                draft.modules[secId].fields[idx].label = inp.value.trim() || draft.modules[secId].fields[idx].id;
+            });
+        };
+
         window.saveRapportinoModifica = async function() {
             const id = window._rapportiniModificaId;
             const draft = window._rapportiniModificaDraft;
             if (!id || !draft) return;
             const store = window.loadRapportiniStore();
             if (!store || !store.items[id]) return;
-            const list = document.getElementById('rapportino-modifica-list');
-            if (list) {
-                list.querySelectorAll('.rapportino-scheda-title').forEach(function(inp) {
-                    const secId = inp.getAttribute('data-sec');
-                    if (!secId || !draft.modules[secId]) return;
-                    draft.modules[secId].title = inp.value.trim() || secId;
-                });
-                list.querySelectorAll('.rapportino-field-label').forEach(function(inp) {
-                    const secId = inp.getAttribute('data-sec');
-                    const idx = parseInt(inp.getAttribute('data-idx'), 10);
-                    if (!secId || !draft.modules[secId] || !draft.modules[secId].fields[idx]) return;
-                    draft.modules[secId].fields[idx].label = inp.value.trim() || draft.modules[secId].fields[idx].id;
-                });
-            }
-            Object.keys(draft.modules).forEach(function(secId) {
-                const mod = draft.modules[secId];
-                if (!mod || mod.enabled === false) delete draft.modules[secId];
-            });
+            window.syncRapportinoModificaFromDomInputs();
             store.items[id].schedeConfig = window.cloneRapportinoConfig(draft);
             window.saveRapportiniStore(store);
-            window.closeRapportinoModifica();
+            window.rapportinoManagerShowList();
             if (store.activeId === id) {
                 window.applyRapportinoSchedeConfig(store.items[id].schedeConfig);
                 updateModulesVisibility();
                 if (typeof window.saveData === 'function') await window.saveData(true);
             }
-            alert('Configurazione schede salvata per «' + (store.items[id].name || id) + '».');
-        };
-
-        window.openRapportinoModificaForPending = function() {
-            window.openRapportinoModifica(window._rapportiniPendingId);
+            alert('Rapportino «' + (store.items[id].name || id) + '» salvato.');
         };
 
         /** Lettura forzata plant dal server (aggira cache SDK / tab in background / rete difficile). */
@@ -11381,8 +11592,8 @@ window.convertToHtml = async () => {
                         <span id="active-rapportino-name" class="text-[14px] uppercase tracking-wide">Generale</span>
                         <span class="text-[9px] font-bold opacity-80 normal-case">Tocca per cambiare rapportino</span>
                     </button>
-                    <button type="button" id="btn-rapportino-modifica" onclick="window.openRapportinoModifica()" class="w-full mt-2 bg-slate-700 text-white font-black py-4 rounded-[20px] uppercase border-b-4 border-slate-900 outline-none active:scale-95 transition-all text-[11px]">
-                        Modifica schede e sigle
+                    <button type="button" id="btn-rapportino-modifica" onclick="window.openRapportinoManager()" class="w-full mt-2 bg-slate-700 text-white font-black py-4 rounded-[20px] uppercase border-b-4 border-slate-900 outline-none active:scale-95 transition-all text-[11px]">
+                        Aggiungi schede e sigle
                     </button>
                 </div>
                 <div>
@@ -11585,20 +11796,31 @@ window.convertToHtml = async () => {
             <p class="text-[9px] font-bold text-slate-500 dark:text-slate-400 text-center px-4 py-2 uppercase">Ogni rapportino salva schede, valori e moduli inviati</p>
             <div id="rapportini-list" class="px-4 pb-2 flex flex-col gap-2 max-h-[45vh] overflow-y-auto"></div>
             <div class="p-4 border-t border-slate-200 dark:border-slate-700 flex flex-col gap-2">
-                <button type="button" onclick="window.openRapportinoModificaForPending()" class="w-full bg-slate-700 text-white font-black py-3 rounded-xl uppercase text-[10px] border-b-4 border-slate-900 active:scale-95">Modifica schede selezionato</button>
+                <button type="button" onclick="window.openRapportinoManagerForPending()" class="w-full bg-slate-700 text-white font-black py-3 rounded-xl uppercase text-[10px] border-b-4 border-slate-900 active:scale-95">Aggiungi schede al selezionato</button>
                 <button type="button" id="btn-rapportini-apply" onclick="window.applySelectedRapportino()" class="w-full bg-emerald-600 text-white font-black py-4 rounded-xl uppercase border-b-4 border-emerald-900 active:scale-95">Applica tutto</button>
                 <button type="button" onclick="window.closeRapportiniModal()" class="w-full bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-white font-black py-3 rounded-xl uppercase active:scale-95">Chiudi</button>
             </div>
         </div>
     </div>
-    <div id="rapportino-modifica-modal" class="modal-overlay" onclick="if(event.target === this) window.closeRapportinoModifica()">
+    <div id="rapportino-modifica-modal" class="modal-overlay" onclick="if(event.target === this) window.closeRapportinoManager()">
         <div class="modal-content-centered bg-white dark:bg-slate-900 max-w-lg w-[92%]" onclick="event.stopPropagation()">
-            <div class="p-4 bg-slate-800 text-white font-black text-center uppercase tracking-wide text-sm" id="rapportino-modifica-title">Modifica rapportino</div>
-            <p class="text-[9px] font-bold text-slate-500 dark:text-slate-400 text-center px-4 py-2 uppercase">Attiva le schede e modifica le sigle sotto ogni scheda</p>
-            <div id="rapportino-modifica-list" class="px-4 pb-2 max-h-[55vh] overflow-y-auto"></div>
-            <div class="p-4 border-t border-slate-200 dark:border-slate-700 flex flex-col gap-2">
-                <button type="button" onclick="window.saveRapportinoModifica()" class="w-full bg-emerald-600 text-white font-black py-4 rounded-xl uppercase border-b-4 border-emerald-900 active:scale-95">Salva configurazione</button>
-                <button type="button" onclick="window.closeRapportinoModifica()" class="w-full bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-white font-black py-3 rounded-xl uppercase active:scale-95">Annulla</button>
+            <div class="p-4 bg-slate-800 text-white font-black text-center uppercase tracking-wide text-sm" id="rapportino-modifica-title">Aggiungi schede e sigle</div>
+            <div id="rapportino-manager-list-view">
+                <p class="text-[9px] font-bold text-slate-500 dark:text-slate-400 text-center px-4 py-2 uppercase">Rapportini presenti — tocca per schede e sigle</p>
+                <div id="rapportino-manager-rapportini-list" class="px-4 pb-2 max-h-[50vh] overflow-y-auto"></div>
+                <div class="p-4 border-t border-slate-200 dark:border-slate-700 flex flex-col gap-2">
+                    <button type="button" onclick="window.createNewRapportino()" class="w-full bg-emerald-600 text-white font-black py-4 rounded-xl uppercase border-b-4 border-emerald-900 active:scale-95">+ Crea rapportino</button>
+                    <button type="button" onclick="window.closeRapportinoManager()" class="w-full bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-white font-black py-3 rounded-xl uppercase active:scale-95">Chiudi</button>
+                </div>
+            </div>
+            <div id="rapportino-manager-editor-view" class="hidden">
+                <p class="text-[9px] font-bold text-slate-500 dark:text-slate-400 text-center px-4 py-2 uppercase" id="rapportino-editor-subtitle">Schede e sigle</p>
+                <div id="rapportino-modifica-list" class="px-4 pb-2 max-h-[48vh] overflow-y-auto"></div>
+                <div class="p-4 border-t border-slate-200 dark:border-slate-700 flex flex-col gap-2">
+                    <button type="button" onclick="window.addCustomSchedaToDraft()" class="w-full bg-slate-600 text-white font-black py-3 rounded-xl uppercase text-[10px] border-b-4 border-slate-800 active:scale-95">+ Aggiungi scheda</button>
+                    <button type="button" onclick="window.saveRapportinoModifica()" class="w-full bg-emerald-600 text-white font-black py-4 rounded-xl uppercase border-b-4 border-emerald-900 active:scale-95">Salva rapportino</button>
+                    <button type="button" onclick="window.rapportinoManagerShowList()" class="w-full bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-white font-black py-3 rounded-xl uppercase active:scale-95">Indietro</button>
+                </div>
             </div>
         </div>
     </div>

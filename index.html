@@ -511,7 +511,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-gemini-dcs-ocr-fix';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-gemini-rete-chat';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -16253,6 +16253,21 @@ window.updateGeminiKeyStatus = function() {
     }
     if (input && saved && !val) input.value = saved;
     if (testBtn && saved && val === saved) testBtn.title = 'Test · chiave salvata';
+    const statusEl = document.getElementById('settings-gemini-status');
+    if (statusEl) {
+        if (window.__geminiUnavailable && window.__geminiLastError) {
+            statusEl.classList.remove('hidden');
+            statusEl.className = 'block text-[9px] font-bold text-red-600 dark:text-red-400 mt-1 leading-snug';
+            statusEl.textContent = window.formatGeminiError(window.__geminiLastError);
+        } else if (saved && val === saved) {
+            statusEl.classList.remove('hidden');
+            statusEl.className = 'block text-[9px] font-bold text-emerald-600 dark:text-emerald-400 mt-1';
+            statusEl.textContent = 'Chiave salvata. Usa il pulsante OK per testare Gemini.';
+        } else {
+            statusEl.classList.add('hidden');
+            statusEl.textContent = '';
+        }
+    }
 };
 
 window.saveGeminiApiKeySilent = function() {
@@ -16326,8 +16341,28 @@ window.testGeminiApiKey = async function() {
     }
 };
 
+window.loadAIMemoryFast = async function(maxMs) {
+    const limit = maxMs == null ? 4500 : maxMs;
+    const local = localStorage.getItem('gemini_long_term_memory') || '';
+    try {
+        const remote = await Promise.race([
+            window.loadAIMemory(),
+            new Promise(function(resolve) {
+                setTimeout(function() { resolve(local); }, limit);
+            })
+        ]);
+        return remote || local;
+    } catch (e) {
+        console.warn('loadAIMemoryFast:', e);
+        return local;
+    }
+};
+
 window.formatGeminiError = function(message) {
     const msg = String(message || '');
+    if (/Failed to fetch|NetworkError|Load failed|network|abort|AbortError|Timeout/i.test(msg)) {
+        return 'Nessuna risposta da Gemini (rete o timeout). Controlla Wi‑Fi/dati, poi Impostazioni → pulsante OK sulla chiave Gemini. Se il test fallisce, il problema non è l\'app ma API Google o chiave.';
+    }
     if (/API_KEY_HTTP_REFERRER_BLOCKED|referer.*blocked/i.test(msg)) {
         return 'Gemini: chiave API con restrizioni dominio. In Google Cloud Console → Credenziali → API key, aggiungi questo sito (es. https://*.github.io/*) oppure usa la chiave del progetto servicehub-18309.';
     }
@@ -16358,15 +16393,31 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
 
     let lastGeminiError = '';
 
-    // Carica memoria AI da Firestore o localStorage
     let memoriaAI = "";
     try {
-        memoriaAI = await window.loadAIMemory();
+        memoriaAI = await window.loadAIMemoryFast(isChat ? 4000 : 6000);
     } catch (e) {
         memoriaAI = localStorage.getItem('gemini_long_term_memory') || "";
     }
+    if (memoriaAI.length > 8000) {
+        memoriaAI = memoriaAI.slice(-8000);
+    }
 
-    const datiImpianto = {
+    const datiImpianto = isChat ? {
+        turno: document.getElementById('current-shift-label')?.innerText?.trim() || '',
+        note: document.getElementById('report-notes')?.value || '',
+        allarmi: Array.from(document.querySelectorAll('.alarm-item')).map(function(el) { return el.innerText; }).slice(0, 20),
+        inputValues: (function() {
+            const inputs = {};
+            let n = 0;
+            document.querySelectorAll('input[id]').forEach(function(input) {
+                if (n > 80 || !input.value) return;
+                inputs[input.id] = input.value;
+                n++;
+            });
+            return inputs;
+        })()
+    } : {
         statoSerbatoi: window.TANK_DATABASE || {},
         analisi: JSON.parse(localStorage.getItem('analisiSettimanali')) || {},
         note: document.getElementById('report-notes')?.value || "",
@@ -17044,13 +17095,17 @@ window.initConversationModal = function(draftUserLine) {
         historyDiv.insertAdjacentHTML('beforeend', '<br><br><span style="color: #22c55e; font-weight: 500;">' + window._escapeHtmlConv('Tu: ' + val).replace(/\n/g, '<br>') + '</span>');
         historyDiv.scrollTop = historyDiv.scrollHeight;
 
-        historyDiv.insertAdjacentHTML('beforeend', "<br><br><span id=\"conv-pending-ai\">AI: <span class=\"ai-loading\"><span>.</span><span>.</span><span>.</span></span></span>");
+        historyDiv.insertAdjacentHTML('beforeend', "<br><br><span id=\"conv-pending-ai\">AI: Connessione a Gemini…</span>");
         historyDiv.scrollTop = historyDiv.scrollHeight;
 
         try {
             const res = await Promise.race([
                 window.callGeminiAPI(val, true, currentImageData),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout richiesta AI')), currentImageData ? 62000 : 35000))
+                new Promise(function(_, reject) {
+                    setTimeout(function() {
+                        reject(new Error('Timeout richiesta AI (nessuna risposta entro ' + (currentImageData ? 62 : 48) + ' s). Controlla rete e chiave Gemini in Impostazioni.'));
+                    }, currentImageData ? 62000 : 48000);
+                })
             ]);
             const pending = document.getElementById('conv-pending-ai');
             if (pending) {
@@ -17059,10 +17114,10 @@ window.initConversationModal = function(draftUserLine) {
             }
         } catch (err) {
             const pending = document.getElementById('conv-pending-ai');
-            const errMsg = window._escapeHtmlConv(err.message || String(err));
+            const errMsg = window._escapeHtmlConv(window.formatGeminiError(err && err.message)).replace(/\n/g, '<br>');
             if (pending) {
                 pending.removeAttribute('id');
-                pending.innerHTML = 'AI: Errore: ' + errMsg.replace(/\n/g, '<br>');
+                pending.innerHTML = 'AI: ' + errMsg;
             }
         }
         historyDiv.scrollTop = historyDiv.scrollHeight;
@@ -17149,10 +17204,10 @@ window.initConversationModal = function(draftUserLine) {
             fileInput.value = '';
         } catch (err) {
             const pending = document.getElementById('conv-pending-ai');
-            const errMsg = window._escapeHtmlConv(err.message || String(err));
+            const errMsg = window._escapeHtmlConv(window.formatGeminiError(err && err.message)).replace(/\n/g, '<br>');
             if (pending) {
                 pending.removeAttribute('id');
-                pending.innerHTML = 'AI: Errore: ' + errMsg.replace(/\n/g, '<br>');
+                pending.innerHTML = 'AI: ' + errMsg;
             }
         }
         historyDiv.scrollTop = historyDiv.scrollHeight;

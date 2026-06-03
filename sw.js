@@ -3,7 +3,7 @@
 // NON facciamo cache offline aggressiva per evitare di servire versioni stantie
 // del index.html: l'app si aggiorna automaticamente a ogni reload.
 
-const CACHE_NAME = 'servicehub-shell-notturno-numpad-only-v1';
+const CACHE_NAME = 'servicehub-shell-notturno-numpad-overwrite-v1';
 
 self.addEventListener('message', (event) => {
   if (event && event.data === 'SKIP_WAITING') self.skipWaiting();

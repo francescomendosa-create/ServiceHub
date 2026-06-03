@@ -511,7 +511,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-same-numbers-all-devices';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-instant-plant-sync';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -982,14 +982,23 @@ window.colorPreviewNumber = function(tankName, value) {
         };
 
         window.__lastLocalPlantEditMs = 0;
-        window.__lastAppliedRemotePlantIso = '';
+        window.__appliedPlantSyncRevision = 0;
+
+        const __plantPayloadRevision = function (d) {
+            if (!d || typeof d !== 'object') return 0;
+            const r = Number(d.syncRevision);
+            if (Number.isFinite(r) && r > 0) return r;
+            const ms = __plantLastUpdateMs(d.lastUpdate);
+            return ms != null ? ms : 0;
+        };
 
         /** Applica il documento plant condiviso (stessi numeri su tutti i dispositivi). */
-        const __applyRemotePlantPayload = function (d) {
+        const __applyRemotePlantPayload = function (d, opts) {
+            opts = opts || {};
             if (!d || typeof d !== 'object') return;
-            const iso = d.lastUpdate || '';
-            if (iso && iso === window.__lastAppliedRemotePlantIso) return;
-            window.__lastAppliedRemotePlantIso = iso;
+            const rev = __plantPayloadRevision(d);
+            if (!opts.force && rev > 0 && rev <= window.__appliedPlantSyncRevision) return;
+            if (rev > 0) window.__appliedPlantSyncRevision = rev;
             applyData(d, { forceRemotePlant: true });
             mergePlantIntoStabileLocalStorage(d);
             if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
@@ -1079,26 +1088,25 @@ window.colorPreviewNumber = function(tankName, value) {
                     if (typeof window.__pullPlantFromServerNow === 'function') {
                         void window.__pullPlantFromServerNow();
                     }
-                }, 280);
+                }, 80);
             };
 
             const __wirePlantSnapshotListener = function () {
                 __shUnsubPlant = onSnapshot(
                     dataDoc,
+                    { includeMetadataChanges: true },
                     (snapshot) => {
                         if (snapshot.exists()) {
                             const d = snapshot.data();
                             const md = snapshot.metadata;
-                            // Se stabileCurrentData è più recente del payload Firestore, non sovrascrivere:
-                            // evita flash del numero giusto → poi quello vecchio (primo evento spesso in cache).
-                            // Quando l'altro dispositivo salva, lastUpdate sul server diventa più nuovo → si applica.
                             if (md && md.hasPendingWrites) return;
+                            if (md && md.fromCache) {
+                                schedulePlantTruthFromServer();
+                                return;
+                            }
                             __applyRemotePlantPayload(d);
                             if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                                 window.schedulePublicDigitalSnapshotSync();
-                            }
-                            if (!md || !md.hasPendingWrites) {
-                                schedulePlantTruthFromServer();
                             }
                         } else {
                             if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
@@ -1133,7 +1141,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 .then((snap) => {
                     if (snap.exists()) {
                         const d = snap.data();
-                        __applyRemotePlantPayload(d);
+                        __applyRemotePlantPayload(d, { force: true });
                     } else if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
                         window.__applyPlantFromLocalStorageFallback();
                     }
@@ -1643,6 +1651,11 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (!(window.isEditingArchive && window.editingArchiveId)) {
                     snapshotPlantToLocalStorage();
                     __plantRetrySaveAfterAuth = true;
+                    if (typeof window.__showPlantCloudSyncBanner === 'function') {
+                        window.__showPlantCloudSyncBanner(
+                            'Cloud non connesso: il numero resta solo su questo dispositivo. Attendi il LED verde o ricarica la pagina.'
+                        );
+                    }
                 }
                 return;
             }
@@ -1782,9 +1795,11 @@ window.colorPreviewNumber = function(tankName, value) {
             
             // ✅ USA IL TURNO REALE, NON QUELLO MANUALE
             const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
+            const syncRevision = Date.now();
             const data = { 
                 shift: currentShift,
-                lastUpdate: new Date().toISOString() 
+                lastUpdate: new Date().toISOString(),
+                syncRevision: syncRevision
             }; 
             document.querySelectorAll('input').forEach(input => { if (input.id) data[input.id] = input.value; });
             document.querySelectorAll('.status-cell-btn, .status-header, .vwt-label-dynamic, .osmosi-label-dynamic').forEach(btn => {
@@ -1803,6 +1818,7 @@ window.colorPreviewNumber = function(tankName, value) {
             } catch (_) {}
             try { 
                 await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data, { merge: true }); 
+                window.__appliedPlantSyncRevision = syncRevision;
                 __plantRetrySaveAfterAuth = false;
                 if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
                 try {
@@ -3684,7 +3700,7 @@ window.updateStoricoButton = async function() {
                     __plantPersistTimer = setTimeout(function () {
                         __plantPersistTimer = null;
                         if (typeof window.saveData === 'function') void window.saveData(true);
-                    }, 120);
+                    }, 80);
                 },
                 true
             );
@@ -6855,7 +6871,7 @@ window.updateStoricoButton = async function() {
                 .then(function (snap) {
                     if (snap.exists()) {
                         const d = snap.data();
-                        __applyRemotePlantPayload(d);
+                        __applyRemotePlantPayload(d, { force: true });
                         if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                             window.schedulePublicDigitalSnapshotSync();
                         }

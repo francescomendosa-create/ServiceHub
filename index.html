@@ -511,7 +511,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-stoccaggio-solo-notturno';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-stoccaggio-tendina-ui';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -5259,13 +5259,22 @@ window.updateStoricoButton = async function() {
         ];
 
         window.renderStoccaggioInternoPanel = function() {
-            const tbody = document.getElementById('stoccaggio-interno-tbody');
-            if (!tbody || tbody.dataset.built === '1') return;
+            const panel = document.getElementById('stoccaggio-panel-notturno');
+            if (!panel || panel.dataset.built === '1') return;
             const rows = (window.STOCCAGGIO_INTERNO_TANKS || []).map(function(t) {
-                return '<tr><td class="cell-label-main">' + t.label + '</td><td><input type="tel" id="' + t.fieldId + '" inputmode="decimal" placeholder="mm" onchange="window.saveData()"></td></tr>';
+                const safe = String(t.label || '').replace(/</g, '&lt;');
+                return '<div class="nott-stocc-row">' +
+                    '<span class="nott-stocc-sigla" data-field-for="' + t.fieldId + '">' + safe + '</span>' +
+                    '<input type="tel" class="nott-stocc-inp" id="' + t.fieldId + '" inputmode="decimal" placeholder="mm" onchange="window.saveData()">' +
+                    '</div>';
             }).join('');
-            tbody.innerHTML = '<tr class="th-bg"><td>SERBATOIO</td><td>LIVELLO (mm)</td></tr>' + rows;
-            tbody.dataset.built = '1';
+            panel.innerHTML =
+                '<div class="nott-stocc-head">' +
+                '<span class="nott-stocc-head-lbl">Serbatoio</span>' +
+                '<span class="nott-stocc-head-lbl">Livello (mm)</span>' +
+                '</div>' +
+                '<div class="nott-stocc-list">' + rows + '</div>';
+            panel.dataset.built = '1';
         };
         window._rapportiniPendingId = null;
         window._rapportiniModificaId = null;
@@ -5284,7 +5293,8 @@ window.updateStoricoButton = async function() {
                 window.renderStoccaggioInternoPanel();
             }
             const section = document.getElementById(secId);
-            if (!section) return [];
+            const panel = secId === 'sec-stoccaggio-interno' ? document.getElementById('stoccaggio-panel-notturno') : null;
+            if (!section && !panel) return [];
             const fields = [];
             const seen = new Set();
             const add = function(inputId, label, kind) {
@@ -5298,9 +5308,16 @@ window.updateStoricoButton = async function() {
                     kind: kind || 'field'
                 });
             };
-            section.querySelectorAll('input[type="tel"], input[type="text"], input[type="number"]').forEach(function(inp) {
+            const inputRoots = panel ? [panel] : (section ? [section] : []);
+            inputRoots.forEach(function(root) {
+            root.querySelectorAll('input[type="tel"], input[type="text"], input[type="number"]').forEach(function(inp) {
                 if (!inp.id) return;
                 let label = '';
+                const stoccSigla = inp.closest('.nott-stocc-row');
+                if (stoccSigla) {
+                    const lab = stoccSigla.querySelector('.nott-stocc-sigla');
+                    if (lab) label = lab.innerText.replace(/\s+/g, ' ').trim();
+                }
                 const amb = inp.closest('.amb-row');
                 if (amb) {
                     const lab = amb.querySelector('.amb-label');
@@ -5322,6 +5339,8 @@ window.updateStoricoButton = async function() {
                 }
                 add(inp.id, label || inp.id, 'input');
             });
+            });
+            if (!section) return fields;
             section.querySelectorAll('.status-cell-btn[id]').forEach(function(btn) {
                 if (btn.id === 'numpad-tank-btn') return;
                 const tr = btn.closest('tr');
@@ -5393,6 +5412,11 @@ window.updateStoricoButton = async function() {
 
         window.applyFieldLabelInDom = function(fieldId, labelText) {
             if (!labelText) return;
+            const siglaEl = document.querySelector('.nott-stocc-sigla[data-field-for="' + fieldId + '"]');
+            if (siglaEl) {
+                siglaEl.textContent = labelText;
+                return;
+            }
             const el = document.getElementById(fieldId);
             if (!el) return;
             if (fieldId === 'vwt-label-text' || fieldId === 'osmosi-label-text') {
@@ -5428,14 +5452,8 @@ window.updateStoricoButton = async function() {
                 const mod = cfg.modules[tab.id];
                 const enabled = mod && mod.enabled !== false;
                 if (tab.id === 'sec-stoccaggio-interno') {
-                    sec.style.display = (isNott && enabled && !hiddenModules.includes(tab.id)) ? 'flex' : 'none';
-                    if (isNott && enabled) {
-                        const title = mod.title || tab.name;
-                        const lbl = document.getElementById('lbl-' + tab.id);
-                        if (lbl) lbl.innerText = title;
-                        (mod.fields || []).forEach(function(f) {
-                            if (f.enabled !== false) window.applyFieldLabelInDom(f.id, f.label);
-                        });
+                    if (typeof window.syncNotturnoStoccaggioPanel === 'function') {
+                        window.syncNotturnoStoccaggioPanel();
                     }
                     return;
                 }
@@ -5477,15 +5495,12 @@ window.updateStoricoButton = async function() {
             const row1 = ['sec-chpp', 'sec-well', 'sec-amb', 'sec-ambiente2'];
             const row2 = ['sec-acqua', 'sec-scam', 'sec-filtra'];
             const row3 = ['sec-bluedown', 'sec-aria', 'sec-azoto'];
-            const row4 = ['sec-stoccaggio-interno'];
             const rb1 = document.getElementById('row-block-1');
             const rb2 = document.getElementById('row-block-2');
             const rb3 = document.getElementById('row-block-3');
-            const rb4 = document.getElementById('row-block-stoccaggio');
             if (rb1) rb1.style.display = row1.some(visible) ? 'flex' : 'none';
             if (rb2) rb2.style.display = row2.some(visible) ? 'flex' : 'none';
             if (rb3) rb3.style.display = row3.some(visible) ? 'flex' : 'none';
-            if (rb4) rb4.style.display = (isNott && row4.some(visible)) ? 'flex' : 'none';
         };
 
         window.migrateRapportiniSchedeConfig = function(store) {
@@ -6271,6 +6286,34 @@ window.updateStoricoButton = async function() {
             setTimeout(function() { globalInteractionLock = false; }, 50);
         };
 
+        window.toggleNotturnoStoccaggioTendina = function(e) {
+            if (e && e.stopPropagation) e.stopPropagation();
+            const tendina = document.getElementById('sec-stoccaggio-interno');
+            const bar = tendina && tendina.querySelector('.nott-stocc-tendina-bar');
+            if (!tendina) return;
+            const collapsed = tendina.classList.toggle('notturno-stoccaggio-tendina-collapsed');
+            if (collapsed) tendina.removeAttribute('data-user-expanded');
+            else tendina.dataset.userExpanded = '1';
+            const ch = document.getElementById('nott-stocc-tendina-chevron');
+            if (ch) ch.textContent = collapsed ? '▼' : '▲';
+            if (bar) bar.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        };
+
+        window.endPressNotturnoStoccaggioTendina = function(e) {
+            if (e && e.currentTarget) e.currentTarget.classList.remove('pressing');
+            if (visualFeedbackTimer) { clearTimeout(visualFeedbackTimer); visualFeedbackTimer = null; }
+            if (pressTimer) {
+                clearTimeout(pressTimer);
+                pressTimer = null;
+                if (!isLongPress) window.toggleNotturnoStoccaggioTendina(e);
+            }
+            document.querySelectorAll('input').forEach(function(input) {
+                input.style.pointerEvents = 'auto';
+                input.readOnly = false;
+            });
+            setTimeout(function() { globalInteractionLock = false; }, 50);
+        };
+
         window.getNotturnoFiltraReportData = function() {
             if (typeof window.refreshNotturnoFiltraTotals === 'function') {
                 window.refreshNotturnoFiltraTotals();
@@ -6346,29 +6389,34 @@ window.updateStoricoButton = async function() {
 
         window.syncNotturnoStoccaggioPanel = function() {
             const isNott = window.isNotturnoFiltraLayoutActive();
-            const stoccRow = document.getElementById('row-block-stoccaggio');
-            const sec = document.getElementById('sec-stoccaggio-interno');
+            const tendina = document.getElementById('sec-stoccaggio-interno');
             const store = window.loadRapportiniStore();
             const stoccMod = store && store.items.notturno && store.items.notturno.schedeConfig &&
                 store.items.notturno.schedeConfig.modules && store.items.notturno.schedeConfig.modules['sec-stoccaggio-interno'];
+            const tendinaTitle = document.getElementById('lbl-sec-stoccaggio-interno-tendina');
             const hidden = (window.hiddenModules || hiddenModules || []).includes('sec-stoccaggio-interno');
             const show = isNott && stoccMod && stoccMod.enabled !== false && !hidden;
-            if (stoccRow) {
-                if (show) {
-                    stoccRow.classList.add('notturno-stoccaggio-visible');
-                    stoccRow.style.display = 'flex';
-                } else {
-                    stoccRow.classList.remove('notturno-stoccaggio-visible');
-                    stoccRow.style.display = 'none';
-                }
+            if (!tendina) return;
+            if (!show) {
+                tendina.style.display = 'none';
+                return;
             }
-            if (sec) {
-                sec.style.display = show ? 'flex' : 'none';
+            tendina.style.display = 'flex';
+            if (!tendina.dataset.userExpanded) {
+                tendina.classList.add('notturno-stoccaggio-tendina-collapsed');
             }
-            if (!isNott && stoccRow) {
-                stoccRow.classList.remove('notturno-stoccaggio-visible');
-                stoccRow.style.display = 'none';
-            }
+            const ch = document.getElementById('nott-stocc-tendina-chevron');
+            const collapsed = tendina.classList.contains('notturno-stoccaggio-tendina-collapsed');
+            if (ch) ch.textContent = collapsed ? '▼' : '▲';
+            const bar = tendina.querySelector('.nott-stocc-tendina-bar');
+            if (bar) bar.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+            if (tendinaTitle) tendinaTitle.textContent = (stoccMod && stoccMod.title) || 'STOCCAGGIO INTERNO';
+            const lbl = document.getElementById('lbl-sec-stoccaggio-interno');
+            if (lbl) lbl.textContent = (stoccMod && stoccMod.title) || 'STOCCAGGIO INTERNO';
+            window.renderStoccaggioInternoPanel();
+            (stoccMod.fields || []).forEach(function(f) {
+                if (f.enabled !== false) window.applyFieldLabelInDom(f.id, f.label);
+            });
         };
 
         window._notturnoTimeTargetId = null;
@@ -6682,6 +6730,9 @@ window.updateStoricoButton = async function() {
 
         window.updateModulesVisibility = () => {
             const allIds = GROUPS.flat();
+            if (window.isNotturnoFiltraLayoutActive && window.isNotturnoFiltraLayoutActive()) {
+                if (allIds.indexOf('sec-stoccaggio-interno') < 0) allIds.push('sec-stoccaggio-interno');
+            }
             const listEl = document.getElementById('management-list');
             if (!listEl) return;
             listEl.innerHTML = '';
@@ -6717,12 +6768,9 @@ window.updateStoricoButton = async function() {
             const rowBlock1 = document.getElementById('row-block-1');
             const rowBlock2 = document.getElementById('row-block-2');
             const rowBlock3 = document.getElementById('row-block-3');
-            const rowBlockStoccaggio = document.getElementById('row-block-stoccaggio');
-            
             const row1Modules = ['sec-chpp', 'sec-well', 'sec-amb', 'sec-ambiente2'];
             const row2Modules = ['sec-acqua', 'sec-scam', 'sec-filtra'];
             const row3Modules = ['sec-bluedown', 'sec-aria', 'sec-azoto'];
-            const row4Modules = ['sec-stoccaggio-interno'];
             const schedeCfg = window.getActiveRapportinoSchedeConfig();
             const visibleInRapportino = function(id) {
                 if (schedeCfg && !window.isRapportinoModuleEnabled(id, schedeCfg)) return false;
@@ -6747,12 +6795,6 @@ window.updateStoricoButton = async function() {
                 if (rowBlock3) rowBlock3.style.display = 'flex';
             }
 
-            if (row4Modules.every(id => !visibleInRapportino(id))) {
-                if (rowBlockStoccaggio) rowBlockStoccaggio.style.display = 'none';
-            } else {
-                if (rowBlockStoccaggio) rowBlockStoccaggio.style.display = 'flex';
-            }
-
             allIds.forEach(id => {
                 const el = document.getElementById(id);
                 const labelEl = document.getElementById('lbl-' + id);
@@ -6760,10 +6802,14 @@ window.updateStoricoButton = async function() {
                 if (hiddenModules.includes(id) || !cfgEnabled) {
                     if (el) el.style.display = 'none';
                     if (hiddenModules.includes(id)) {
-                        if (window.isNotturnoFiltraLayoutActive && id !== 'sec-filtra' && id !== 'sec-stoccaggio-interno') return;
+                        if (window.isNotturnoFiltraLayoutActive() && id !== 'sec-filtra' && id !== 'sec-stoccaggio-interno') return;
                         let labelText = labelEl ? labelEl.innerText : id;
                         if (id === 'sec-filtra' && window.isNotturnoFiltraLayoutActive()) {
                             const t = document.getElementById('lbl-sec-filtra-tendina');
+                            if (t) labelText = t.textContent.trim();
+                        }
+                        if (id === 'sec-stoccaggio-interno' && window.isNotturnoFiltraLayoutActive()) {
+                            const t = document.getElementById('lbl-sec-stoccaggio-interno-tendina');
                             if (t) labelText = t.textContent.trim();
                         }
                         const item = document.createElement('div');
@@ -6772,9 +6818,16 @@ window.updateStoricoButton = async function() {
                         item.onclick = (e) => { e.preventDefault(); window.restoreModule(id); };
                         listEl.appendChild(item);
                     }
-                } else { if (el) el.style.display = 'flex'; }
+                } else {
+                    if (id === 'sec-stoccaggio-interno' && !window.isNotturnoFiltraLayoutActive()) {
+                        if (el) el.style.display = 'none';
+                    } else if (el) {
+                        el.style.display = 'flex';
+                    }
+                }
             });
             window.updateRapportiniRowBlocksVisibility();
+            if (typeof window.syncNotturnoStoccaggioPanel === 'function') window.syncNotturnoStoccaggioPanel();
         };
 
         window.hideModule = (id) => {
@@ -6786,6 +6839,8 @@ window.updateStoricoButton = async function() {
                     if (tendina) tendina.style.display = 'none';
                 }
                 if (window.isNotturnoFiltraLayoutActive() && id === 'sec-stoccaggio-interno') {
+                    const stTend = document.getElementById('sec-stoccaggio-interno');
+                    if (stTend) stTend.style.display = 'none';
                     if (typeof window.syncNotturnoStoccaggioPanel === 'function') window.syncNotturnoStoccaggioPanel();
                 }
                 updateModulesVisibility();
@@ -6799,6 +6854,12 @@ window.updateStoricoButton = async function() {
                     input.readOnly = false;
                 });
                 if (window.isNotturnoFiltraLayoutActive() && id === 'sec-filtra') {
+                    if (navigator.vibrate) {
+                        try { navigator.vibrate(40); } catch (_) {}
+                    }
+                    return;
+                }
+                if (window.isNotturnoFiltraLayoutActive() && id === 'sec-stoccaggio-interno') {
                     if (navigator.vibrate) {
                         try { navigator.vibrate(40); } catch (_) {}
                     }
@@ -11216,9 +11277,32 @@ window.convertToHtml = async () => {
         .nott-f-prod-lbl { font-size: 8px; font-weight: 800; text-transform: uppercase; text-align: center; color: #64748b; }
         .nott-f-prod-inp { width: 100%; min-height: 38px; border: 2px solid var(--border-main); border-radius: 8px; text-align: center; font-size: 13px; font-weight: 800; background: var(--bg-card); color: var(--text-main); box-sizing: border-box; }
         .nott-filtra-footer { width: 100%; flex-shrink: 0; border-top: 2px solid #065f46; padding-top: 10px; margin-top: 2px; }
-        #sec-stoccaggio-interno .stoccaggio-interno-scroll { flex: 1; min-height: 0; -webkit-overflow-scrolling: touch; }
-        #sec-stoccaggio-interno table td { vertical-align: middle; }
-        #sec-stoccaggio-interno .cell-label-main { font-size: 9px; white-space: nowrap; }
+        .notturno-stoccaggio-tendina { width: 100%; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; border-bottom: 2px solid var(--border-main); background: var(--bg-card); }
+        .notturno-stoccaggio-tendina-collapsed { flex: 0 0 auto; }
+        .nott-stocc-tendina-bar { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; background: linear-gradient(135deg, #0f766e 0%, #0d9488 55%, #14b8a6 100%); color: #fff; border: none; cursor: pointer; touch-action: manipulation; flex-shrink: 0; box-shadow: 0 2px 8px rgba(15, 118, 110, 0.35); }
+        .nott-stocc-tendina-bar.pressing { filter: brightness(1.12); opacity: 0.94; }
+        .nott-stocc-tendina-title { font-size: 14px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.06em; line-height: 1.2; }
+        .nott-stocc-tendina-chevron { font-size: 14px; font-weight: 900; line-height: 1; transition: transform 0.25s ease; }
+        .notturno-stoccaggio-tendina-collapsed .nott-stocc-tendina-chevron { transform: rotate(180deg); }
+        .nott-stocc-tendina-body { flex: 1 1 auto; min-height: 0; overflow: hidden; max-height: 2000px; transition: max-height 0.35s ease, padding 0.3s ease; padding: 10px 12px 12px; }
+        .notturno-stoccaggio-tendina-collapsed .nott-stocc-tendina-body { max-height: 0; padding-top: 0; padding-bottom: 0; flex: 0 0 auto; }
+        #stoccaggio-panel-notturno.nott-stocc-panel { display: flex; flex-direction: column; gap: 8px; width: 100%; min-height: 0; }
+        .nott-stocc-head { display: grid; grid-template-columns: minmax(128px, 1.2fr) minmax(88px, 1fr); gap: 12px; padding: 8px 12px 6px; border-bottom: 2px dashed rgba(15, 118, 110, 0.25); margin-bottom: 4px; }
+        .nott-stocc-head-lbl { font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.06em; color: #0f766e; }
+        .nott-stocc-head-lbl:first-child { text-align: left; padding-left: 4px; }
+        .nott-stocc-head-lbl:last-child { text-align: center; }
+        .dark .nott-stocc-head-lbl { color: #5eead4; }
+        .nott-stocc-list { display: flex; flex-direction: column; gap: 10px; max-height: min(52vh, 480px); overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 4px 4px 8px; }
+        .nott-stocc-row { display: grid; grid-template-columns: minmax(128px, 1.2fr) minmax(88px, 1fr); gap: 12px; align-items: stretch; padding: 0; border-radius: 12px; overflow: hidden; border: 2px solid rgba(15, 118, 110, 0.28); box-shadow: 0 2px 6px rgba(15, 118, 110, 0.12); background: var(--bg-card); }
+        .nott-stocc-list .nott-stocc-row:nth-child(even) { border-color: rgba(13, 148, 136, 0.4); }
+        .dark .nott-stocc-row { border-color: rgba(45, 212, 191, 0.4); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25); }
+        .nott-stocc-sigla { display: flex; align-items: center; justify-content: flex-start; min-height: 52px; padding: 10px 12px; font-size: 16px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.04em; color: #fff; line-height: 1.2; word-break: break-word; background: linear-gradient(135deg, #0f766e 0%, #0d9488 100%); border-right: 2px solid rgba(255, 255, 255, 0.2); }
+        .dark .nott-stocc-sigla { color: #ecfdf5; background: linear-gradient(135deg, #115e59 0%, #0f766e 100%); }
+        .nott-stocc-inp { width: 100%; min-height: 52px; padding: 10px 8px; font-size: 18px; font-weight: 900; text-align: center; border: none; border-radius: 0; background: #ecfdf5; color: #064e3b; box-sizing: border-box; font-variant-numeric: tabular-nums; }
+        .dark .nott-stocc-inp { background: #042f2e; color: #ecfdf5; }
+        .nott-stocc-inp:focus { outline: none; background: #d1fae5; box-shadow: inset 0 0 0 3px rgba(20, 184, 166, 0.45); }
+        .dark .nott-stocc-inp:focus { background: #134e4a; }
+        .nott-stocc-inp::placeholder { color: #94a3b8; font-size: 14px; font-weight: 800; opacity: 0.85; }
         .nott-f-totals { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
         .nott-f-total-box { border: 2px solid #065f46; border-radius: 10px; padding: 10px 8px; text-align: center; background: #f0fdf4; min-height: 52px; }
         .dark .nott-f-total-box { background: #022c22; }
@@ -11226,8 +11310,12 @@ window.convertToHtml = async () => {
         .nott-f-total-val { font-size: 18px; font-weight: 900; color: #064e3b; margin-top: 4px; }
         .dark .nott-f-total-val { color: #6ee7b7; }
         .nott-f-add-step { width: 100%; padding: 11px; border-radius: 8px; background: #047857; color: #fff; font-size: 10px; font-weight: 800; text-transform: uppercase; border: none; touch-action: manipulation; }
+        body.notturno-filtra-active .main-container { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
         body.notturno-filtra-active .main-container .row-block { display: none !important; }
-        body.notturno-filtra-active #row-block-stoccaggio.notturno-stoccaggio-visible { display: flex !important; }
+        body.notturno-filtra-active .notturno-filtra-tendina { flex: 0 0 auto; }
+        body.notturno-filtra-active .notturno-stoccaggio-tendina { flex: 1 1 auto; min-height: 0; }
+        body.notturno-filtra-active .notturno-stoccaggio-tendina:not(.notturno-stoccaggio-tendina-collapsed) .nott-stocc-tendina-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+        body.notturno-filtra-active .notturno-stoccaggio-tendina:not(.notturno-stoccaggio-tendina-collapsed) .nott-stocc-list { max-height: none; flex: 1 1 auto; }
         .main-header { background-color: #000; color: white; padding: 0 12px; display: flex; justify-content: space-between; align-items: center; height: 60px; }
         input { width: 100%; height: 100%; border: none; text-align: center; font-weight: 800; background: transparent; outline: none; color: var(--text-main); }
         table { width: 100%; border-collapse: collapse; table-layout: fixed; height: 100%; }
@@ -12176,6 +12264,19 @@ window.convertToHtml = async () => {
             </div>
         </div>
 
+        <!-- Stoccaggio interno Notturno: tendina orizzontale -->
+        <div id="sec-stoccaggio-interno" class="notturno-stoccaggio-tendina notturno-stoccaggio-tendina-collapsed" style="display: none;" aria-label="Stoccaggio interno notturno">
+            <button type="button" class="nott-stocc-tendina-bar" aria-expanded="false"
+                ontouchstart="window.startPress(event, 'sec-stoccaggio-interno')" ontouchmove="window.movePress(event)" ontouchend="window.endPressNotturnoStoccaggioTendina(event)"
+                onmousedown="window.startPress(event, 'sec-stoccaggio-interno')" onmouseup="window.endPressNotturnoStoccaggioTendina(event)">
+                <span class="nott-stocc-tendina-title" id="lbl-sec-stoccaggio-interno-tendina">STOCCAGGIO INTERNO</span>
+                <span class="nott-stocc-tendina-chevron" id="nott-stocc-tendina-chevron" aria-hidden="true">▼</span>
+            </button>
+            <div id="notturno-stoccaggio-tendina-body" class="nott-stocc-tendina-body">
+                <div id="stoccaggio-panel-notturno" class="nott-stocc-panel"></div>
+            </div>
+        </div>
+
         <!-- Righe dei Moduli -->
         <div id="row-block-1" class="row-block" style="height: 420px;">
             <div id="sec-chpp" class="col-section col-collapsed">
@@ -12270,14 +12371,6 @@ window.convertToHtml = async () => {
             </div>
         </div>
 
-        <div id="row-block-stoccaggio" class="row-block" style="display: none; min-height: 300px; border-bottom: none;">
-            <div id="sec-stoccaggio-interno" class="col-section col-expanded" style="flex: 1 1 100%; max-width: 100%;">
-                <div class="v-label-container" style="background-color: #0f766e;" ontouchstart="window.startPress(event, 'sec-stoccaggio-interno')" ontouchmove="window.movePress(event)" ontouchend="window.endPress(event, 'sec-stoccaggio-interno')" onmousedown="window.startPress(event, 'sec-stoccaggio-interno')" onmouseup="window.endPress(event, 'sec-stoccaggio-interno')"><span class="v-label-text" id="lbl-sec-stoccaggio-interno">STOCCAGGIO INTERNO</span></div>
-                <div class="stoccaggio-interno-scroll flex flex-col grow overflow-y-auto min-h-0">
-                    <table class="w-full"><tbody id="stoccaggio-interno-tbody"></tbody></table>
-                </div>
-            </div>
-        </div>
     </div>
 
     <!-- UI Navigazione Inferiore -->

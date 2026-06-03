@@ -511,7 +511,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-multi-photo-import';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-notturno-restore-moduli';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -1153,7 +1153,12 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (snapshot.exists()) {
                     const settings = snapshot.data();
                     isDarkMode = settings.isDarkMode || false;
-                    hiddenModules = settings.hiddenModules || [];
+                    if (typeof window.applyHiddenModulesFromActiveRapportino === 'function') {
+                        window.applyHiddenModulesFromActiveRapportino(settings.hiddenModules);
+                    } else {
+                        hiddenModules = settings.hiddenModules || [];
+                        window.hiddenModules = hiddenModules;
+                    }
                     updateThemeUI();
                     updateModulesVisibility();
                 }
@@ -5413,6 +5418,44 @@ window.updateStoricoButton = async function() {
             return !!(store && store.activeId === 'notturno');
         };
 
+        /** Moduli nascosti: per rapportino (localStorage) ha priorità su Firebase settings (evita race al ripristino). */
+        window.applyHiddenModulesFromActiveRapportino = function(fallbackFromSettings) {
+            if (typeof window.ensureRapportiniInitialized === 'function') {
+                window.ensureRapportiniInitialized();
+            }
+            const store = window.loadRapportiniStore && window.loadRapportiniStore();
+            if (store && store.activeId && store.items[store.activeId] &&
+                Array.isArray(store.items[store.activeId].hiddenModules)) {
+                hiddenModules = store.items[store.activeId].hiddenModules.slice();
+            } else {
+                hiddenModules = Array.isArray(fallbackFromSettings) ? fallbackFromSettings.slice() : [];
+            }
+            window.hiddenModules = hiddenModules;
+        };
+
+        window.persistHiddenModulesForActiveRapportino = function() {
+            window.hiddenModules = hiddenModules;
+            if (typeof window.ensureRapportiniInitialized === 'function') {
+                window.ensureRapportiniInitialized();
+            }
+            const store = window.loadRapportiniStore && window.loadRapportiniStore();
+            if (store && store.activeId && store.items[store.activeId]) {
+                store.items[store.activeId].hiddenModules = hiddenModules.slice();
+                store.items[store.activeId].updatedAt = new Date().toISOString();
+                window.saveRapportiniStore(store);
+            }
+        };
+
+        window.syncNotturnoModulesAfterVisibility = function() {
+            if (!window.isNotturnoFiltraLayoutActive || !window.isNotturnoFiltraLayoutActive()) return;
+            if (typeof window.syncFiltraPanelForActiveRapportino === 'function') {
+                window.syncFiltraPanelForActiveRapportino();
+            }
+            if (typeof window.syncNotturnoStoccaggioPanel === 'function') {
+                window.syncNotturnoStoccaggioPanel();
+            }
+        };
+
         window.isRapportinoModuleEnabled = function(secId, schedeConfig) {
             const mod = schedeConfig && schedeConfig.modules && schedeConfig.modules[secId];
             return !!(mod && mod.enabled !== false);
@@ -5484,12 +5527,7 @@ window.updateStoricoButton = async function() {
                 });
             });
             window.updateRapportiniRowBlocksVisibility();
-            if (typeof window.syncFiltraPanelForActiveRapportino === 'function') {
-                window.syncFiltraPanelForActiveRapportino();
-            }
-            if (typeof window.syncNotturnoStoccaggioPanel === 'function') {
-                window.syncNotturnoStoccaggioPanel();
-            }
+            window.syncNotturnoModulesAfterVisibility();
         };
 
         window.updateRapportiniRowBlocksVisibility = function() {
@@ -6740,6 +6778,7 @@ window.updateStoricoButton = async function() {
             const allIds = GROUPS.flat();
             if (window.isNotturnoFiltraLayoutActive && window.isNotturnoFiltraLayoutActive()) {
                 if (allIds.indexOf('sec-stoccaggio-interno') < 0) allIds.push('sec-stoccaggio-interno');
+                if (allIds.indexOf('sec-filtra') < 0) allIds.push('sec-filtra');
             }
             const listEl = document.getElementById('management-list');
             if (!listEl) return;
@@ -6835,7 +6874,7 @@ window.updateStoricoButton = async function() {
                 }
             });
             window.updateRapportiniRowBlocksVisibility();
-            if (typeof window.syncNotturnoStoccaggioPanel === 'function') window.syncNotturnoStoccaggioPanel();
+            window.syncNotturnoModulesAfterVisibility();
         };
 
         window.hideModule = (id) => {
@@ -6852,6 +6891,7 @@ window.updateStoricoButton = async function() {
                     if (typeof window.syncNotturnoStoccaggioPanel === 'function') window.syncNotturnoStoccaggioPanel();
                 }
                 updateModulesVisibility();
+                window.persistHiddenModulesForActiveRapportino();
                 window.saveSettings();
                 if (typeof window.saveActiveRapportinoFromUI === 'function') {
                     window.saveActiveRapportinoFromUI();
@@ -6886,13 +6926,11 @@ window.updateStoricoButton = async function() {
             window.hiddenModules = hiddenModules;
             updateModulesVisibility();
             if (window.isNotturnoFiltraLayoutActive() && (id === 'sec-filtra' || id === 'sec-stoccaggio-interno')) {
-                if (typeof window.syncFiltraPanelForActiveRapportino === 'function') {
-                    window.syncFiltraPanelForActiveRapportino();
-                }
-                if (typeof window.syncNotturnoStoccaggioPanel === 'function') window.syncNotturnoStoccaggioPanel();
+                window.syncNotturnoModulesAfterVisibility();
             } else {
                 window.handleLabelClick(id, true);
             }
+            window.persistHiddenModulesForActiveRapportino();
             window.saveSettings();
             if (typeof window.saveActiveRapportinoFromUI === 'function') {
                 window.saveActiveRapportinoFromUI();
@@ -6901,15 +6939,20 @@ window.updateStoricoButton = async function() {
 
         window.restoreAllModules = () => {
             hiddenModules = [];
+            window.hiddenModules = hiddenModules;
             updateModulesVisibility();
+            if (window.isNotturnoFiltraLayoutActive && window.isNotturnoFiltraLayoutActive()) {
+                window.syncNotturnoModulesAfterVisibility();
+            } else {
+                window.handleLabelClick('sec-ambiente2', true);
+                window.handleLabelClick('sec-filtra', true);
+                window.handleLabelClick('sec-azoto', true);
+            }
+            window.persistHiddenModulesForActiveRapportino();
             window.saveSettings();
-            
-            // ✅ APRI I MODULI STANDARD PER LA MODIFICA
-            window.handleLabelClick('sec-ambiente2', true);  // Ambiente 2
-            window.handleLabelClick('sec-filtra', true);      // Filtra
-            // ✅ APRI AZOTO
-            window.handleLabelClick('sec-azoto', true);       // Azoto
-            
+            if (typeof window.saveActiveRapportinoFromUI === 'function') {
+                window.saveActiveRapportinoFromUI();
+            }
             window.closeManagement();
         };
 

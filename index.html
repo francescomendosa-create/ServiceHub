@@ -511,7 +511,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-notturno-restore-moduli';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-multi-device-sync';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -595,6 +595,7 @@ window.colorPreviewNumber = function(tankName, value) {
 
         let __shUnsubPlant = null;
         let __shUnsubSettings = null;
+        let __shUnsubRapportini = null;
         let __shUnsubAlarm = null;
         /** Salvataggi arrivati prima che Firebase Auth fosse pronto: si ripete il push dopo il login. */
         let __plantRetrySaveAfterAuth = false;
@@ -1054,6 +1055,12 @@ window.colorPreviewNumber = function(tankName, value) {
                 } catch (_) {}
                 __shUnsubSettings = null;
             }
+            if (__shUnsubRapportini) {
+                try {
+                    __shUnsubRapportini();
+                } catch (_) {}
+                __shUnsubRapportini = null;
+            }
             const dataDoc = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
             let __plantTruthTimer = null;
             const schedulePlantTruthFromServer = function () {
@@ -1163,6 +1170,15 @@ window.colorPreviewNumber = function(tankName, value) {
                     updateModulesVisibility();
                 }
             }, (error) => {});
+
+            const rapportiniDoc = doc(db, 'artifacts', appId, 'sharedDial', 'rapportini');
+            __shUnsubRapportini = onSnapshot(rapportiniDoc, (snapshot) => {
+                if (!snapshot.exists()) return;
+                if (typeof window.applyRapportiniStoreFromCloud !== 'function') return;
+                window.applyRapportiniStoreFromCloud(snapshot.data());
+            }, (error) => {
+                console.warn('[ServiceHub] rapportini Firestore:', error && error.message);
+            });
         };
 
         // ✅ FUNZIONE PER SALVATAGGIO MOMENTANEO (FUNZIONA ANCHE IN MODIFICA)
@@ -5615,10 +5631,98 @@ window.updateStoricoButton = async function() {
             }
         };
 
+        window.parseRapportinoUpdatedMs = function(iso) {
+            if (!iso) return 0;
+            const t = Date.parse(iso);
+            return Number.isFinite(t) ? t : 0;
+        };
+
+        window.mergeRapportiniStores = function(localStore, remoteStore) {
+            if (!remoteStore || !remoteStore.items) return localStore;
+            if (!localStore || !localStore.items) {
+                return JSON.parse(JSON.stringify(remoteStore));
+            }
+            const outItems = {};
+            const allIds = new Set(
+                Object.keys(localStore.items).concat(Object.keys(remoteStore.items))
+            );
+            allIds.forEach(function(rid) {
+                const l = localStore.items[rid];
+                const r = remoteStore.items[rid];
+                if (!l && r) outItems[rid] = JSON.parse(JSON.stringify(r));
+                else if (l && !r) outItems[rid] = JSON.parse(JSON.stringify(l));
+                else if (l && r) {
+                    outItems[rid] = window.parseRapportinoUpdatedMs(r.updatedAt) >= window.parseRapportinoUpdatedMs(l.updatedAt)
+                        ? JSON.parse(JSON.stringify(r))
+                        : JSON.parse(JSON.stringify(l));
+                }
+            });
+            const localMs = window.parseRapportinoUpdatedMs(localStore.lastUpdate);
+            const remoteMs = window.parseRapportinoUpdatedMs(remoteStore.lastUpdate);
+            return {
+                activeId: remoteMs > localMs ? (remoteStore.activeId || localStore.activeId) : localStore.activeId,
+                items: outItems,
+                lastUpdate: new Date(Math.max(localMs, remoteMs)).toISOString()
+            };
+        };
+
+        window.pushRapportiniStoreToCloud = async function(store) {
+            if (!user || !user.uid || !db || !store) return;
+            if (window.__rapportiniApplyingFromCloud) return;
+            try {
+                const payload = {
+                    activeId: store.activeId,
+                    items: store.items,
+                    lastUpdate: store.lastUpdate || new Date().toISOString()
+                };
+                await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'rapportini'), payload, { merge: true });
+            } catch (e) {
+                console.warn('[ServiceHub] push rapportini cloud:', e && e.message);
+            }
+        };
+
+        window.applyRapportiniStoreFromCloud = function(remoteStore) {
+            if (!remoteStore || !remoteStore.items) return;
+            const local = window.loadRapportiniStore();
+            const merged = window.mergeRapportiniStores(local, remoteStore);
+            if (!merged) return;
+            const prevActive = local && local.activeId;
+            const prevUpdated = local && local.items && local.activeId && local.items[local.activeId]
+                ? local.items[local.activeId].updatedAt : null;
+            const newUpdated = merged.items && merged.activeId && merged.items[merged.activeId]
+                ? merged.items[merged.activeId].updatedAt : null;
+            window.__rapportiniApplyingFromCloud = true;
+            window.saveRapportiniStore(merged);
+            window.__rapportiniApplyingFromCloud = false;
+            window.__rapportiniStore = merged;
+            if (merged.activeId === prevActive && newUpdated && newUpdated !== prevUpdated &&
+                typeof window.applyRapportinoItem === 'function' && merged.items[merged.activeId]) {
+                window.applyRapportinoItem(merged.items[merged.activeId]);
+            }
+        };
+
+        window.getMergedRapportinoPlantData = function(itemData) {
+            const item = itemData && typeof itemData === 'object' ? Object.assign({}, itemData) : {};
+            let cloud = null;
+            try {
+                const raw = localStorage.getItem('stabileCurrentData');
+                if (raw) cloud = JSON.parse(raw);
+            } catch (_) {}
+            if (!cloud || typeof cloud !== 'object') return item;
+            if (window.parseRapportinoUpdatedMs(cloud.lastUpdate) >= window.parseRapportinoUpdatedMs(item.lastUpdate)) {
+                return Object.assign({}, item, cloud);
+            }
+            return item;
+        };
+
         window.saveRapportiniStore = function(store) {
             try {
+                if (store) store.lastUpdate = new Date().toISOString();
                 localStorage.setItem(window.RAPPORTINI_STORAGE_KEY, JSON.stringify(store));
                 window.__rapportiniStore = store;
+                if (!window.__rapportiniApplyingFromCloud && typeof window.pushRapportiniStoreToCloud === 'function') {
+                    void window.pushRapportiniStoreToCloud(store);
+                }
             } catch (e) {
                 console.warn('[ServiceHub] save rapportini:', e);
             }
@@ -5787,7 +5891,8 @@ window.updateStoricoButton = async function() {
             window.applySectionsLayout(item.sectionsLayout);
             updateModulesVisibility();
             window.applyRapportinoSchedeConfig(item.schedeConfig);
-            applyData(item.data, { forceRemotePlant: true });
+            const dataToApply = window.getMergedRapportinoPlantData(item.data || {});
+            applyData(dataToApply, { forceRemotePlant: true });
             updateBoilerInputs();
             if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
             if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
@@ -5803,10 +5908,13 @@ window.updateStoricoButton = async function() {
             if (!store || !store.items[id]) return;
             if (store.activeId !== id) {
                 window.saveActiveRapportinoFromUI();
+                if (typeof window.__pullPlantFromServerNow === 'function') {
+                    await window.__pullPlantFromServerNow();
+                }
                 store.activeId = id;
                 window.saveRapportiniStore(store);
                 window.applyRapportinoItem(store.items[id]);
-                if (typeof window.saveData === 'function') await window.saveData(true);
+                window.saveActiveRapportinoFromUI();
                 if (typeof window.saveSettings === 'function') await window.saveSettings();
             }
             window._rapportiniPendingId = id;

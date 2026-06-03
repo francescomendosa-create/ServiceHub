@@ -511,7 +511,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-gemini-test-ui';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-gemini-capture-first';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -14087,6 +14087,8 @@ window.applyAlarmLevelFillToField = function (el, forceMin) {
 // --- ACQUISIZIONE INTELLIGENTE: GEMINI VISION + OCR + CONFERMA ---
 window.SMART_CAPTURE_OFFLINE_ONLY = false;
 window.SMART_CAPTURE_PREFER_GEMINI = true;
+/** true = solo Gemini per foto serbatoi (niente OCR locale se non quota). */
+window.SMART_CAPTURE_GEMINI_ONLY = true;
 window._smartCaptureTankMode = false;
 
 window.TANK_CAPTURE_FIELDS = [
@@ -14671,7 +14673,113 @@ window.extractDcsAcquaReadings = function(raw, fields, opts) {
             return allowed.has(r.id);
         });
     }
+    if (opts.skipTrustedFilter) return readings;
     return window.filterTrustedDcsReadings(readings);
+};
+
+window.isPlausibleCaptureLevel = function(fieldId, value) {
+    const n = parseFloat(String(value || '').replace(',', '.'));
+    if (!isFinite(n) || n < 0 || n > 12000) return false;
+    const seed = (window.getDefaultDcsCatalogSeed() || []).find(function(c) { return c.fieldId === fieldId; });
+    if (seed && seed.livMax != null) {
+        const max = parseFloat(String(seed.livMax).replace(',', '.'));
+        if (isFinite(max) && n > max * 1.12) return false;
+    }
+    return true;
+};
+
+window.filterGeminiCaptureReadings = function(readings) {
+    return (readings || []).filter(function(r) {
+        if (!r || !r.id || r.value == null) return false;
+        const v = window.fixOcrDigitValue(r.value);
+        if (!window.isValidOcrValue(v)) return false;
+        return window.isPlausibleCaptureLevel(r.id, v);
+    }).map(function(r) {
+        return Object.assign({}, r, { value: window.fixOcrDigitValue(r.value) });
+    });
+};
+
+window.extractGeminiCaptureReadings = function(raw, fields) {
+    fields = fields || [];
+    if (!raw || window.isLikelyGeminiFailureRaw(raw)) return [];
+    let readings = window.extractDcsAcquaReadings(raw, fields, { allowTextFallback: false, skipTrustedFilter: true });
+    readings = window.mergeOcrReadingLists(readings, window.parseGeminiTankPairsJson(window.parseSmartCaptureJson(raw), fields));
+    readings = window.mergeOcrReadingLists(readings, window.extractTankReadingsFromGeminiRaw(raw, fields));
+    return window.filterGeminiCaptureReadings(readings);
+};
+
+window.mergeCaptureFieldsForGemini = function(tankMode) {
+    const tank = tankMode ? window.buildTankCaptureFieldMap() : window.buildSmartCaptureFieldMap();
+    const dcs = window.getDcsStoccaggioCaptureFields ? window.getDcsStoccaggioCaptureFields() : [];
+    const seen = new Set();
+    const out = [];
+    dcs.concat(tank).forEach(function(f) {
+        if (!f || !f.id || seen.has(f.id)) return;
+        seen.add(f.id);
+        out.push(f);
+    });
+    return out;
+};
+
+window.buildGeminiUnifiedCapturePrompt = function(fields) {
+    fields = fields || [];
+    const dcsLines = (window.getDefaultDcsCatalogSeed() || []).filter(function(c) { return c.fieldId; }).map(function(c) {
+        return '- ' + (c.dcsLabel || c.label) + (c.description ? ' | ' + c.description : '') + ' → ' + c.fieldId;
+    }).join('\n');
+    const uiLines = fields.map(function(f) {
+        return '- "' + f.label + '" → ' + f.id + (f.section ? ' (' + f.section + ')' : '');
+    }).join('\n');
+    const sample = fields.slice(0, 2).map(function(f) {
+        return '{"serbatoio":"' + f.label + '","livello":"1234.5","campo_id":"' + f.id + '"}';
+    }).join(',');
+
+    return 'Sei un operatore che legge un QUADRO DCS / sinottico serbatoi da FOTO.\n\n' +
+        'COMPITO: per ogni SIGLA visibile in foto, leggi il LIVELLO numerico (mm) dalla colonna LIVELLO / valore a destra della sigla.\n' +
+        'Abbina ogni riga al campo_id corretto. Non inventare sigle assenti in foto.\n\n' +
+        'SERBATOI DCS (priorità se tabella SERBATOIO | DESCRIZIONE | LIVELLO):\n' + dcsLines + '\n\n' +
+        'ALTRI CAMPI RAPPORTINO:\n' + uiLines + '\n\n' +
+        'REGOLE:\n' +
+        '- Usa LIVELLO (mm), non LIV.MAX.\n' +
+        '- TK 9000 ACQUA GREZZA e TK 9201 ACQUA DEMI sono distinti.\n' +
+        '- Decimali con il punto.\n' +
+        '- Metti TUTTE le righe lette in applica_ora e in catalogo.\n\n' +
+        'Rispondi SOLO JSON valido (niente markdown):\n' +
+        '{"tipo":"dcs-tabella","catalogo":[' + sample + '],"applica_ora":[' + sample + '],"coppie":[' +
+        '{"sigla_visibile":"' + (fields[0] ? fields[0].label : 'TK 9000') + '","livello_a_destra":"6031.7","campo_id":"' + (fields[0] ? fields[0].id : 'inp-tk9000') + '"}]}\n';
+};
+
+window.runGeminiPrimaryCapture = async function(imageData, fields) {
+    fields = fields || window.mergeCaptureFieldsForGemini(!!window._smartCaptureTankMode);
+    const prompt = window.buildGeminiUnifiedCapturePrompt(fields);
+    const t = window.GEMINI_TIMING || {};
+    let raw = '';
+    try {
+        raw = await window.withOcrTimeout(
+            window.callGeminiTankOcr(prompt, imageData),
+            t.tankOcrMs || 68000,
+            'Gemini in timeout. Riprova.'
+        );
+    } catch (e) {
+        throw e;
+    }
+    if (window.isLikelyGeminiFailureRaw(raw)) {
+        const err = new Error(String(raw).slice(0, 280));
+        if (window.isGeminiQuotaOrBlockedError(err.message)) err.geminiQuota = true;
+        throw err;
+    }
+    const readings = window.extractGeminiCaptureReadings(raw, fields);
+    const isDcs = window.readingsIncludeDcsStoccaggio(readings);
+    return {
+        readings: readings,
+        engine: 'gemini-primary',
+        profile: isDcs ? 'dcs-acqua' : 'tank',
+        catalogSize: readings.length,
+        rawTextPreview: String(raw).slice(0, 400),
+        rawGemini: String(raw || ''),
+        notes: readings.length
+            ? ('Gemini · ' + readings.length + ' sigle lette — controlla sulla foto')
+            : 'Gemini · nessuna sigla riconosciuta nel JSON — riprova foto più nitida'
+    };
 };
 
 window.runDcsAcquaCapture = async function(imageData) {
@@ -15383,9 +15491,9 @@ window.callGeminiTankOcr = async function(promptText, imageData) {
     ];
     const t = window.GEMINI_TIMING || {};
     const out = await window.runGeminiWithKeyRotation(parts, {
-        models: ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-flash'],
+        models: ['gemini-2.5-flash-lite', 'gemini-2.5-flash'],
         timeoutMs: t.tankOcrMs || 68000,
-        generationConfig: { temperature: 0.1, maxOutputTokens: 2048 },
+        generationConfig: { temperature: 0.05, maxOutputTokens: 4096 },
         clearCooldowns: false
     });
     return out.text;
@@ -15760,7 +15868,7 @@ window.runLocalSmartCaptureOcr = async function(imageData, fields) {
 
 window.runSmartCaptureAnalysis = async function(imageData) {
     const tankMode = !!window._smartCaptureTankMode;
-    const fields = tankMode ? window.buildTankCaptureFieldMap() : window.buildSmartCaptureFieldMap();
+    const fields = window.mergeCaptureFieldsForGemini(tankMode);
     if (!fields.length && !tankMode) throw new Error('Nessun campo mappabile trovato nell\'interfaccia.');
 
     if (imageData && imageData.type === 'application/pdf') {
@@ -15768,68 +15876,32 @@ window.runSmartCaptureAnalysis = async function(imageData) {
     }
 
     const geminiKey = window.getGeminiApiKey && window.getGeminiApiKey();
-    const DCS_READINGS_OK = 4;
-    const dcsFields = window.getDcsStoccaggioCaptureFields ? window.getDcsStoccaggioCaptureFields() : fields;
     let geminiQuotaHit = false;
 
     if (geminiKey && window.SMART_CAPTURE_PREFER_GEMINI && !window._smartCaptureAbort) {
-        let dcsResult = null;
         try {
-            window.setSmartCaptureLoadingMessage('Analisi Gemini tabella DCS…');
-            dcsResult = await window.runDcsAcquaCapture(imageData);
-        } catch (errDcs) {
-            console.warn('DCS stoccaggio capture:', errDcs);
-            if (errDcs && (errDcs.geminiQuota || window.isGeminiQuotaOrBlockedError(errDcs.message))) {
+            window.setSmartCaptureLoadingMessage('Gemini: analisi foto (sigle e livelli)…');
+            const geminiResult = await window.runGeminiPrimaryCapture(imageData, fields);
+            if (geminiResult.readings && geminiResult.readings.length > 0) {
+                if (geminiResult.profile === 'dcs-acqua' && typeof window.integrateDcsCatalog === 'function') {
+                    const json = window.parseSmartCaptureJson(geminiResult.rawGemini);
+                    if (json) window.integrateDcsCatalog(json);
+                }
+                return geminiResult;
+            }
+            console.warn('Gemini: risposta senza letture utilizzabili', geminiResult.rawTextPreview);
+        } catch (errGem) {
+            console.warn('Gemini primary capture:', errGem);
+            if (errGem && (errGem.geminiQuota || window.isGeminiQuotaOrBlockedError(errGem.message))) {
                 geminiQuotaHit = true;
+            } else if (window.SMART_CAPTURE_GEMINI_ONLY) {
+                throw new Error(window.formatGeminiError(errGem && errGem.message) || 'Gemini non ha letto la foto.');
             }
         }
+    }
 
-        let readings = window.filterTrustedDcsReadings((dcsResult && dcsResult.readings) ? dcsResult.readings.slice() : []);
-        let engine = (dcsResult && dcsResult.engine) || 'gemini-dcs';
-
-        if (!geminiQuotaHit && readings.length < DCS_READINGS_OK) {
-            try {
-                window.setSmartCaptureLoadingMessage('Gemini: lettura completa serbatoi…');
-                const geminiExtra = await window.runGeminiSmartCaptureOcr(imageData, dcsFields);
-                readings = window.filterTrustedDcsReadings(
-                    window.mergeOcrReadingLists(readings, geminiExtra.readings || [])
-                );
-                engine = engine + '+' + (geminiExtra.engine || 'gemini');
-            } catch (errExtra) {
-                console.warn('Gemini completamento serbatoi:', errExtra);
-                if (window.isGeminiQuotaOrBlockedError(errExtra && errExtra.message)) geminiQuotaHit = true;
-            }
-        }
-
-        if (!geminiQuotaHit && readings.length >= DCS_READINGS_OK) {
-            return Object.assign({}, dcsResult || {}, {
-                readings: readings,
-                engine: engine,
-                profile: 'dcs-acqua',
-                catalogSize: dcsResult && dcsResult.catalogSize,
-                tankRegistry: dcsResult && dcsResult.tankRegistry,
-                rawTextPreview: dcsResult && dcsResult.rawTextPreview,
-                notes: 'Gemini DCS · ' + readings.length + ' livelli (verifica sulla foto)'
-            });
-        }
-
-        if (!geminiQuotaHit && tankMode) {
-            try {
-                window.setSmartCaptureLoadingMessage('Analisi AI foto…');
-                const geminiResult = await window.runGeminiSmartCaptureOcr(imageData, dcsFields);
-                const tr = window.filterTrustedDcsReadings(geminiResult.readings || []);
-                if (tr.length >= DCS_READINGS_OK) {
-                    geminiResult.readings = tr;
-                    return geminiResult;
-                }
-            } catch (err) {
-                console.warn('Gemini smart capture:', err);
-                if (window.isGeminiQuotaOrBlockedError(err && err.message)) geminiQuotaHit = true;
-                if (window.SMART_CAPTURE_OFFLINE_ONLY) {
-                    throw new Error(window.formatGeminiError(err && err.message) || 'Analisi AI non riuscita.');
-                }
-            }
-        }
+    if (window.SMART_CAPTURE_GEMINI_ONLY && !geminiQuotaHit) {
+        throw new Error('Gemini non ha trovato sigle/livelli nella foto. Avvicina il DCS, luce uniforme, riprova.');
     }
 
     if (geminiQuotaHit) {
@@ -15839,7 +15911,7 @@ window.runSmartCaptureAnalysis = async function(imageData) {
     }
 
     window.__smartCaptureGeminiQuota = !!geminiQuotaHit;
-    const localResult = await window.runLocalSmartCaptureOcr(imageData, dcsFields.length ? dcsFields : fields);
+    const localResult = await window.runLocalSmartCaptureOcr(imageData, fields);
     window.__smartCaptureGeminiQuota = false;
     if (localResult.readings && localResult.readings.length) {
         return localResult;

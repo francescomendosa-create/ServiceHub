@@ -511,7 +511,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-dcs-stoccaggio-fix';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-gemini-dcs-ocr-fix';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -14504,28 +14504,32 @@ window.parseDcsAcquaFromText = function(rawText) {
     const readings = [];
     const used = new Set();
 
-    const rowRes = [
-        { id: 'inp-tk9000', re: /TK\s*[-–]?\s*9000\b[\s\S]{0,200}?(\d{3,5}[.,]\d{0,2}|\d{3,5})/i },
-        { id: 'inp-tk9201', re: /TK\s*[-–]?\s*9201\b[\s\S]{0,200}?(\d{3,5}[.,]\d{0,2}|\d{3,5})/i },
-        { id: 'inp-tk9000', re: /ACQUA\s*GREZZA[\s\S]{0,160}?(\d{3,5}[.,]\d{0,2}|\d{3,5})/i },
-        { id: 'inp-tk9201', re: /ACQUA\s*DEMI\b[\s\S]{0,160}?(\d{3,5}[.,]\d{0,2}|\d{3,5})/i }
-    ];
-
-    rowRes.forEach(function(row) {
-        if (used.has(row.id)) return;
-        const m = row.re.exec(text);
-        if (!m) return;
-        let val = window.fixOcrDigitValue(m[1]);
-        if (!window.isValidOcrValue(val)) return;
-        const field = fields.find(function(f) { return f.id === row.id; });
-        used.add(row.id);
-        readings.push({
-            id: row.id,
-            value: val,
-            confidence: /ACQUA/i.test(row.re.source) ? 'alta' : 'media',
-            source: field ? field.label : row.id,
-            method: /ACQUA/i.test(row.re.source) ? 'dcs-descrizione' : 'dcs-testo'
-        });
+    (window.getDefaultDcsCatalogSeed() || []).forEach(function(c) {
+        if (!c.fieldId || used.has(c.fieldId)) return;
+        const sig = (c.dcsLabel || '').replace(/\s*-\s*/g, ' ').trim();
+        const sigPat = sig.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s*');
+        const descPat = c.description
+            ? c.description.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')
+            : '';
+        const patterns = [];
+        if (sigPat) patterns.push(new RegExp(sigPat + '[\\s\\S]{0,240}?(\\d{3,5}[.,]\\d{0,2}|\\d{3,5})', 'i'));
+        if (descPat) patterns.push(new RegExp(descPat + '[\\s\\S]{0,200}?(\\d{3,5}[.,]\\d{0,2}|\\d{3,5})', 'i'));
+        for (let i = 0; i < patterns.length; i++) {
+            const m = patterns[i].exec(text);
+            if (!m) continue;
+            let val = window.fixOcrDigitValue(m[1]);
+            if (!window.isValidOcrValue(val)) continue;
+            const field = fields.find(function(f) { return f.id === c.fieldId; });
+            used.add(c.fieldId);
+            readings.push({
+                id: c.fieldId,
+                value: val,
+                confidence: i > 0 ? 'alta' : 'media',
+                source: (field && field.label) || sig,
+                method: 'dcs-testo'
+            });
+            break;
+        }
     });
     return readings;
 };
@@ -14546,10 +14550,10 @@ window.extractDcsAcquaReadings = function(raw, fields) {
     if (json && json.catalogo) {
         readings = window.mergeOcrReadingLists(readings, window.parseDcsCatalogoToReadings(json, fields));
     }
-    if (!readings.length && json && window.isDcsAcquaTableText(raw)) {
-        readings = window.parseGeminiTankPairsJson(json, fields).filter(function(r) {
+    if (json && (json.applica_ora || json.catalogo || json.coppie)) {
+        readings = window.mergeOcrReadingLists(readings, window.parseGeminiTankPairsJson(json, fields).filter(function(r) {
             return allowed.has(r.id);
-        });
+        }));
     }
     if (!readings.length) {
         readings = window.parseDcsAcquaFromText(raw);
@@ -14618,9 +14622,10 @@ window.runDcsAcquaCapture = async function(imageData) {
         catalogSize: catSize,
         tankRegistry: window.getDcsAcquaTankRegistry(),
         rawTextPreview: String(raw).slice(0, 300),
+        rawGemini: String(raw || ''),
         notes: readings.length
-            ? ('DCS · ' + readings.length + ' livelli (Notturno Stoccaggio + Acqua Generale)' + memNote)
-            : ('DCS · catalogo aggiornato' + memNote + ' — nessun livello rilevato')
+            ? ('Gemini DCS · ' + readings.length + ' livelli (Stoccaggio + Acqua)' + memNote)
+            : ('Gemini DCS · catalogo aggiornato' + memNote + ' — nessun livello estratto dal JSON')
     };
 };
 
@@ -14730,12 +14735,26 @@ window.collectRapportinoTankFields = function() {
         });
 
         sec.querySelectorAll('tr').forEach(function(tr) {
-            const labelTd = tr.querySelector('.cell-label-main');
+            const labelTd = tr.querySelector('.cell-label-main, .nott-stocc-sigla-cell');
             const input = tr.querySelector('input[type="tel"]');
             if (labelTd && input && input.id && !input.readOnly) {
                 addField(input.id, labelTd.innerText.trim(), section);
             }
         });
+        if (secId === 'sec-stoccaggio-interno') {
+            const panel = document.getElementById('stoccaggio-panel-notturno');
+            if (panel && typeof window.renderStoccaggioInternoPanel === 'function') {
+                window.renderStoccaggioInternoPanel();
+            }
+            const stRoot = panel || sec;
+            stRoot.querySelectorAll('.nott-stocc-tr').forEach(function(tr) {
+                const lab = tr.querySelector('.nott-stocc-sigla-cell');
+                const input = tr.querySelector('input.nott-stocc-inp');
+                if (lab && input && input.id) {
+                    addField(input.id, lab.innerText.trim(), 'STOCCAGGIO INTERNO');
+                }
+            });
+        }
     });
 
     return fields;
@@ -14810,20 +14829,24 @@ window.parseGeminiTankPairsJson = function(json, fields) {
     fields = fields || window.buildTankCaptureFieldMap();
     const fieldIds = new Set(fields.map(function(f) { return f.id; }));
     if (!json) return [];
-    let pairs = json.coppie || json.pairs || json.serbatoi || json.readings;
+    let pairs = json.applica_ora || json.coppie || json.pairs || json.serbatoi || json.catalogo || json.readings;
     if (!pairs && Array.isArray(json)) pairs = json;
     if (!Array.isArray(pairs)) return [];
     const readings = [];
     const used = new Set();
     pairs.forEach(function(p) {
         if (!p) return;
-        const sigla = p.sigla_visibile || p.sigla || p.label || p.tk || '';
+        const sigla = p.sigla_visibile || p.sigla || p.serbatoio || p.label || p.tk || '';
         let val = p.livello_a_destra != null ? p.livello_a_destra : (p.livello != null ? p.livello : (p.liv != null ? p.liv : p.value));
         if (val != null && typeof val === 'number') val = String(val);
         val = window.fixOcrDigitValue(val);
         if (!window.isValidOcrValue(val)) return;
         let id = p.campo_id || p.field_id || p.campo || null;
         if (id && !fieldIds.has(id)) id = null;
+        if (!id && sigla && typeof window.resolveDcsAcquaTarget === 'function') {
+            const t = window.resolveDcsAcquaTarget(sigla, p.descrizione || p.description || '');
+            if (t && t.fieldId && fieldIds.has(t.fieldId)) id = t.fieldId;
+        }
         if (!id) id = window.resolveTankIdFromLabel(sigla, fields);
         if (!id || used.has(id)) return;
         used.add(id);
@@ -15642,27 +15665,64 @@ window.runSmartCaptureAnalysis = async function(imageData) {
     }
 
     const geminiKey = window.getGeminiApiKey && window.getGeminiApiKey();
+    const DCS_READINGS_OK = 4;
     if (geminiKey && window.SMART_CAPTURE_PREFER_GEMINI && !window._smartCaptureAbort) {
+        let dcsResult = null;
         try {
-            window.setSmartCaptureLoadingMessage('Analisi DCS Stoccaggio interno…');
-            const dcsResult = await window.runDcsAcquaCapture(imageData);
-            if (dcsResult && (dcsResult.readings && dcsResult.readings.length || dcsResult.catalogSize)) {
-                return dcsResult;
-            }
+            window.setSmartCaptureLoadingMessage('Analisi Gemini tabella DCS…');
+            dcsResult = await window.runDcsAcquaCapture(imageData);
         } catch (errDcs) {
             console.warn('DCS stoccaggio capture:', errDcs);
         }
-        if (tankMode) { /* fallback gemini generico sotto */ }
-        try {
-            window.setSmartCaptureLoadingMessage('Analisi AI foto…');
-            const geminiResult = await window.runGeminiSmartCaptureOcr(imageData, fields);
-            if (geminiResult.readings && geminiResult.readings.length) {
-                return geminiResult;
+
+        let readings = (dcsResult && dcsResult.readings) ? dcsResult.readings.slice() : [];
+        let engine = (dcsResult && dcsResult.engine) || 'gemini-dcs';
+
+        if (readings.length < DCS_READINGS_OK && dcsResult && dcsResult.rawGemini) {
+            const dcsFields = window.getDcsStoccaggioCaptureFields();
+            readings = window.mergeOcrReadingLists(
+                readings,
+                window.extractDcsAcquaReadings(dcsResult.rawGemini, dcsFields)
+            );
+        }
+
+        if (readings.length < DCS_READINGS_OK) {
+            try {
+                window.setSmartCaptureLoadingMessage('Gemini: lettura completa serbatoi…');
+                const dcsFields = window.getDcsStoccaggioCaptureFields();
+                const geminiExtra = await window.runGeminiSmartCaptureOcr(imageData, dcsFields);
+                readings = window.mergeOcrReadingLists(readings, geminiExtra.readings || []);
+                engine = engine + '+' + (geminiExtra.engine || 'gemini');
+            } catch (errExtra) {
+                console.warn('Gemini completamento serbatoi:', errExtra);
             }
-        } catch (err) {
-            console.warn('Gemini smart capture:', err);
-            if (window.SMART_CAPTURE_OFFLINE_ONLY) {
-                throw new Error(window.formatGeminiError(err && err.message) || 'Analisi AI non riuscita.');
+        }
+
+        if (readings.length > 0) {
+            return Object.assign({}, dcsResult || {}, {
+                readings: readings,
+                engine: engine,
+                profile: 'dcs-acqua',
+                catalogSize: dcsResult && dcsResult.catalogSize,
+                tankRegistry: dcsResult && dcsResult.tankRegistry,
+                rawTextPreview: dcsResult && dcsResult.rawTextPreview,
+                notes: 'Gemini · ' + readings.length + ' livelli DCS/Stoccaggio' +
+                    (readings.length < DCS_READINGS_OK ? ' (verifica i valori)' : '')
+            });
+        }
+
+        if (tankMode) {
+            try {
+                window.setSmartCaptureLoadingMessage('Analisi AI foto…');
+                const geminiResult = await window.runGeminiSmartCaptureOcr(imageData, fields);
+                if (geminiResult.readings && geminiResult.readings.length) {
+                    return geminiResult;
+                }
+            } catch (err) {
+                console.warn('Gemini smart capture:', err);
+                if (window.SMART_CAPTURE_OFFLINE_ONLY) {
+                    throw new Error(window.formatGeminiError(err && err.message) || 'Analisi AI non riuscita.');
+                }
             }
         }
     }
@@ -16069,10 +16129,12 @@ window.showSmartCaptureConfirm = function(parsed) {
     }).join('');
 
     if (parsed && parsed.notes && hint) {
-        hint.textContent = parsed.notes + ' — correggi se necessario';
+        const eng = parsed.engine ? (' · motore: ' + parsed.engine) : '';
+        hint.textContent = parsed.notes + eng + ' — correggi se necessario';
     } else if (hint) {
         hint.textContent = isDcsAcqua
-            ? ('DCS: sigle → Notturno (Stoccaggio interno). TK 9000 / 9201 anche su Generale (Acqua).' +
+            ? ('Gemini DCS → Stoccaggio Notturno. TK 9000 / 9201 anche su Generale (Acqua).' +
+                (parsed.engine ? ' Motore: ' + parsed.engine + '.' : '') +
                 (parsed.catalogSize ? ' (' + parsed.catalogSize + ' in catalogo.)' : ''))
             : 'Ogni sigla letta dalla foto va nel campo corrispondente del rapportino (Ambiente 1 / 2 / Acqua)';
     }

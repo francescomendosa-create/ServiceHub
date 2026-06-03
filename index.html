@@ -511,7 +511,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-gemini-rete-chat';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-gemini-timeout-fix';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -16318,7 +16318,7 @@ window.testGeminiApiKey = async function() {
     localStorage.setItem('servicehub_gemini_api_key', key);
     let testOk = false;
     try {
-        await window.callGeminiAPI('Rispondi solo con la parola OK.', false);
+        await window.callGeminiAPIWithTimeout('Rispondi solo con la parola OK.', true, null, 25000);
         testOk = true;
         if (input) input.type = 'password';
         if (testBtn) { testBtn.textContent = '✓'; testBtn.classList.add('bg-emerald-600'); }
@@ -16546,8 +16546,9 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
         "Per scrivere nel report usa: [SCRIVI_NOTE: testo].";
 
     let datiJson = JSON.stringify(datiImpianto);
-    if (imageData && datiJson.length > 14000) {
-        datiJson = datiJson.slice(0, 14000) + "\n…[contesto troncato per richiesta con file allegato]";
+    const maxJson = imageData ? 14000 : (isChat ? 10000 : 12000);
+    if (datiJson.length > maxJson) {
+        datiJson = datiJson.slice(0, maxJson) + "\n…[contesto troncato]";
     }
 
     const istruzioneMultimodale = "Sei l'assistente tecnico integrato nell'app STABILE 2026. " +
@@ -16587,19 +16588,24 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
     for (let nomeModello of modelli2026) {
         try {
             const controller = new AbortController();
-            const timeoutMs = imageData ? 55000 : 22000;
-            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+            const timeoutMs = imageData ? 50000 : (isChat ? 32000 : 26000);
+            const timeoutId = setTimeout(function() { controller.abort(); }, timeoutMs);
 
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/${nomeModello}:generateContent?key=${CHIAVE_AI}`;
+            const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + nomeModello + ':generateContent?key=' + CHIAVE_AI;
             const response = await fetch(url, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ contents: [{ parts: contentParts }] }),
                 signal: controller.signal
             });
 
             clearTimeout(timeoutId);
-            const data = await response.json();
+            const data = await Promise.race([
+                response.json(),
+                new Promise(function(_, reject) {
+                    setTimeout(function() { reject(new Error('Risposta Gemini incompleta (JSON)')); }, 12000);
+                })
+            ]);
 
             if (data.error) {
                 lastGeminiError = data.error.message || JSON.stringify(data.error);
@@ -16622,10 +16628,11 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
                 if (isChat) {
                     memoriaAI += "\n- " + promptText;
                     try {
-                        await window.saveAIMemory(memoriaAI);
-                    } catch (e) {
                         localStorage.setItem('gemini_long_term_memory', memoriaAI);
-                    }
+                    } catch (eMem) {}
+                    void window.saveAIMemory(memoriaAI).catch(function(e) {
+                        console.warn('saveAIMemory async:', e);
+                    });
                 }
                 
                 if (testoRisposta.includes("[SCRIVI_NOTE:")) {
@@ -16651,6 +16658,19 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
     window.__geminiLastError = lastGeminiError;
     window.__geminiUnavailable = true;
     throw new Error(window.formatGeminiError(lastGeminiError) || 'Connessione instabile o modelli non disponibili. Riprova tra un momento.');
+};
+
+/** Timeout globale: evita puntini infiniti se fetch o Firestore non rispondono. */
+window.callGeminiAPIWithTimeout = function(promptText, isChat, imageData, timeoutMs) {
+    const ms = timeoutMs == null ? (imageData ? 58000 : 50000) : timeoutMs;
+    return Promise.race([
+        window.callGeminiAPI(promptText, !!isChat, imageData || null),
+        new Promise(function(_, reject) {
+            setTimeout(function() {
+                reject(new Error('Timeout: Gemini non ha risposto entro ' + Math.round(ms / 1000) + ' s. Controlla rete e chiave in Impostazioni → OK.'));
+            }, ms);
+        })
+    ]);
 };
 
 // --- FIX PANNELLO, INVIO E VOCALE ---
@@ -16754,10 +16774,10 @@ function fixAIPanel() {
             statusEl.textContent = 'Invio in corso…';
         }
         try {
-            const res = await window.callGeminiAPI(val, true);
+            const res = await window.callGeminiAPIWithTimeout(val, true, null, 50000);
             if (statusEl) statusEl.textContent = res;
         } catch(err) {
-            if (statusEl) statusEl.textContent = 'Errore: ' + err.message;
+            if (statusEl) statusEl.textContent = window.formatGeminiError(err && err.message);
         }
     };
 
@@ -16840,20 +16860,22 @@ window.importAIMemory = function() {
 
 // Tasti Analisi Rapida
 window.runQuickAIAnalysis = async () => {
-    window.showAIModal(" Analisi", "<div class='ai-loading'>Analisi in corso<span>.</span><span>.</span><span>.</span></div>");
+    window.showAIModal(' Analisi', 'Connessione a Gemini…');
     try {
-        const res = await window.callGeminiAPI("Analisi tecnica sintetica.");
-        window.showAIModal("Risultato", res);
-    } catch(err) { window.showAIModal("Errore", err.message); }
+        const res = await window.callGeminiAPIWithTimeout('Analisi tecnica sintetica dell\'impianto.', true, null, 50000);
+        window.showAIModal('Risultato', res);
+    } catch (err) {
+        window.showAIModal('Errore', window.formatGeminiError(err && err.message));
+    }
 };
 
 window.showAISuggestions = async () => {
-    window.showAIModal(" Suggerimenti", "<div class='ai-loading'>Cerco soluzioni<span>.</span><span>.</span><span>.</span></div>");
+    window.showAIModal(' Suggerimenti', 'Connessione a Gemini…');
     try {
-        const res = await window.callGeminiAPI("2 suggerimenti brevi.");
-        window.showAIModal("Suggerimenti", res);
-    } catch(err) { 
-        console.error(err);
+        const res = await window.callGeminiAPIWithTimeout('2 suggerimenti brevi per l\'operatore.', true, null, 50000);
+        window.showAIModal('Suggerimenti', res);
+    } catch (err) {
+        window.showAIModal('Errore', window.formatGeminiError(err && err.message));
     }
 };
 
@@ -17099,14 +17121,7 @@ window.initConversationModal = function(draftUserLine) {
         historyDiv.scrollTop = historyDiv.scrollHeight;
 
         try {
-            const res = await Promise.race([
-                window.callGeminiAPI(val, true, currentImageData),
-                new Promise(function(_, reject) {
-                    setTimeout(function() {
-                        reject(new Error('Timeout richiesta AI (nessuna risposta entro ' + (currentImageData ? 62 : 48) + ' s). Controlla rete e chiave Gemini in Impostazioni.'));
-                    }, currentImageData ? 62000 : 48000);
-                })
-            ]);
+            const res = await window.callGeminiAPIWithTimeout(val, true, currentImageData, currentImageData ? 60000 : 50000);
             const pending = document.getElementById('conv-pending-ai');
             if (pending) {
                 pending.removeAttribute('id');
@@ -17182,17 +17197,14 @@ window.initConversationModal = function(draftUserLine) {
         historyDiv.insertAdjacentHTML('beforeend', '<br><br><span style="color: #22c55e; font-weight: 500;">' + window._escapeHtmlConv('Tu: [' + tipoEt + ': ' + currentImageData.name + ']') + '</span>');
         historyDiv.scrollTop = historyDiv.scrollHeight;
 
-        historyDiv.insertAdjacentHTML('beforeend', "<br><br><span id=\"conv-pending-ai\">AI: <span class=\"ai-loading\"><span>.</span><span>.</span><span>.</span></span></span>");
+        historyDiv.insertAdjacentHTML('beforeend', "<br><br><span id=\"conv-pending-ai\">AI: Connessione a Gemini…</span>");
         historyDiv.scrollTop = historyDiv.scrollHeight;
 
         try {
             const istruz = currentImageData.type === 'application/pdf'
                 ? 'Analizza questo PDF: estrai i dati principali e commenta in italiano in modo sintetico.'
                 : 'Analizza questa immagine nel contesto dell\'impianto: descrivi cosa vedi e commenta in italiano.';
-            const res = await Promise.race([
-                window.callGeminiAPI(istruz, true, currentImageData),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout richiesta AI con allegato')), 62000))
-            ]);
+            const res = await window.callGeminiAPIWithTimeout(istruz, true, currentImageData, 60000);
             const pending = document.getElementById('conv-pending-ai');
             if (pending) {
                 pending.removeAttribute('id');
@@ -17385,7 +17397,7 @@ window.runAIDebug = async function() {
     
     // Mostra subito la finestra (Istantaneo)
     debugModal.classList.add('active');
-    content.innerHTML = "<div class='ai-loading'>Analisi tecnica dell'errore...<span>.</span><span>.</span></div>";
+    content.innerHTML = 'Connessione a Gemini per diagnosi…';
 
     const codiceRecente = window.LAST_CODING_ERRORS.join("\n---\n") || "Nessun errore rilevato negli ultimi minuti.";
     
@@ -17400,10 +17412,10 @@ window.runAIDebug = async function() {
     Sii ultra-veloce e tecnico. Se non ci sono log, analizza l'ultima azione dell'utente.`;
 
     try {
-        const risposta = await window.callGeminiAPI(promptDebug, false);
-        content.innerHTML = `<div style="color:#4ade80; margin-bottom:10px;">✔ Diagnosi Completata:</div>${risposta}`;
+        const risposta = await window.callGeminiAPIWithTimeout(promptDebug, true, null, 50000);
+        content.innerHTML = '<div style="color:#4ade80; margin-bottom:10px;">Diagnosi completata:</div>' + window._escapeHtmlConv(risposta);
     } catch (err) {
-        content.innerHTML = `<div style="color:#f87171;">Errore durante il debug: ${err.message}</div>`;
+        content.innerHTML = '<div style="color:#f87171;">' + window._escapeHtmlConv(window.formatGeminiError(err && err.message)) + '</div>';
     }
 };
 

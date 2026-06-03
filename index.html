@@ -511,7 +511,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-gemini-timeout-fix';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-gemini-key-notice';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -10202,30 +10202,70 @@ window.__serviceHubUpdateDigitalRemoteCloudLine = function (text, kind) {
     } catch (_) {}
 };
 
-/** Messaggio temporaneo in cima allo schermo (PWA / tablet spesso non mostrano alert). */
-window.__serviceHubFlashToast = function (message, isError) {
+/** Messaggio temporaneo in cima allo schermo (PWA / tablet spesso non mostrano alert). kind: ok | err | warn */
+window.__serviceHubFlashToast = function (message, isError, kind) {
     try {
         var old = document.getElementById("sh-servicehub-flash-toast");
         if (old) old.remove();
         var t = document.createElement("div");
         t.id = "sh-servicehub-flash-toast";
         t.setAttribute("role", "status");
-        t.style.cssText =
-            "position:fixed;left:50%;top:max(14px,env(safe-area-inset-top));transform:translateX(-50%);max-width:min(560px,94vw);z-index:2147483001;padding:14px 18px;border-radius:14px;font:800 13px/1.35 system-ui,-apple-system,sans-serif;box-shadow:0 16px 40px rgba(0,0,0,0.5);word-wrap:break-word;" +
-            (isError
-                ? "background:#450a0a;color:#fecaca;border:1px solid rgba(248,113,113,0.65);"
-                : "background:#052e16;color:#bbf7d0;border:1px solid rgba(74,222,128,0.55);");
+        var style = "position:fixed;left:50%;top:max(14px,env(safe-area-inset-top));transform:translateX(-50%);max-width:min(560px,94vw);z-index:2147483001;padding:14px 18px;border-radius:14px;font:800 13px/1.35 system-ui,-apple-system,sans-serif;box-shadow:0 16px 40px rgba(0,0,0,0.5);word-wrap:break-word;";
+        if (kind === "warn") {
+            style += "background:#422006;color:#fde68a;border:1px solid rgba(251,191,36,0.65);";
+        } else if (isError) {
+            style += "background:#450a0a;color:#fecaca;border:1px solid rgba(248,113,113,0.65);";
+        } else {
+            style += "background:#052e16;color:#bbf7d0;border:1px solid rgba(74,222,128,0.55);";
+        }
+        t.style.cssText = style;
         t.textContent = String(message || "");
         document.body.appendChild(t);
+        var ms = isError ? 12000 : (kind === "warn" ? 8000 : 5000);
         setTimeout(
             function () {
                 try {
                     t.remove();
                 } catch (_) {}
             },
-            isError ? 12000 : 5000
+            ms
         );
     } catch (_) {}
+};
+
+window.summarizeGeminiKeyFailReason = function(message) {
+    const msg = String(message || '').toLowerCase();
+    if (/quota|resource_exhausted|429|rate limit|limit:\s*0/.test(msg)) return 'quota esaurita';
+    if (/timeout|abort|deadline/.test(msg)) return 'timeout';
+    if (/failed to fetch|network|503|502|504|unavailable/.test(msg)) return 'rete instabile';
+    if (/api key not valid|permission_denied|403|401|invalid/.test(msg)) return 'chiave rifiutata';
+    return 'non disponibile';
+};
+
+window.showGeminiKeySwitchNotice = function(opts) {
+    opts = opts || {};
+    const fromKey = opts.fromKey;
+    const toKey = opts.toKey || 1;
+    const reason = opts.reason || 'non disponibile';
+    const silent = !!opts.silent;
+    let msg = '';
+    if (fromKey && fromKey !== toKey) {
+        msg = 'Gemini: chiave ' + fromKey + ' ' + reason + ' → passo alla chiave ' + toKey + '.';
+    } else if (toKey > 1) {
+        msg = 'Gemini: uso la chiave ' + toKey + '.';
+    } else {
+        return;
+    }
+    window.__lastGeminiKeySwitch = { fromKey: fromKey, toKey: toKey, reason: reason, at: Date.now() };
+    if (!silent) {
+        window.__serviceHubFlashToast(msg, false, 'warn');
+    }
+    if (typeof window.setSmartCaptureLoadingMessage === 'function') {
+        window.setSmartCaptureLoadingMessage(msg);
+    }
+    if (typeof window.updateGeminiKeyStatus === 'function') {
+        window.updateGeminiKeyStatus();
+    }
 };
 
 /** Copia testo (Clipboard API + fallback execCommand per Safari / contesti non sicuri). */
@@ -12381,7 +12421,7 @@ window.convertToHtml = async () => {
             <div class="settings-sheet-header px-8 pt-2 pb-2 flex justify-between items-center bg-slate-50 dark:bg-slate-900">
                 <div>
                     <h2 class="font-black uppercase text-3xl italic tracking-tighter text-slate-900 dark:text-white">Impostazioni</h2>
-                    <p id="app-build-tag" class="text-[9px] font-bold text-emerald-600 dark:text-emerald-400 uppercase mt-1">Build 2026.06.02-v6</p>
+                    <p id="app-build-tag" class="text-[9px] font-bold text-emerald-600 dark:text-emerald-400 uppercase mt-1">Build 2026.06.03-gemini-key-notice</p>
                 </div>
                 <button type="button" id="btn-close-settings" class="bg-black text-white rounded-2xl w-12 h-12 flex items-center justify-center font-black" aria-label="Chiudi impostazioni">X</button>
             </div>
@@ -12465,10 +12505,16 @@ window.convertToHtml = async () => {
                 <!-- IMPLEMENTAZIONE IA -->
                 <div class="mt-auto pt-8 border-t border-slate-100 dark:border-slate-800">
                     <p class="text-[12px] font-black text-blue-600 uppercase tracking-widest mb-4 text-center">Implementa IA</p>
-                    <div id="settings-gemini-row" class="flex items-center gap-2 px-3 py-2 mb-4 rounded-2xl border-2 border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950">
-                        <span class="text-[9px] font-black uppercase text-blue-600 dark:text-blue-400 shrink-0">Gemini</span>
-                        <input type="password" id="settings-gemini-key" autocomplete="off" placeholder="Nessuna chiave" class="flex-1 min-w-0 border-0 bg-transparent p-0 text-[11px] font-mono text-slate-900 dark:text-white outline-none" oninput="window.updateGeminiKeyStatus()" onblur="window.saveGeminiApiKeySilent()">
-                        <button type="button" id="gemini-test-btn" onclick="window.testGeminiApiKey()" class="shrink-0 w-8 h-8 rounded-lg bg-slate-600 text-white text-[10px] font-black active:scale-95" title="Test connessione">OK</button>
+                    <div id="settings-gemini-keys-wrap" class="mb-4 rounded-2xl border-2 border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 p-3 space-y-2">
+                        <div class="flex items-center justify-between gap-2">
+                            <span class="text-[9px] font-black uppercase text-blue-600 dark:text-blue-400">Gemini · fino a 3 chiavi</span>
+                            <button type="button" id="gemini-test-btn" onclick="window.testGeminiApiKeys()" class="shrink-0 px-2 h-8 rounded-lg bg-slate-600 text-white text-[10px] font-black active:scale-95" title="Test tutte le chiavi">OK</button>
+                        </div>
+                        <p class="text-[8px] font-bold text-slate-500 dark:text-slate-400 leading-snug">Se una chiave è in quota o timeout, l'app passa subito alla successiva.</p>
+                        <div class="flex items-center gap-2"><span class="w-5 text-[9px] font-black text-slate-500">1</span><input type="password" id="settings-gemini-key-1" autocomplete="off" placeholder="Chiave principale" class="flex-1 min-w-0 border border-slate-200 dark:border-slate-600 rounded-lg px-2 py-1.5 text-[10px] font-mono bg-transparent outline-none" oninput="window.updateGeminiKeyStatus()" onblur="window.saveGeminiKeysFromInputs()"></div>
+                        <div class="flex items-center gap-2"><span class="w-5 text-[9px] font-black text-slate-500">2</span><input type="password" id="settings-gemini-key-2" autocomplete="off" placeholder="Chiave di riserva (opz.)" class="flex-1 min-w-0 border border-slate-200 dark:border-slate-600 rounded-lg px-2 py-1.5 text-[10px] font-mono bg-transparent outline-none" oninput="window.updateGeminiKeyStatus()" onblur="window.saveGeminiKeysFromInputs()"></div>
+                        <div class="flex items-center gap-2"><span class="w-5 text-[9px] font-black text-slate-500">3</span><input type="password" id="settings-gemini-key-3" autocomplete="off" placeholder="Chiave di riserva (opz.)" class="flex-1 min-w-0 border border-slate-200 dark:border-slate-600 rounded-lg px-2 py-1.5 text-[10px] font-mono bg-transparent outline-none" oninput="window.updateGeminiKeyStatus()" onblur="window.saveGeminiKeysFromInputs()"></div>
+                        <input type="password" id="settings-gemini-key" autocomplete="off" class="hidden" aria-hidden="true">
                     </div>
                     <span id="settings-gemini-status" class="hidden" aria-hidden="true"></span>
                     <div class="grid grid-cols-3 gap-3">
@@ -14534,9 +14580,55 @@ window.parseDcsAcquaFromText = function(rawText) {
     return readings;
 };
 
-window.extractDcsAcquaReadings = function(raw, fields) {
+window.isGeminiQuotaOrBlockedError = function(message) {
+    const msg = String(message || '');
+    return /quota|RESOURCE_EXHAUSTED|rate limit|limit:\s*0|429|Too Many Requests|billing/i.test(msg);
+};
+
+window.isLikelyGeminiFailureRaw = function(raw) {
+    const t = String(raw || '');
+    if (!t || t.length < 6) return true;
+    if (window.isGeminiQuotaOrBlockedError(t)) return true;
+    if (/"error"\s*:|"code"\s*:\s*(429|403|401)/i.test(t)) return true;
+    const json = window.parseSmartCaptureJson(raw);
+    if (json && json.error) return true;
+    if (!json) return !window.isDcsAcquaTableText(t);
+    return !(json.catalogo || json.applica_ora || json.coppie || json.tipo === 'dcs-tabella' || json.tipo === 'dcs-acqua');
+};
+
+window.isPlausibleDcsLevel = function(fieldId, value) {
+    const n = parseFloat(String(value || '').replace(',', '.'));
+    if (!isFinite(n) || n < 80 || n > 11000) return false;
+    const seed = (window.getDefaultDcsCatalogSeed() || []).find(function(c) { return c.fieldId === fieldId; });
+    if (seed && seed.livMax != null) {
+        const max = parseFloat(String(seed.livMax).replace(',', '.'));
+        if (isFinite(max) && n > max * 1.08) return false;
+    }
+    return true;
+};
+
+window.isTrustedDcsOcrReading = function(r) {
+    if (!r || !r.id || !r.value) return false;
+    if (!window.isPlausibleDcsLevel(r.id, r.value)) return false;
+    const m = r.method || '';
+    if (m === 'dcs-catalogo' || m === 'dcs-applica-ora' || m === 'coppia') return true;
+    if (r.confidence === 'alta' && m !== 'dcs-testo' && m !== 'regex') return true;
+    return false;
+};
+
+window.filterTrustedDcsReadings = function(readings) {
+    return (readings || []).filter(function(r) {
+        return window.isTrustedDcsOcrReading(r);
+    });
+};
+
+window.extractDcsAcquaReadings = function(raw, fields, opts) {
     fields = fields || window.getDcsStoccaggioCaptureFields();
+    opts = opts || {};
     const allowed = new Set(fields.map(function(f) { return f.id; }));
+    if (window.isLikelyGeminiFailureRaw(raw)) {
+        return [];
+    }
     const json = window.parseSmartCaptureJson(raw);
 
     if (json && (json.catalogo || json.tutti_serbatoi)) {
@@ -14555,15 +14647,15 @@ window.extractDcsAcquaReadings = function(raw, fields) {
             return allowed.has(r.id);
         }));
     }
-    if (!readings.length) {
+    if (!readings.length && opts.allowTextFallback === true && !window.isLikelyGeminiFailureRaw(raw)) {
         readings = window.parseDcsAcquaFromText(raw);
     }
-    if (!readings.length && window.isDcsAcquaTableText(raw)) {
+    if (!readings.length && opts.allowTextFallback === true && window.isDcsAcquaTableText(raw)) {
         readings = window.matchTankReadingsFromOcrText(raw, fields).filter(function(r) {
             return allowed.has(r.id);
         });
     }
-    return readings;
+    return window.filterTrustedDcsReadings(readings);
 };
 
 window.runDcsAcquaCapture = async function(imageData) {
@@ -14571,6 +14663,8 @@ window.runDcsAcquaCapture = async function(imageData) {
     const prompt = window.buildGeminiDcsAcquaPrompt();
     let raw = '';
     let engine = 'gemini-dcs-acqua';
+    let geminiOk = false;
+    let lastErr = '';
 
     try {
         raw = await window.withOcrTimeout(
@@ -14578,30 +14672,46 @@ window.runDcsAcquaCapture = async function(imageData) {
             55000,
             'Analisi DCS in timeout.'
         );
+        geminiOk = !window.isLikelyGeminiFailureRaw(raw);
     } catch (e1) {
+        lastErr = e1 && e1.message ? e1.message : String(e1);
         console.warn('DCS acqua OCR dedicato:', e1);
-        raw = await window.withOcrTimeout(
-            window.callGeminiAPI(prompt, false, imageData),
-            55000,
-            'Analisi DCS in timeout.'
-        );
-        engine = 'gemini-dcs-legacy';
+        if (!window.isGeminiQuotaOrBlockedError(lastErr)) {
+            try {
+                raw = await window.withOcrTimeout(
+                    window.callGeminiAPI(prompt, false, imageData),
+                    55000,
+                    'Analisi DCS in timeout.'
+                );
+                engine = 'gemini-dcs-legacy';
+                geminiOk = !window.isLikelyGeminiFailureRaw(raw);
+            } catch (e1b) {
+                lastErr = e1b && e1b.message ? e1b.message : String(e1b);
+            }
+        }
     }
 
-    let readings = window.extractDcsAcquaReadings(raw, fields);
+    let readings = geminiOk ? window.extractDcsAcquaReadings(raw, fields, { allowTextFallback: false }) : [];
 
-    if (!readings.length) {
+    if (geminiOk && readings.length < 4) {
         try {
             const raw2 = await window.withOcrTimeout(
                 window.callGeminiAPI(prompt, false, imageData),
                 45000,
                 'timeout'
             );
-            if (raw2) {
+            if (raw2 && !window.isLikelyGeminiFailureRaw(raw2)) {
                 raw = raw2;
-                readings = window.extractDcsAcquaReadings(raw2, fields);
+                readings = window.extractDcsAcquaReadings(raw2, fields, { allowTextFallback: false });
+                engine = 'gemini-dcs-legacy';
             }
         } catch (e2) { /* fallback */ }
+    }
+
+    if (!geminiOk && window.isGeminiQuotaOrBlockedError(lastErr)) {
+        const err = new Error(lastErr);
+        err.geminiQuota = true;
+        throw err;
     }
 
     const json = window.parseSmartCaptureJson(raw);
@@ -15246,58 +15356,21 @@ window.sortTankFieldsForDisplay = function(fields) {
 };
 
 window.callGeminiTankOcr = async function(promptText, imageData) {
-    const CHIAVE_AI = window.getGeminiApiKey();
-    if (!CHIAVE_AI) throw new Error('Nessuna chiave Gemini.');
+    if (!window.getGeminiApiKeysList().length) throw new Error('Nessuna chiave Gemini.');
     const raw = imageData && imageData.data ? imageData.data : (typeof imageData === 'string' ? imageData : '');
     const base64 = raw.indexOf(',') >= 0 ? raw.split(',')[1] : raw;
     const mimeType = (imageData && imageData.type) || 'image/jpeg';
     if (!base64 || base64.length < 20) throw new Error('Foto non valida.');
-    const modelli = ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash-lite'];
     const parts = [
         { inline_data: { mime_type: mimeType, data: base64 } },
         { text: promptText }
     ];
-    let lastErr = '';
-    for (let i = 0; i < modelli.length; i++) {
-        const nomeModello = modelli[i];
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(function() { controller.abort(); }, 55000);
-            const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + nomeModello + ':generateContent?key=' + CHIAVE_AI;
-            const body = {
-                contents: [{ parts: parts }],
-                generationConfig: { temperature: 0.1, maxOutputTokens: 2048 }
-            };
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-                signal: controller.signal
-            });
-            clearTimeout(timeoutId);
-            const data = await response.json();
-            if (data.error) {
-                lastErr = data.error.message || JSON.stringify(data.error);
-                continue;
-            }
-            if (!response.ok) {
-                lastErr = 'HTTP ' + response.status + ' su ' + nomeModello;
-                continue;
-            }
-            const cand = data.candidates && data.candidates[0];
-            const partsOut = cand && cand.content && cand.content.parts;
-            if (partsOut && partsOut.length) {
-                const text = partsOut.map(function(p) { return p.text || ''; }).join('').trim();
-                if (text) return text;
-            }
-            if (cand && cand.finishReason) {
-                lastErr = 'Risposta vuota (' + cand.finishReason + ')';
-            }
-        } catch (e) {
-            lastErr = e && e.message ? e.message : String(e);
-        }
-    }
-    throw new Error(window.formatGeminiError(lastErr) || 'Lettura foto non disponibile.');
+    const out = await window.runGeminiWithKeyRotation(parts, {
+        models: ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-flash'],
+        timeoutMs: 42000,
+        generationConfig: { temperature: 0.1, maxOutputTokens: 2048 }
+    });
+    return out.text;
 };
 
 window.runGeminiSmartCaptureOcr = async function(imageData, fields) {
@@ -15650,8 +15723,20 @@ window.runLocalSmartCaptureOcr = async function(imageData, fields) {
     parsed.readings = window.mergeOcrReadingLists(parsed.readings, tankReadings);
     parsed.rawTextPreview = text.slice(0, 300);
     parsed._fullText = text;
+    parsed.readings = window.filterTrustedDcsReadings(parsed.readings);
+    if (!parsed.readings.length) {
+        const loose = window.mergeOcrReadingLists(
+            window.matchReadingsFromOcrText(text, fields),
+            window.matchTankReadingsFromOcrText(text, fields)
+        );
+        parsed.readings = loose.filter(function(r) {
+            return r && r.id && window.isPlausibleDcsLevel && window.isPlausibleDcsLevel(r.id, r.value);
+        });
+    }
     parsed.engine = 'local';
-    parsed.notes = 'OCR offline · ' + parsed.readings.length + ' livelli';
+    parsed.notes = (window.__smartCaptureGeminiQuota
+        ? 'Quota Gemini esaurita · OCR locale · '
+        : 'OCR offline · ') + parsed.readings.length + ' livelli — controlla ogni valore sulla foto DCS';
     return parsed;
 };
 
@@ -15666,6 +15751,9 @@ window.runSmartCaptureAnalysis = async function(imageData) {
 
     const geminiKey = window.getGeminiApiKey && window.getGeminiApiKey();
     const DCS_READINGS_OK = 4;
+    const dcsFields = window.getDcsStoccaggioCaptureFields ? window.getDcsStoccaggioCaptureFields() : fields;
+    let geminiQuotaHit = false;
+
     if (geminiKey && window.SMART_CAPTURE_PREFER_GEMINI && !window._smartCaptureAbort) {
         let dcsResult = null;
         try {
@@ -15673,32 +15761,29 @@ window.runSmartCaptureAnalysis = async function(imageData) {
             dcsResult = await window.runDcsAcquaCapture(imageData);
         } catch (errDcs) {
             console.warn('DCS stoccaggio capture:', errDcs);
-        }
-
-        let readings = (dcsResult && dcsResult.readings) ? dcsResult.readings.slice() : [];
-        let engine = (dcsResult && dcsResult.engine) || 'gemini-dcs';
-
-        if (readings.length < DCS_READINGS_OK && dcsResult && dcsResult.rawGemini) {
-            const dcsFields = window.getDcsStoccaggioCaptureFields();
-            readings = window.mergeOcrReadingLists(
-                readings,
-                window.extractDcsAcquaReadings(dcsResult.rawGemini, dcsFields)
-            );
-        }
-
-        if (readings.length < DCS_READINGS_OK) {
-            try {
-                window.setSmartCaptureLoadingMessage('Gemini: lettura completa serbatoi…');
-                const dcsFields = window.getDcsStoccaggioCaptureFields();
-                const geminiExtra = await window.runGeminiSmartCaptureOcr(imageData, dcsFields);
-                readings = window.mergeOcrReadingLists(readings, geminiExtra.readings || []);
-                engine = engine + '+' + (geminiExtra.engine || 'gemini');
-            } catch (errExtra) {
-                console.warn('Gemini completamento serbatoi:', errExtra);
+            if (errDcs && (errDcs.geminiQuota || window.isGeminiQuotaOrBlockedError(errDcs.message))) {
+                geminiQuotaHit = true;
             }
         }
 
-        if (readings.length > 0) {
+        let readings = window.filterTrustedDcsReadings((dcsResult && dcsResult.readings) ? dcsResult.readings.slice() : []);
+        let engine = (dcsResult && dcsResult.engine) || 'gemini-dcs';
+
+        if (!geminiQuotaHit && readings.length < DCS_READINGS_OK) {
+            try {
+                window.setSmartCaptureLoadingMessage('Gemini: lettura completa serbatoi…');
+                const geminiExtra = await window.runGeminiSmartCaptureOcr(imageData, dcsFields);
+                readings = window.filterTrustedDcsReadings(
+                    window.mergeOcrReadingLists(readings, geminiExtra.readings || [])
+                );
+                engine = engine + '+' + (geminiExtra.engine || 'gemini');
+            } catch (errExtra) {
+                console.warn('Gemini completamento serbatoi:', errExtra);
+                if (window.isGeminiQuotaOrBlockedError(errExtra && errExtra.message)) geminiQuotaHit = true;
+            }
+        }
+
+        if (!geminiQuotaHit && readings.length >= DCS_READINGS_OK) {
             return Object.assign({}, dcsResult || {}, {
                 readings: readings,
                 engine: engine,
@@ -15706,20 +15791,22 @@ window.runSmartCaptureAnalysis = async function(imageData) {
                 catalogSize: dcsResult && dcsResult.catalogSize,
                 tankRegistry: dcsResult && dcsResult.tankRegistry,
                 rawTextPreview: dcsResult && dcsResult.rawTextPreview,
-                notes: 'Gemini · ' + readings.length + ' livelli DCS/Stoccaggio' +
-                    (readings.length < DCS_READINGS_OK ? ' (verifica i valori)' : '')
+                notes: 'Gemini DCS · ' + readings.length + ' livelli (verifica sulla foto)'
             });
         }
 
-        if (tankMode) {
+        if (!geminiQuotaHit && tankMode) {
             try {
                 window.setSmartCaptureLoadingMessage('Analisi AI foto…');
-                const geminiResult = await window.runGeminiSmartCaptureOcr(imageData, fields);
-                if (geminiResult.readings && geminiResult.readings.length) {
+                const geminiResult = await window.runGeminiSmartCaptureOcr(imageData, dcsFields);
+                const tr = window.filterTrustedDcsReadings(geminiResult.readings || []);
+                if (tr.length >= DCS_READINGS_OK) {
+                    geminiResult.readings = tr;
                     return geminiResult;
                 }
             } catch (err) {
                 console.warn('Gemini smart capture:', err);
+                if (window.isGeminiQuotaOrBlockedError(err && err.message)) geminiQuotaHit = true;
                 if (window.SMART_CAPTURE_OFFLINE_ONLY) {
                     throw new Error(window.formatGeminiError(err && err.message) || 'Analisi AI non riuscita.');
                 }
@@ -15727,7 +15814,15 @@ window.runSmartCaptureAnalysis = async function(imageData) {
         }
     }
 
-    const localResult = await window.runLocalSmartCaptureOcr(imageData, fields);
+    if (geminiQuotaHit) {
+        window.setSmartCaptureLoadingMessage('Quota Gemini: OCR locale (controlla i numeri)…');
+    } else {
+        window.setSmartCaptureLoadingMessage('OCR locale sulla foto…');
+    }
+
+    window.__smartCaptureGeminiQuota = !!geminiQuotaHit;
+    const localResult = await window.runLocalSmartCaptureOcr(imageData, dcsFields.length ? dcsFields : fields);
+    window.__smartCaptureGeminiQuota = false;
     if (localResult.readings && localResult.readings.length) {
         return localResult;
     }
@@ -16202,143 +16297,379 @@ window.applySmartCaptureResults = function() {
     }
 };
 
-// --- INTEGRAZIONE GEMINI AI (chiave solo da Impostazioni, mai hardcoded) ---
+// --- INTEGRAZIONE GEMINI AI (fino a 3 chiavi con rotazione automatica) ---
+window.GEMINI_KEYS_STORAGE = 'servicehub_gemini_api_keys_v1';
+
+window.loadGeminiKeysConfig = function() {
+    let cfg = { keys: ['', '', ''], activeIndex: 0, keyMeta: {} };
+    try {
+        const raw = localStorage.getItem(window.GEMINI_KEYS_STORAGE);
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed && Array.isArray(parsed.keys)) cfg = parsed;
+        }
+    } catch (e) {}
+    if (!cfg.keys || !cfg.keys.length) cfg.keys = ['', '', ''];
+    while (cfg.keys.length < 3) cfg.keys.push('');
+    if (cfg.keys.length > 3) cfg.keys = cfg.keys.slice(0, 3);
+    cfg.keyMeta = cfg.keyMeta || {};
+    const legacy = (localStorage.getItem('servicehub_gemini_api_key') || '').trim();
+    if (legacy && !cfg.keys[0]) cfg.keys[0] = legacy;
+    cfg.keys = cfg.keys.map(function(k) { return String(k || '').trim(); });
+    if (cfg.activeIndex == null || cfg.activeIndex < 0 || cfg.activeIndex > 2) cfg.activeIndex = 0;
+    return cfg;
+};
+
+window.saveGeminiKeysConfig = function(cfg) {
+    cfg = cfg || window.loadGeminiKeysConfig();
+    cfg.keys = (cfg.keys || []).map(function(k) { return String(k || '').trim(); });
+    while (cfg.keys.length < 3) cfg.keys.push('');
+    try {
+        localStorage.setItem(window.GEMINI_KEYS_STORAGE, JSON.stringify(cfg));
+    } catch (e) {}
+    const active = cfg.keys[cfg.activeIndex] || cfg.keys.find(function(k) { return !!k; }) || '';
+    if (active) localStorage.setItem('servicehub_gemini_api_key', active);
+    else localStorage.removeItem('servicehub_gemini_api_key');
+};
+
+window.getGeminiApiKeysList = function() {
+    const cfg = window.loadGeminiKeysConfig();
+    let hasDraft = false;
+    for (let i = 1; i <= 3; i++) {
+        const el = document.getElementById('settings-gemini-key-' + i);
+        if (el) {
+            cfg.keys[i - 1] = el.value.trim();
+            if (cfg.keys[i - 1]) hasDraft = true;
+        }
+    }
+    if (!hasDraft) {
+        return cfg.keys.filter(function(k) { return k && k.length > 8; });
+    }
+    return cfg.keys.filter(function(k) { return k && k.length > 8; });
+};
+
 window.getGeminiApiKey = function() {
-    const saved = localStorage.getItem('servicehub_gemini_api_key');
-    if (saved && saved.trim()) return saved.trim();
-    const input = document.getElementById('settings-gemini-key');
-    const draft = (input && input.value || '').trim();
-    return draft || '';
+    const keys = window.getGeminiApiKeysList();
+    if (keys.length) {
+        const cfg = window.loadGeminiKeysConfig();
+        return keys[cfg.activeIndex] || keys[0];
+    }
+    const legacy = (localStorage.getItem('servicehub_gemini_api_key') || '').trim();
+    return legacy;
+};
+
+window.updateGeminiKeyInputHints = function(cfg) {
+    cfg = cfg || window.loadGeminiKeysConfig();
+    for (let i = 1; i <= 3; i++) {
+        const el = document.getElementById('settings-gemini-key-' + i);
+        if (!el) continue;
+        const m = cfg.keyMeta && cfg.keyMeta[i - 1];
+        const inPause = m && m.cooldownUntil && Date.now() < m.cooldownUntil;
+        const active = cfg.activeIndex === i - 1 && el.value.trim();
+        el.title = inPause
+            ? ('In pausa · riprova tra ~' + Math.ceil((m.cooldownUntil - Date.now()) / 60) + ' min')
+            : (active ? 'Chiave attiva' : '');
+        el.style.borderColor = inPause ? '#f59e0b' : (active ? '#10b981' : '');
+    }
+};
+
+window.saveGeminiKeysFromInputs = function() {
+    const cfg = window.loadGeminiKeysConfig();
+    for (let i = 1; i <= 3; i++) {
+        const el = document.getElementById('settings-gemini-key-' + i);
+        cfg.keys[i - 1] = el ? el.value.trim() : (cfg.keys[i - 1] || '');
+    }
+    window.saveGeminiKeysConfig(cfg);
+    window.__geminiUnavailable = false;
+    window.updateGeminiKeyStatus();
 };
 
 window.ensureGeminiApiKeySaved = function() {
-    const input = document.getElementById('settings-gemini-key');
-    if (!input) return false;
-    const key = input.value.trim();
-    if (!key) return false;
-    const prev = (localStorage.getItem('servicehub_gemini_api_key') || '').trim();
-    if (key === prev) return true;
-    localStorage.setItem('servicehub_gemini_api_key', key);
-    sessionStorage.removeItem('servicehub_gemini_skip');
-    window.__geminiUnavailable = false;
-    input.type = 'password';
-    window.updateGeminiKeyStatus();
-    return true;
+    window.saveGeminiKeysFromInputs();
+    return window.getGeminiApiKeysList().length > 0;
 };
 
 window.isGeminiApiKeySaved = function() {
-    return !!(localStorage.getItem('servicehub_gemini_api_key') || '').trim();
+    return window.getGeminiApiKeysList().length > 0;
 };
 
 window.loadGeminiKeySettings = function() {
-    const input = document.getElementById('settings-gemini-key');
-    const saved = localStorage.getItem('servicehub_gemini_api_key') || '';
-    if (input) {
-        input.value = saved;
-        input.type = saved ? 'password' : 'text';
+    const cfg = window.loadGeminiKeysConfig();
+    for (let i = 1; i <= 3; i++) {
+        const el = document.getElementById('settings-gemini-key-' + i);
+        if (el) {
+            el.value = cfg.keys[i - 1] || '';
+            el.type = el.value ? 'password' : 'text';
+        }
     }
+    const hidden = document.getElementById('settings-gemini-key');
+    if (hidden) hidden.value = cfg.keys[cfg.activeIndex] || cfg.keys[0] || '';
+    window.updateGeminiKeyInputHints(cfg);
     window.updateGeminiKeyStatus();
 };
 
 window.updateGeminiKeyStatus = function() {
-    const input = document.getElementById('settings-gemini-key');
-    const row = document.getElementById('settings-gemini-row');
+    const wrap = document.getElementById('settings-gemini-keys-wrap');
     const testBtn = document.getElementById('gemini-test-btn');
-    const val = (input && input.value || '').trim();
-    const saved = (localStorage.getItem('servicehub_gemini_api_key') || '').trim();
-    if (row) {
-        row.classList.remove('border-emerald-500', 'border-amber-500');
-        if (saved && val === saved) row.classList.add('border-emerald-500');
-        else if (val) row.classList.add('border-amber-500');
+    const keys = window.getGeminiApiKeysList();
+    if (wrap) {
+        wrap.classList.remove('border-emerald-500', 'border-amber-500', 'border-red-500');
+        if (keys.length) wrap.classList.add('border-emerald-500');
+        else wrap.classList.add('border-amber-500');
     }
-    if (input && saved && !val) input.value = saved;
-    if (testBtn && saved && val === saved) testBtn.title = 'Test · chiave salvata';
+    if (testBtn) testBtn.title = keys.length ? ('Test ' + keys.length + ' chiavi') : 'Inserisci almeno una chiave';
     const statusEl = document.getElementById('settings-gemini-status');
     if (statusEl) {
+        statusEl.classList.remove('hidden');
+        statusEl.className = 'block text-[9px] font-bold mt-1 leading-snug';
         if (window.__geminiUnavailable && window.__geminiLastError) {
-            statusEl.classList.remove('hidden');
-            statusEl.className = 'block text-[9px] font-bold text-red-600 dark:text-red-400 mt-1 leading-snug';
+            statusEl.classList.add('text-red-600', 'dark:text-red-400');
             statusEl.textContent = window.formatGeminiError(window.__geminiLastError);
-        } else if (saved && val === saved) {
-            statusEl.classList.remove('hidden');
-            statusEl.className = 'block text-[9px] font-bold text-emerald-600 dark:text-emerald-400 mt-1';
-            statusEl.textContent = 'Chiave salvata. Usa il pulsante OK per testare Gemini.';
+        } else if (keys.length) {
+            statusEl.classList.add('text-emerald-600', 'dark:text-emerald-400');
+            let msg = keys.length + ' chiave' + (keys.length > 1 ? 'i' : '') + ' salvata' + (keys.length > 1 ? 'e' : '') + '. Rotazione automatica attiva.';
+            if (window.__lastGeminiKeyLabel) msg += ' Ultima OK: ' + window.__lastGeminiKeyLabel + '.';
+            if (window.__lastGeminiKeySwitch && window.__lastGeminiKeySwitch.fromKey) {
+                const sw = window.__lastGeminiKeySwitch;
+                msg += ' Ultimo switch: chiave ' + sw.fromKey + ' → ' + sw.toKey + ' (' + sw.reason + ').';
+            }
+            const cfg = window.loadGeminiKeysConfig();
+            const paused = [];
+            for (let ki = 0; ki < 3; ki++) {
+                const m = cfg.keyMeta && cfg.keyMeta[ki];
+                if (m && m.cooldownUntil && Date.now() < m.cooldownUntil) {
+                    paused.push((ki + 1) + ' (' + Math.ceil((m.cooldownUntil - Date.now()) / 60) + ' min)');
+                }
+            }
+            if (paused.length) msg += ' In pausa: chiave ' + paused.join(', ') + '.';
+            statusEl.textContent = msg;
+            window.updateGeminiKeyInputHints(cfg);
         } else {
-            statusEl.classList.add('hidden');
-            statusEl.textContent = '';
+            statusEl.classList.add('text-slate-500');
+            statusEl.textContent = 'Inserisci almeno la chiave 1 (da aistudio.google.com/apikey).';
         }
     }
 };
 
 window.saveGeminiApiKeySilent = function() {
-    const input = document.getElementById('settings-gemini-key');
-    if (!input) return;
-    const key = input.value.trim();
-    if (!key) return;
-    const prev = (localStorage.getItem('servicehub_gemini_api_key') || '').trim();
-    if (key === prev) return;
-    localStorage.setItem('servicehub_gemini_api_key', key);
-    sessionStorage.removeItem('servicehub_gemini_skip');
-    window.__geminiUnavailable = false;
-    input.type = 'password';
-    window.updateGeminiKeyStatus();
+    window.saveGeminiKeysFromInputs();
 };
 
 window.saveGeminiApiKey = function() {
-    const input = document.getElementById('settings-gemini-key');
-    if (!input) return;
-    const key = input.value.trim();
-    if (!key) {
-        localStorage.removeItem('servicehub_gemini_api_key');
-        sessionStorage.removeItem('servicehub_gemini_skip');
-        window.__geminiUnavailable = false;
-        input.value = '';
-        window.updateGeminiKeyStatus();
-        return;
-    }
-    localStorage.setItem('servicehub_gemini_api_key', key);
-    sessionStorage.removeItem('servicehub_gemini_skip');
-    window.__geminiUnavailable = false;
-    input.type = 'password';
-    window.updateGeminiKeyStatus();
+    window.saveGeminiKeysFromInputs();
 };
 
-window.testGeminiApiKey = async function() {
-    const input = document.getElementById('settings-gemini-key');
+window.isGeminiKeyFailoverError = function(message) {
+    const msg = String(message || '');
+    if (window.isGeminiQuotaOrBlockedError(msg)) return true;
+    if (/timeout|abort|AbortError|503|502|504|UNAVAILABLE|DEADLINE|overloaded|Failed to fetch/i.test(msg)) return true;
+    if (/API key not valid|PERMISSION_DENIED|API_KEY_INVALID|403|401/i.test(msg)) return true;
+    return false;
+};
+
+window.markGeminiKeyCooldown = function(keyIndex, message) {
+    const cfg = window.loadGeminiKeysConfig();
+    const ms = window.isGeminiQuotaOrBlockedError(message) ? 10 * 60 * 1000 : 90 * 1000;
+    cfg.keyMeta = cfg.keyMeta || {};
+    cfg.keyMeta[keyIndex] = {
+        cooldownUntil: Date.now() + ms,
+        lastError: String(message || '').slice(0, 200)
+    };
+    window.saveGeminiKeysConfig(cfg);
+};
+
+window.geminiFetchModelOnce = async function(apiKey, modelName, parts, timeoutMs, genConfig) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(function() { controller.abort(); }, timeoutMs);
+    const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + modelName + ':generateContent?key=' + apiKey;
+    const body = {
+        contents: [{ parts: parts }],
+        generationConfig: genConfig || { temperature: 0.15, maxOutputTokens: 2048 }
+    };
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        const data = await Promise.race([
+            response.json(),
+            new Promise(function(_, reject) {
+                setTimeout(function() { reject(new Error('Risposta Gemini incompleta')); }, 12000);
+            })
+        ]);
+        if (data.error) {
+            const err = new Error(data.error.message || JSON.stringify(data.error));
+            err.geminiApiError = true;
+            throw err;
+        }
+        if (!response.ok) {
+            throw new Error('HTTP ' + response.status + ' su ' + modelName);
+        }
+        const cand = data.candidates && data.candidates[0];
+        const partsOut = cand && cand.content && cand.content.parts;
+        if (partsOut && partsOut.length) {
+            const text = partsOut.map(function(p) { return p.text || ''; }).join('').trim();
+            if (text) return text;
+        }
+        if (cand && cand.finishReason) {
+            throw new Error('Risposta vuota (' + cand.finishReason + ')');
+        }
+        throw new Error('Risposta vuota da ' + modelName);
+    } catch (e) {
+        clearTimeout(timeoutId);
+        throw e;
+    }
+};
+
+window.geminiGenerateWithOneKey = async function(apiKey, parts, opts) {
+    opts = opts || {};
+    const modelli = opts.models || ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash-lite'];
+    const timeoutMs = opts.timeoutMs || 28000;
+    let lastErr = '';
+    for (let i = 0; i < modelli.length; i++) {
+        try {
+            const text = await window.geminiFetchModelOnce(apiKey, modelli[i], parts, timeoutMs, opts.generationConfig);
+            return { text: text, model: modelli[i] };
+        } catch (e) {
+            lastErr = e && e.message ? e.message : String(e);
+            if (window.isGeminiQuotaOrBlockedError(lastErr)) break;
+        }
+    }
+    throw new Error(lastErr || 'Gemini non disponibile');
+};
+
+window.runGeminiWithKeyRotation = async function(parts, opts) {
+    opts = opts || {};
+    const cfg = window.loadGeminiKeysConfig();
+    const keys = window.getGeminiApiKeysList();
+    if (!keys.length) {
+        throw new Error('Nessuna chiave Gemini. Impostazioni → inserisci almeno la chiave 1.');
+    }
+    const order = [];
+    const start = cfg.activeIndex >= 0 && cfg.activeIndex < keys.length ? cfg.activeIndex : 0;
+    for (let o = 0; o < keys.length; o++) {
+        order.push((start + o) % keys.length);
+    }
+    const failures = [];
+    let lastFailedKeyNum = null;
+    let lastFailReason = '';
+    const silentNotice = !!opts.silentKeyNotice;
+    for (let oi = 0; oi < order.length; oi++) {
+        const keyIndex = order[oi];
+        const apiKey = keys[keyIndex];
+        const keyNum = keyIndex + 1;
+        const meta = (cfg.keyMeta && cfg.keyMeta[keyIndex]) || {};
+        if (meta.cooldownUntil && Date.now() < meta.cooldownUntil) {
+            const sec = Math.ceil((meta.cooldownUntil - Date.now()) / 1000);
+            failures.push('Chiave ' + keyNum + ' in pausa (' + sec + ' s)');
+            lastFailedKeyNum = keyNum;
+            lastFailReason = 'in pausa';
+            const nextIdx = order[oi + 1];
+            if (nextIdx != null && !silentNotice) {
+                window.showGeminiKeySwitchNotice({
+                    fromKey: keyNum,
+                    toKey: nextIdx + 1,
+                    reason: 'in pausa (' + sec + ' s)',
+                    silent: true
+                });
+                if (typeof window.setSmartCaptureLoadingMessage === 'function') {
+                    window.setSmartCaptureLoadingMessage('Chiave ' + keyNum + ' in pausa → provo chiave ' + (nextIdx + 1) + '…');
+                }
+            }
+            continue;
+        }
+        try {
+            const out = await window.geminiGenerateWithOneKey(apiKey, parts, opts);
+            cfg.activeIndex = keyIndex;
+            cfg.keyMeta[keyIndex] = { lastOkAt: Date.now() };
+            window.saveGeminiKeysConfig(cfg);
+            window.__lastGeminiKeyLabel = 'chiave ' + keyNum;
+            window.__geminiUnavailable = false;
+            window.__geminiLastError = '';
+            if (lastFailedKeyNum && lastFailedKeyNum !== keyNum) {
+                window.showGeminiKeySwitchNotice({
+                    fromKey: lastFailedKeyNum,
+                    toKey: keyNum,
+                    reason: lastFailReason || window.summarizeGeminiKeyFailReason(failures[failures.length - 1]),
+                    silent: silentNotice
+                });
+            }
+            return {
+                text: out.text,
+                model: out.model,
+                keyIndex: keyIndex,
+                keysTried: oi + 1,
+                keyLabel: 'chiave ' + keyNum
+            };
+        } catch (e) {
+            const msg = e && e.message ? e.message : String(e);
+            failures.push('Chiave ' + keyNum + ': ' + window.formatGeminiError(msg));
+            if (window.isGeminiKeyFailoverError(msg)) {
+                window.markGeminiKeyCooldown(keyIndex, msg);
+                lastFailedKeyNum = keyNum;
+                lastFailReason = window.summarizeGeminiKeyFailReason(msg);
+                const nextIdx = order[oi + 1];
+                if (nextIdx != null) {
+                    if (typeof window.setSmartCaptureLoadingMessage === 'function') {
+                        window.setSmartCaptureLoadingMessage('Chiave ' + keyNum + ' ' + lastFailReason + ' → provo chiave ' + (nextIdx + 1) + '…');
+                    }
+                }
+                continue;
+            }
+            throw e;
+        }
+    }
+    const err = new Error('Tutte le chiavi Gemini non disponibili.\n' + failures.join('\n'));
+    err.allKeysFailed = true;
+    if (!silentNotice) {
+        window.__serviceHubFlashToast('Gemini: tutte le chiavi non disponibili. Controlla quota/rete in Impostazioni.', true);
+    }
+    throw err;
+};
+
+window.testGeminiApiKeys = async function() {
     const testBtn = document.getElementById('gemini-test-btn');
-    window.saveGeminiApiKeySilent();
-    const key = ((input && input.value) || localStorage.getItem('servicehub_gemini_api_key') || '').trim();
-    if (!key) {
-        alert('Inserisci la chiave Gemini nel campo.');
+    window.saveGeminiKeysFromInputs();
+    const keys = window.getGeminiApiKeysList();
+    if (!keys.length) {
+        alert('Inserisci almeno la chiave Gemini 1.');
         return;
     }
     const prevLabel = testBtn ? testBtn.textContent : '';
     if (testBtn) { testBtn.textContent = '…'; testBtn.disabled = true; }
-    const prev = localStorage.getItem('servicehub_gemini_api_key');
-    localStorage.setItem('servicehub_gemini_api_key', key);
-    let testOk = false;
-    try {
-        await window.callGeminiAPIWithTimeout('Rispondi solo con la parola OK.', true, null, 25000);
-        testOk = true;
-        if (input) input.type = 'password';
-        if (testBtn) { testBtn.textContent = '✓'; testBtn.classList.add('bg-emerald-600'); }
-    } catch (e) {
-        if (!testOk) {
-            if (prev) localStorage.setItem('servicehub_gemini_api_key', prev);
-            else localStorage.removeItem('servicehub_gemini_api_key');
-        }
-        if (testBtn) { testBtn.textContent = '!'; testBtn.classList.add('bg-red-600'); }
-        alert('Test fallito:\n' + window.formatGeminiError(e && e.message));
-    } finally {
-        if (testBtn) testBtn.disabled = false;
-        window.updateGeminiKeyStatus();
-        if (testBtn && !testOk) {
-            setTimeout(function() {
-                testBtn.textContent = prevLabel || 'OK';
-                testBtn.classList.remove('bg-red-600', 'bg-emerald-600');
-            }, 2000);
+    const lines = [];
+    let anyOk = false;
+    for (let i = 0; i < keys.length; i++) {
+        const cfg = window.loadGeminiKeysConfig();
+        cfg.activeIndex = i;
+        window.saveGeminiKeysConfig(cfg);
+        try {
+            await window.callGeminiAPIWithTimeout('Rispondi solo OK.', true, null, 22000);
+            lines.push('Chiave ' + (i + 1) + ': OK');
+            anyOk = true;
+        } catch (e) {
+            lines.push('Chiave ' + (i + 1) + ': ' + window.formatGeminiError(e && e.message));
         }
     }
+    if (testBtn) {
+        testBtn.disabled = false;
+        testBtn.textContent = anyOk ? '✓' : '!';
+        testBtn.classList.toggle('bg-emerald-600', anyOk);
+        testBtn.classList.toggle('bg-red-600', !anyOk);
+        setTimeout(function() {
+            testBtn.textContent = prevLabel || 'OK';
+            testBtn.classList.remove('bg-red-600', 'bg-emerald-600');
+        }, 2500);
+    }
+    window.updateGeminiKeyStatus();
+    alert(anyOk ? ('Test chiavi Gemini:\n' + lines.join('\n')) : ('Nessuna chiave funzionante:\n' + lines.join('\n')));
+};
+
+window.testGeminiApiKey = function() {
+    return window.testGeminiApiKeys();
 };
 
 window.loadAIMemoryFast = async function(maxMs) {
@@ -16370,26 +16701,26 @@ window.formatGeminiError = function(message) {
         return 'Gemini API non attiva sul progetto ServiceHub. Abilitala qui: https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com?project=servicehub-18309';
     }
     if (/API_KEY_SERVICE_BLOCKED|blocked.*generativelanguage/i.test(msg)) {
-        return 'La chiave Firebase non può chiamare Gemini (è limitata a Firebase). Crea una API key dedicata in Google Cloud con "Generative Language API" abilitata e salvala in Impostazioni, oppure in console: localStorage.setItem("servicehub_gemini_api_key","TUA_CHIAVE").';
+        return 'La chiave Firebase non può chiamare Gemini (è limitata a Firebase). Crea una API key dedicata in Google Cloud con "Generative Language API" abilitata e salvala in Impostazioni (fino a 3 chiavi con rotazione automatica).';
     }
     if (/API key not valid|INVALID_ARGUMENT.*API key/i.test(msg)) {
         return 'Chiave Gemini non valida. Verifica la API key nel progetto Google Cloud servicehub-18309.';
     }
-    if (/quota|RESOURCE_EXHAUSTED|rate limit|limit: 0/i.test(msg)) {
-        return 'Gemini: quota esaurita su questo modello. L\'app userà gemini-2.5-flash-lite. Riprova tra un minuto o controlla il piano su ai.google.dev.';
+    if (/quota|RESOURCE_EXHAUSTED|rate limit|limit:\s*0|429|Too Many Requests/i.test(msg)) {
+        return 'Quota Gemini esaurita (tutti i modelli provati: 2.5 Flash-Lite, 2.5 Flash, 2.0 Flash-Lite). ' +
+            'Chat AI e foto DCS non possono usare Gemini finché non si resetta la quota. ' +
+            'L\'acquisizione foto userà OCR locale: controlla ogni numero. Piano e limiti: https://ai.google.dev/';
     }
     return msg || 'Errore Gemini sconosciuto.';
 };
 
 window.callGeminiAPI = async function(promptText, isChat = false, imageData = null) {
-    const CHIAVE_AI = window.getGeminiApiKey();
-    if (!CHIAVE_AI) {
-        throw new Error('Nessuna chiave Gemini. Vai in Impostazioni → Chiave Gemini AI e incollala da aistudio.google.com/apikey');
+    if (!window.getGeminiApiKeysList().length) {
+        throw new Error('Nessuna chiave Gemini. Impostazioni → inserisci almeno la chiave 1 (aistudio.google.com/apikey).');
     }
-    // Modelli con quota free tier attiva (2026); evitare gemini-2.0-flash (quota 0 su molti progetti)
     const modelli2026 = imageData
-        ? ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash-lite"]
-        : ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash-lite"];
+        ? ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-flash']
+        : ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-flash'];
 
     let lastGeminiError = '';
 
@@ -16585,79 +16916,43 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
         contentParts.push({ text: promptFinale });
     }
 
-    for (let nomeModello of modelli2026) {
-        try {
-            const controller = new AbortController();
-            const timeoutMs = imageData ? 50000 : (isChat ? 32000 : 26000);
-            const timeoutId = setTimeout(function() { controller.abort(); }, timeoutMs);
-
-            const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + nomeModello + ':generateContent?key=' + CHIAVE_AI;
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ contents: [{ parts: contentParts }] }),
-                signal: controller.signal
+    const timeoutMs = imageData ? 42000 : (isChat ? 28000 : 24000);
+    try {
+        const out = await window.runGeminiWithKeyRotation(contentParts, {
+            models: modelli2026,
+            timeoutMs: timeoutMs,
+            generationConfig: { temperature: 0.15, maxOutputTokens: imageData ? 2048 : 1536 }
+        });
+        let testoRisposta = out.text;
+        if (isChat) {
+            memoriaAI += "\n- " + promptText;
+            try {
+                localStorage.setItem('gemini_long_term_memory', memoriaAI);
+            } catch (eMem) {}
+            void window.saveAIMemory(memoriaAI).catch(function(e) {
+                console.warn('saveAIMemory async:', e);
             });
-
-            clearTimeout(timeoutId);
-            const data = await Promise.race([
-                response.json(),
-                new Promise(function(_, reject) {
-                    setTimeout(function() { reject(new Error('Risposta Gemini incompleta (JSON)')); }, 12000);
-                })
-            ]);
-
-            if (data.error) {
-                lastGeminiError = data.error.message || JSON.stringify(data.error);
-                console.warn("Gemini API:", nomeModello, lastGeminiError);
-                continue;
-            }
-            if (!response.ok) {
-                lastGeminiError = 'HTTP ' + response.status + ' su ' + nomeModello;
-                console.warn("Gemini HTTP:", response.status, nomeModello);
-                continue;
-            }
-            
-            if (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0]) {
-                const part0 = data.candidates[0].content.parts[0];
-                if (!part0.text) {
-                    console.warn("Gemini: risposta senza testo", nomeModello, part0);
-                    continue;
-                }
-                let testoRisposta = part0.text;
-                if (isChat) {
-                    memoriaAI += "\n- " + promptText;
-                    try {
-                        localStorage.setItem('gemini_long_term_memory', memoriaAI);
-                    } catch (eMem) {}
-                    void window.saveAIMemory(memoriaAI).catch(function(e) {
-                        console.warn('saveAIMemory async:', e);
-                    });
-                }
-                
-                if (testoRisposta.includes("[SCRIVI_NOTE:")) {
-                    const match = testoRisposta.match(/\[SCRIVI_NOTE:\s*(.*?)\]/);
-                    if (match && match[1]) {
-                        const campo = document.getElementById('report-notes');
-                        if (campo) {
-                            campo.value += (campo.value ? "\n" : "") + " AI: " + match[1];
-                            campo.dispatchEvent(new Event('input'));
-                        }
-                    }
-                    testoRisposta = testoRisposta.replace(/\[SCRIVI_NOTE:.*?\]/g, "").trim();
-                }
-                window.__geminiUnavailable = false;
-                window.__geminiLastError = '';
-                return testoRisposta;
-            }
-        } catch (e) {
-            lastGeminiError = e && e.message ? e.message : String(e);
-            console.warn('Gemini tentativo modello fallito:', nomeModello, lastGeminiError);
         }
+        if (testoRisposta.includes("[SCRIVI_NOTE:")) {
+            const match = testoRisposta.match(/\[SCRIVI_NOTE:\s*(.*?)\]/);
+            if (match && match[1]) {
+                const campo = document.getElementById('report-notes');
+                if (campo) {
+                    campo.value += (campo.value ? "\n" : "") + " AI: " + match[1];
+                    campo.dispatchEvent(new Event('input'));
+                }
+            }
+            testoRisposta = testoRisposta.replace(/\[SCRIVI_NOTE:.*?\]/g, "").trim();
+        }
+        window.__geminiUnavailable = false;
+        window.__geminiLastError = '';
+        return testoRisposta;
+    } catch (e) {
+        lastGeminiError = e && e.message ? e.message : String(e);
+        window.__geminiLastError = lastGeminiError;
+        window.__geminiUnavailable = true;
+        throw new Error(window.formatGeminiError(lastGeminiError) || 'Connessione instabile o modelli non disponibili. Riprova tra un momento.');
     }
-    window.__geminiLastError = lastGeminiError;
-    window.__geminiUnavailable = true;
-    throw new Error(window.formatGeminiError(lastGeminiError) || 'Connessione instabile o modelli non disponibili. Riprova tra un momento.');
 };
 
 /** Timeout globale: evita puntini infiniti se fetch o Firestore non rispondono. */

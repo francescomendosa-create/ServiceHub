@@ -511,7 +511,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-gemini-key-notice';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-gemini-timeout-keys';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -12421,7 +12421,7 @@ window.convertToHtml = async () => {
             <div class="settings-sheet-header px-8 pt-2 pb-2 flex justify-between items-center bg-slate-50 dark:bg-slate-900">
                 <div>
                     <h2 class="font-black uppercase text-3xl italic tracking-tighter text-slate-900 dark:text-white">Impostazioni</h2>
-                    <p id="app-build-tag" class="text-[9px] font-bold text-emerald-600 dark:text-emerald-400 uppercase mt-1">Build 2026.06.03-gemini-key-notice</p>
+                    <p id="app-build-tag" class="text-[9px] font-bold text-emerald-600 dark:text-emerald-400 uppercase mt-1">Build 2026.06.03-gemini-timeout-keys</p>
                 </div>
                 <button type="button" id="btn-close-settings" class="bg-black text-white rounded-2xl w-12 h-12 flex items-center justify-center font-black" aria-label="Chiudi impostazioni">X</button>
             </div>
@@ -12510,7 +12510,7 @@ window.convertToHtml = async () => {
                             <span class="text-[9px] font-black uppercase text-blue-600 dark:text-blue-400">Gemini · fino a 3 chiavi</span>
                             <button type="button" id="gemini-test-btn" onclick="window.testGeminiApiKeys()" class="shrink-0 px-2 h-8 rounded-lg bg-slate-600 text-white text-[10px] font-black active:scale-95" title="Test tutte le chiavi">OK</button>
                         </div>
-                        <p class="text-[8px] font-bold text-slate-500 dark:text-slate-400 leading-snug">Se una chiave è in quota o timeout, l'app passa subito alla successiva.</p>
+                        <p class="text-[8px] font-bold text-slate-500 dark:text-slate-400 leading-snug">Rotazione automatica se quota/timeout. Test OK: ~58 s per chiave (3 chiavi ≈ 3 min).</p>
                         <div class="flex items-center gap-2"><span class="w-5 text-[9px] font-black text-slate-500">1</span><input type="password" id="settings-gemini-key-1" autocomplete="off" placeholder="Chiave principale" class="flex-1 min-w-0 border border-slate-200 dark:border-slate-600 rounded-lg px-2 py-1.5 text-[10px] font-mono bg-transparent outline-none" oninput="window.updateGeminiKeyStatus()" onblur="window.saveGeminiKeysFromInputs()"></div>
                         <div class="flex items-center gap-2"><span class="w-5 text-[9px] font-black text-slate-500">2</span><input type="password" id="settings-gemini-key-2" autocomplete="off" placeholder="Chiave di riserva (opz.)" class="flex-1 min-w-0 border border-slate-200 dark:border-slate-600 rounded-lg px-2 py-1.5 text-[10px] font-mono bg-transparent outline-none" oninput="window.updateGeminiKeyStatus()" onblur="window.saveGeminiKeysFromInputs()"></div>
                         <div class="flex items-center gap-2"><span class="w-5 text-[9px] font-black text-slate-500">3</span><input type="password" id="settings-gemini-key-3" autocomplete="off" placeholder="Chiave di riserva (opz.)" class="flex-1 min-w-0 border border-slate-200 dark:border-slate-600 rounded-lg px-2 py-1.5 text-[10px] font-mono bg-transparent outline-none" oninput="window.updateGeminiKeyStatus()" onblur="window.saveGeminiKeysFromInputs()"></div>
@@ -15365,9 +15365,10 @@ window.callGeminiTankOcr = async function(promptText, imageData) {
         { inline_data: { mime_type: mimeType, data: base64 } },
         { text: promptText }
     ];
+    const t = window.GEMINI_TIMING || {};
     const out = await window.runGeminiWithKeyRotation(parts, {
         models: ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-flash'],
-        timeoutMs: 42000,
+        timeoutMs: t.tankOcrMs || 68000,
         generationConfig: { temperature: 0.1, maxOutputTokens: 2048 }
     });
     return out.text;
@@ -16300,6 +16301,21 @@ window.applySmartCaptureResults = function() {
 // --- INTEGRAZIONE GEMINI AI (fino a 3 chiavi con rotazione automatica) ---
 window.GEMINI_KEYS_STORAGE = 'servicehub_gemini_api_keys_v1';
 
+/** Timeout centralizzati (rete lenta / più chiavi: evitare falsi fallimenti). */
+window.GEMINI_TIMING = {
+    testPerKeyMs: 58000,
+    modelFetchMs: 52000,
+    jsonParseMs: 28000,
+    chatTotalMs: 65000,
+    chatModelMs: 45000,
+    imageTotalMs: 78000,
+    imageModelMs: 60000,
+    tankOcrMs: 68000,
+    cooldownQuotaMs: 10 * 60 * 1000,
+    cooldownTimeoutMs: 2 * 60 * 1000,
+    cooldownNetworkMs: 90 * 1000
+};
+
 window.loadGeminiKeysConfig = function() {
     let cfg = { keys: ['', '', ''], activeIndex: 0, keyMeta: {} };
     try {
@@ -16468,14 +16484,36 @@ window.isGeminiKeyFailoverError = function(message) {
 };
 
 window.markGeminiKeyCooldown = function(keyIndex, message) {
+    if (window.__geminiSkipCooldown) return;
     const cfg = window.loadGeminiKeysConfig();
-    const ms = window.isGeminiQuotaOrBlockedError(message) ? 10 * 60 * 1000 : 90 * 1000;
+    const msg = String(message || '');
+    const t = window.GEMINI_TIMING || {};
+    let ms = t.cooldownTimeoutMs || 120000;
+    if (window.isGeminiQuotaOrBlockedError(msg)) {
+        ms = t.cooldownQuotaMs || 600000;
+    } else if (/failed to fetch|503|502|504|unavailable|network/i.test(msg)) {
+        ms = t.cooldownNetworkMs || 90000;
+    }
     cfg.keyMeta = cfg.keyMeta || {};
     cfg.keyMeta[keyIndex] = {
         cooldownUntil: Date.now() + ms,
-        lastError: String(message || '').slice(0, 200)
+        lastError: msg.slice(0, 200)
     };
     window.saveGeminiKeysConfig(cfg);
+};
+
+window.clearGeminiKeyCooldown = function(keyIndex) {
+    const cfg = window.loadGeminiKeysConfig();
+    if (cfg.keyMeta && cfg.keyMeta[keyIndex]) {
+        delete cfg.keyMeta[keyIndex].cooldownUntil;
+        cfg.keyMeta[keyIndex].lastOkAt = Date.now();
+    }
+    window.saveGeminiKeysConfig(cfg);
+};
+
+window.isGeminiTimeoutLikeError = function(message) {
+    const msg = String(message || '');
+    return /timeout|abort|AbortError|incompleta|deadline/i.test(msg);
 };
 
 window.geminiFetchModelOnce = async function(apiKey, modelName, parts, timeoutMs, genConfig) {
@@ -16494,10 +16532,11 @@ window.geminiFetchModelOnce = async function(apiKey, modelName, parts, timeoutMs
             signal: controller.signal
         });
         clearTimeout(timeoutId);
+        const jsonMs = (window.GEMINI_TIMING && window.GEMINI_TIMING.jsonParseMs) || 28000;
         const data = await Promise.race([
             response.json(),
             new Promise(function(_, reject) {
-                setTimeout(function() { reject(new Error('Risposta Gemini incompleta')); }, 12000);
+                setTimeout(function() { reject(new Error('Risposta Gemini incompleta (JSON)')); }, jsonMs);
             })
         ]);
         if (data.error) {
@@ -16527,18 +16566,44 @@ window.geminiFetchModelOnce = async function(apiKey, modelName, parts, timeoutMs
 window.geminiGenerateWithOneKey = async function(apiKey, parts, opts) {
     opts = opts || {};
     const modelli = opts.models || ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash-lite'];
-    const timeoutMs = opts.timeoutMs || 28000;
+    const timeoutMs = opts.timeoutMs || (window.GEMINI_TIMING && window.GEMINI_TIMING.modelFetchMs) || 52000;
+    const maxRetry = opts.retryOnSlow === false ? 0 : 1;
     let lastErr = '';
     for (let i = 0; i < modelli.length; i++) {
-        try {
-            const text = await window.geminiFetchModelOnce(apiKey, modelli[i], parts, timeoutMs, opts.generationConfig);
-            return { text: text, model: modelli[i] };
-        } catch (e) {
-            lastErr = e && e.message ? e.message : String(e);
-            if (window.isGeminiQuotaOrBlockedError(lastErr)) break;
+        let attempt = 0;
+        while (attempt <= maxRetry) {
+            try {
+                const text = await window.geminiFetchModelOnce(apiKey, modelli[i], parts, timeoutMs, opts.generationConfig);
+                return { text: text, model: modelli[i] };
+            } catch (e) {
+                lastErr = e && e.message ? e.message : String(e);
+                if (window.isGeminiQuotaOrBlockedError(lastErr)) {
+                    i = modelli.length;
+                    break;
+                }
+                if (window.isGeminiTimeoutLikeError(lastErr) && attempt < maxRetry) {
+                    attempt++;
+                    continue;
+                }
+                break;
+            }
         }
     }
     throw new Error(lastErr || 'Gemini non disponibile');
+};
+
+/** Test leggero di una singola chiave (senza contesto impianto / memoria). */
+window.geminiTestOneKey = async function(apiKey, timeoutMs) {
+    const ms = timeoutMs || (window.GEMINI_TIMING && window.GEMINI_TIMING.testPerKeyMs) || 58000;
+    const parts = [{ text: 'Rispondi solo con la parola OK.' }];
+    const gen = { temperature: 0, maxOutputTokens: 32 };
+    const modelli = ['gemini-2.5-flash-lite', 'gemini-2.0-flash-lite'];
+    return window.geminiGenerateWithOneKey(apiKey, parts, {
+        models: modelli,
+        timeoutMs: ms,
+        generationConfig: gen,
+        retryOnSlow: true
+    });
 };
 
 window.runGeminiWithKeyRotation = async function(parts, opts) {
@@ -16633,26 +16698,50 @@ window.runGeminiWithKeyRotation = async function(parts, opts) {
 window.testGeminiApiKeys = async function() {
     const testBtn = document.getElementById('gemini-test-btn');
     window.saveGeminiKeysFromInputs();
-    const keys = window.getGeminiApiKeysList();
+    const cfg = window.loadGeminiKeysConfig();
+    const keys = cfg.keys.filter(function(k) { return k && k.length > 8; });
     if (!keys.length) {
         alert('Inserisci almeno la chiave Gemini 1.');
         return;
     }
     const prevLabel = testBtn ? testBtn.textContent : '';
-    if (testBtn) { testBtn.textContent = '…'; testBtn.disabled = true; }
+    const perKeyMs = (window.GEMINI_TIMING && window.GEMINI_TIMING.testPerKeyMs) || 58000;
+    const totalMs = keys.length * (perKeyMs + 8000) + 15000;
+    if (testBtn) {
+        testBtn.textContent = '…';
+        testBtn.disabled = true;
+        testBtn.title = 'Test in corso (fino a ~' + Math.round(totalMs / 1000) + ' s per ' + keys.length + ' chiavi)';
+    }
     const lines = [];
     let anyOk = false;
-    for (let i = 0; i < keys.length; i++) {
-        const cfg = window.loadGeminiKeysConfig();
-        cfg.activeIndex = i;
-        window.saveGeminiKeysConfig(cfg);
-        try {
-            await window.callGeminiAPIWithTimeout('Rispondi solo OK.', true, null, 22000);
-            lines.push('Chiave ' + (i + 1) + ': OK');
-            anyOk = true;
-        } catch (e) {
-            lines.push('Chiave ' + (i + 1) + ': ' + window.formatGeminiError(e && e.message));
+    window.__geminiSkipCooldown = true;
+    try {
+        for (let i = 0; i < keys.length; i++) {
+            if (testBtn) testBtn.textContent = String(i + 1) + '/' + keys.length;
+            const t0 = Date.now();
+            try {
+                await Promise.race([
+                    window.geminiTestOneKey(keys[i], perKeyMs),
+                    new Promise(function(_, reject) {
+                        setTimeout(function() {
+                            reject(new Error('Timeout test chiave ' + (i + 1) + ' (' + Math.round(perKeyMs / 1000) + ' s)'));
+                        }, perKeyMs + 5000);
+                    })
+                ]);
+                const sec = Math.round((Date.now() - t0) / 1000);
+                lines.push('Chiave ' + (i + 1) + ': OK (' + sec + ' s)');
+                anyOk = true;
+                window.clearGeminiKeyCooldown(i);
+                cfg.activeIndex = i;
+                window.__lastGeminiKeyLabel = 'chiave ' + (i + 1);
+            } catch (e) {
+                const sec = Math.round((Date.now() - t0) / 1000);
+                lines.push('Chiave ' + (i + 1) + ': ' + window.formatGeminiError(e && e.message) + ' (' + sec + ' s)');
+            }
         }
+        window.saveGeminiKeysConfig(cfg);
+    } finally {
+        window.__geminiSkipCooldown = false;
     }
     if (testBtn) {
         testBtn.disabled = false;
@@ -16662,6 +16751,7 @@ window.testGeminiApiKeys = async function() {
         setTimeout(function() {
             testBtn.textContent = prevLabel || 'OK';
             testBtn.classList.remove('bg-red-600', 'bg-emerald-600');
+            testBtn.title = keys.length ? ('Test ' + keys.length + ' chiavi · ~' + Math.round(perKeyMs / 1000) + ' s ciascuna') : 'Inserisci almeno una chiave';
         }, 2500);
     }
     window.updateGeminiKeyStatus();
@@ -16916,7 +17006,8 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
         contentParts.push({ text: promptFinale });
     }
 
-    const timeoutMs = imageData ? 42000 : (isChat ? 28000 : 24000);
+    const gt = window.GEMINI_TIMING || {};
+    const timeoutMs = imageData ? (gt.imageModelMs || 60000) : (isChat ? (gt.chatModelMs || 45000) : (gt.modelFetchMs || 52000));
     try {
         const out = await window.runGeminiWithKeyRotation(contentParts, {
             models: modelli2026,
@@ -16957,7 +17048,10 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
 
 /** Timeout globale: evita puntini infiniti se fetch o Firestore non rispondono. */
 window.callGeminiAPIWithTimeout = function(promptText, isChat, imageData, timeoutMs) {
-    const ms = timeoutMs == null ? (imageData ? 58000 : 50000) : timeoutMs;
+    const gt = window.GEMINI_TIMING || {};
+    const ms = timeoutMs == null
+        ? (imageData ? (gt.imageTotalMs || 78000) : (gt.chatTotalMs || 65000))
+        : timeoutMs;
     return Promise.race([
         window.callGeminiAPI(promptText, !!isChat, imageData || null),
         new Promise(function(_, reject) {

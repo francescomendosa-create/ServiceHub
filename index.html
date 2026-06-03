@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-cloud-only-no-localStorage';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-fix-rapportini-plant-split';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -1025,6 +1025,13 @@ window.colorPreviewNumber = function(tankName, value) {
             if (typeof window.syncFiltraPanelForActiveRapportino === 'function') window.syncFiltraPanelForActiveRapportino();
             if (typeof window.syncNotturnoStoccaggioPanel === 'function') window.syncNotturnoStoccaggioPanel();
             if (typeof window.refreshNotturnoFiltraTotals === 'function') window.refreshNotturnoFiltraTotals();
+            if (window.__pendingActiveRapportinoItem) {
+                const pendingItem = window.__pendingActiveRapportinoItem;
+                window.__pendingActiveRapportinoItem = null;
+                if (typeof window.applyRapportinoItem === 'function') {
+                    window.applyRapportinoItem(pendingItem);
+                }
+            }
         };
 
         window.buildPlantPayloadFromDOM = function() {
@@ -1083,6 +1090,8 @@ window.colorPreviewNumber = function(tankName, value) {
         const syncWithCloud = () => {
             if (!user || !user.uid || !db) return;
             __purgeLegacySyncLocalStorage();
+            const sessOnSync = typeof window.readSessionPrefs === 'function' ? window.readSessionPrefs() : null;
+            if (sessOnSync && sessOnSync.activeId) window.__sessionActiveIdHint = sessOnSync.activeId;
             if (__shUnsubPlant) {
                 try {
                     __shUnsubPlant();
@@ -1183,25 +1192,57 @@ window.colorPreviewNumber = function(tankName, value) {
             }, (error) => {});
 
             const rapportiniDoc = doc(db, 'artifacts', appId, 'sharedDial', 'rapportini');
-            __shUnsubRapportini = onSnapshot(rapportiniDoc, (snapshot) => {
-                const md = snapshot.metadata;
-                if (md && md.hasPendingWrites) return;
-                window.__rapportiniCloudHydrated = true;
-                if (!snapshot.exists()) {
-                    window.__rapportiniCloudDocMissing = true;
-                    if (!window.__rapportiniStore && typeof window.ensureRapportiniInitialized === 'function') {
-                        window.ensureRapportiniInitialized();
-                    } else if (window.__rapportiniStore && typeof window.saveRapportiniStore === 'function') {
-                        window.saveRapportiniStore(window.__rapportiniStore);
+            const __wireRapportiniSnapshotListener = function () {
+                __shUnsubRapportini = onSnapshot(rapportiniDoc, (snapshot) => {
+                    const md = snapshot.metadata;
+                    if (md && md.hasPendingWrites) return;
+                    window.__rapportiniCloudHydrated = true;
+                    if (!snapshot.exists()) {
+                        window.__rapportiniCloudDocMissing = true;
+                        if (!window.__rapportiniStore && typeof window.ensureRapportiniInitialized === 'function') {
+                            window.ensureRapportiniInitialized({ allowBootstrap: true });
+                        } else if (window.__rapportiniStore && typeof window.saveRapportiniStore === 'function') {
+                            window.saveRapportiniStore(window.__rapportiniStore);
+                        }
+                        return;
                     }
-                    return;
-                }
-                window.__rapportiniCloudDocMissing = false;
-                if (typeof window.applyRapportiniStoreFromCloud !== 'function') return;
-                window.applyRapportiniStoreFromCloud(snapshot.data());
-            }, (error) => {
-                console.warn('[ServiceHub] rapportini Firestore:', error && error.message);
-            });
+                    window.__rapportiniCloudDocMissing = false;
+                    if (typeof window.applyRapportiniStoreFromCloud !== 'function') return;
+                    window.applyRapportiniStoreFromCloud(snapshot.data());
+                }, (error) => {
+                    console.warn('[ServiceHub] rapportini Firestore:', error && error.message);
+                });
+            };
+
+            Promise.resolve()
+                .then(function () {
+                    return getDocFromServer(rapportiniDoc);
+                })
+                .catch(function () {
+                    return getDoc(rapportiniDoc);
+                })
+                .then(function (snap) {
+                    window.__rapportiniCloudHydrated = true;
+                    if (snap.exists()) {
+                        window.__rapportiniCloudDocMissing = false;
+                        if (typeof window.applyRapportiniStoreFromCloud === 'function') {
+                            window.applyRapportiniStoreFromCloud(snap.data(), { force: true });
+                        }
+                    } else {
+                        window.__rapportiniCloudDocMissing = true;
+                        if (typeof window.ensureRapportiniInitialized === 'function') {
+                            window.ensureRapportiniInitialized({ allowBootstrap: true });
+                        }
+                    }
+                })
+                .catch(function (err) {
+                    console.warn('[ServiceHub] rapportini getDoc:', err && err.message);
+                    const sess = typeof window.readSessionPrefs === 'function' ? window.readSessionPrefs() : null;
+                    if (sess && sess.activeId) window.__sessionActiveIdHint = sess.activeId;
+                })
+                .finally(function () {
+                    __wireRapportiniSnapshotListener();
+                });
         };
 
         // ✅ FUNZIONE PER SALVATAGGIO MOMENTANEO (FUNZIONA ANCHE IN MODIFICA)
@@ -3621,6 +3662,9 @@ window.updateStoricoButton = async function() {
             
             initAuth();
 
+            const sessPrefs = typeof window.readSessionPrefs === 'function' ? window.readSessionPrefs() : null;
+            if (sessPrefs && sessPrefs.activeId) window.__sessionActiveIdHint = sessPrefs.activeId;
+
             let __plantPersistTimer = null;
             document.addEventListener(
                 'input',
@@ -3705,12 +3749,8 @@ window.updateStoricoButton = async function() {
             updateDeviceInfo(); 
             setInterval(updateDeviceInfo, 60000);
 
-            setTimeout(function() {
-                if (typeof window.ensureRapportiniInitialized === 'function') {
-                    window.ensureRapportiniInitialized();
-                }
-            }, 1200);
-            
+            // Rapportini: init solo da Firestore (syncWithCloud), non da timeout locale.
+
             // ✅ CRITICO: Inizializza listener per sincronizzazione allarmi dopo auth
             setTimeout(() => {
                 if (window.initAlarmConfigListener && user && user.uid) {
@@ -5192,8 +5232,46 @@ window.updateStoricoButton = async function() {
         }
 
         window.RAPPORTINI_STORAGE_KEY = 'servicehub_rapportini_v2';
+        window.SERVICEHUB_SESSION_KEY = 'servicehub_session_prefs';
         window.__rapportiniCloudHydrated = false;
         window.__rapportiniCloudDocMissing = false;
+        window.__pendingActiveRapportinoItem = null;
+
+        window.isRapportinoOnlyDataKey = function (key) {
+            if (!key || typeof key !== 'string') return false;
+            if (key.indexOf('_nott') === 0) return true;
+            return /^nott-f-s\d+(-start|-end|-pi|-pf)$/.test(key);
+        };
+
+        window.extractRapportinoOnlyData = function (data) {
+            if (!data || typeof data !== 'object') return {};
+            const out = {};
+            Object.keys(data).forEach(function (k) {
+                if (window.isRapportinoOnlyDataKey(k)) out[k] = data[k];
+            });
+            return out;
+        };
+
+        window.readSessionPrefs = function () {
+            try {
+                const raw = localStorage.getItem(window.SERVICEHUB_SESSION_KEY);
+                if (!raw) return null;
+                const p = JSON.parse(raw);
+                if (p && p.activeId) return p;
+            } catch (_) {}
+            return null;
+        };
+
+        window.persistSessionPrefs = function () {
+            const store = window.__rapportiniStore || window.loadRapportiniStore();
+            if (!store || !store.activeId) return;
+            try {
+                localStorage.setItem(
+                    window.SERVICEHUB_SESSION_KEY,
+                    JSON.stringify({ activeId: store.activeId, updatedAt: new Date().toISOString() })
+                );
+            } catch (_) {}
+        };
         window.RAPPORTINI_SECTION_IDS = ['sec-chpp', 'sec-well', 'sec-amb', 'sec-ambiente2', 'sec-acqua', 'sec-scam', 'sec-filtra', 'sec-bluedown', 'sec-aria', 'sec-azoto', 'sec-stoccaggio-interno'];
         window.RAPPORTINI_TAB_META = [
             { id: 'sec-chpp', name: 'CHPP' },
@@ -5547,6 +5625,13 @@ window.updateStoricoButton = async function() {
                         changed = true;
                     }
                 }
+                if (item.data && typeof item.data === 'object') {
+                    const stripped = window.extractRapportinoOnlyData(item.data);
+                    if (Object.keys(stripped).length !== Object.keys(item.data).length) {
+                        item.data = stripped;
+                        changed = true;
+                    }
+                }
                 if (rid === 'generale' && item.schedeConfig && item.schedeConfig.modules) {
                     if (item.schedeConfig.modules['sec-stoccaggio-interno']) {
                         delete item.schedeConfig.modules['sec-stoccaggio-interno'];
@@ -5570,10 +5655,12 @@ window.updateStoricoButton = async function() {
             return Number.isFinite(t) ? t : 0;
         };
 
-        window.mergeRapportiniStores = function(localStore, remoteStore) {
+        window.mergeRapportiniStores = function(localStore, remoteStore, fromCloud) {
             if (!remoteStore || !remoteStore.items) return localStore;
             if (!localStore || !localStore.items) {
-                return JSON.parse(JSON.stringify(remoteStore));
+                const only = JSON.parse(JSON.stringify(remoteStore));
+                if (fromCloud && remoteStore.activeId) only.activeId = remoteStore.activeId;
+                return only;
             }
             const outItems = {};
             const allIds = new Set(
@@ -5589,11 +5676,22 @@ window.updateStoricoButton = async function() {
                         ? JSON.parse(JSON.stringify(r))
                         : JSON.parse(JSON.stringify(l));
                 }
+                if (outItems[rid] && outItems[rid].data) {
+                    outItems[rid].data = window.extractRapportinoOnlyData(outItems[rid].data);
+                }
             });
             const localMs = window.parseRapportinoUpdatedMs(localStore.lastUpdate);
             const remoteMs = window.parseRapportinoUpdatedMs(remoteStore.lastUpdate);
+            let activeId = fromCloud
+                ? (remoteStore.activeId || localStore.activeId || 'generale')
+                : (remoteMs >= localMs ? (remoteStore.activeId || localStore.activeId) : localStore.activeId);
+            const sessHint = window.__sessionActiveIdHint;
+            if (fromCloud && sessHint && outItems[sessHint] && (!remoteStore.activeId || remoteMs === 0)) {
+                activeId = sessHint;
+            }
+            if (!activeId || !outItems[activeId]) activeId = outItems.generale ? 'generale' : Object.keys(outItems)[0];
             return {
-                activeId: remoteMs > localMs ? (remoteStore.activeId || localStore.activeId) : localStore.activeId,
+                activeId: activeId,
                 items: outItems,
                 lastUpdate: new Date(Math.max(localMs, remoteMs)).toISOString()
             };
@@ -5603,12 +5701,18 @@ window.updateStoricoButton = async function() {
             if (!user || !user.uid || !db || !store) return;
             if (window.__rapportiniApplyingFromCloud) return;
             try {
+                const slimItems = {};
+                Object.keys(store.items || {}).forEach(function (rid) {
+                    const item = JSON.parse(JSON.stringify(store.items[rid]));
+                    item.data = window.extractRapportinoOnlyData(item.data || {});
+                    slimItems[rid] = item;
+                });
                 const payload = {
-                    activeId: store.activeId,
-                    items: store.items,
+                    activeId: store.activeId || 'generale',
+                    items: slimItems,
                     lastUpdate: store.lastUpdate || new Date().toISOString()
                 };
-                await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'rapportini'), payload, { merge: true });
+                await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'rapportini'), payload);
             } catch (e) {
                 console.warn('[ServiceHub] push rapportini cloud:', e && e.message);
             }
@@ -5626,8 +5730,9 @@ window.updateStoricoButton = async function() {
                     remoteWon = true;
                 }
             });
-            const merged = window.mergeRapportiniStores(local, remoteStore);
+            const merged = window.mergeRapportiniStores(local, remoteStore, true);
             if (!merged) return;
+            window.__sessionActiveIdHint = null;
             const prevActive = local && local.activeId;
             const prevUpdated = local && local.items && local.activeId && local.items[local.activeId]
                 ? local.items[local.activeId].updatedAt : null;
@@ -5643,19 +5748,17 @@ window.updateStoricoButton = async function() {
                     window.applyHiddenModulesFromActiveRapportino();
                 }
                 if (merged.items[merged.activeId] && typeof window.applyRapportinoItem === 'function') {
-                    window.applyRapportinoItem(merged.items[merged.activeId]);
+                    if (window.__cloudPlantHydrated) {
+                        window.applyRapportinoItem(merged.items[merged.activeId]);
+                    } else {
+                        window.__pendingActiveRapportinoItem = merged.items[merged.activeId];
+                    }
                 }
                 if (typeof window.updateRapportinoSettingsButton === 'function') {
                     window.updateRapportinoSettingsButton();
                 }
             }
-        };
-
-        window.getMergedRapportinoPlantData = function(itemData) {
-            const item = itemData && typeof itemData === 'object' ? Object.assign({}, itemData) : {};
-            const cloud = window.__cloudPlantCache;
-            if (!cloud || typeof cloud !== 'object') return item;
-            return Object.assign({}, item, cloud);
+            if (typeof window.persistSessionPrefs === 'function') window.persistSessionPrefs();
         };
 
         window.saveRapportiniStore = function(store, opts) {
@@ -5663,6 +5766,7 @@ window.updateStoricoButton = async function() {
             try {
                 if (store) store.lastUpdate = new Date().toISOString();
                 window.__rapportiniStore = store;
+                if (typeof window.persistSessionPrefs === 'function') window.persistSessionPrefs();
                 const mayPush = opts.pushCloud !== false && !window.__rapportiniApplyingFromCloud && window.__rapportiniCloudHydrated;
                 if (mayPush && typeof window.pushRapportiniStoreToCloud === 'function') {
                     void window.pushRapportiniStoreToCloud(store);
@@ -5730,25 +5834,18 @@ window.updateStoricoButton = async function() {
         };
 
         window.captureRapportinoSnapshot = function() {
-            const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
-            const data = { shift: currentShift, lastUpdate: new Date().toISOString() };
+            const data = {};
             document.querySelectorAll('input').forEach(function(input) {
-                if (input.id) data[input.id] = input.value;
-            });
-            document.querySelectorAll('.status-cell-btn, .status-header, .vwt-label-dynamic, .osmosi-label-dynamic').forEach(function(btn) {
-                if (btn.id && btn.id !== 'numpad-tank-btn') {
-                    data[btn.id] = {
-                        text: btn.innerHTML,
-                        class: btn.className,
-                        style: btn.getAttribute('style') || ''
-                    };
+                if (input.id && window.isRapportinoOnlyDataKey(input.id)) {
+                    data[input.id] = input.value;
                 }
             });
-            if (window.tankStatuses) {
-                try { data.tankStatuses = JSON.parse(JSON.stringify(window.tankStatuses)); } catch (_) { data.tankStatuses = window.tankStatuses; }
+            if (window.isNotturnoFiltraLayoutActive && window.isNotturnoFiltraLayoutActive()) {
+                const steps = window.getNotturnoFiltraStepCount ? window.getNotturnoFiltraStepCount() : 1;
+                data._nottFiltraSteps = steps;
             }
             return {
-                data: data,
+                data: window.extractRapportinoOnlyData(data),
                 hiddenModules: (window.hiddenModules || hiddenModules || []).slice(),
                 sectionsLayout: window.captureSectionsLayout(),
                 manualShift: manualShift || null,
@@ -5756,9 +5853,10 @@ window.updateStoricoButton = async function() {
             };
         };
 
-        window.captureEmptyRapportinoSnapshot = function(layoutFrom, hiddenFrom) {
+        window.captureEmptyRapportinoSnapshot = function(layoutFrom, hiddenFrom, rapportinoId) {
+            const data = rapportinoId === 'notturno' ? { _nottFiltraSteps: 1 } : {};
             return {
-                data: window.buildEmptyPlantSnapshot(),
+                data: data,
                 hiddenModules: Array.isArray(hiddenFrom) ? hiddenFrom.slice() : [],
                 sectionsLayout: layoutFrom ? JSON.parse(JSON.stringify(layoutFrom)) : window.captureSectionsLayout(),
                 manualShift: null,
@@ -5779,40 +5877,70 @@ window.updateStoricoButton = async function() {
             }).length;
         };
 
-        window.ensureRapportiniInitialized = function() {
+        window.buildMinimalRapportiniScaffold = function() {
+            const sess = typeof window.readSessionPrefs === 'function' ? window.readSessionPrefs() : null;
+            const activeId = (sess && sess.activeId) || window.__sessionActiveIdHint || 'generale';
+            const genSnap = window.captureEmptyRapportinoSnapshot(null, [], 'generale');
+            const nottSnap = window.captureEmptyRapportinoSnapshot(null, [], 'notturno');
+            return {
+                activeId: activeId,
+                items: {
+                    generale: Object.assign({ id: 'generale', name: 'Generale', schedeConfig: window.buildFullRapportinoConfigFromDOM() }, genSnap),
+                    notturno: Object.assign({ id: 'notturno', name: 'Notturno', schedeConfig: window.buildNotturnoRapportinoConfig() }, nottSnap)
+                }
+            };
+        };
+
+        window.ensureRapportiniInitialized = function(opts) {
+            opts = opts || {};
             let store = window.loadRapportiniStore();
+            const sess = typeof window.readSessionPrefs === 'function' ? window.readSessionPrefs() : null;
             if (!store || !store.items || !store.items.generale) {
-                const snap = window.captureRapportinoSnapshot();
+                if (!opts.allowBootstrap) {
+                    store = window.buildMinimalRapportiniScaffold();
+                    window.__rapportiniStore = store;
+                    if (sess && sess.activeId && store.items[sess.activeId]) store.activeId = sess.activeId;
+                    if (!store.activeId || !store.items[store.activeId]) store.activeId = 'generale';
+                    window.updateRapportinoSettingsButton();
+                    const activeItem = store.items[store.activeId];
+                    if (activeItem && activeItem.schedeConfig) {
+                        window.applyRapportinoSchedeConfig(activeItem.schedeConfig);
+                    }
+                    return store;
+                }
                 const fullCfg = window.buildFullRapportinoConfigFromDOM();
+                const genSnap = window.captureEmptyRapportinoSnapshot(null, [], 'generale');
+                const nottSnap = window.captureEmptyRapportinoSnapshot(null, [], 'notturno');
                 store = {
-                    activeId: 'generale',
+                    activeId: (sess && sess.activeId) || window.__sessionActiveIdHint || 'generale',
                     items: {
-                        generale: Object.assign({ id: 'generale', name: 'Generale', schedeConfig: fullCfg }, snap),
-                        notturno: (function() {
-                            var snap = window.captureEmptyRapportinoSnapshot(null, []);
-                            snap.data._nottFiltraSteps = 1;
-                            return Object.assign({ id: 'notturno', name: 'Notturno', schedeConfig: window.buildNotturnoRapportinoConfig() }, snap);
-                        })()
+                        generale: Object.assign({ id: 'generale', name: 'Generale', schedeConfig: fullCfg }, genSnap),
+                        notturno: Object.assign({ id: 'notturno', name: 'Notturno', schedeConfig: window.buildNotturnoRapportinoConfig() }, nottSnap)
                     }
                 };
-                window.saveRapportiniStore(store, { pushCloud: false });
+                window.saveRapportiniStore(store, { pushCloud: !!window.__rapportiniCloudDocMissing });
             } else {
                 store = window.migrateRapportiniSchedeConfig(store);
             }
             if (!store.items.notturno) {
-                (function() {
-                    var snap = window.captureEmptyRapportinoSnapshot(null, []);
-                    snap.data._nottFiltraSteps = 1;
-                    store.items.notturno = Object.assign({ id: 'notturno', name: 'Notturno', schedeConfig: window.buildNotturnoRapportinoConfig() }, snap);
-                })();
+                var nottSnap2 = window.captureEmptyRapportinoSnapshot(null, [], 'notturno');
+                store.items.notturno = Object.assign({ id: 'notturno', name: 'Notturno', schedeConfig: window.buildNotturnoRapportinoConfig() }, nottSnap2);
                 window.saveRapportiniStore(store, { pushCloud: false });
             }
-            if (!store.activeId) store.activeId = 'generale';
+            if (sess && sess.activeId && store.items[sess.activeId]) store.activeId = sess.activeId;
+            else if (window.__sessionActiveIdHint && store.items[window.__sessionActiveIdHint]) {
+                store.activeId = window.__sessionActiveIdHint;
+            }
+            if (!store.activeId || !store.items[store.activeId]) store.activeId = 'generale';
             window.__rapportiniStore = store;
+            if (typeof window.persistSessionPrefs === 'function') window.persistSessionPrefs();
             window.updateRapportinoSettingsButton();
             const activeItem = store.items[store.activeId];
             if (activeItem && activeItem.schedeConfig) {
                 window.applyRapportinoSchedeConfig(activeItem.schedeConfig);
+            }
+            if (activeItem && typeof window.applyRapportinoItem === 'function' && opts.applyActiveItem) {
+                window.applyRapportinoItem(activeItem);
             }
             return store;
         };
@@ -5835,8 +5963,15 @@ window.updateStoricoButton = async function() {
             window.applySectionsLayout(item.sectionsLayout);
             updateModulesVisibility();
             window.applyRapportinoSchedeConfig(item.schedeConfig);
-            const dataToApply = window.getMergedRapportinoPlantData(item.data || {});
-            applyData(dataToApply, { forceRemotePlant: true });
+            const rapportinoOnly = window.extractRapportinoOnlyData(item.data || {});
+            if (typeof window.restoreNotturnoFiltraAfterApplyData === 'function') {
+                window.restoreNotturnoFiltraAfterApplyData(rapportinoOnly);
+            }
+            if (window.__cloudPlantHydrated && window.__cloudPlantCache) {
+                applyData(window.__cloudPlantCache, { forceRemotePlant: true });
+            } else if (typeof window.__pullPlantFromServerNow === 'function') {
+                void window.__pullPlantFromServerNow();
+            }
             updateBoilerInputs();
             if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
             if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
@@ -15200,10 +15335,10 @@ window.applyDcsReadingsToAllRapportini = function(readings) {
         applied += window.setAllPlantInputsById(r.id, r.value) || 0;
     });
 
-    if (store && store.activeId && store.items[store.activeId] && store.items[store.activeId].data) {
-        if (typeof applyData === 'function') {
-            applyData(store.items[store.activeId].data, { forceRemotePlant: true });
-        }
+    if (window.__cloudPlantHydrated && window.__cloudPlantCache && typeof applyData === 'function') {
+        applyData(window.__cloudPlantCache, { forceRemotePlant: true });
+    } else if (typeof window.__pullPlantFromServerNow === 'function') {
+        void window.__pullPlantFromServerNow();
     }
     if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
     if (typeof window.saveData === 'function') window.saveData();

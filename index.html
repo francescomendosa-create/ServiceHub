@@ -511,7 +511,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-gemini-capture-first';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-gemini-no-trail-zero';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -14128,15 +14128,150 @@ window.mapDcsSiglaToFieldId = function(siglaText) {
         TK10602: 'inp-tk10602', TK10602A: 'inp-tk10602a', TK10604: 'inp-tk10604',
         TK10605: 'inp-tk10605', TK10606A: 'inp-tk10606a', TK10606B: 'inp-tk10606b',
         TK10607: 'inp-tk10607', TK10608: 'inp-tk10608',
-        V9203: 'inp-v9203', V172C: 'inp-v172c'
+        TK8066: 'inp-tk8066', TK8092: 'inp-tk8092', TK8093: 'inp-bacino-tk8093',
+        V9203: 'inp-v9203', V172C: 'inp-v172c',
+        S817: 'inp-s817', S818: 'inp-s818', S813: 'inp-s813', S819: 'inp-s819',
+        S864: 'inp-s864', S854: 'inp-s854', S846: 'inp-s846', S148: 'inp-s148-ab',
+        S148AB: 'inp-s148-ab', A10605: 'inp-a10605', LURGI: 'inp-lurgi'
     };
     if (map[k]) return map[k];
-    const m = k.match(/^(TK|V)(\d+)([A-Z])?/);
-    if (!m) return null;
-    const base = m[1] + m[2] + (m[3] || '');
-    const id = 'inp-' + base.toLowerCase();
-    if (document.getElementById(id)) return id;
-    return map[base] || null;
+    const m = k.match(/^(TK|V|S|A)(\d+)([A-Z])?/);
+    if (m) {
+        const base = m[1] + m[2] + (m[3] || '');
+        const id = 'inp-' + base.toLowerCase();
+        if (document.getElementById(id)) return id;
+        if (map[base]) return map[base];
+    }
+    const m2 = k.match(/^(TK|V)(\d+)([A-Z])?/);
+    if (!m2) return null;
+    const base2 = m2[1] + m2[2] + (m2[3] || '');
+    const id2 = 'inp-' + base2.toLowerCase();
+    if (document.getElementById(id2)) return id2;
+    return map[base2] || null;
+};
+
+window.isDcsOverviewStrumentiText = function(text) {
+    const t = String(text || '').toUpperCase();
+    if (!t) return false;
+    return /OVERVIEW\s*STRUMENTI/.test(t) ||
+        ( /VASCHE\s*API/.test(t) && /POZZI\s*TORCIA/.test(t) ) ||
+        ( /STREAM\s*E\s*C-?TIP/.test(t) && /ACQUA-?POTABILIZZ/.test(t) );
+};
+
+window.isDcsOverviewScreen = function(raw, json) {
+    if (json && (json.tipo === 'dcs-overview-strumenti' || json.tipo === 'overview-strumenti')) return true;
+    return window.isDcsOverviewStrumentiText(raw);
+};
+
+window.resolveFieldIdFromInstrumentTag = function(tagText, siglaText) {
+    const tag = String(tagText || '').toUpperCase().replace(/\s+/g, '');
+    const sig = window.normalizeDcsKey(siglaText);
+    if (/9100.?LI.?818|9100LI818/.test(tag)) return 'inp-s818';
+    if (/9106.?LI.?103|9106LI103/.test(tag)) return 'inp-s148-ab';
+    if (/9100.?LI.?846|9100LI846/.test(tag)) return 'inp-s846';
+    if (/9100.?LI.?854|9100LI854/.test(tag)) return 'inp-s854';
+    if (/9106.?LI.?101|9106LI101/.test(tag)) return 'inp-a10605';
+    if (/9106.?LI.?102|9106LI102|LURGI/.test(sig)) return 'inp-lurgi';
+    if (sig && window.mapDcsSiglaToFieldId(siglaText)) return window.mapDcsSiglaToFieldId(siglaText);
+    return null;
+};
+
+window.normalizeDcsStatus = function(value) {
+    const v = String(value || '').trim().toUpperCase();
+    if (/^(ON|RUN|RUNNING|MARCIA|VERDE|GREEN|1|TRUE)$/i.test(v)) return 'MARCIA';
+    if (/^(OFF|STOP|STOPPED|FERMO|ARRESTO|ROSSO|RED|0|FALSE)$/i.test(v)) return 'FERMO';
+    return v;
+};
+
+window.resolvePozzoFieldId = function(siglaText) {
+    const t = String(siglaText || '').toUpperCase();
+    const m = t.match(/POZZO\s*(?:N\.?\s*)?(\d)/);
+    if (m) return 'stat-well-' + m[1];
+    const k = window.normalizeDcsKey(siglaText);
+    const map = { POZZO2: 'stat-well-2', POZZO3: 'stat-well-3', POZZO4: 'stat-well-4', POZZO5: 'stat-well-5' };
+    return map[k] || null;
+};
+
+window.parseOverviewPozziFromJson = function(json) {
+    if (!json || !json.stati_pozzi || !Array.isArray(json.stati_pozzi)) return [];
+    const readings = [];
+    json.stati_pozzi.forEach(function(p) {
+        if (!p) return;
+        const id = p.campo_id || p.field_id || window.resolvePozzoFieldId(p.pozzo != null ? ('Pozzo n. ' + p.pozzo) : (p.sigla || p.label));
+        const stato = window.normalizeDcsStatus(p.stato || p.status || p.value);
+        if (!id || !stato) return;
+        readings.push({
+            id: id,
+            value: stato,
+            confidence: 'alta',
+            source: 'Pozzo ' + (p.pozzo || p.sigla || id),
+            method: 'overview-pozzo',
+            kind: 'status'
+        });
+    });
+    return readings;
+};
+
+window.extractInstrumentTagLevel = function(raw, json, tagPattern) {
+    const re = new RegExp(tagPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '[\\s-]*'), 'i');
+    const tryText = function(text) {
+        const m = String(text || '').match(re);
+        if (!m) return null;
+        const tail = String(text).slice(m.index + m[0].length, m.index + m[0].length + 80);
+        const num = tail.match(/(\d{1,5}[.,]\d{0,2}|\d{2,5})/);
+        if (!num) return null;
+        return window.fixOcrDigitValue(num[1]);
+    };
+    let v = tryText(raw);
+    if (v) return v;
+    const rows = (json && (json.applica_ora || json.catalogo || json.coppie)) || [];
+    for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        if (!r) continue;
+        const tag = r.tag_strumento || r.strumento || r.tag || '';
+        if (re.test(tag)) {
+            let lv = r.livello != null ? r.livello : r.value;
+            if (lv != null) return window.fixOcrDigitValue(String(lv));
+        }
+    }
+    return null;
+};
+
+/** Regole Overview Strumenti: S-121 mai; S-817 ignorato; 9100-LI-818 → S-818. */
+window.applyOverviewStrumentiRules = function(readings, raw, json, isOverview) {
+    if (!isOverview) return readings || [];
+    let out = (readings || []).slice();
+
+    out = out.filter(function(r) {
+        if (!r || !r.id) return false;
+        if (r.id === 'inp-s121') return false;
+        if (r.id === 'inp-s817') return false;
+        const src = String(r.source || '').toUpperCase();
+        const sig = String(r.source || '').replace(/\s/g, '');
+        if (/S.?121/.test(src) || /S121/.test(sig)) return false;
+        if (/LIVELLO\s*S.?121|90.?LT.?121/.test(src)) return false;
+        return true;
+    });
+
+    const li818 = window.extractInstrumentTagLevel(raw, json, '9100-LI-818') ||
+        window.extractInstrumentTagLevel(raw, json, '9100LI818');
+    if (li818 && window.isValidOcrValue(li818)) {
+        out = out.filter(function(r) { return r.id !== 'inp-s818'; });
+        out.push({
+            id: 'inp-s818',
+            value: li818,
+            confidence: 'alta',
+            source: 'S-818 · 9100-LI-818',
+            method: 'overview-tag'
+        });
+    }
+
+    const pozzi = window.parseOverviewPozziFromJson(json);
+    if (pozzi.length) {
+        out = window.mergeOcrReadingLists(out, pozzi);
+    }
+
+    return out;
 };
 
 window.getDefaultDcsCatalogSeed = function() {
@@ -14487,13 +14622,13 @@ window.buildGeminiDcsAcquaPrompt = function() {
         '- applica_ora = stesse righe con livello letto + campo_id corretto (tutte le sigle sopra).\n\n' +
         'JSON (senza markdown):\n' +
         '{"tipo":"dcs-tabella","catalogo":[' +
-        '{"serbatoio":"TK - 10000","descrizione":"SLOP","liv_max":"6003","livello":"4500.0","campo_id":"inp-tk10000"},' +
+        '{"serbatoio":"TK - 10000","descrizione":"SLOP","liv_max":"6003","livello":"4500","campo_id":"inp-tk10000"},' +
         '{"serbatoio":"TK - 9000","descrizione":"ACQUA GREZZA","liv_max":"9000","livello":"6031.7","campo_id":"inp-tk9000"}' +
         '],"applica_ora":[' +
-        '{"serbatoio":"TK - 10000","descrizione":"SLOP","livello":"4500.0","campo_id":"inp-tk10000"},' +
+        '{"serbatoio":"TK - 10000","descrizione":"SLOP","livello":"4500","campo_id":"inp-tk10000"},' +
         '{"serbatoio":"TK - 9000","descrizione":"ACQUA GREZZA","livello":"6031.7","campo_id":"inp-tk9000"}' +
         ']}\n' +
-        'In catalogo e applica_ora metti TUTTE le righe visibili. Decimali con il punto.';
+        'In catalogo e applica_ora metti TUTTE le righe visibili. Numeri interi senza decimali (es. 4567, non 4567.0). Decimali solo se visibili in foto (es. 6031.7), mai zeri finali (.0 ,0).';
 };
 
 window.parseDcsCatalogoToReadings = function(json, fields) {
@@ -14535,8 +14670,10 @@ window.parseDcsAcquaPairsFromJson = function(json, fields) {
         val = window.fixOcrDigitValue(val);
         if (!window.isValidOcrValue(val)) return;
 
+        const tag = p.tag_strumento || p.strumento || p.tag || '';
         let id = p.campo_id || p.field_id;
         if (id && !allowed.has(id)) id = null;
+        if (!id && tag) id = window.resolveFieldIdFromInstrumentTag(tag, sigla);
         const target = window.resolveDcsAcquaTarget(sigla, desc);
         if (target && target.fieldId) id = target.fieldId;
         if (!id) id = window.resolveTankIdFromLabel(sigla || desc, fields);
@@ -14610,8 +14747,9 @@ window.isLikelyGeminiFailureRaw = function(raw) {
     if (/"error"\s*:|"code"\s*:\s*(429|403|401)/i.test(t)) return true;
     const json = window.parseSmartCaptureJson(raw);
     if (json && json.error) return true;
-    if (!json) return !window.isDcsAcquaTableText(t);
-    return !(json.catalogo || json.applica_ora || json.coppie || json.tipo === 'dcs-tabella' || json.tipo === 'dcs-acqua');
+    if (!json) return !window.isDcsAcquaTableText(t) && !window.isDcsOverviewStrumentiText(t);
+    return !(json.catalogo || json.applica_ora || json.coppie || json.stati_pozzi ||
+        json.tipo === 'dcs-tabella' || json.tipo === 'dcs-acqua' || json.tipo === 'dcs-overview-strumenti');
 };
 
 window.isPlausibleDcsLevel = function(fieldId, value) {
@@ -14691,30 +14829,58 @@ window.isPlausibleCaptureLevel = function(fieldId, value) {
 window.filterGeminiCaptureReadings = function(readings) {
     return (readings || []).filter(function(r) {
         if (!r || !r.id || r.value == null) return false;
+        if (r.id === 'inp-s121') return false;
+        if (r.kind === 'status') {
+            const st = window.normalizeDcsStatus(r.value);
+            return st === 'MARCIA' || st === 'FERMO';
+        }
         const v = window.fixOcrDigitValue(r.value);
         if (!window.isValidOcrValue(v)) return false;
         return window.isPlausibleCaptureLevel(r.id, v);
     }).map(function(r) {
+        if (r.kind === 'status') {
+            return Object.assign({}, r, { value: window.normalizeDcsStatus(r.value) });
+        }
         return Object.assign({}, r, { value: window.fixOcrDigitValue(r.value) });
     });
+};
+
+window.applyStatusReadingToUI = function(fieldId, stato) {
+    const el = document.getElementById(fieldId);
+    if (!el) return false;
+    const s = window.normalizeDcsStatus(stato);
+    if (s !== 'MARCIA' && s !== 'FERMO') return false;
+    el.innerText = s;
+    el.className = 'status-cell-btn ' + (s === 'MARCIA' ? 'bg-marcia' : 'bg-fermo');
+    return true;
 };
 
 window.extractGeminiCaptureReadings = function(raw, fields) {
     fields = fields || [];
     if (!raw || window.isLikelyGeminiFailureRaw(raw)) return [];
+    const json = window.parseSmartCaptureJson(raw);
+    const isOverview = window.isDcsOverviewScreen(raw, json);
     let readings = window.extractDcsAcquaReadings(raw, fields, { allowTextFallback: false, skipTrustedFilter: true });
-    readings = window.mergeOcrReadingLists(readings, window.parseGeminiTankPairsJson(window.parseSmartCaptureJson(raw), fields));
+    readings = window.mergeOcrReadingLists(readings, window.parseGeminiTankPairsJson(json, fields));
     readings = window.mergeOcrReadingLists(readings, window.extractTankReadingsFromGeminiRaw(raw, fields));
+    readings = window.applyOverviewStrumentiRules(readings, raw, json, isOverview);
     return window.filterGeminiCaptureReadings(readings);
 };
 
 window.mergeCaptureFieldsForGemini = function(tankMode) {
     const tank = tankMode ? window.buildTankCaptureFieldMap() : window.buildSmartCaptureFieldMap();
     const dcs = window.getDcsStoccaggioCaptureFields ? window.getDcsStoccaggioCaptureFields() : [];
+    const pozzi = [
+        { id: 'stat-well-2', label: 'Pozzo 2', section: 'POZZI TORCIA', kind: 'status' },
+        { id: 'stat-well-3', label: 'Pozzo 3', section: 'POZZI TORCIA', kind: 'status' },
+        { id: 'stat-well-4', label: 'Pozzo 4', section: 'POZZI TORCIA', kind: 'status' },
+        { id: 'stat-well-5', label: 'Pozzo 5', section: 'POZZI TORCIA', kind: 'status' }
+    ];
     const seen = new Set();
     const out = [];
-    dcs.concat(tank).forEach(function(f) {
+    dcs.concat(tank).concat(pozzi).forEach(function(f) {
         if (!f || !f.id || seen.has(f.id)) return;
+        if (f.id === 'inp-s121') return;
         seen.add(f.id);
         out.push(f);
     });
@@ -14726,7 +14892,7 @@ window.buildGeminiUnifiedCapturePrompt = function(fields) {
     const dcsLines = (window.getDefaultDcsCatalogSeed() || []).filter(function(c) { return c.fieldId; }).map(function(c) {
         return '- ' + (c.dcsLabel || c.label) + (c.description ? ' | ' + c.description : '') + ' → ' + c.fieldId;
     }).join('\n');
-    const uiLines = fields.map(function(f) {
+    const uiLines = fields.filter(function(f) { return f && f.id !== 'inp-s121'; }).map(function(f) {
         return '- "' + f.label + '" → ' + f.id + (f.section ? ' (' + f.section + ')' : '');
     }).join('\n');
     const sample = fields.slice(0, 2).map(function(f) {
@@ -14734,18 +14900,28 @@ window.buildGeminiUnifiedCapturePrompt = function(fields) {
     }).join(',');
 
     return 'Sei un operatore che legge un QUADRO DCS / sinottico serbatoi da FOTO.\n\n' +
-        'COMPITO: per ogni SIGLA visibile in foto, leggi il LIVELLO numerico (mm) dalla colonna LIVELLO / valore a destra della sigla.\n' +
-        'Abbina ogni riga al campo_id corretto. Non inventare sigle assenti in foto.\n\n' +
-        'SERBATOI DCS (priorità se tabella SERBATOIO | DESCRIZIONE | LIVELLO):\n' + dcsLines + '\n\n' +
-        'ALTRI CAMPI RAPPORTINO:\n' + uiLines + '\n\n' +
-        'REGOLE:\n' +
-        '- Usa LIVELLO (mm), non LIV.MAX.\n' +
-        '- TK 9000 ACQUA GREZZA e TK 9201 ACQUA DEMI sono distinti.\n' +
-        '- Decimali con il punto.\n' +
-        '- Metti TUTTE le righe lette in applica_ora e in catalogo.\n\n' +
-        'Rispondi SOLO JSON valido (niente markdown):\n' +
-        '{"tipo":"dcs-tabella","catalogo":[' + sample + '],"applica_ora":[' + sample + '],"coppie":[' +
-        '{"sigla_visibile":"' + (fields[0] ? fields[0].label : 'TK 9000') + '","livello_a_destra":"6031.7","campo_id":"' + (fields[0] ? fields[0].id : 'inp-tk9000') + '"}]}\n';
+        'COMPITO: riconosci il tipo schermo e leggi sigle + valori. Rispondi SOLO JSON valido.\n\n' +
+        'TIPO SCHERMO (campo tipo):\n' +
+        '- "dcs-overview-strumenti" se titolo OVERVIEW STRUMENTI (4 quadranti: VASCHE API, ACQUA-POTABILIZZ, STREAM, POZZI TORCIA)\n' +
+        '- "dcs-tabella" se tabella SERBATOIO | DESCRIZIONE | LIVELLO (Stoccaggio)\n' +
+        '- "dcs-vasche-api" se GESTIONE VASCHE API\n\n' +
+        'OVERVIEW STRUMENTI — REGOLE OBBLIGATORIE:\n' +
+        '1) IGNORA COMPLETAMENTE "Livello S-121" (sezione ACQUA-POTABILIZZ, spesso 0.0 mm con icona fault): non inserire in JSON, mai campo_id inp-s121.\n' +
+        '   Il tag 90-LT-121 compare anche in POZZI TORCIA come "Press. Piloti" (pressione kg/cm2): non è il livello S-121, non usare inp-s121.\n' +
+        '2) Riga S-817 con valore accanto al tag 9100-LI-818: il livello mm va su S-818 (inp-s818), NON su S-817 (ignora S-817 su Overview).\n' +
+        '3) Leggi: S-148→inp-s148-ab, S-846→inp-s846, S-854→inp-s854, A-10605→inp-a10605, LURGI→inp-lurgi.\n' +
+        '4) Pozzi (POZZI TORCIA): stati_pozzi con pozzo 2-5 e stato ON/OFF → MARCIA o FERMO, campo_id stat-well-N.\n\n' +
+        'STOCCAGGIO / TABELLA:\n' + dcsLines + '\n\n' +
+        'CAMPI RAPPORTINO:\n' + uiLines + '\n\n' +
+        'Per ogni riga: serbatoio/sigla, tag_strumento se visibile, livello (mm), campo_id.\n' +
+        'FORMATO NUMERI: interi senza decimali (4590, 6992). Mai 4590.0 né 4590,0. Decimali solo se reali in foto (es. 506.85), senza zeri finali.\n' +
+        'applica_ora = tutte le righe da applicare ora.\n\n' +
+        'JSON esempio Overview:\n' +
+        '{"tipo":"dcs-overview-strumenti","applica_ora":[' +
+        '{"serbatoio":"S-148","tag_strumento":"9106-LI-103","livello":"4590","campo_id":"inp-s148-ab"},' +
+        '{"serbatoio":"S-818","tag_strumento":"9100-LI-818","livello":"6992","campo_id":"inp-s818"},' +
+        '{"serbatoio":"S-846","tag_strumento":"9100-LI-846","livello":"1768","campo_id":"inp-s846"}' +
+        '],"stati_pozzi":[{"pozzo":3,"stato":"FERMO","campo_id":"stat-well-3"},{"pozzo":5,"stato":"MARCIA","campo_id":"stat-well-5"}]}\n';
 };
 
 window.runGeminiPrimaryCapture = async function(imageData, fields) {
@@ -14768,11 +14944,13 @@ window.runGeminiPrimaryCapture = async function(imageData, fields) {
         throw err;
     }
     const readings = window.extractGeminiCaptureReadings(raw, fields);
-    const isDcs = window.readingsIncludeDcsStoccaggio(readings);
+    const json = window.parseSmartCaptureJson(raw);
+    const isOverview = window.isDcsOverviewScreen(raw, json);
+    const isDcs = !isOverview && window.readingsIncludeDcsStoccaggio(readings);
     return {
         readings: readings,
         engine: 'gemini-primary',
-        profile: isDcs ? 'dcs-acqua' : 'tank',
+        profile: isOverview ? 'dcs-overview-strumenti' : (isDcs ? 'dcs-acqua' : 'tank'),
         catalogSize: readings.length,
         rawTextPreview: String(raw).slice(0, 400),
         rawGemini: String(raw || ''),
@@ -15075,13 +15253,17 @@ window.parseGeminiTankPairsJson = function(json, fields) {
         if (val != null && typeof val === 'number') val = String(val);
         val = window.fixOcrDigitValue(val);
         if (!window.isValidOcrValue(val)) return;
+        const tag = p.tag_strumento || p.strumento || p.tag || '';
         let id = p.campo_id || p.field_id || p.campo || null;
         if (id && !fieldIds.has(id)) id = null;
+        if (!id && tag) id = window.resolveFieldIdFromInstrumentTag(tag, sigla);
         if (!id && sigla && typeof window.resolveDcsAcquaTarget === 'function') {
             const t = window.resolveDcsAcquaTarget(sigla, p.descrizione || p.description || '');
             if (t && t.fieldId && fieldIds.has(t.fieldId)) id = t.fieldId;
         }
         if (!id) id = window.resolveTankIdFromLabel(sigla, fields);
+        if (id === 'inp-s121') return;
+        if (/^S.?121$/i.test(String(sigla).trim()) && /LIVELLO|90.?LT.?121/i.test(String(p.descrizione || p.description || ''))) return;
         if (!id || used.has(id)) return;
         used.add(id);
         const field = fields.find(function(f) { return f.id === id; });
@@ -15089,7 +15271,7 @@ window.parseGeminiTankPairsJson = function(json, fields) {
             id: id,
             value: val,
             confidence: p.certezza || p.confidence || 'alta',
-            source: String(sigla).trim() || (field ? field.label : id),
+            source: (tag ? tag + ' · ' : '') + String(sigla).trim() || (field ? field.label : id),
             method: 'coppia'
         });
     });
@@ -15251,6 +15433,10 @@ window.applySmartCaptureDirectly = function(parsed) {
     let applied = 0;
     parsed.readings.forEach(function(r) {
         if (!r || !r.id || !fieldIds.has(r.id)) return;
+        if (r.kind === 'status' || String(r.id).indexOf('stat-') === 0) {
+            if (window.applyStatusReadingToUI(r.id, r.value)) applied++;
+            return;
+        }
         const el = document.getElementById(r.id);
         if (!el || el.readOnly) return;
         el.value = String(r.value).trim();
@@ -15464,7 +15650,7 @@ window.buildGeminiTankCapturePrompt = function(fields) {
         '5) Se TK/S/A affiancati, il numero va alla sigla corretta, non a quella vicina.\n\n' +
         'Rispondi SOLO JSON valido (niente markdown):\n' +
         '{"coppie":[' + esempio + ']}\n' +
-        'Includi solo coppie reali dalla foto. Decimali con il punto.';
+        'Includi solo coppie reali dalla foto. Interi senza .0 (es. 4567). Decimali solo se necessari, senza zeri finali.';
 };
 
 window.sortTankFieldsForDisplay = function(fields) {
@@ -15680,6 +15866,10 @@ window.fixOcrDigitValue = function(value) {
     v = v.replace(/[^\d.]/g, '');
     const parts = v.split('.');
     if (parts.length > 2) v = parts[0] + '.' + parts.slice(1).join('');
+    if (v.indexOf('.') >= 0) {
+        v = v.replace(/0+$/, '');
+        v = v.replace(/\.$/, '');
+    }
     return v;
 };
 
@@ -16272,8 +16462,9 @@ window.showSmartCaptureConfirm = function(parsed) {
 
     const tankMode = !!window._smartCaptureTankMode;
     const isDcsAcqua = parsed && parsed.profile === 'dcs-acqua';
+    const isOverview = parsed && parsed.profile === 'dcs-overview-strumenti';
     const fieldMap = {};
-    let fields = tankMode ? window.buildTankCaptureFieldMap() : window.buildSmartCaptureFieldMap();
+    let fields = tankMode ? window.mergeCaptureFieldsForGemini(true) : window.buildSmartCaptureFieldMap();
     if (isDcsAcqua) {
         fields = window.getDcsAcquaCaptureFields();
     }
@@ -16284,7 +16475,9 @@ window.showSmartCaptureConfirm = function(parsed) {
         if (r && r.id && r.value != null) readingMap[r.id] = String(r.value).trim();
     });
 
-    const displayOrder = (tankMode && isDcsAcqua) ? fields : (tankMode ? (function() {
+    const displayOrder = (tankMode && isDcsAcqua) ? fields : (isOverview ? (function() {
+        return fields.filter(function(f) { return readingMap[f.id]; });
+    })() : (tankMode ? (function() {
         const sorted = window.sortTankFieldsForDisplay(fields);
         const withVal = sorted.filter(function(f) { return readingMap[f.id]; });
         if (withVal.length) {
@@ -16292,7 +16485,7 @@ window.showSmartCaptureConfirm = function(parsed) {
             return withVal.concat(sorted.filter(function(f) { return !ids.has(f.id); }));
         }
         return sorted;
-    })() : fields);
+    })() : fields));
     const rows = tankMode ? displayOrder : (parsed.readings || []).map(function(r) {
         return fieldMap[r.id] || { id: r.id, label: r.id, section: '' };
     }).filter(function(f, i, arr) {
@@ -16308,6 +16501,15 @@ window.showSmartCaptureConfirm = function(parsed) {
         const conf = (parsed.readings || []).find(function(r) { return r.id === f.id; });
         const confTxt = conf && conf.confidence ? ' · ' + conf.confidence : '';
         const warnLow = conf && conf.confidence === 'bassa' ? ' style="color:#fbbf24;"' : '';
+        const isStatus = (f.kind === 'status') || (conf && conf.kind === 'status') || String(f.id).indexOf('stat-') === 0;
+        if (isStatus) {
+            const sel = (val === 'MARCIA' || val === 'FERMO') ? val : 'FERMO';
+            return '<div class="smart-capture-row">' +
+                '<span><strong' + warnLow + '>' + f.label + '</strong><br><span style="color:#94a3b8;font-size:10px;">' + (f.section || 'Stato') + confTxt + '</span></span>' +
+                '<select data-field-id="' + f.id + '" data-field-kind="status" class="w-full rounded-lg border border-slate-600 bg-slate-900 p-2 text-sm font-bold">' +
+                '<option value="MARCIA"' + (sel === 'MARCIA' ? ' selected' : '') + '>MARCIA</option>' +
+                '<option value="FERMO"' + (sel === 'FERMO' ? ' selected' : '') + '>FERMO</option></select></div>';
+        }
         return '<div class="smart-capture-row">' +
             '<span><strong' + warnLow + '>' + f.label + '</strong><br><span style="color:#94a3b8;font-size:10px;">' + (f.section || 'Serbatoi') + confTxt + '</span></span>' +
             '<input type="tel" inputmode="decimal" data-field-id="' + f.id + '" value="' + val + '" placeholder="—"></div>';
@@ -16317,11 +16519,14 @@ window.showSmartCaptureConfirm = function(parsed) {
         const eng = parsed.engine ? (' · motore: ' + parsed.engine) : '';
         hint.textContent = parsed.notes + eng + ' — correggi se necessario';
     } else if (hint) {
-        hint.textContent = isDcsAcqua
+        hint.textContent = isOverview
+            ? ('Overview Strumenti · S-121 ignorato · 9100-LI-818 → S 818 · pozzi MARCIA/FERMO' +
+                (parsed.engine ? ' · ' + parsed.engine : ''))
+            : (isDcsAcqua
             ? ('Gemini DCS → Stoccaggio Notturno. TK 9000 / 9201 anche su Generale (Acqua).' +
                 (parsed.engine ? ' Motore: ' + parsed.engine + '.' : '') +
                 (parsed.catalogSize ? ' (' + parsed.catalogSize + ' in catalogo.)' : ''))
-            : 'Ogni sigla letta dalla foto va nel campo corrispondente del rapportino (Ambiente 1 / 2 / Acqua)';
+            : 'Ogni sigla letta dalla foto va nel campo corrispondente del rapportino (Ambiente 1 / 2 / Acqua)');
     }
 
     modal.classList.add('active');
@@ -16341,9 +16546,13 @@ window.closeSmartCaptureConfirm = function(reopenSettings) {
 window.applySmartCaptureResults = function() {
     const parsed = window._smartCapturePending || { readings: [] };
     const readings = [];
-    document.querySelectorAll('#smart-capture-confirm-list input[data-field-id]').forEach(function(inp) {
+    document.querySelectorAll('#smart-capture-confirm-list [data-field-id]').forEach(function(inp) {
         const val = String(inp.value || '').trim();
         if (!val) return;
+        if (inp.dataset.fieldKind === 'status') {
+            readings.push({ id: inp.dataset.fieldId, value: window.normalizeDcsStatus(val), kind: 'status' });
+            return;
+        }
         const v = window.fixOcrDigitValue(val);
         if (!window.isValidOcrValue(v)) return;
         readings.push({ id: inp.dataset.fieldId, value: v });
@@ -16355,11 +16564,23 @@ window.applySmartCaptureResults = function() {
     }
 
     const pending = window._smartCapturePending || {};
+    const isOverview = pending.profile === 'dcs-overview-strumenti';
     const isDcs = pending.profile === 'dcs-acqua' || window.readingsIncludeDcsStoccaggio(readings);
     let applied = 0;
 
     if (isDcs) {
         applied = window.applyDcsReadingsToAllRapportini(readings);
+    } else if (isOverview) {
+        readings.forEach(function(r) {
+            if (!r || !r.id) return;
+            if (r.kind === 'status' || String(r.id).indexOf('stat-') === 0) {
+                if (window.applyStatusReadingToUI(r.id, r.value)) applied++;
+            } else {
+                applied += window.setAllPlantInputsById(r.id, r.value) || 0;
+            }
+        });
+        if (typeof window.saveData === 'function') window.saveData();
+        if (typeof window.salvaDatiGlobale === 'function') window.salvaDatiGlobale();
     } else {
         const fieldIds = new Set(
             (window._smartCaptureTankMode ? window.buildTankCaptureFieldMap() : window.buildSmartCaptureFieldMap())

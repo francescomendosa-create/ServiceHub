@@ -59,6 +59,7 @@ window.salvaDatiGlobale = function() {
         tuttiElementi.forEach(elemento => {
             if (elemento.id) {
                 try {
+                    if (elemento.closest && elemento.closest('.main-container')) return;
                     // Salva valori per tutti i tipi di input
                     if (elemento.tagName === 'INPUT' || elemento.tagName === 'TEXTAREA') {
                         // Salva SEMPRE il valore, anche se vuoto (importante per campi vuoti)
@@ -175,6 +176,7 @@ window.ripristinaDatiGlobale = function() {
             if (id.startsWith('_')) return;
             
             const elemento = document.getElementById(id);
+            if (elemento && elemento.closest && elemento.closest('.main-container')) return;
             if (elemento) {
                 const dato = dati[id];
                 
@@ -291,8 +293,8 @@ document.addEventListener('click', function(e) {
     }
 });
 
-// NON ripristinare datiAppGlobali all'avvio: sovrascriveva i numeri da Firebase (stabileCurrentData).
-// La verità condivisa è artifacts/.../sharedDial/plant via saveData + onSnapshot.
+// NON ripristinare datiAppGlobali all'avvio: sovrascriveva i numeri da Firebase.
+// Cruscotto impianto: solo cloud (Firestore plant), cache in memoria __cloudPlantCache.
 
 // ===============================
 // DATABASE SERBATOI (DA EXCEL)
@@ -507,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-fix-datiAppGlobali-race';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-cloud-only-no-localStorage';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -953,22 +955,29 @@ window.colorPreviewNumber = function(tankName, value) {
             } catch (_) {}
         };
 
-        /** Ultimo lastUpdate ISO già noto in stabileCurrentData (snapshot locale senza bump fittizio). */
+        /** Ultimo lastUpdate ISO dalla cache cloud in memoria (nessun localStorage). */
         const __readPrevPlantLastUpdateIso = () => {
+            const p = window.__cloudPlantCache;
+            if (
+                p &&
+                typeof p === 'object' &&
+                typeof p.lastUpdate === 'string' &&
+                Number.isFinite(Date.parse(p.lastUpdate))
+            ) {
+                return p.lastUpdate;
+            }
+            return null;
+        };
+
+        const __purgeLegacySyncLocalStorage = function () {
             try {
-                const raw = localStorage.getItem('stabileCurrentData');
-                if (!raw) return null;
-                const p = JSON.parse(raw);
-                if (
-                    p &&
-                    typeof p === 'object' &&
-                    typeof p.lastUpdate === 'string' &&
-                    Number.isFinite(Date.parse(p.lastUpdate))
-                ) {
-                    return p.lastUpdate;
+                localStorage.removeItem('stabileCurrentData');
+                if (window.RAPPORTINI_STORAGE_KEY) {
+                    localStorage.removeItem(window.RAPPORTINI_STORAGE_KEY);
+                } else {
+                    localStorage.removeItem('servicehub_rapportini_v2');
                 }
             } catch (_) {}
-            return null;
         };
 
         const __plantLastUpdateMs = (iso) => {
@@ -990,6 +999,16 @@ window.colorPreviewNumber = function(tankName, value) {
 
         /** Applica il documento plant condiviso (stessi numeri su tutti i dispositivi). */
         window.__cloudPlantHydrated = false;
+        window.__cloudPlantCache = null;
+
+        const cacheCloudPlantPayload = function (remote) {
+            if (!remote || typeof remote !== 'object') return;
+            try {
+                window.__cloudPlantCache = JSON.parse(JSON.stringify(remote));
+            } catch (_) {
+                window.__cloudPlantCache = remote;
+            }
+        };
 
         const __applyRemotePlantPayload = function (d, opts) {
             opts = opts || {};
@@ -999,26 +1018,13 @@ window.colorPreviewNumber = function(tankName, value) {
             if (rev > 0) window.__appliedPlantSyncRevision = rev;
             window.__cloudPlantHydrated = true;
             applyData(d, { forceRemotePlant: true });
-            mergePlantIntoStabileLocalStorage(d);
-            if (typeof window.salvaDatiGlobale === 'function') {
-                try { window.salvaDatiGlobale(); } catch (_) {}
-            }
+            cacheCloudPlantPayload(d);
             if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
             if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
             if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
             if (typeof window.syncFiltraPanelForActiveRapportino === 'function') window.syncFiltraPanelForActiveRapportino();
             if (typeof window.syncNotturnoStoccaggioPanel === 'function') window.syncNotturnoStoccaggioPanel();
             if (typeof window.refreshNotturnoFiltraTotals === 'function') window.refreshNotturnoFiltraTotals();
-        };
-
-        /** Salva in localStorage la copia cloud (sostituzione intera, niente merge con dati vecchi). */
-        const mergePlantIntoStabileLocalStorage = (remote) => {
-            try {
-                if (!remote || typeof remote !== 'object') return;
-                localStorage.setItem('stabileCurrentData', JSON.stringify(remote));
-            } catch (e) {
-                console.warn('[ServiceHub] merge stabileCurrentData:', e && e.message);
-            }
         };
 
         window.buildPlantPayloadFromDOM = function() {
@@ -1076,6 +1082,7 @@ window.colorPreviewNumber = function(tankName, value) {
 
         const syncWithCloud = () => {
             if (!user || !user.uid || !db) return;
+            __purgeLegacySyncLocalStorage();
             if (__shUnsubPlant) {
                 try {
                     __shUnsubPlant();
@@ -1123,10 +1130,6 @@ window.colorPreviewNumber = function(tankName, value) {
                             if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                                 window.schedulePublicDigitalSnapshotSync();
                             }
-                        } else {
-                            if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
-                                window.__applyPlantFromLocalStorageFallback();
-                            }
                         }
                     },
                     (error) => {
@@ -1136,9 +1139,6 @@ window.colorPreviewNumber = function(tankName, value) {
                             window.__showPlantCloudSyncBanner(
                                 'Impossibile leggere il cruscotto dal cloud (permessi Firestore). Gli altri dispositivi non ricevono aggiornamenti in tempo reale. Apri Firebase Console → Firestore → Regole e pubblica il file firestore.rules del repository (progetto ' + pid + ').'
                             );
-                        }
-                        if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
-                            window.__applyPlantFromLocalStorageFallback();
                         }
                     }
                 );
@@ -1157,15 +1157,10 @@ window.colorPreviewNumber = function(tankName, value) {
                     if (snap.exists()) {
                         const d = snap.data();
                         __applyRemotePlantPayload(d, { force: true });
-                    } else if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
-                        window.__applyPlantFromLocalStorageFallback();
                     }
                 })
                 .catch((err) => {
                     console.warn('[ServiceHub] plant getDoc:', err && err.message);
-                    if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
-                        window.__applyPlantFromLocalStorageFallback();
-                    }
                 })
                 .finally(function () {
                     __wirePlantSnapshotListener();
@@ -1189,9 +1184,19 @@ window.colorPreviewNumber = function(tankName, value) {
 
             const rapportiniDoc = doc(db, 'artifacts', appId, 'sharedDial', 'rapportini');
             __shUnsubRapportini = onSnapshot(rapportiniDoc, (snapshot) => {
-                if (!snapshot.exists()) return;
                 const md = snapshot.metadata;
                 if (md && md.hasPendingWrites) return;
+                window.__rapportiniCloudHydrated = true;
+                if (!snapshot.exists()) {
+                    window.__rapportiniCloudDocMissing = true;
+                    if (!window.__rapportiniStore && typeof window.ensureRapportiniInitialized === 'function') {
+                        window.ensureRapportiniInitialized();
+                    } else if (window.__rapportiniStore && typeof window.saveRapportiniStore === 'function') {
+                        window.saveRapportiniStore(window.__rapportiniStore);
+                    }
+                    return;
+                }
+                window.__rapportiniCloudDocMissing = false;
                 if (typeof window.applyRapportiniStoreFromCloud !== 'function') return;
                 window.applyRapportiniStoreFromCloud(snapshot.data());
             }, (error) => {
@@ -1217,26 +1222,23 @@ window.colorPreviewNumber = function(tankName, value) {
             // AGGIUNGI STORICO DEI SALVATAGGI PER TREND
             window.addToHistory(data);
             
-            try {
-                localStorage.setItem('stabileCurrentData', JSON.stringify(data));
-            } catch (_) {}
             try { 
-                await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data, { merge: true }); 
+                await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data);
+                cacheCloudPlantPayload(data);
+                const rev = __plantPayloadRevision(data);
+                if (rev > 0) window.__appliedPlantSyncRevision = rev;
+                window.__cloudPlantHydrated = true;
                 __plantRetrySaveAfterAuth = false;
                 if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
-                try {
-                    localStorage.setItem('stabileCurrentData', JSON.stringify(data));
-                } catch (_) {}
                 if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                     window.schedulePublicDigitalSnapshotSync();
                 }
             } catch (e) { 
                 console.error('[ServiceHub] saveCurrentData Firestore:', e && e.code, e && e.message);
-                localStorage.setItem('stabileCurrentData', JSON.stringify(data));
                 if (window.__isFirestorePermissionError && window.__isFirestorePermissionError(e)) {
                     const pid = window.__SERVICEHUB_FIREBASE_PROJECT || 'Firebase';
                     window.__showPlantCloudSyncBanner(
-                        'Salvataggio sul cloud rifiutato (regole Firestore). I dati restano su questo dispositivo; gli altri non li vedono. Pubblica in Firebase il file firestore.rules del repository (progetto ' + pid + ').'
+                        'Salvataggio sul cloud rifiutato (regole Firestore). Gli altri dispositivi non vedono le modifiche. Pubblica in Firebase il file firestore.rules del repository (progetto ' + pid + ').'
                     );
                 }
             }
@@ -1598,39 +1600,15 @@ window.colorPreviewNumber = function(tankName, value) {
 
         window.refreshTankLevelAlarmVisuals = window.colorAllTankInputs;
 
-        /** Snapshot immediato su localStorage (stesso payload di saveData) — chiamare su pagehide prima del salvataggio async. */
-        window.__snapshotStabilePlantLocalOnly = function () {
-            try {
-                const data = typeof window.buildPlantPayloadFromDOM === 'function'
-                    ? window.buildPlantPayloadFromDOM()
-                    : null;
-                if (data) localStorage.setItem('stabileCurrentData', JSON.stringify(data));
-            } catch (e) {
-                console.warn('[ServiceHub] snapshot locale immediato:', e);
-            }
-        };
-
         window.saveData = async function (skipHistory) {
             const skipHist = skipHistory === true;
 
-            const snapshotPlantToLocalStorage = function () {
-                try {
-                    const data = typeof window.buildPlantPayloadFromDOM === 'function'
-                        ? window.buildPlantPayloadFromDOM()
-                        : null;
-                    if (data) localStorage.setItem('stabileCurrentData', JSON.stringify(data));
-                } catch (e) {
-                    console.warn('[ServiceHub] snapshotPlantToLocalStorage', e);
-                }
-            };
-
             if (!user || !user.uid || !db) {
                 if (!(window.isEditingArchive && window.editingArchiveId)) {
-                    snapshotPlantToLocalStorage();
                     __plantRetrySaveAfterAuth = true;
                     if (typeof window.__showPlantCloudSyncBanner === 'function') {
                         window.__showPlantCloudSyncBanner(
-                            'Cloud non connesso: il numero resta solo su questo dispositivo. Attendi il LED verde o ricarica la pagina.'
+                            'Cloud non connesso: le modifiche non vengono salvate. Attendi il LED verde o ricarica la pagina.'
                         );
                     }
                 }
@@ -1780,20 +1758,12 @@ window.colorPreviewNumber = function(tankName, value) {
             }
 
             try {
-                localStorage.setItem('stabileCurrentData', JSON.stringify(data));
-            } catch (_) {}
-            try {
                 await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data);
+                cacheCloudPlantPayload(data);
                 window.__appliedPlantSyncRevision = syncRevision;
                 window.__cloudPlantHydrated = true;
                 __plantRetrySaveAfterAuth = false;
                 if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
-                if (typeof window.salvaDatiGlobale === 'function') {
-                    try { window.salvaDatiGlobale(); } catch (_) {}
-                }
-                try {
-                    localStorage.setItem('stabileCurrentData', JSON.stringify(data));
-                } catch (_) {}
                 if (typeof window.flushPublicDigitalSnapshotNow === "function") {
                     window.flushPublicDigitalSnapshotNow();
                 } else if (typeof window.schedulePublicDigitalSnapshotSync === "function") {
@@ -1801,11 +1771,10 @@ window.colorPreviewNumber = function(tankName, value) {
                 }
             } catch (e) { 
                 console.error('[ServiceHub] saveData Firestore:', e && e.code, e && e.message);
-                localStorage.setItem('stabileCurrentData', JSON.stringify(data));
                 if (window.__isFirestorePermissionError && window.__isFirestorePermissionError(e)) {
                     const pid = window.__SERVICEHUB_FIREBASE_PROJECT || 'Firebase';
                     window.__showPlantCloudSyncBanner(
-                        'Salvataggio sul cloud rifiutato (regole Firestore). I dati restano su questo dispositivo; gli altri non li vedono. Pubblica in Firebase il file firestore.rules del repository (progetto ' + pid + ').'
+                        'Salvataggio sul cloud rifiutato (regole Firestore). Gli altri dispositivi non vedono le modifiche. Pubblica in Firebase il file firestore.rules del repository (progetto ' + pid + ').'
                     );
                 }
             }
@@ -3674,9 +3643,6 @@ window.updateStoricoButton = async function() {
                     clearTimeout(__plantPersistTimer);
                     __plantPersistTimer = null;
                 }
-                if (typeof window.__snapshotStabilePlantLocalOnly === 'function') {
-                    window.__snapshotStabilePlantLocalOnly();
-                }
                 if (typeof window.saveData === 'function') void window.saveData(true);
             });
             document.addEventListener('visibilitychange', function () {
@@ -3684,9 +3650,6 @@ window.updateStoricoButton = async function() {
                     if (__plantPersistTimer) {
                         clearTimeout(__plantPersistTimer);
                         __plantPersistTimer = null;
-                    }
-                    if (typeof window.__snapshotStabilePlantLocalOnly === 'function') {
-                        window.__snapshotStabilePlantLocalOnly();
                     }
                     if (typeof window.saveData === 'function') {
                         void window.saveData(true);
@@ -3713,9 +3676,6 @@ window.updateStoricoButton = async function() {
                     if (!__plantPersistTimer) return;
                     clearTimeout(__plantPersistTimer);
                     __plantPersistTimer = null;
-                    if (typeof window.__snapshotStabilePlantLocalOnly === 'function') {
-                        window.__snapshotStabilePlantLocalOnly();
-                    }
                     if (typeof window.saveData === 'function') void window.saveData(true);
                 },
                 true
@@ -5232,6 +5192,8 @@ window.updateStoricoButton = async function() {
         }
 
         window.RAPPORTINI_STORAGE_KEY = 'servicehub_rapportini_v2';
+        window.__rapportiniCloudHydrated = false;
+        window.__rapportiniCloudDocMissing = false;
         window.RAPPORTINI_SECTION_IDS = ['sec-chpp', 'sec-well', 'sec-amb', 'sec-ambiente2', 'sec-acqua', 'sec-scam', 'sec-filtra', 'sec-bluedown', 'sec-aria', 'sec-azoto', 'sec-stoccaggio-interno'];
         window.RAPPORTINI_TAB_META = [
             { id: 'sec-chpp', name: 'CHPP' },
@@ -5597,15 +5559,9 @@ window.updateStoricoButton = async function() {
         };
 
         window.loadRapportiniStore = function() {
-            try {
-                const raw = localStorage.getItem(window.RAPPORTINI_STORAGE_KEY);
-                if (!raw) return null;
-                const parsed = JSON.parse(raw);
-                if (!parsed || !parsed.items) return null;
-                return parsed;
-            } catch (e) {
-                return null;
-            }
+            const mem = window.__rapportiniStore;
+            if (mem && mem.items) return mem;
+            return null;
         };
 
         window.parseRapportinoUpdatedMs = function(iso) {
@@ -5680,12 +5636,7 @@ window.updateStoricoButton = async function() {
             const activeChanged = merged.activeId !== prevActive;
             const dataChanged = newUpdated && newUpdated !== prevUpdated;
             window.__rapportiniApplyingFromCloud = true;
-            try {
-                localStorage.setItem(window.RAPPORTINI_STORAGE_KEY, JSON.stringify(merged));
-                window.__rapportiniStore = merged;
-            } catch (e) {
-                console.warn('[ServiceHub] save rapportini local:', e);
-            }
+            window.__rapportiniStore = merged;
             window.__rapportiniApplyingFromCloud = false;
             if (remoteWon || opts.force || activeChanged || dataChanged) {
                 if (typeof window.applyHiddenModulesFromActiveRapportino === 'function') {
@@ -5702,21 +5653,18 @@ window.updateStoricoButton = async function() {
 
         window.getMergedRapportinoPlantData = function(itemData) {
             const item = itemData && typeof itemData === 'object' ? Object.assign({}, itemData) : {};
-            let cloud = null;
-            try {
-                const raw = localStorage.getItem('stabileCurrentData');
-                if (raw) cloud = JSON.parse(raw);
-            } catch (_) {}
+            const cloud = window.__cloudPlantCache;
             if (!cloud || typeof cloud !== 'object') return item;
             return Object.assign({}, item, cloud);
         };
 
-        window.saveRapportiniStore = function(store) {
+        window.saveRapportiniStore = function(store, opts) {
+            opts = opts || {};
             try {
                 if (store) store.lastUpdate = new Date().toISOString();
-                localStorage.setItem(window.RAPPORTINI_STORAGE_KEY, JSON.stringify(store));
                 window.__rapportiniStore = store;
-                if (!window.__rapportiniApplyingFromCloud && typeof window.pushRapportiniStoreToCloud === 'function') {
+                const mayPush = opts.pushCloud !== false && !window.__rapportiniApplyingFromCloud && window.__rapportiniCloudHydrated;
+                if (mayPush && typeof window.pushRapportiniStoreToCloud === 'function') {
                     void window.pushRapportiniStoreToCloud(store);
                 }
             } catch (e) {
@@ -5847,7 +5795,7 @@ window.updateStoricoButton = async function() {
                         })()
                     }
                 };
-                window.saveRapportiniStore(store);
+                window.saveRapportiniStore(store, { pushCloud: false });
             } else {
                 store = window.migrateRapportiniSchedeConfig(store);
             }
@@ -5857,7 +5805,7 @@ window.updateStoricoButton = async function() {
                     snap.data._nottFiltraSteps = 1;
                     store.items.notturno = Object.assign({ id: 'notturno', name: 'Notturno', schedeConfig: window.buildNotturnoRapportinoConfig() }, snap);
                 })();
-                window.saveRapportiniStore(store);
+                window.saveRapportiniStore(store, { pushCloud: false });
             }
             if (!store.activeId) store.activeId = 'generale';
             window.__rapportiniStore = store;
@@ -6867,20 +6815,6 @@ window.updateStoricoButton = async function() {
             const p2 = typeof window.__pullRapportiniFromServerNow === 'function'
                 ? window.__pullRapportiniFromServerNow() : Promise.resolve();
             return Promise.all([p1, p2]);
-        };
-
-        window.__applyPlantFromLocalStorageFallback = function () {
-            if (window.__cloudPlantHydrated) return;
-            try {
-                const raw = localStorage.getItem('stabileCurrentData');
-                if (!raw) return;
-                const data = JSON.parse(raw);
-                if (data && typeof data === 'object') {
-                    applyData(data, { forceRemotePlant: true });
-                }
-            } catch (e) {
-                console.warn('[ServiceHub] ripristino plant da localStorage:', e);
-            }
         };
 
         window.toggleDarkMode = () => { isDarkMode = !isDarkMode; updateThemeUI(); window.saveSettings(); };

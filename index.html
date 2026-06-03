@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-fix-rapportini-plant-split';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-fix-save-overwrite';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -930,11 +930,6 @@ window.colorPreviewNumber = function(tankName, value) {
                     syncWithCloud();
                     window.__hydrateDigitalShareKeyFromCloud();
                     window.initAlarmConfigListener();
-                    setTimeout(function () {
-                        if (user && user.uid && db && __plantRetrySaveAfterAuth && typeof window.saveData === 'function') {
-                            void window.saveData(true);
-                        }
-                    }, 2000);
                 } else {
                     if(led) led.className = "w-2.5 h-2.5 rounded-full bg-red-600 shadow-[0_0_10px_#dc2626]";
                 }
@@ -1015,6 +1010,9 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!d || typeof d !== 'object') return;
             const rev = __plantPayloadRevision(d);
             if (!opts.force && rev > 0 && rev <= window.__appliedPlantSyncRevision) return;
+            const remoteMs = __plantLastUpdateMs(d.lastUpdate) || 0;
+            const localEditMs = window.__lastLocalPlantEditMs || 0;
+            if (!opts.force && localEditMs > remoteMs + 300) return;
             if (rev > 0) window.__appliedPlantSyncRevision = rev;
             window.__cloudPlantHydrated = true;
             applyData(d, { forceRemotePlant: true });
@@ -1117,7 +1115,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 __plantTruthTimer = setTimeout(function () {
                     __plantTruthTimer = null;
                     if (typeof window.__pullPlantFromServerNow === 'function') {
-                        void window.__pullPlantFromServerNow();
+                        void window.__pullPlantFromServerNow({ force: false });
                     }
                 }, 80);
             };
@@ -1166,10 +1164,30 @@ window.colorPreviewNumber = function(tankName, value) {
                     if (snap.exists()) {
                         const d = snap.data();
                         __applyRemotePlantPayload(d, { force: true });
+                    } else {
+                        try {
+                            const raw = localStorage.getItem('stabilePlantBackup');
+                            if (raw) {
+                                const backup = JSON.parse(raw);
+                                if (backup && typeof backup === 'object') {
+                                    __applyRemotePlantPayload(backup, { force: true });
+                                    void setDoc(dataDoc, backup);
+                                }
+                            }
+                        } catch (_) {}
                     }
                 })
                 .catch((err) => {
                     console.warn('[ServiceHub] plant getDoc:', err && err.message);
+                    try {
+                        const raw = localStorage.getItem('stabilePlantBackup');
+                        if (raw) {
+                            const backup = JSON.parse(raw);
+                            if (backup && typeof backup === 'object') {
+                                __applyRemotePlantPayload(backup, { force: true });
+                            }
+                        }
+                    } catch (_) {}
                 })
                 .finally(function () {
                     __wirePlantSnapshotListener();
@@ -1264,12 +1282,17 @@ window.colorPreviewNumber = function(tankName, value) {
             window.addToHistory(data);
             
             try { 
+                data.syncRevision = Date.now();
                 await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data);
                 cacheCloudPlantPayload(data);
                 const rev = __plantPayloadRevision(data);
                 if (rev > 0) window.__appliedPlantSyncRevision = rev;
+                window.__lastLocalPlantEditMs = rev;
                 window.__cloudPlantHydrated = true;
                 __plantRetrySaveAfterAuth = false;
+                try {
+                    localStorage.setItem('stabilePlantBackup', JSON.stringify(data));
+                } catch (_) {}
                 if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
                 if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                     window.schedulePublicDigitalSnapshotSync();
@@ -1647,9 +1670,19 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!user || !user.uid || !db) {
                 if (!(window.isEditingArchive && window.editingArchiveId)) {
                     __plantRetrySaveAfterAuth = true;
+                    try {
+                        const offlineData = typeof window.buildPlantPayloadFromDOM === 'function'
+                            ? window.buildPlantPayloadFromDOM()
+                            : null;
+                        if (offlineData) {
+                            localStorage.setItem('stabilePlantBackup', JSON.stringify(offlineData));
+                            window.__lastLocalPlantEditMs = offlineData.syncRevision || Date.now();
+                            cacheCloudPlantPayload(offlineData);
+                        }
+                    } catch (_) {}
                     if (typeof window.__showPlantCloudSyncBanner === 'function') {
                         window.__showPlantCloudSyncBanner(
-                            'Cloud non connesso: le modifiche non vengono salvate. Attendi il LED verde o ricarica la pagina.'
+                            'Cloud non connesso: backup locale salvato. Attendi il LED verde per sincronizzare.'
                         );
                     }
                 }
@@ -1802,8 +1835,12 @@ window.colorPreviewNumber = function(tankName, value) {
                 await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data);
                 cacheCloudPlantPayload(data);
                 window.__appliedPlantSyncRevision = syncRevision;
+                window.__lastLocalPlantEditMs = syncRevision;
                 window.__cloudPlantHydrated = true;
                 __plantRetrySaveAfterAuth = false;
+                try {
+                    localStorage.setItem('stabilePlantBackup', JSON.stringify(data));
+                } catch (_) {}
                 if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
                 if (typeof window.flushPublicDigitalSnapshotNow === "function") {
                     window.flushPublicDigitalSnapshotNow();
@@ -3699,13 +3736,15 @@ window.updateStoricoButton = async function() {
                         void window.saveData(true);
                     }
                 } else if (document.visibilityState === 'visible') {
-                    if (typeof window.__pullAllCloudStateNow === 'function') {
+                    const sinceEdit = Date.now() - (window.__lastLocalPlantEditMs || 0);
+                    if (sinceEdit > 5000 && typeof window.__pullAllCloudStateNow === 'function') {
                         void window.__pullAllCloudStateNow();
                     }
                 }
             });
             window.addEventListener('online', function () {
-                if (typeof window.__pullAllCloudStateNow === 'function') {
+                const sinceEdit = Date.now() - (window.__lastLocalPlantEditMs || 0);
+                if (sinceEdit > 5000 && typeof window.__pullAllCloudStateNow === 'function') {
                     void window.__pullAllCloudStateNow();
                 }
             });
@@ -5967,11 +6006,6 @@ window.updateStoricoButton = async function() {
             if (typeof window.restoreNotturnoFiltraAfterApplyData === 'function') {
                 window.restoreNotturnoFiltraAfterApplyData(rapportinoOnly);
             }
-            if (window.__cloudPlantHydrated && window.__cloudPlantCache) {
-                applyData(window.__cloudPlantCache, { forceRemotePlant: true });
-            } else if (typeof window.__pullPlantFromServerNow === 'function') {
-                void window.__pullPlantFromServerNow();
-            }
             updateBoilerInputs();
             if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
             if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
@@ -5987,9 +6021,6 @@ window.updateStoricoButton = async function() {
             if (!store || !store.items[id]) return;
             if (store.activeId !== id) {
                 window.saveActiveRapportinoFromUI();
-                if (typeof window.__pullPlantFromServerNow === 'function') {
-                    await window.__pullPlantFromServerNow();
-                }
                 store.activeId = id;
                 window.saveRapportiniStore(store);
                 window.applyRapportinoItem(store.items[id]);
@@ -6912,7 +6943,12 @@ window.updateStoricoButton = async function() {
         };
 
         /** Lettura forzata plant dal server (aggira cache SDK / tab in background / rete difficile). */
-        window.__pullPlantFromServerNow = function () {
+        window.__pullPlantFromServerNow = function (opts) {
+            opts = opts || {};
+            if (!opts.force) {
+                const sinceEdit = Date.now() - (window.__lastLocalPlantEditMs || 0);
+                if (sinceEdit < 5000) return Promise.resolve();
+            }
             if (!db || !user || !user.uid) return Promise.resolve();
             const dataDoc = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
             return getDocFromServer(dataDoc)
@@ -15295,12 +15331,11 @@ window.setAllPlantInputsById = function(fieldId, value) {
     return n;
 };
 
-window.applyDcsReadingsToAllRapportini = function(readings) {
+window.applyDcsReadingsToAllRapportini = async function(readings) {
     if (!readings || !readings.length) return 0;
     if (typeof window.ensureRapportiniInitialized === 'function') window.ensureRapportiniInitialized();
     if (typeof window.renderStoccaggioInternoPanel === 'function') window.renderStoccaggioInternoPanel();
     const dcsIds = window.getDcsStoccaggioFieldIdSet();
-    const shared = window.DCS_ACQUA_SHARED_FIELD_IDS || [];
     const relevant = readings.filter(function(r) {
         if (!r || !r.id || !dcsIds.has(r.id)) return false;
         const v = String(r.value || '').trim();
@@ -15312,37 +15347,14 @@ window.applyDcsReadingsToAllRapportini = function(readings) {
     const store = window.loadRapportiniStore && window.loadRapportiniStore();
     const rapportinoCount = store && store.items ? Object.keys(store.items).length : 0;
 
-    if (store && store.items) {
-        Object.keys(store.items).forEach(function(rid) {
-            const item = store.items[rid];
-            if (!item) return;
-            if (!item.data) item.data = {};
-            relevant.forEach(function(r) {
-                const val = String(r.value).trim();
-                if (shared.indexOf(r.id) >= 0) {
-                    item.data[r.id] = val;
-                } else if (rid === 'notturno') {
-                    item.data[r.id] = val;
-                }
-            });
-            item.updatedAt = new Date().toISOString();
-        });
-        if (typeof window.saveRapportiniStore === 'function') window.saveRapportiniStore(store);
-    }
-
     let applied = 0;
     relevant.forEach(function(r) {
         applied += window.setAllPlantInputsById(r.id, r.value) || 0;
     });
 
-    if (window.__cloudPlantHydrated && window.__cloudPlantCache && typeof applyData === 'function') {
-        applyData(window.__cloudPlantCache, { forceRemotePlant: true });
-    } else if (typeof window.__pullPlantFromServerNow === 'function') {
-        void window.__pullPlantFromServerNow();
-    }
+    window.__lastLocalPlantEditMs = Date.now();
     if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
-    if (typeof window.saveData === 'function') window.saveData();
-    if (typeof window.salvaDatiGlobale === 'function') window.salvaDatiGlobale();
+    if (typeof window.saveData === 'function') await window.saveData(true);
 
     window._lastDcsRapportiniCount = rapportinoCount;
     return applied;
@@ -15656,10 +15668,10 @@ window.matchTankReadingsFromOcrText = function(ocrText, fields) {
     return parsed && parsed.readings ? parsed.readings : [];
 };
 
-window.applySmartCaptureDirectly = function(parsed) {
+window.applySmartCaptureDirectly = async function(parsed) {
     if (!parsed || !Array.isArray(parsed.readings)) return 0;
     if (parsed.profile === 'dcs-acqua' || window.readingsIncludeDcsStoccaggio(parsed.readings)) {
-        return window.applyDcsReadingsToAllRapportini(parsed.readings);
+        return await window.applyDcsReadingsToAllRapportini(parsed.readings);
     }
     const fieldIds = new Set(
         (window._smartCaptureTankMode ? window.buildTankCaptureFieldMap() : window.buildSmartCaptureFieldMap())
@@ -16889,7 +16901,7 @@ window.closeSmartCaptureConfirm = function(reopenSettings) {
     }
 };
 
-window.applySmartCaptureResults = function() {
+window.applySmartCaptureResults = async function() {
     const parsed = window._smartCapturePending || { readings: [] };
     const readings = [];
     document.querySelectorAll('#smart-capture-confirm-list [data-field-id]').forEach(function(inp) {
@@ -16915,7 +16927,7 @@ window.applySmartCaptureResults = function() {
     let applied = 0;
 
     if (isDcs) {
-        applied = window.applyDcsReadingsToAllRapportini(readings);
+        applied = await window.applyDcsReadingsToAllRapportini(readings);
     } else if (isOverview) {
         readings.forEach(function(r) {
             if (!r || !r.id) return;
@@ -16925,8 +16937,8 @@ window.applySmartCaptureResults = function() {
                 applied += window.setAllPlantInputsById(r.id, r.value) || 0;
             }
         });
-        if (typeof window.saveData === 'function') window.saveData();
-        if (typeof window.salvaDatiGlobale === 'function') window.salvaDatiGlobale();
+        window.__lastLocalPlantEditMs = Date.now();
+        if (typeof window.saveData === 'function') await window.saveData(true);
     } else {
         const fieldIds = new Set(
             (window._smartCaptureTankMode ? window.buildTankCaptureFieldMap() : window.buildSmartCaptureFieldMap())
@@ -16940,8 +16952,8 @@ window.applySmartCaptureResults = function() {
             applied++;
             try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
         });
-        if (typeof window.saveData === 'function') window.saveData();
-        if (typeof window.salvaDatiGlobale === 'function') window.salvaDatiGlobale();
+        window.__lastLocalPlantEditMs = Date.now();
+        if (typeof window.saveData === 'function') await window.saveData(true);
         if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
     }
 

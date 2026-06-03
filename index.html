@@ -511,7 +511,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-dcs-all-rapportini';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-stoccaggio-solo-notturno';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -902,8 +902,7 @@ window.colorPreviewNumber = function(tankName, value) {
         const GROUPS = [
             ['sec-chpp', 'sec-well', 'sec-amb', 'sec-ambiente2'], 
             ['sec-acqua', 'sec-scam', 'sec-filtra'], 
-            ['sec-bluedown', 'sec-aria', 'sec-azoto'],
-            ['sec-stoccaggio-interno']
+            ['sec-bluedown', 'sec-aria', 'sec-azoto']
         ];
 
         const initAuth = async () => {
@@ -5346,6 +5345,7 @@ window.updateStoricoButton = async function() {
             if (typeof window.renderStoccaggioInternoPanel === 'function') window.renderStoccaggioInternoPanel();
             const modules = {};
             window.RAPPORTINI_TAB_META.forEach(function(tab) {
+                if (tab.id === 'sec-stoccaggio-interno') return;
                 const vLabel = document.getElementById('lbl-' + tab.id);
                 modules[tab.id] = {
                     enabled: true,
@@ -5361,6 +5361,9 @@ window.updateStoricoButton = async function() {
         };
 
         window.buildNotturnoRapportinoConfig = function() {
+            if (typeof window.renderStoccaggioInternoPanel === 'function') window.renderStoccaggioInternoPanel();
+            const stoccFields = typeof window.collectFieldsForRapportinoSection === 'function'
+                ? window.collectFieldsForRapportinoSection('sec-stoccaggio-interno') : [];
             return {
                 modules: {
                     'sec-filtra': {
@@ -5368,9 +5371,19 @@ window.updateStoricoButton = async function() {
                         title: 'FILTRA',
                         layout: 'turni-produzione',
                         stepCount: 1
+                    },
+                    'sec-stoccaggio-interno': {
+                        enabled: true,
+                        title: 'STOCCAGGIO INTERNO',
+                        fields: stoccFields
                     }
                 }
             };
+        };
+
+        window.isActiveRapportinoNotturno = function() {
+            const store = window.loadRapportiniStore();
+            return !!(store && store.activeId === 'notturno');
         };
 
         window.isRapportinoModuleEnabled = function(secId, schedeConfig) {
@@ -5408,11 +5421,24 @@ window.updateStoricoButton = async function() {
 
         window.applyRapportinoSchedeConfig = function(schedeConfig) {
             const cfg = schedeConfig || { modules: {} };
+            const isNott = window.isActiveRapportinoNotturno();
             window.RAPPORTINI_TAB_META.forEach(function(tab) {
                 const sec = document.getElementById(tab.id);
                 if (!sec) return;
                 const mod = cfg.modules[tab.id];
                 const enabled = mod && mod.enabled !== false;
+                if (tab.id === 'sec-stoccaggio-interno') {
+                    sec.style.display = (isNott && enabled && !hiddenModules.includes(tab.id)) ? 'flex' : 'none';
+                    if (isNott && enabled) {
+                        const title = mod.title || tab.name;
+                        const lbl = document.getElementById('lbl-' + tab.id);
+                        if (lbl) lbl.innerText = title;
+                        (mod.fields || []).forEach(function(f) {
+                            if (f.enabled !== false) window.applyFieldLabelInDom(f.id, f.label);
+                        });
+                    }
+                    return;
+                }
                 if (!enabled) {
                     sec.style.display = 'none';
                     return;
@@ -5435,11 +5461,15 @@ window.updateStoricoButton = async function() {
             if (typeof window.syncFiltraPanelForActiveRapportino === 'function') {
                 window.syncFiltraPanelForActiveRapportino();
             }
+            if (typeof window.syncNotturnoStoccaggioPanel === 'function') {
+                window.syncNotturnoStoccaggioPanel();
+            }
         };
 
         window.updateRapportiniRowBlocksVisibility = function() {
             const store = window.loadRapportiniStore();
             const cfg = store && store.items[store.activeId] ? store.items[store.activeId].schedeConfig : null;
+            const isNott = store && store.activeId === 'notturno';
             const visible = function(id) {
                 const el = document.getElementById(id);
                 return el && el.style.display !== 'none';
@@ -5455,7 +5485,7 @@ window.updateStoricoButton = async function() {
             if (rb1) rb1.style.display = row1.some(visible) ? 'flex' : 'none';
             if (rb2) rb2.style.display = row2.some(visible) ? 'flex' : 'none';
             if (rb3) rb3.style.display = row3.some(visible) ? 'flex' : 'none';
-            if (rb4) rb4.style.display = row4.some(visible) ? 'flex' : 'none';
+            if (rb4) rb4.style.display = (isNott && row4.some(visible)) ? 'flex' : 'none';
         };
 
         window.migrateRapportiniSchedeConfig = function(store) {
@@ -5483,21 +5513,27 @@ window.updateStoricoButton = async function() {
                         changed = true;
                     }
                     if (item.hiddenModules && item.hiddenModules.length) {
-                        var onlyFiltra = item.hiddenModules.filter(function(m) { return m === 'sec-filtra'; });
-                        if (onlyFiltra.length !== item.hiddenModules.length) {
-                            item.hiddenModules = onlyFiltra;
+                        var nottMods = item.hiddenModules.filter(function(m) {
+                            return m === 'sec-filtra' || m === 'sec-stoccaggio-interno';
+                        });
+                        if (nottMods.length !== item.hiddenModules.length) {
+                            item.hiddenModules = nottMods;
                             changed = true;
                         }
                     }
-                }
-                if (rid === 'generale' && item.schedeConfig && item.schedeConfig.modules) {
+                    if (typeof window.renderStoccaggioInternoPanel === 'function') window.renderStoccaggioInternoPanel();
                     if (!item.schedeConfig.modules['sec-stoccaggio-interno']) {
-                        if (typeof window.renderStoccaggioInternoPanel === 'function') window.renderStoccaggioInternoPanel();
                         item.schedeConfig.modules['sec-stoccaggio-interno'] = {
                             enabled: true,
                             title: 'STOCCAGGIO INTERNO',
                             fields: window.collectFieldsForRapportinoSection('sec-stoccaggio-interno')
                         };
+                        changed = true;
+                    }
+                }
+                if (rid === 'generale' && item.schedeConfig && item.schedeConfig.modules) {
+                    if (item.schedeConfig.modules['sec-stoccaggio-interno']) {
+                        delete item.schedeConfig.modules['sec-stoccaggio-interno'];
                         changed = true;
                     }
                 }
@@ -5696,6 +5732,7 @@ window.updateStoricoButton = async function() {
             if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
             if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
             if (typeof window.syncFiltraPanelForActiveRapportino === 'function') window.syncFiltraPanelForActiveRapportino();
+            if (typeof window.syncNotturnoStoccaggioPanel === 'function') window.syncNotturnoStoccaggioPanel();
             if (typeof window.refreshNotturnoFiltraTotals === 'function') window.refreshNotturnoFiltraTotals();
         };
 
@@ -6302,6 +6339,36 @@ window.updateStoricoButton = async function() {
                 if (tendina) tendina.style.display = 'none';
                 if (sec) sec.style.display = '';
             }
+            if (typeof window.syncNotturnoStoccaggioPanel === 'function') {
+                window.syncNotturnoStoccaggioPanel();
+            }
+        };
+
+        window.syncNotturnoStoccaggioPanel = function() {
+            const isNott = window.isNotturnoFiltraLayoutActive();
+            const stoccRow = document.getElementById('row-block-stoccaggio');
+            const sec = document.getElementById('sec-stoccaggio-interno');
+            const store = window.loadRapportiniStore();
+            const stoccMod = store && store.items.notturno && store.items.notturno.schedeConfig &&
+                store.items.notturno.schedeConfig.modules && store.items.notturno.schedeConfig.modules['sec-stoccaggio-interno'];
+            const hidden = (window.hiddenModules || hiddenModules || []).includes('sec-stoccaggio-interno');
+            const show = isNott && stoccMod && stoccMod.enabled !== false && !hidden;
+            if (stoccRow) {
+                if (show) {
+                    stoccRow.classList.add('notturno-stoccaggio-visible');
+                    stoccRow.style.display = 'flex';
+                } else {
+                    stoccRow.classList.remove('notturno-stoccaggio-visible');
+                    stoccRow.style.display = 'none';
+                }
+            }
+            if (sec) {
+                sec.style.display = show ? 'flex' : 'none';
+            }
+            if (!isNott && stoccRow) {
+                stoccRow.classList.remove('notturno-stoccaggio-visible');
+                stoccRow.style.display = 'none';
+            }
         };
 
         window._notturnoTimeTargetId = null;
@@ -6693,7 +6760,7 @@ window.updateStoricoButton = async function() {
                 if (hiddenModules.includes(id) || !cfgEnabled) {
                     if (el) el.style.display = 'none';
                     if (hiddenModules.includes(id)) {
-                        if (window.isNotturnoFiltraLayoutActive && id !== 'sec-filtra') return;
+                        if (window.isNotturnoFiltraLayoutActive && id !== 'sec-filtra' && id !== 'sec-stoccaggio-interno') return;
                         let labelText = labelEl ? labelEl.innerText : id;
                         if (id === 'sec-filtra' && window.isNotturnoFiltraLayoutActive()) {
                             const t = document.getElementById('lbl-sec-filtra-tendina');
@@ -6717,6 +6784,9 @@ window.updateStoricoButton = async function() {
                 if (window.isNotturnoFiltraLayoutActive() && id === 'sec-filtra') {
                     const tendina = document.getElementById('notturno-filtra-tendina');
                     if (tendina) tendina.style.display = 'none';
+                }
+                if (window.isNotturnoFiltraLayoutActive() && id === 'sec-stoccaggio-interno') {
+                    if (typeof window.syncNotturnoStoccaggioPanel === 'function') window.syncNotturnoStoccaggioPanel();
                 }
                 updateModulesVisibility();
                 window.saveSettings();
@@ -6746,10 +6816,11 @@ window.updateStoricoButton = async function() {
             hiddenModules = hiddenModules.filter(m => m !== id);
             window.hiddenModules = hiddenModules;
             updateModulesVisibility();
-            if (window.isNotturnoFiltraLayoutActive() && id === 'sec-filtra') {
+            if (window.isNotturnoFiltraLayoutActive() && (id === 'sec-filtra' || id === 'sec-stoccaggio-interno')) {
                 if (typeof window.syncFiltraPanelForActiveRapportino === 'function') {
                     window.syncFiltraPanelForActiveRapportino();
                 }
+                if (typeof window.syncNotturnoStoccaggioPanel === 'function') window.syncNotturnoStoccaggioPanel();
             } else {
                 window.handleLabelClick(id, true);
             }
@@ -7336,6 +7407,7 @@ window.updateStoricoButton = async function() {
                 console.log('Tablet landscape rilevato - apro tutte le schede');
                 const allSections = ['sec-chpp', 'sec-well', 'sec-amb', 'sec-ambiente2', 'sec-acqua', 'sec-scam', 'sec-filtra', 'sec-bluedown', 'sec-aria', 'sec-azoto', 'sec-stoccaggio-interno'];
                 allSections.forEach(sectionId => {
+                    if (sectionId === 'sec-stoccaggio-interno' && !window.isNotturnoFiltraLayoutActive()) return;
                     const section = document.getElementById(sectionId);
                     if (section) {
                         section.classList.remove('col-collapsed');
@@ -9090,6 +9162,7 @@ window.buildDigitalCardsHTML = function() {
         ];
         // Filtra solo i moduli che esistono nel DOM e non sono già in orderedModules
         const otherModules = allModuleIds.filter(id => {
+            if (id === 'sec-stoccaggio-interno' && !window.isNotturnoFiltraLayoutActive()) return false;
             const element = document.getElementById(id);
             return element && !orderedModules.includes(id) && !hiddenModules.includes(id);
         });
@@ -11154,6 +11227,7 @@ window.convertToHtml = async () => {
         .dark .nott-f-total-val { color: #6ee7b7; }
         .nott-f-add-step { width: 100%; padding: 11px; border-radius: 8px; background: #047857; color: #fff; font-size: 10px; font-weight: 800; text-transform: uppercase; border: none; touch-action: manipulation; }
         body.notturno-filtra-active .main-container .row-block { display: none !important; }
+        body.notturno-filtra-active #row-block-stoccaggio.notturno-stoccaggio-visible { display: flex !important; }
         .main-header { background-color: #000; color: white; padding: 0 12px; display: flex; justify-content: space-between; align-items: center; height: 60px; }
         input { width: 100%; height: 100%; border: none; text-align: center; font-weight: 800; background: transparent; outline: none; color: var(--text-main); }
         table { width: 100%; border-collapse: collapse; table-layout: fixed; height: 100%; }
@@ -12148,7 +12222,7 @@ window.convertToHtml = async () => {
         <div id="row-block-2" class="row-block" style="height: 150px;">
             <div id="sec-acqua" class="col-section col-collapsed">
                 <div class="v-label-container" style="background-color: #075985;" ontouchstart="window.startPress(event, 'sec-acqua')" ontouchmove="window.movePress(event)" ontouchend="window.endPress(event, 'sec-acqua')" onmousedown="window.startPress(event, 'sec-acqua')" onmouseup="window.endPress(event, 'sec-acqua')"><span class="v-label-text" id="lbl-sec-acqua">ACQUA</span></div>
-                <table><tr class="th-bg"><td>TK</td><td>LIV</td><td>TK</td><td>LIV</td></tr><tr><td class="cell-label-main">S 133</td><td><input type="tel" id="inp-s133" onchange="window.saveData()"></td><td class="cell-label-main">TK 101</td><td><input type="tel" id="tk101" onchange="window.saveData()"></td></tr></table>
+                <table><tr class="th-bg"><td>TK</td><td>LIV</td><td>TK</td><td>LIV</td></tr><tr><td class="cell-label-main">TK 9000</td><td><input type="tel" id="inp-tk9000" onchange="window.saveData()"></td><td class="cell-label-main">TK 9201</td><td><input type="tel" id="inp-tk9201" onchange="window.saveData()"></td></tr><tr><td class="cell-label-main">S 133</td><td><input type="tel" id="inp-s133" onchange="window.saveData()"></td><td class="cell-label-main">TK 101</td><td><input type="tel" id="tk101" onchange="window.saveData()"></td></tr></table>
             </div>
             <div id="sec-scam" class="col-section col-expanded">
                 <div class="v-label-container" style="background-color: #92400e;" ontouchstart="window.startPress(event, 'sec-scam')" ontouchmove="window.movePress(event)" ontouchend="window.endPress(event, 'sec-scam')" onmousedown="window.startPress(event, 'sec-scam')" onmouseup="window.endPress(event, 'sec-scam')"><span class="v-label-text" id="lbl-sec-scam">SCAM</span></div>
@@ -12196,7 +12270,7 @@ window.convertToHtml = async () => {
             </div>
         </div>
 
-        <div id="row-block-stoccaggio" class="row-block" style="min-height: 300px; border-bottom: none;">
+        <div id="row-block-stoccaggio" class="row-block" style="display: none; min-height: 300px; border-bottom: none;">
             <div id="sec-stoccaggio-interno" class="col-section col-expanded" style="flex: 1 1 100%; max-width: 100%;">
                 <div class="v-label-container" style="background-color: #0f766e;" ontouchstart="window.startPress(event, 'sec-stoccaggio-interno')" ontouchmove="window.movePress(event)" ontouchend="window.endPress(event, 'sec-stoccaggio-interno')" onmousedown="window.startPress(event, 'sec-stoccaggio-interno')" onmouseup="window.endPress(event, 'sec-stoccaggio-interno')"><span class="v-label-text" id="lbl-sec-stoccaggio-interno">STOCCAGGIO INTERNO</span></div>
                 <div class="stoccaggio-interno-scroll flex flex-col grow overflow-y-auto min-h-0">
@@ -14453,15 +14527,18 @@ window.runDcsAcquaCapture = async function(imageData) {
         tankRegistry: window.getDcsAcquaTankRegistry(),
         rawTextPreview: String(raw).slice(0, 300),
         notes: readings.length
-            ? ('DCS · ' + readings.length + ' livelli Stoccaggio interno (tutti i rapportini)' + memNote)
+            ? ('DCS · ' + readings.length + ' livelli (Notturno Stoccaggio + Acqua Generale)' + memNote)
             : ('DCS · catalogo aggiornato' + memNote + ' — nessun livello rilevato')
     };
 };
+
+window.DCS_ACQUA_SHARED_FIELD_IDS = ['inp-tk9000', 'inp-tk9201'];
 
 window.applyDcsReadingsToAllRapportini = function(readings) {
     if (!readings || !readings.length) return 0;
     if (typeof window.ensureRapportiniInitialized === 'function') window.ensureRapportiniInitialized();
     const dcsIds = window.getDcsStoccaggioFieldIdSet();
+    const shared = window.DCS_ACQUA_SHARED_FIELD_IDS || [];
     const relevant = readings.filter(function(r) {
         if (!r || !r.id || !dcsIds.has(r.id)) return false;
         const v = String(r.value || '').trim();
@@ -14479,7 +14556,12 @@ window.applyDcsReadingsToAllRapportini = function(readings) {
             if (!item) return;
             if (!item.data) item.data = {};
             relevant.forEach(function(r) {
-                item.data[r.id] = String(r.value).trim();
+                const val = String(r.value).trim();
+                if (shared.indexOf(r.id) >= 0) {
+                    item.data[r.id] = val;
+                } else if (rid === 'notturno') {
+                    item.data[r.id] = val;
+                }
             });
             item.updatedAt = new Date().toISOString();
         });
@@ -15880,8 +15962,8 @@ window.showSmartCaptureConfirm = function(parsed) {
         hint.textContent = parsed.notes + ' — correggi se necessario';
     } else if (hint) {
         hint.textContent = isDcsAcqua
-            ? ('DCS Stoccaggio interno: tutte le sigle della tabella. Conferma → livelli su TUTTI i rapportini.' +
-                (parsed.catalogSize ? ' (' + parsed.catalogSize + ' serbatoi in catalogo.)' : ''))
+            ? ('DCS: sigle → Notturno (Stoccaggio interno). TK 9000 / 9201 anche su Generale (Acqua).' +
+                (parsed.catalogSize ? ' (' + parsed.catalogSize + ' in catalogo.)' : ''))
             : 'Ogni sigla letta dalla foto va nel campo corrispondente del rapportino (Ambiente 1 / 2 / Acqua)';
     }
 
@@ -15942,7 +16024,7 @@ window.applySmartCaptureResults = function() {
     window.closeSmartCaptureConfirm();
     if (isDcs && applied) {
         const n = window._lastDcsRapportiniCount || 1;
-        alert('Applicati ' + applied + ' livelli DCS su Stoccaggio interno · copiati su ' + n + ' rapportini.');
+        alert('Applicati ' + applied + ' livelli DCS · Stoccaggio su Notturno, TK 9000/9201 su tutti i rapportini (' + n + ').');
     } else {
         alert(applied ? ('Applicati ' + applied + ' livelli serbatoi.') : 'Nessun campo aggiornato.');
     }

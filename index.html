@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.04-brutal-sync-restore';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-sync-other-device';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -1087,7 +1087,7 @@ window.colorPreviewNumber = function(tankName, value) {
         };
 
         window.__updatePlantSyncDiagnostic = function (serverData) {
-            const localRev = window.__lastPushedPlantRevision || 0;
+            const localRev = window.__lastPushedPlantRevision || window.__lastLocalPlantRevision || 0;
             const serverRev = serverData ? __plantPayloadRevision(serverData) : (window.__lastServerPlantRevision || 0);
             if (serverRev > 0) window.__lastServerPlantRevision = serverRev;
             const localShort = window.__formatPlantRevShort(localRev);
@@ -1181,7 +1181,8 @@ window.colorPreviewNumber = function(tankName, value) {
             }
             if (rev > 0) window.__appliedPlantSyncRevision = Math.max(window.__appliedPlantSyncRevision || 0, rev);
             window.__cloudPlantHydrated = true;
-            applyData(d, { fromRemote: true });
+            const fromOtherDevice = !!(d.savedBy && myDev && d.savedBy !== myDev);
+            applyData(d, { fromRemote: true, fromOtherDevice: fromOtherDevice, savedBy: d.savedBy });
             cacheCloudPlantPayload(d);
             if (typeof window.__updatePlantSyncDiagnostic === 'function') {
                 window.__updatePlantSyncDiagnostic(d);
@@ -1205,7 +1206,12 @@ window.colorPreviewNumber = function(tankName, value) {
         window.flushPlantBackupNow = function () {
             if (typeof window.buildPlantPayloadFromDOM !== 'function') return null;
             const data = window.buildPlantPayloadFromDOM();
+            const rev = __plantPayloadRevision(data);
+            if (rev > 0) window.__lastLocalPlantRevision = rev;
             __writePlantLocalBackup(data);
+            if (typeof window.__updatePlantSyncDiagnostic === 'function') {
+                window.__updatePlantSyncDiagnostic(window.__cloudPlantCache || data);
+            }
             return data;
         };
 
@@ -1326,7 +1332,11 @@ window.colorPreviewNumber = function(tankName, value) {
                             schedulePlantTruthFromServer();
                             return;
                         }
-                        __applyRemotePlantPayload(d);
+                        const myDevSnap = typeof window.__getServiceHubDeviceId === 'function' ? window.__getServiceHubDeviceId() : '';
+                        const revSnap = __plantPayloadRevision(d);
+                        const otherDev = !!(d.savedBy && myDevSnap && d.savedBy !== myDevSnap);
+                        const newerSnap = revSnap > (window.__appliedPlantSyncRevision || 0);
+                        __applyRemotePlantPayload(d, { force: otherDev || newerSnap });
                         if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                             window.schedulePublicDigitalSnapshotSync();
                         }
@@ -5477,6 +5487,7 @@ window.updateStoricoButton = async function() {
         function applyData(data, opts) {
             if (!data) return;
             const fromRemote = opts && opts.fromRemote === true;
+            const fromOtherDevice = !!(opts && opts.fromOtherDevice);
             const skipBoilerSideEffects = false;
             if (data.manualShift !== undefined) { manualShift = data.manualShift; updateDeviceInfo(); }
             if (data.shift !== undefined && document.getElementById('current-shift-label')) {
@@ -5495,7 +5506,7 @@ window.updateStoricoButton = async function() {
                 if (inputs.length) {
                     inputs.forEach(function(el) {
                         if (fromRemote && window.__shouldSkipInputForPlantPayload && window.__shouldSkipInputForPlantPayload(el)) return;
-                        if (window.__isPlantFieldProtected && window.__isPlantFieldProtected(id, el)) return;
+                        if (!fromOtherDevice && window.__isPlantFieldProtected && window.__isPlantFieldProtected(id, el)) return;
                         el.value = strVal;
                         if (id === 'osmosi' && typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(el);
                     });
@@ -5504,7 +5515,7 @@ window.updateStoricoButton = async function() {
                 const el = document.getElementById(id);
                 if (!el) continue;
                 if (el.tagName === 'INPUT') {
-                    if (window.__isPlantFieldProtected && window.__isPlantFieldProtected(id, el)) return;
+                    if (!fromOtherDevice && window.__isPlantFieldProtected && window.__isPlantFieldProtected(id, el)) return;
                     el.value = strVal;
                     if (id === 'osmosi' && typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(el);
                 }

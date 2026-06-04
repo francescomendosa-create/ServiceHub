@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.04-sync-stable';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-plant-sync-v1';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -1041,10 +1041,8 @@ window.colorPreviewNumber = function(tankName, value) {
             return Number.isFinite(t) ? t : null;
         };
 
+        window.__lastLocalPlantEditMs = 0;
         window.__appliedPlantSyncRevision = 0;
-        window.__lastPushedPlantRevision = 0;
-        window.__plantSavePulseAt = 0;
-        window.__plantPushMismatchSince = 0;
         window.__cloudPlantHydrated = false;
         window.__cloudPlantCache = null;
         window.__plantSyncPollInterval = null;
@@ -1086,41 +1084,6 @@ window.colorPreviewNumber = function(tankName, value) {
             const ae = document.activeElement;
             if (!ae || (ae.tagName !== 'INPUT' && ae.tagName !== 'TEXTAREA')) return false;
             return !!(ae.closest && ae.closest('.main-container'));
-        };
-
-        window.__updatePlantSyncDiagnostic = function (serverData) {
-            const localRev = window.__lastPushedPlantRevision || 0;
-            const serverRev = serverData ? __plantPayloadRevision(serverData) : (window.__lastServerPlantRevision || 0);
-            if (serverRev > 0) window.__lastServerPlantRevision = serverRev;
-            const localShort = window.__formatPlantRevShort(localRev);
-            const serverShort = window.__formatPlantRevShort(serverRev);
-            let msg = 'Tu ' + localShort + ' · Cloud ' + serverShort;
-            const savingNow = window.__plantSavePulseAt && (Date.now() - window.__plantSavePulseAt < 3500);
-            if (savingNow) {
-                msg += ' · invio al cloud…';
-            } else if (localRev > 0 && serverRev > 0 && Math.abs(localRev - serverRev) <= 2) {
-                window.__plantPushMismatchSince = 0;
-                msg += ' · OK';
-            } else if (localRev > 0 && serverRev > 0 && localRev !== serverRev) {
-                if (localRev > serverRev) {
-                    if (!window.__plantPushMismatchSince) window.__plantPushMismatchSince = Date.now();
-                    if (Date.now() - window.__plantPushMismatchSince > 12000) {
-                        msg += ' · cloud in ritardo';
-                    } else {
-                        msg += ' · OK';
-                    }
-                } else {
-                    window.__plantPushMismatchSince = 0;
-                    msg += ' · ricezione…';
-                }
-            } else if (localRev > 0 && serverRev > 0) {
-                window.__plantPushMismatchSince = 0;
-                msg += ' · OK';
-            }
-            if (serverData && serverData.savedBy) {
-                msg += ' · da ' + String(serverData.savedBy).slice(-6);
-            }
-            if (typeof window.__setPlantSyncStatusUI === 'function') window.__setPlantSyncStatusUI(msg);
         };
 
         const __plantPayloadRevision = function (d) {
@@ -1176,7 +1139,31 @@ window.colorPreviewNumber = function(tankName, value) {
             } catch (_) {}
         };
 
-        window.__updatePlantSaveStatusUI = function () {};
+        window.__updatePlantSaveStatusUI = function (state, detail) {
+            const led = document.getElementById('cloud-status-led');
+            const bar = document.getElementById('sh-sync-status-text');
+            const d = detail ? String(detail) : '';
+            if (bar) {
+                if (state === 'pending') bar.textContent = 'Salvataggio sul cloud…';
+                else if (state === 'ok') bar.textContent = 'Cloud OK' + (d ? ' · ' + d : '');
+                else if (state === 'local') bar.textContent = 'Solo backup locale' + (d ? ' · ' + d : '');
+                else if (state === 'error') bar.textContent = 'Errore cloud' + (d ? ' · ' + d : '');
+            }
+            if (!led) return;
+            if (state === 'pending') {
+                led.className = 'w-2.5 h-2.5 rounded-full bg-blue-500 shadow-[0_0_10px_#3b82f6]';
+                led.title = 'Salvataggio sul cloud in corso…';
+            } else if (state === 'ok') {
+                led.className = 'w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_10px_#10b981]';
+                led.title = 'Cloud connesso · salvato' + (d ? ' ' + d : '');
+            } else if (state === 'local') {
+                led.className = 'w-2.5 h-2.5 rounded-full bg-amber-500 shadow-[0_0_10px_#f59e0b]';
+                led.title = 'Backup locale (cloud in attesa)' + (d ? ' · ' + d : '');
+            } else if (state === 'error') {
+                led.className = 'w-2.5 h-2.5 rounded-full bg-red-600 shadow-[0_0_10px_#dc2626]';
+                led.title = 'Errore salvataggio cloud' + (d ? ' · ' + d : '');
+            }
+        };
 
         window.__hydratePlantFromLocalBackup = function () {
             const backup = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
@@ -1194,18 +1181,11 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!d || typeof d !== 'object') return;
             d = window.__stripRapportinoKeysFromPlantPayload(d);
             const rev = __plantPayloadRevision(d);
-            const myDev = typeof window.__getServiceHubDeviceId === 'function' ? window.__getServiceHubDeviceId() : '';
-            if (!opts.force && rev > 0 && rev === window.__lastPushedPlantRevision && d.savedBy && myDev && d.savedBy === myDev) {
-                return;
-            }
-            if (rev > 0) window.__appliedPlantSyncRevision = Math.max(window.__appliedPlantSyncRevision || 0, rev);
+            if (!opts.force && rev > 0 && rev <= window.__appliedPlantSyncRevision) return;
+            if (rev > 0) window.__appliedPlantSyncRevision = rev;
             window.__cloudPlantHydrated = true;
-            const fromOtherDevice = !!(d.savedBy && myDev && d.savedBy !== myDev);
-            applyData(d, { fromRemote: true, fromOtherDevice: fromOtherDevice, savedBy: d.savedBy });
+            applyData(d, { forceRemotePlant: true });
             cacheCloudPlantPayload(d);
-            if (typeof window.__updatePlantSyncDiagnostic === 'function') {
-                window.__updatePlantSyncDiagnostic(d);
-            }
             console.info('[ServiceHub] plant da cloud rev=', rev, 'by', d && d.savedBy);
             if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
             if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
@@ -1225,12 +1205,13 @@ window.colorPreviewNumber = function(tankName, value) {
         window.flushPlantBackupNow = function () {
             if (typeof window.buildPlantPayloadFromDOM !== 'function') return null;
             const data = window.buildPlantPayloadFromDOM();
+            if (!data.syncRevision) data.syncRevision = Date.now();
             __writePlantLocalBackup(data);
+            cacheCloudPlantPayload(data);
             return data;
         };
 
         let __plantSaveInFlight = null;
-        let __plantSaveRunAgain = false;
 
         window.buildPlantPayloadFromDOM = function() {
             const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
@@ -1347,11 +1328,7 @@ window.colorPreviewNumber = function(tankName, value) {
                             schedulePlantTruthFromServer();
                             return;
                         }
-                        const myDevSnap = typeof window.__getServiceHubDeviceId === 'function' ? window.__getServiceHubDeviceId() : '';
-                        const revSnap = __plantPayloadRevision(d);
-                        const otherDev = !!(d.savedBy && myDevSnap && d.savedBy !== myDevSnap);
-                        const newerSnap = revSnap > (window.__appliedPlantSyncRevision || 0);
-                        __applyRemotePlantPayload(d, { force: otherDev || newerSnap });
+                        __applyRemotePlantPayload(d);
                         if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                             window.schedulePublicDigitalSnapshotSync();
                         }
@@ -1379,16 +1356,29 @@ window.colorPreviewNumber = function(tankName, value) {
                     return getDoc(dataDoc);
                 })
                 .then((snap) => {
-                    if (snap.exists()) {
-                        const d = window.__stripRapportinoKeysFromPlantPayload(snap.data());
-                        __applyRemotePlantPayload(d, { force: true });
-                        return;
+                    const serverData = snap.exists() ? snap.data() : null;
+                    const backup = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
+                    let picked = null;
+                    if (serverData && backup) {
+                        picked = window.__pickNewestPlantPayload(serverData, backup);
+                    } else if (serverData) {
+                        picked = serverData;
+                    } else if (backup) {
+                        picked = backup;
                     }
-                    const backup = window.__readPlantBackupLocal();
-                    if (backup) {
-                        const picked = window.__stripRapportinoKeysFromPlantPayload(backup);
-                        __applyRemotePlantPayload(picked, { force: true });
-                        if (user && user.uid) void setDoc(dataDoc, picked);
+                    if (picked) {
+                        const d = window.__stripRapportinoKeysFromPlantPayload(picked);
+                        __applyRemotePlantPayload(d, { force: true });
+                        if (!serverData && user && user.uid) void setDoc(dataDoc, d);
+                        else if (
+                            serverData &&
+                            backup &&
+                            __plantPayloadRevision(backup) > __plantPayloadRevision(serverData) &&
+                            user &&
+                            user.uid
+                        ) {
+                            void setDoc(dataDoc, d);
+                        }
                     }
                 })
                 .catch((err) => {

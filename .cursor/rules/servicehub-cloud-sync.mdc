@@ -1,53 +1,39 @@
----
-description: ServiceHub STABILE 2026 — architettura salvataggio cloud (NON rompere)
-globs: index.html,sw.js,firestore.rules
-alwaysApply: true
----
-
-# ServiceHub — salvataggio e sync (assetto validato)
-
-Build di riferimento: `2026.06.03-fix-persist-sync` (o successiva).
-
-## Fonte unica numeri impianto
-
-- **Firestore**: `artifacts/stabile-2026-v4/sharedDial/plant` (documento intero, `setDoc` senza merge).
-- **Backup locale** (solo dopo modifica / chiusura app): `localStorage.stabilePlantBackup`.
-- **NON** includere in `plant` chiavi rapportino-only (`_nott*`, `nott-f-s*`) — solo in documento `rapportini`.
-- **NON** usare `stabileCurrentData`, `datiAppGlobali` per i campi `.main-container` (numeri cruscotto).
-
-## Rapportini (Generale / Notturno)
-
-- **Firestore**: `artifacts/stabile-2026-v4/sharedDial/rapportini` — solo `activeId`, `schedeConfig`, `hiddenModules`, `sectionsLayout`, campi `_nott*` / filtra notturno.
-- **Backup locale rapportini**: `localStorage.stabileRapportiniBackup` (come plant).
-- **NON** salvare snapshot completi degli input plant in `item.data` dei rapportini.
-- `applyRapportinoItem`: solo UI (layout, moduli, filtra notturno). **Non** riapplicare `__cloudPlantCache` sui numeri condivisi.
-- Sessione UI: `localStorage.servicehub_session_prefs` (`activeId`).
-
-## Bootstrap
-
-1. `getDocFromServer(plant)` poi listener `onSnapshot`.
-2. All’avvio: `__bootstrapPlantFromServerSnap` — confronta server vs `stabilePlantBackup` con `__pickNewestPlantPayload`, applica il più recente.
-3. `setDoc(plant)` dal backup **solo** se `syncRevision` del backup > server (recupero offline / salvataggio cloud fallito).
-4. Anteprima immediata: in `DOMContentLoaded` applicare `stabilePlantBackup` finché non arriva Firestore.
-5. Rapportini: `mergeRapportiniStores(backup, server)`; push cloud solo se backup `lastUpdate` > server.
-6. **Mai** `saveData(true)` ritardato all’auth su DOM vuoto — usare `__syncPendingPlantBackupToCloud`.
-
-## Salvataggio
-
-- `saveData` / input: `flushPlantBackupNow()` poi `setDoc(plant)`.
-- **Mai** riapplicare `__cloudPlantCache` dopo import DCS o modifica DOM (`applyDcsReadingsToAllRapportini`).
-- **Non** salvare automaticamente all’avvio valori HTML su Firestore.
-- Dopo login: se `__plantRetrySaveAfterAuth`, eseguire `saveData(true)` una volta.
-- `pagehide` / `visibility hidden`: `flushPlantBackupNow()` + `saveData(true)`.
-- `visibility visible` / `online`: `__pullAllCloudStateNow({ force: true })` per riallineare.
-- **NON** impostare `__lastLocalPlantEditMs` su ogni `input` (blocca gli aggiornamenti da altri tablet). Solo dopo `setDoc` riuscito.
-- `__applyRemotePlantPayload`: applica se `syncRevision` > `__appliedPlantSyncRevision` (niente guardia “ultimi 5s di digitazione”).
-
-## Report preview
-
-- Titolo sezione stoccaggio: sempre **`STOCCAGGIO INTERNO`** (`displayTitle` in `buildPreview`), non “Scheda …” né id DOM.
-
-## Multi-dispositivo
-
-- Stesso progetto Firebase `servicehub-18309`, stesso `appId`, regole `firestore.rules` pubblicate.
-- LED verde = auth anonima OK; banner giallo = cloud non scrive/legge.
+---
+description: ServiceHub STABILE 2026 — architettura salvataggio cloud (NON rompere)
+globs: index.html,sw.js,firestore.rules
+alwaysApply: true
+---
+
+# ServiceHub — salvataggio e sync (assetto validato)
+
+Build di riferimento: `2026.06.03-restore-sync-v13` (modello dc9d001 + filtri rapportino).
+
+## Fonte unica numeri impianto
+
+- **Firestore**: `artifacts/stabile-2026-v4/sharedDial/plant` — `setDoc(..., { merge: true })`.
+- **Backup locale**: `localStorage.stabileCurrentData` (lastUpdate ISO per confronto).
+- **NON** cancellare `stabileCurrentData` in `syncWithCloud`.
+- **NON** includere in `plant` chiavi rapportino-only (`_nott*`, `nott-f-s*`) — solo in `rapportini`.
+- **NON** usare `datiAppGlobali` per i campi `.main-container`.
+
+## Sync plant (real-time)
+
+- `onSnapshot(plant)` → se `stabileCurrentData.lastUpdate` > remote.lastUpdate → tieni locale; altrimenti `applyData` + merge in `stabileCurrentData`.
+- Bootstrap: `getDocFromServer` poi listener (come v13).
+- `__pullPlantFromServerNow` dopo ogni evento (debounce 280ms).
+- LED: **solo verde** se auth OK, rosso se disconnesso — **niente** blu/giallo su salvataggio.
+
+## Rapportini
+
+- Firestore: `artifacts/stabile-2026-v4/sharedDial/rapportini`.
+- `mergeRapportiniStores` all’avvio; non snapshot plant in `item.data`.
+
+## Salvataggio
+
+- `saveData`: scrive `stabileCurrentData` poi `setDoc(plant, data, { merge: true })`.
+- `pagehide` / `hidden`: `__snapshotStabilePlantLocalOnly()` + `saveData(true)`.
+- Senza auth: solo snapshot locale + `__plantRetrySaveAfterAuth` → `saveData` dopo 2s.
+
+## Multi-dispositivo
+
+- Progetto `servicehub-18309`, `appId` `stabile-2026-v4`, regole `firestore.rules` pubblicate.

@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.04-persist-local-first';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-fix-stoccaggio-sync';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -1172,8 +1172,7 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!d || typeof d !== 'object') return;
             d = window.__stripRapportinoKeysFromPlantPayload(d);
             const rev = __plantPayloadRevision(d);
-            if (!opts.force && rev > 0 && rev < window.__appliedPlantSyncRevision) return;
-            if (!opts.force && rev > 0 && rev === window.__appliedPlantSyncRevision && d.savedBy && d.savedBy === (typeof window.__getServiceHubDeviceId === 'function' ? window.__getServiceHubDeviceId() : '')) return;
+            if (!opts.force && rev > 0 && rev <= window.__appliedPlantSyncRevision) return;
             if (rev > 0) window.__appliedPlantSyncRevision = rev;
             window.__cloudPlantHydrated = true;
             applyData(d, { fromRemote: true });
@@ -1225,6 +1224,7 @@ window.colorPreviewNumber = function(tankName, value) {
             document.querySelectorAll('input').forEach(function(input) {
                 if (!input.id) return;
                 if (window.isRapportinoOnlyDataKey && window.isRapportinoOnlyDataKey(input.id)) return;
+                if (window.__shouldSkipInputForPlantPayload && window.__shouldSkipInputForPlantPayload(input)) return;
                 data[input.id] = input.value;
             });
             document.querySelectorAll('.status-cell-btn, .status-header, .vwt-label-dynamic, .osmosi-label-dynamic').forEach(function(btn) {
@@ -1351,16 +1351,16 @@ window.colorPreviewNumber = function(tankName, value) {
                     return getDoc(dataDoc);
                 })
                 .then((snap) => {
-                    const serverData = snap.exists() ? window.__stripRapportinoKeysFromPlantPayload(snap.data()) : null;
+                    if (snap.exists()) {
+                        const d = window.__stripRapportinoKeysFromPlantPayload(snap.data());
+                        __applyRemotePlantPayload(d, { force: true });
+                        return;
+                    }
                     const backup = window.__readPlantBackupLocal();
-                    const backupData = backup ? window.__stripRapportinoKeysFromPlantPayload(backup) : null;
-                    const picked = window.__pickNewestPlantPayload(serverData, backupData);
-                    if (!picked) return;
-                    __applyRemotePlantPayload(picked, { force: true });
-                    const revServer = serverData ? __plantPayloadRevision(serverData) : 0;
-                    const revPicked = __plantPayloadRevision(picked);
-                    if (user && user.uid && revPicked > revServer) {
-                        void setDoc(dataDoc, picked);
+                    if (backup) {
+                        const picked = window.__stripRapportinoKeysFromPlantPayload(backup);
+                        __applyRemotePlantPayload(picked, { force: true });
+                        if (user && user.uid) void setDoc(dataDoc, picked);
                     }
                 })
                 .catch((err) => {
@@ -1373,6 +1373,12 @@ window.colorPreviewNumber = function(tankName, value) {
                 })
                 .finally(function () {
                     __wirePlantSnapshotListener();
+                    if (window.__plantSyncPollInterval) clearInterval(window.__plantSyncPollInterval);
+                    window.__plantSyncPollInterval = setInterval(function () {
+                        if (!user || !user.uid || !db) return;
+                        if (typeof window.__isPlantUserTypingNow === 'function' && window.__isPlantUserTypingNow()) return;
+                        if (typeof window.__pullPlantFromServerNow === 'function') void window.__pullPlantFromServerNow();
+                    }, 4000);
                 });
 
             const settingsDoc = doc(db, 'artifacts', appId, 'sharedDial', 'settings');
@@ -1875,15 +1881,12 @@ window.colorPreviewNumber = function(tankName, value) {
         window.saveData = async function (skipHistory) {
             const skipHist = skipHistory === true;
             const doSave = async function () {
-            if (!(window.isEditingArchive && window.editingArchiveId)) {
-                const localSnap = typeof window.buildPlantPayloadFromDOM === 'function'
-                    ? window.buildPlantPayloadFromDOM({ preserveRevision: true })
-                    : null;
-                if (localSnap) __writePlantLocalBackup(localSnap);
-            }
-
             if (!user || !user.uid || !db) {
                 if (!(window.isEditingArchive && window.editingArchiveId)) {
+                    const localOnly = typeof window.buildPlantPayloadFromDOM === 'function'
+                        ? window.buildPlantPayloadFromDOM()
+                        : null;
+                    if (localOnly) __writePlantLocalBackup(localOnly);
                     __plantRetrySaveAfterAuth = true;
                 }
                 return;
@@ -5601,6 +5604,20 @@ window.updateStoricoButton = async function() {
             { label: 'TK 10602 A', fieldId: 'inp-tk10602a' }
         ];
 
+        window.__STOCCAGGIO_FIELD_IDS = new Set(
+            (window.STOCCAGGIO_INTERNO_TANKS || []).map(function (t) { return t.fieldId; })
+        );
+
+        /** TK9000/9201 ecc. esistono anche in ACQUA: in Notturno la sezione ACQUA è nascosta ma svuotava il cloud. */
+        window.__shouldSkipInputForPlantPayload = function (input) {
+            if (!input || !input.id) return true;
+            if (!window.__STOCCAGGIO_FIELD_IDS || !window.__STOCCAGGIO_FIELD_IDS.has(input.id)) return false;
+            const inStocc = !!(input.closest && input.closest('#stoccaggio-panel-notturno'));
+            const notturno = !!(window.isNotturnoFiltraLayoutActive && window.isNotturnoFiltraLayoutActive());
+            if (notturno) return !inStocc;
+            return inStocc;
+        };
+
         window.renderStoccaggioInternoPanel = function() {
             const panel = document.getElementById('stoccaggio-panel-notturno');
             if (!panel || panel.dataset.built === 'v3-table') return;
@@ -7387,9 +7404,7 @@ window.updateStoricoButton = async function() {
                     if (!snap.exists()) return;
                     const d = snap.data();
                     const rev = __plantPayloadRevision(d);
-                    const local = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
-                    const revLocal = local ? __plantPayloadRevision(local) : 0;
-                    if (rev <= revLocal && rev <= (window.__appliedPlantSyncRevision || 0)) return;
+                    if (rev > 0 && rev <= (window.__appliedPlantSyncRevision || 0)) return;
                     __applyRemotePlantPayload(d, { force: true });
                     if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                         window.schedulePublicDigitalSnapshotSync();

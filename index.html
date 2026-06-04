@@ -929,8 +929,8 @@ window.colorPreviewNumber = function(tankName, value) {
                     if(led) led.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_10px_#10b981]"; 
                     const bt = document.getElementById('sh-build-tag');
                     if (bt) bt.textContent = window.SERVICEHUB_BUILD || '';
-                    if (typeof window.__setPlantSyncStatusUI === 'function') {
-                        window.__setPlantSyncStatusUI('Cloud connesso · ' + (window.SERVICEHUB_BUILD || ''));
+                    if (typeof window.__updatePlantSaveStatusUI === 'function') {
+                        window.__updatePlantSaveStatusUI('ok', window.SERVICEHUB_BUILD || '');
                     }
                     syncWithCloud();
                     window.__hydrateDigitalShareKeyFromCloud();
@@ -1514,11 +1514,14 @@ window.colorPreviewNumber = function(tankName, value) {
                 const rev = __plantPayloadRevision(data);
                 if (rev > 0) {
                     window.__appliedPlantSyncRevision = rev;
-                    window.__lastPushedPlantRevision = rev;
+                    window.__lastLocalPlantEditMs = rev;
                 }
                 window.__cloudPlantHydrated = true;
                 __plantRetrySaveAfterAuth = false;
                 __writePlantLocalBackup(data);
+                if (typeof window.__updatePlantSaveStatusUI === 'function') {
+                    window.__updatePlantSaveStatusUI('ok', new Date().toLocaleTimeString());
+                }
                 if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
                 if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                     window.schedulePublicDigitalSnapshotSync();
@@ -1897,13 +1900,19 @@ window.colorPreviewNumber = function(tankName, value) {
         window.saveData = async function (skipHistory) {
             const skipHist = skipHistory === true;
             const doSave = async function () {
+            if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
+
             if (!user || !user.uid || !db) {
                 if (!(window.isEditingArchive && window.editingArchiveId)) {
-                    const localOnly = typeof window.buildPlantPayloadFromDOM === 'function'
-                        ? window.buildPlantPayloadFromDOM()
-                        : null;
-                    if (localOnly) __writePlantLocalBackup(localOnly);
                     __plantRetrySaveAfterAuth = true;
+                    if (typeof window.__updatePlantSaveStatusUI === 'function') {
+                        window.__updatePlantSaveStatusUI('local', new Date().toLocaleTimeString());
+                    }
+                    if (typeof window.__showPlantCloudSyncBanner === 'function') {
+                        window.__showPlantCloudSyncBanner(
+                            'Cloud non connesso: dati in backup locale. Attendi LED verde.'
+                        );
+                    }
                 }
                 return;
             }
@@ -2049,40 +2058,24 @@ window.colorPreviewNumber = function(tankName, value) {
                 window.addToHistory(data);
             }
 
+            const syncRevision = data.syncRevision;
             try {
-                __writePlantLocalBackup(data);
-                const rev = __plantPayloadRevision(data);
-                window.__plantSavePulseAt = Date.now();
-                if (typeof window.__updatePlantSyncDiagnostic === 'function') {
-                    window.__updatePlantSyncDiagnostic(window.__cloudPlantCache || data);
+                if (typeof window.__updatePlantSaveStatusUI === 'function') {
+                    window.__updatePlantSaveStatusUI('pending', '');
                 }
                 await enableNetwork(db);
                 await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data);
                 cacheCloudPlantPayload(data);
-                if (rev > 0) {
-                    window.__appliedPlantSyncRevision = Math.max(window.__appliedPlantSyncRevision || 0, rev);
-                    window.__lastPushedPlantRevision = rev;
-                    window.__lastServerPlantRevision = rev;
-                    window.__plantPushMismatchSince = 0;
-                }
+                window.__appliedPlantSyncRevision = syncRevision;
+                window.__lastLocalPlantEditMs = syncRevision;
                 window.__cloudPlantHydrated = true;
                 __plantRetrySaveAfterAuth = false;
                 __writePlantLocalBackup(data);
-                console.info('[ServiceHub] plant salvato su cloud, rev=', rev, 'by', data.savedBy);
-                if (typeof window.__updatePlantSyncDiagnostic === 'function') {
-                    window.__updatePlantSyncDiagnostic(data);
+                console.info('[ServiceHub] plant salvato su cloud, rev=', syncRevision, 'by', data.savedBy);
+                const t = new Date().toLocaleTimeString();
+                if (typeof window.__updatePlantSaveStatusUI === 'function') {
+                    window.__updatePlantSaveStatusUI('ok', t);
                 }
-                setTimeout(function () {
-                    window.__plantSavePulseAt = 0;
-                    if (!db || !user || !user.uid) return;
-                    getDocFromServer(doc(db, 'artifacts', appId, 'sharedDial', 'plant'))
-                        .then(function (snap) {
-                            if (snap.exists() && typeof window.__updatePlantSyncDiagnostic === 'function') {
-                                window.__updatePlantSyncDiagnostic(snap.data());
-                            }
-                        })
-                        .catch(function () {});
-                }, 900);
                 if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
                 if (typeof window.flushPublicDigitalSnapshotNow === "function") {
                     window.flushPublicDigitalSnapshotNow();
@@ -2091,9 +2084,9 @@ window.colorPreviewNumber = function(tankName, value) {
                 }
             } catch (e) { 
                 console.error('[ServiceHub] saveData Firestore:', e && e.code, e && e.message);
-                __writePlantLocalBackup(data);
-                if (typeof window.__setPlantSyncStatusUI === 'function') {
-                    window.__setPlantSyncStatusUI('Salvataggio cloud FALLITO — solo locale');
+                if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
+                if (typeof window.__updatePlantSaveStatusUI === 'function') {
+                    window.__updatePlantSaveStatusUI('error', (e && e.code) || 'errore');
                 }
                 const msg = window.__isFirestorePermissionError && window.__isFirestorePermissionError(e)
                     ? ('Salvataggio cloud rifiutato (regole Firestore). Progetto ' + (window.__SERVICEHUB_FIREBASE_PROJECT || 'Firebase') + '. Pubblica firestore.rules.')
@@ -2110,18 +2103,13 @@ window.colorPreviewNumber = function(tankName, value) {
             };
 
             if (__plantSaveInFlight) {
-                __plantSaveRunAgain = true;
-                return __plantSaveInFlight;
+                try { await __plantSaveInFlight; } catch (_) {}
             }
-            const p = doSave().finally(function () {
-                __plantSaveInFlight = null;
-                if (__plantSaveRunAgain) {
-                    __plantSaveRunAgain = false;
-                    if (typeof window.saveData === 'function') void window.saveData(true);
-                }
-            });
+            const p = doSave();
             __plantSaveInFlight = p;
-            return p;
+            return p.finally(function () {
+                __plantSaveInFlight = null;
+            });
         };
 
         // NUOVO SISTEMA DI SYNC AUTOMATICO BACKUP
@@ -3960,10 +3948,6 @@ window.updateStoricoButton = async function() {
                 });
             }
             
-            if (typeof window.__hydratePlantFromLocalBackup === 'function') {
-                window.__hydratePlantFromLocalBackup();
-            }
-
             initAuth();
 
             const bt0 = document.getElementById('sh-build-tag');
@@ -5501,9 +5485,7 @@ window.updateStoricoButton = async function() {
         
         function applyData(data, opts) {
             if (!data) return;
-            const fromRemote = opts && opts.fromRemote === true;
-            const fromOtherDevice = !!(opts && opts.fromOtherDevice);
-            const skipBoilerSideEffects = false;
+            const forcePlant = opts && opts.forceRemotePlant === true;
             if (data.manualShift !== undefined) { manualShift = data.manualShift; updateDeviceInfo(); }
             if (data.shift !== undefined && document.getElementById('current-shift-label')) {
                 document.getElementById('current-shift-label').innerText = data.shift;
@@ -5520,18 +5502,19 @@ window.updateStoricoButton = async function() {
                 const inputs = document.querySelectorAll('input[id="' + id + '"]');
                 if (inputs.length) {
                     inputs.forEach(function(el) {
-                        if (fromRemote && window.__shouldSkipInputForPlantPayload && window.__shouldSkipInputForPlantPayload(el)) return;
-                        if (!fromOtherDevice && window.__isPlantFieldProtected && window.__isPlantFieldProtected(id, el)) return;
-                        el.value = strVal;
-                        if (id === 'osmosi' && typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(el);
+                        if (forcePlant && window.__shouldSkipInputForPlantPayload && window.__shouldSkipInputForPlantPayload(el)) return;
+                        if (forcePlant || document.activeElement !== el) {
+                            el.value = strVal;
+                            if (id === 'osmosi' && typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(el);
+                        }
                     });
                     continue;
                 }
                 const el = document.getElementById(id);
                 if (!el) continue;
                 if (el.tagName === 'INPUT') {
-                    if (!fromOtherDevice && window.__isPlantFieldProtected && window.__isPlantFieldProtected(id, el)) return;
-                    el.value = strVal;
+                    if (forcePlant || document.activeElement !== el) {
+                        el.value = strVal;
                     if (id === 'osmosi' && typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(el);
                 }
                 else if (typeof val === 'object') {
@@ -5540,15 +5523,13 @@ window.updateStoricoButton = async function() {
                     if (val.style) el.setAttribute('style', val.style);
                 }
             }
-            if (!skipBoilerSideEffects) updateBoilerInputs();
+            updateBoilerInputs();
             
-            // Applica i colori agli input SCAM dopo aver caricato i dati
-            if (!skipBoilerSideEffects && window.colorScamInputs) {
+            if (window.colorScamInputs) {
                 window.colorScamInputs();
             }
             
-            // Applica i colori agli input serbatoi dopo aver caricato i dati
-            if (!skipBoilerSideEffects && window.colorAllTankInputs) {
+            if (window.colorAllTankInputs) {
                 window.colorAllTankInputs();
             }
 
@@ -13113,7 +13094,7 @@ window.convertToHtml = async () => {
             </div>
         </div>
 
-        <div id="sh-sync-status-text" class="px-2 py-0.5 text-[9px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 border-b border-emerald-200 dark:border-emerald-800">Cloud: in connessione… (Tu 000 · Cloud 000 — le ultime 3 cifre della rev devono coincidere su tutti i device)</div>
+        <div id="sh-sync-status-text" class="px-2 py-0.5 text-[9px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 border-b border-emerald-200 dark:border-emerald-800">Cloud: connessione…</div>
         <div id="plant-cloud-sync-banner" role="alert" class="hidden flex-row items-center justify-between gap-2 px-3 py-2 bg-amber-400 text-slate-900 text-[10px] font-bold leading-snug border-b-2 border-amber-600">
             <span id="plant-cloud-sync-banner-text">Sincronizzazione cloud non disponibile. Controlla le regole Firestore nel progetto indicato dalla console (file firestore.rules nel repository).</span>
             <button type="button" class="shrink-0 px-2 py-1 rounded bg-slate-900/15 text-[9px] font-black uppercase border border-slate-900/30" onclick="if(typeof window.__hidePlantCloudSyncBanner==='function')window.__hidePlantCloudSyncBanner()">Chiudi</button>

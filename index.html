@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.04-sync-baseline-v1';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-sync-firestore-merge';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -1123,10 +1123,7 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!d || typeof d !== 'object') return;
             d = window.__stripRapportinoKeysFromPlantPayload(d);
             const rev = __plantPayloadRevision(d);
-            if (!opts.force && window.__lastLocalPlantSaveMs && Date.now() - window.__lastLocalPlantSaveMs < 3000) {
-                if (rev > 0 && rev < (window.__appliedPlantSyncRevision || 0)) return;
-            }
-            if (!opts.force && rev > 0 && rev <= window.__appliedPlantSyncRevision) return;
+            if (!opts.force && rev > 0 && rev < (window.__appliedPlantSyncRevision || 0)) return;
             if (rev > 0) window.__appliedPlantSyncRevision = rev;
             window.__cloudPlantHydrated = true;
             applyData(d, { forceRemotePlant: true });
@@ -1201,41 +1198,40 @@ window.colorPreviewNumber = function(tankName, value) {
             return data;
         };
 
-        /**
-         * Cloud: server + solo campi cambiati rispetto all'ultimo stato applicato (baseline).
-         * Così il tablet B non riscrive i numeri aggiornati dal tablet A.
-         */
-        window.buildPlantPayloadForCloudSave = async function () {
+        /** Patch Firestore (merge:true) — solo campi cambiati vs baseline, non sovrascrive altri tablet. */
+        window.buildPlantCloudPatch = function () {
             const local = window.buildPlantPayloadFromDOM({ bumpRevision: true });
-            if (!db || !user || !user.uid) return local;
-
-            let server = null;
-            try {
-                const snap = await getDocFromServer(doc(db, 'artifacts', appId, 'sharedDial', 'plant'));
-                if (snap.exists()) {
-                    server = window.__stripRapportinoKeysFromPlantPayload(snap.data());
-                }
-            } catch (_) {}
-            if (!server && window.__cloudPlantCache) {
-                server = window.__stripRapportinoKeysFromPlantPayload(window.__cloudPlantCache);
-            }
-
-            const baseline = window.__plantSyncBaseline || server || {};
-            const merged = server ? Object.assign({}, server) : {};
-
+            const baseline = window.__plantSyncBaseline || {};
+            const patch = {
+                shift: local.shift,
+                lastUpdate: local.lastUpdate,
+                syncRevision: local.syncRevision
+            };
+            let changed = 0;
             Object.keys(local).forEach(function (k) {
                 if (__PLANT_META_KEYS.indexOf(k) >= 0) return;
                 if (!window.__plantValueEquals(local[k], baseline[k])) {
-                    merged[k] = local[k];
+                    patch[k] = local[k];
+                    changed++;
                 }
             });
-            merged.shift = local.shift;
-            merged.lastUpdate = local.lastUpdate;
-            merged.syncRevision = local.syncRevision;
             if (local.tankStatuses && !window.__plantValueEquals(local.tankStatuses, baseline.tankStatuses)) {
-                merged.tankStatuses = local.tankStatuses;
+                patch.tankStatuses = local.tankStatuses;
+                changed++;
             }
-            return merged;
+            patch.__changedCount = changed;
+            return patch;
+        };
+
+        window.__refreshPlantBaselineFromDOM = function (syncMeta) {
+            if (typeof window.buildPlantPayloadFromDOM !== 'function') return;
+            const full = window.buildPlantPayloadFromDOM({ bumpRevision: false });
+            if (syncMeta) {
+                if (syncMeta.syncRevision) full.syncRevision = syncMeta.syncRevision;
+                if (syncMeta.lastUpdate) full.lastUpdate = syncMeta.lastUpdate;
+            }
+            if (typeof window.__setPlantSyncBaseline === 'function') window.__setPlantSyncBaseline(full);
+            return full;
         };
 
         /** Backup locale sempre dal DOM completo (mai da payload cloud parziale). */
@@ -1332,7 +1328,12 @@ window.colorPreviewNumber = function(tankName, value) {
                                 schedulePlantTruthFromServer();
                                 return;
                             }
-                            __applyRemotePlantPayload(d);
+                            const revLive = __plantPayloadRevision(d);
+                            if (revLive > (window.__appliedPlantSyncRevision || 0)) {
+                                __applyRemotePlantPayload(d, { force: true });
+                            } else {
+                                __applyRemotePlantPayload(d);
+                            }
                             if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                                 window.schedulePublicDigitalSnapshotSync();
                             }
@@ -1365,10 +1366,28 @@ window.colorPreviewNumber = function(tankName, value) {
                     const picked = window.__pickNewestPlantPayload(serverStripped, backupStripped);
                     if (picked) {
                         __applyRemotePlantPayload(picked, { force: true });
-                        const pickedRev = __plantPayloadRevision(picked);
-                        const serverRev = serverStripped ? __plantPayloadRevision(serverStripped) : 0;
-                        if (user && user.uid && pickedRev > serverRev) {
-                            void setDoc(dataDoc, picked);
+                        if (user && user.uid && !serverStripped) {
+                            void setDoc(dataDoc, picked, { merge: true });
+                        } else if (user && user.uid && serverStripped && picked) {
+                            const pickedRev = __plantPayloadRevision(picked);
+                            const serverRev = __plantPayloadRevision(serverStripped);
+                            if (pickedRev > serverRev) {
+                                const bootPatch = {
+                                    shift: picked.shift,
+                                    lastUpdate: picked.lastUpdate,
+                                    syncRevision: picked.syncRevision
+                                };
+                                Object.keys(picked).forEach(function (k) {
+                                    if (__PLANT_META_KEYS.indexOf(k) >= 0) return;
+                                    if (!window.__plantValueEquals(picked[k], serverStripped[k])) {
+                                        bootPatch[k] = picked[k];
+                                    }
+                                });
+                                if (picked.tankStatuses && !window.__plantValueEquals(picked.tankStatuses, serverStripped.tankStatuses)) {
+                                    bootPatch.tankStatuses = picked.tankStatuses;
+                                }
+                                void setDoc(dataDoc, bootPatch, { merge: true });
+                            }
                         }
                     }
                 })
@@ -1489,31 +1508,44 @@ window.colorPreviewNumber = function(tankName, value) {
         // ✅ FUNZIONE PER SALVATAGGIO MOMENTANEO (FUNZIONA ANCHE IN MODIFICA)
         window.saveCurrentData = async function() {
             if (!user || !user.uid || !db) return;
+            if (!window.__cloudPlantHydrated) return;
             
             const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
-            const data = typeof window.buildPlantPayloadForCloudSave === 'function'
-                ? await window.buildPlantPayloadForCloudSave()
+            const patch = typeof window.buildPlantCloudPatch === 'function'
+                ? window.buildPlantCloudPatch()
                 : (typeof window.buildPlantPayloadFromDOM === 'function'
                     ? window.buildPlantPayloadFromDOM({ bumpRevision: true })
                     : { shift: currentShift, lastUpdate: new Date().toISOString(), syncRevision: Date.now() });
+            const historyData = typeof window.buildPlantPayloadFromDOM === 'function'
+                ? window.buildPlantPayloadFromDOM({ bumpRevision: true })
+                : patch;
             
             // AGGIUNGI STORICO DEI SALVATAGGI PER TREND
-            window.addToHistory(data);
+            window.addToHistory(historyData);
             
             try {
-                await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data);
-                cacheCloudPlantPayload(data);
-                const rev = __plantPayloadRevision(data);
+                const plantRef = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
+                const changedN = patch.__changedCount;
+                delete patch.__changedCount;
+                await setDoc(plantRef, patch, { merge: true });
+                const rev = __plantPayloadRevision(patch);
                 if (rev > 0) window.__appliedPlantSyncRevision = rev;
                 window.__cloudPlantHydrated = true;
                 window.__lastLocalPlantSaveMs = Date.now();
                 __plantRetrySaveAfterAuth = false;
-                if (typeof window.__setPlantSyncBaseline === 'function') window.__setPlantSyncBaseline(data);
-                if (typeof window.__writePlantLocalBackupFromDOM === 'function') {
-                    window.__writePlantLocalBackupFromDOM(data);
-                } else {
-                    __writePlantLocalBackup(data);
+                if (typeof window.__refreshPlantBaselineFromDOM === 'function') {
+                    window.__refreshPlantBaselineFromDOM(patch);
                 }
+                try {
+                    const snap = await getDocFromServer(plantRef);
+                    if (snap.exists()) cacheCloudPlantPayload(snap.data());
+                } catch (_) {
+                    cacheCloudPlantPayload(patch);
+                }
+                if (typeof window.__writePlantLocalBackupFromDOM === 'function') {
+                    window.__writePlantLocalBackupFromDOM(patch);
+                }
+                console.info('[ServiceHub] cloud OK rev=' + rev + ' campi=' + (changedN != null ? changedN : '?'));
                 if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
                 if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                     window.schedulePublicDigitalSnapshotSync();
@@ -1902,6 +1934,10 @@ window.colorPreviewNumber = function(tankName, value) {
                 }
                 return;
             }
+
+            if (!window.__cloudPlantHydrated) {
+                return;
+            }
             
             // SE SIAMO IN MODALITÀ MODIFICA, GESTISCE IL SALVATAGGIO DEL BACKUP
             if (window.isEditingArchive && window.editingArchiveId) {
@@ -2036,30 +2072,42 @@ window.colorPreviewNumber = function(tankName, value) {
                 await window.ensureBackupHistory();
             }
             
-            const data = typeof window.buildPlantPayloadForCloudSave === 'function'
-                ? await window.buildPlantPayloadForCloudSave()
+            const patch = typeof window.buildPlantCloudPatch === 'function'
+                ? window.buildPlantCloudPatch()
                 : (typeof window.buildPlantPayloadFromDOM === 'function'
                     ? window.buildPlantPayloadFromDOM({ bumpRevision: true })
                     : { shift: '', lastUpdate: new Date().toISOString(), syncRevision: Date.now() });
+            const historyData = typeof window.buildPlantPayloadFromDOM === 'function'
+                ? window.buildPlantPayloadFromDOM({ bumpRevision: true })
+                : patch;
 
             if (!skipHist) {
-                window.addToHistory(data);
+                window.addToHistory(historyData);
             }
 
             try {
-                await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data);
-                cacheCloudPlantPayload(data);
-                const rev = __plantPayloadRevision(data);
+                const plantRef = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
+                const changedN = patch.__changedCount;
+                delete patch.__changedCount;
+                await setDoc(plantRef, patch, { merge: true });
+                const rev = __plantPayloadRevision(patch);
                 if (rev > 0) window.__appliedPlantSyncRevision = rev;
                 window.__cloudPlantHydrated = true;
                 window.__lastLocalPlantSaveMs = Date.now();
                 __plantRetrySaveAfterAuth = false;
-                if (typeof window.__setPlantSyncBaseline === 'function') window.__setPlantSyncBaseline(data);
-                if (typeof window.__writePlantLocalBackupFromDOM === 'function') {
-                    window.__writePlantLocalBackupFromDOM(data);
-                } else {
-                    __writePlantLocalBackup(data);
+                if (typeof window.__refreshPlantBaselineFromDOM === 'function') {
+                    window.__refreshPlantBaselineFromDOM(patch);
                 }
+                try {
+                    const snap = await getDocFromServer(plantRef);
+                    if (snap.exists()) cacheCloudPlantPayload(snap.data());
+                } catch (_) {
+                    cacheCloudPlantPayload(patch);
+                }
+                if (typeof window.__writePlantLocalBackupFromDOM === 'function') {
+                    window.__writePlantLocalBackupFromDOM(patch);
+                }
+                console.info('[ServiceHub] cloud OK rev=' + rev + ' campi=' + (changedN != null ? changedN : '?'));
                 if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
                 if (typeof window.flushPublicDigitalSnapshotNow === "function") {
                     window.flushPublicDigitalSnapshotNow();

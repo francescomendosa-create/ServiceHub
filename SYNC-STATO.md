@@ -2,7 +2,7 @@
 
 ## Build da usare adesso
 
-- **BUILD in app:** `2026.06.04-restore-0d8932c`
+- **BUILD in app:** `2026.06.04-sync-merge-fields`
 - **Git base ripristinata:** commit `0d8932c` (messaggio: fix realtime sync v2)
 - **BUILD originale di quel commit:** `2026.06.03-fix-realtime-sync-v2`
 
@@ -12,7 +12,11 @@ Verifica sul telefono/PC (console del browser):
 window.SERVICEHUB_BUILD
 ```
 
-Deve essere esattamente `2026.06.04-restore-0d8932c`. Se vedi altro, stai usando una versione vecchia in cache.
+Deve essere esattamente `2026.06.04-sync-merge-fields`. Se vedi `gemini-quota-fix` nelle impostazioni ma la console dice un altro BUILD, aggiorna con Ctrl+F5.
+
+## Perché i dispositivi restavano diversi (causa reale)
+
+Ogni salvataggio mandava **tutto** il documento Firestore `plant`. Il tablet A aggiornava un serbatoio; il tablet B salvava subito dopo con numeri **vecchi** negli altri campi e cancellava la modifica di A. Fix: salvataggio cloud = server + **solo campi toccati su quel dispositivo** (`__dirtyPlantKeys`).
 
 ## Commit storici (quando “funzionava”)
 

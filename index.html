@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.04-restore-0d8932c';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-sync-merge-fields';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -1039,6 +1039,18 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__appliedPlantSyncRevision = 0;
         window.__cloudPlantHydrated = false;
         window.__cloudPlantCache = null;
+        window.__dirtyPlantKeys = new Set();
+
+        window.__markPlantFieldDirty = function (key) {
+            if (!key || typeof key !== 'string') return;
+            if (window.isRapportinoOnlyDataKey && window.isRapportinoOnlyDataKey(key)) return;
+            if (!window.__dirtyPlantKeys) window.__dirtyPlantKeys = new Set();
+            window.__dirtyPlantKeys.add(key);
+        };
+
+        window.__clearPlantDirtyKeys = function () {
+            if (window.__dirtyPlantKeys) window.__dirtyPlantKeys.clear();
+        };
 
         const __plantPayloadRevision = function (d) {
             if (!d || typeof d !== 'object') return 0;
@@ -1103,6 +1115,7 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!opts.force && rev > 0 && rev <= window.__appliedPlantSyncRevision) return;
             if (rev > 0) window.__appliedPlantSyncRevision = rev;
             window.__cloudPlantHydrated = true;
+            if (typeof window.__clearPlantDirtyKeys === 'function') window.__clearPlantDirtyKeys();
             applyData(d, { forceRemotePlant: true });
             __writePlantLocalBackup(d);
             cacheCloudPlantPayload(d);
@@ -1168,6 +1181,33 @@ window.colorPreviewNumber = function(tankName, value) {
             });
             if (window.tankStatuses) data.tankStatuses = window.tankStatuses;
             return data;
+        };
+
+        /** Cloud: unisce server + solo campi modificati su QUESTO dispositivo (evita di sovrascrivere numeri freschi degli altri tablet). */
+        window.buildPlantPayloadForCloudSave = async function () {
+            const local = window.buildPlantPayloadFromDOM({ bumpRevision: true });
+            if (!db || !user || !user.uid) return local;
+            let base = null;
+            try {
+                const snap = await getDocFromServer(doc(db, 'artifacts', appId, 'sharedDial', 'plant'));
+                if (snap.exists()) {
+                    base = window.__stripRapportinoKeysFromPlantPayload(snap.data());
+                }
+            } catch (_) {}
+            if (!base && window.__cloudPlantCache) {
+                base = window.__stripRapportinoKeysFromPlantPayload(window.__cloudPlantCache);
+            }
+            const dirty = window.__dirtyPlantKeys;
+            if (!base || !dirty || dirty.size === 0) return local;
+            const merged = Object.assign({}, base);
+            dirty.forEach(function (k) {
+                if (Object.prototype.hasOwnProperty.call(local, k)) merged[k] = local[k];
+            });
+            merged.shift = local.shift;
+            merged.lastUpdate = local.lastUpdate;
+            merged.syncRevision = local.syncRevision;
+            if (local.tankStatuses) merged.tankStatuses = local.tankStatuses;
+            return merged;
         };
 
         window.__isFirestorePermissionError = function (e) {
@@ -1279,17 +1319,18 @@ window.colorPreviewNumber = function(tankName, value) {
                 })
                 .then((snap) => {
                     const serverData = snap.exists() ? snap.data() : null;
+                    if (serverData) {
+                        __applyRemotePlantPayload(
+                            window.__stripRapportinoKeysFromPlantPayload(serverData),
+                            { force: true }
+                        );
+                        return;
+                    }
                     const backup = window.__readPlantBackupLocal();
-                    const serverStripped = serverData ? window.__stripRapportinoKeysFromPlantPayload(serverData) : null;
-                    const backupStripped = backup ? window.__stripRapportinoKeysFromPlantPayload(backup) : null;
-                    const picked = window.__pickNewestPlantPayload(serverStripped, backupStripped);
-                    if (picked) {
+                    if (backup) {
+                        const picked = window.__stripRapportinoKeysFromPlantPayload(backup);
                         __applyRemotePlantPayload(picked, { force: true });
-                        const pickedRev = __plantPayloadRevision(picked);
-                        const serverRev = serverStripped ? __plantPayloadRevision(serverStripped) : 0;
-                        if (user && user.uid && pickedRev > serverRev) {
-                            void setDoc(dataDoc, picked);
-                        }
+                        if (user && user.uid) void setDoc(dataDoc, picked);
                     }
                 })
                 .catch((err) => {
@@ -1407,9 +1448,11 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!user || !user.uid || !db) return;
             
             const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
-            const data = typeof window.buildPlantPayloadFromDOM === 'function'
-                ? window.buildPlantPayloadFromDOM({ bumpRevision: true })
-                : { shift: currentShift, lastUpdate: new Date().toISOString(), syncRevision: Date.now() };
+            const data = typeof window.buildPlantPayloadForCloudSave === 'function'
+                ? await window.buildPlantPayloadForCloudSave()
+                : (typeof window.buildPlantPayloadFromDOM === 'function'
+                    ? window.buildPlantPayloadFromDOM({ bumpRevision: true })
+                    : { shift: currentShift, lastUpdate: new Date().toISOString(), syncRevision: Date.now() });
             
             // AGGIUNGI STORICO DEI SALVATAGGI PER TREND
             window.addToHistory(data);
@@ -1422,6 +1465,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (rev > 0) window.__appliedPlantSyncRevision = rev;
                 window.__cloudPlantHydrated = true;
                 __plantRetrySaveAfterAuth = false;
+                if (typeof window.__clearPlantDirtyKeys === 'function') window.__clearPlantDirtyKeys();
                 __writePlantLocalBackup(data);
                 if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
                 if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
@@ -1945,9 +1989,11 @@ window.colorPreviewNumber = function(tankName, value) {
                 await window.ensureBackupHistory();
             }
             
-            const data = typeof window.buildPlantPayloadFromDOM === 'function'
-                ? window.buildPlantPayloadFromDOM({ bumpRevision: true })
-                : { shift: '', lastUpdate: new Date().toISOString(), syncRevision: Date.now() };
+            const data = typeof window.buildPlantPayloadForCloudSave === 'function'
+                ? await window.buildPlantPayloadForCloudSave()
+                : (typeof window.buildPlantPayloadFromDOM === 'function'
+                    ? window.buildPlantPayloadFromDOM({ bumpRevision: true })
+                    : { shift: '', lastUpdate: new Date().toISOString(), syncRevision: Date.now() });
 
             if (!skipHist) {
                 window.addToHistory(data);
@@ -1961,6 +2007,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (rev > 0) window.__appliedPlantSyncRevision = rev;
                 window.__cloudPlantHydrated = true;
                 __plantRetrySaveAfterAuth = false;
+                if (typeof window.__clearPlantDirtyKeys === 'function') window.__clearPlantDirtyKeys();
                 __writePlantLocalBackup(data);
                 if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
                 if (typeof window.flushPublicDigitalSnapshotNow === "function") {
@@ -3791,6 +3838,10 @@ window.updateStoricoButton = async function() {
         };
 
         document.addEventListener('DOMContentLoaded', () => {
+            const buildTagEl = document.getElementById('app-build-tag');
+            if (buildTagEl && window.SERVICEHUB_BUILD) {
+                buildTagEl.textContent = 'Build ' + window.SERVICEHUB_BUILD;
+            }
             if (typeof window.renderStoccaggioInternoPanel === 'function') window.renderStoccaggioInternoPanel();
             // CARICAMENTO DATABASE CENTRALE - PRIMA DI TUTTO!
             window.loadDB();
@@ -3849,6 +3900,7 @@ window.updateStoricoButton = async function() {
                     if (!t || !t.closest || !t.closest('.main-container')) return;
                     if (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA') return;
                     if (t.closest('#settings-modal') || t.closest('#management-modal') || t.closest('#shift-modal')) return;
+                    if (t.id) window.__markPlantFieldDirty(t.id);
                     if (__plantPersistTimer) clearTimeout(__plantPersistTimer);
                     __plantPersistTimer = setTimeout(function () {
                         __plantPersistTimer = null;
@@ -3900,12 +3952,21 @@ window.updateStoricoButton = async function() {
             });
 
             document.addEventListener(
+                'click',
+                function (e) {
+                    const btn = e.target && e.target.closest ? e.target.closest('.status-cell-btn, .status-header') : null;
+                    if (btn && btn.id && btn.id !== 'numpad-tank-btn') window.__markPlantFieldDirty(btn.id);
+                },
+                true
+            );
+            document.addEventListener(
                 'blur',
                 function (e) {
                     const t = e.target;
                     if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) return;
                     if (!t.closest || !t.closest('.main-container')) return;
                     if (t.closest('#settings-modal') || t.closest('#management-modal') || t.closest('#shift-modal')) return;
+                    if (t.id) window.__markPlantFieldDirty(t.id);
                     if (!__plantPersistTimer) return;
                     clearTimeout(__plantPersistTimer);
                     __plantPersistTimer = null;
@@ -5926,16 +5987,24 @@ window.updateStoricoButton = async function() {
             if (!user || !user.uid || !db || !store) return;
             if (window.__rapportiniApplyingFromCloud) return;
             try {
+                let mergedStore = store;
+                try {
+                    const rapportiniDoc = doc(db, 'artifacts', appId, 'sharedDial', 'rapportini');
+                    const snap = await getDocFromServer(rapportiniDoc);
+                    if (snap.exists() && typeof window.mergeRapportiniStores === 'function') {
+                        mergedStore = window.mergeRapportiniStores(store, snap.data(), false);
+                    }
+                } catch (_) {}
                 const slimItems = {};
-                Object.keys(store.items || {}).forEach(function (rid) {
-                    const item = JSON.parse(JSON.stringify(store.items[rid]));
+                Object.keys(mergedStore.items || {}).forEach(function (rid) {
+                    const item = JSON.parse(JSON.stringify(mergedStore.items[rid]));
                     item.data = window.extractRapportinoOnlyData(item.data || {});
                     slimItems[rid] = item;
                 });
                 const payload = {
-                    activeId: store.activeId || 'generale',
+                    activeId: mergedStore.activeId || 'generale',
                     items: slimItems,
-                    lastUpdate: store.lastUpdate || new Date().toISOString()
+                    lastUpdate: mergedStore.lastUpdate || new Date().toISOString()
                 };
                 await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'rapportini'), payload);
             } catch (e) {
@@ -11265,6 +11334,7 @@ window.convertToHtml = async () => {
                 // Salva le selezioni del serbatoio precedente
                 if (!window.tankStatuses) window.tankStatuses = {};
                 window.tankStatuses[window.currentTank] = window.selectedTankStatuses.join('+');
+                if (typeof window.__markPlantFieldDirty === 'function') window.__markPlantFieldDirty('tankStatuses');
                 window.saveData();
                 console.log('Salvato automaticamente serbatoio precedente:', window.currentTank, window.selectedTankStatuses);
             }
@@ -11397,6 +11467,7 @@ window.convertToHtml = async () => {
                     } else {
                         window.tankStatuses[window.currentTank] = window.selectedTankStatuses.join('+');
                     }
+                    if (typeof window.__markPlantFieldDirty === 'function') window.__markPlantFieldDirty('tankStatuses');
                     window.saveData();
                 }
             } else {
@@ -13116,7 +13187,7 @@ window.convertToHtml = async () => {
             <div class="settings-sheet-header px-8 pt-2 pb-2 flex justify-between items-center bg-slate-50 dark:bg-slate-900">
                 <div>
                     <h2 class="font-black uppercase text-3xl italic tracking-tighter text-slate-900 dark:text-white">Impostazioni</h2>
-                    <p id="app-build-tag" class="text-[9px] font-bold text-emerald-600 dark:text-emerald-400 uppercase mt-1">Build 2026.06.03-gemini-quota-fix</p>
+                    <p id="app-build-tag" class="text-[9px] font-bold text-emerald-600 dark:text-emerald-400 uppercase mt-1">Build …</p>
                 </div>
                 <button type="button" id="btn-close-settings" class="bg-black text-white rounded-2xl w-12 h-12 flex items-center justify-center font-black" aria-label="Chiudi impostazioni">X</button>
             </div>

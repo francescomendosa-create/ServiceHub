@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-fix-sync-server-wins';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-fix-realtime-sync';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -1108,13 +1108,6 @@ window.colorPreviewNumber = function(tankName, value) {
             d = window.__stripRapportinoKeysFromPlantPayload(d);
             const rev = __plantPayloadRevision(d);
             if (!opts.force && rev > 0 && rev <= window.__appliedPlantSyncRevision) return;
-            if (!opts.force && rev > 0 && rev > (window.__appliedPlantSyncRevision || 0)) {
-                /* Aggiornamento da altro dispositivo: syncRevision più alta → applica sempre. */
-            } else if (!opts.force) {
-                const remoteMs = __plantLastUpdateMs(d.lastUpdate) || 0;
-                const localEditMs = window.__lastLocalPlantEditMs || 0;
-                if (localEditMs > remoteMs + 300) return;
-            }
             if (rev > 0) window.__appliedPlantSyncRevision = rev;
             window.__cloudPlantHydrated = true;
             applyData(d, { forceRemotePlant: true });
@@ -1215,11 +1208,11 @@ window.colorPreviewNumber = function(tankName, value) {
             const dataDoc = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
             let __plantTruthTimer = null;
             const schedulePlantTruthFromServer = function () {
-                if (__plantTruthTimer) clearTimeout(__plantTruthTimer);
+                    if (__plantTruthTimer) clearTimeout(__plantTruthTimer);
                 __plantTruthTimer = setTimeout(function () {
                     __plantTruthTimer = null;
                     if (typeof window.__pullPlantFromServerNow === 'function') {
-                        void window.__pullPlantFromServerNow({ force: false });
+                        void window.__pullPlantFromServerNow({ force: true });
                     }
                 }, 80);
             };
@@ -1234,7 +1227,8 @@ window.colorPreviewNumber = function(tankName, value) {
                             const md = snapshot.metadata;
                             if (md && md.hasPendingWrites) return;
                             if (md && md.fromCache) {
-                                if (!window.__cloudPlantHydrated) {
+                                const revCache = __plantPayloadRevision(d);
+                                if (!window.__cloudPlantHydrated || revCache > (window.__appliedPlantSyncRevision || 0)) {
                                     __applyRemotePlantPayload(d, { force: true });
                                 }
                                 schedulePlantTruthFromServer();
@@ -3842,7 +3836,6 @@ window.updateStoricoButton = async function() {
                     if (!t || !t.closest || !t.closest('.main-container')) return;
                     if (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA') return;
                     if (t.closest('#settings-modal') || t.closest('#management-modal') || t.closest('#shift-modal')) return;
-                    window.__lastLocalPlantEditMs = Date.now();
                     if (__plantPersistTimer) clearTimeout(__plantPersistTimer);
                     __plantPersistTimer = setTimeout(function () {
                         __plantPersistTimer = null;
@@ -3878,15 +3871,13 @@ window.updateStoricoButton = async function() {
                         void window.saveData(true);
                     }
                 } else if (document.visibilityState === 'visible') {
-                    const sinceEdit = Date.now() - (window.__lastLocalPlantEditMs || 0);
-                    if (sinceEdit > 5000 && typeof window.__pullAllCloudStateNow === 'function') {
+                    if (typeof window.__pullAllCloudStateNow === 'function') {
                         void window.__pullAllCloudStateNow();
                     }
                 }
             });
             window.addEventListener('online', function () {
-                const sinceEdit = Date.now() - (window.__lastLocalPlantEditMs || 0);
-                if (sinceEdit > 5000 && typeof window.__pullAllCloudStateNow === 'function') {
+                if (typeof window.__pullAllCloudStateNow === 'function') {
                     void window.__pullAllCloudStateNow();
                 }
             });
@@ -7259,10 +7250,6 @@ window.updateStoricoButton = async function() {
         /** Lettura forzata plant dal server (aggira cache SDK / tab in background / rete difficile). */
         window.__pullPlantFromServerNow = function (opts) {
             opts = opts || {};
-            if (!opts.force) {
-                const sinceEdit = Date.now() - (window.__lastLocalPlantEditMs || 0);
-                if (sinceEdit < 5000) return Promise.resolve();
-            }
             if (!db || !user || !user.uid) return Promise.resolve();
             const dataDoc = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
             return getDocFromServer(dataDoc)
@@ -7296,7 +7283,7 @@ window.updateStoricoButton = async function() {
 
         window.__pullAllCloudStateNow = function () {
             const p1 = typeof window.__pullPlantFromServerNow === 'function'
-                ? window.__pullPlantFromServerNow() : Promise.resolve();
+                ? window.__pullPlantFromServerNow({ force: true }) : Promise.resolve();
             const p2 = typeof window.__pullRapportiniFromServerNow === 'function'
                 ? window.__pullRapportiniFromServerNow() : Promise.resolve();
             return Promise.all([p1, p2]);

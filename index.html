@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-restore-cloud-sync-plant-only';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-fix-sync-server-wins';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -931,7 +931,12 @@ window.colorPreviewNumber = function(tankName, value) {
                     window.__hydrateDigitalShareKeyFromCloud();
                     window.initAlarmConfigListener();
                     if (__plantRetrySaveAfterAuth && typeof window.saveData === 'function') {
-                        void window.saveData(true);
+                        setTimeout(function () {
+                            if (__plantRetrySaveAfterAuth) {
+                                __plantRetrySaveAfterAuth = false;
+                                void window.saveData(true);
+                            }
+                        }, 2500);
                     }
                 } else {
                     if(led) led.className = "w-2.5 h-2.5 rounded-full bg-red-600 shadow-[0_0_10px_#dc2626]";
@@ -1073,7 +1078,6 @@ window.colorPreviewNumber = function(tankName, value) {
                 localStorage.setItem('stabilePlantBackup', JSON.stringify(data));
             } catch (_) {}
             cacheCloudPlantPayload(data);
-            window.__lastLocalPlantEditMs = data.syncRevision;
             return data;
         };
 
@@ -1104,9 +1108,13 @@ window.colorPreviewNumber = function(tankName, value) {
             d = window.__stripRapportinoKeysFromPlantPayload(d);
             const rev = __plantPayloadRevision(d);
             if (!opts.force && rev > 0 && rev <= window.__appliedPlantSyncRevision) return;
-            const remoteMs = __plantLastUpdateMs(d.lastUpdate) || 0;
-            const localEditMs = window.__lastLocalPlantEditMs || 0;
-            if (!opts.force && localEditMs > remoteMs + 300) return;
+            if (!opts.force && rev > 0 && rev > (window.__appliedPlantSyncRevision || 0)) {
+                /* Aggiornamento da altro dispositivo: syncRevision più alta → applica sempre. */
+            } else if (!opts.force) {
+                const remoteMs = __plantLastUpdateMs(d.lastUpdate) || 0;
+                const localEditMs = window.__lastLocalPlantEditMs || 0;
+                if (localEditMs > remoteMs + 300) return;
+            }
             if (rev > 0) window.__appliedPlantSyncRevision = rev;
             window.__cloudPlantHydrated = true;
             applyData(d, { forceRemotePlant: true });
@@ -1261,14 +1269,16 @@ window.colorPreviewNumber = function(tankName, value) {
                 })
                 .then((snap) => {
                     const serverData = snap.exists() ? snap.data() : null;
+                    if (serverData) {
+                        const d = window.__stripRapportinoKeysFromPlantPayload(serverData);
+                        __applyRemotePlantPayload(d, { force: true });
+                        return;
+                    }
                     const backup = window.__readPlantBackupLocal();
-                    let picked = window.__pickNewestPlantPayload(serverData, backup);
-                    if (picked) {
-                        picked = window.__stripRapportinoKeysFromPlantPayload(picked);
+                    if (backup) {
+                        const picked = window.__stripRapportinoKeysFromPlantPayload(backup);
                         __applyRemotePlantPayload(picked, { force: true });
-                        const pickedRev = __plantPayloadRevision(picked);
-                        const serverRev = serverData ? __plantPayloadRevision(serverData) : 0;
-                        if (user && user.uid && pickedRev > serverRev) {
+                        if (user && user.uid) {
                             void setDoc(dataDoc, picked);
                         }
                     }
@@ -1276,7 +1286,10 @@ window.colorPreviewNumber = function(tankName, value) {
                 .catch((err) => {
                     console.warn('[ServiceHub] plant getDoc:', err && err.message);
                     const backup = window.__readPlantBackupLocal();
-                    if (backup) __applyRemotePlantPayload(backup, { force: true });
+                    if (backup) {
+                        const picked = window.__stripRapportinoKeysFromPlantPayload(backup);
+                        __applyRemotePlantPayload(picked, { force: true });
+                    }
                 })
                 .finally(function () {
                     __wirePlantSnapshotListener();
@@ -1334,16 +1347,7 @@ window.colorPreviewNumber = function(tankName, value) {
                     const backupStore = window.__readRapportiniBackupLocal && window.__readRapportiniBackupLocal();
                     if (serverStore && serverStore.items) {
                         window.__rapportiniCloudDocMissing = false;
-                        const localMem = window.__rapportiniStore || null;
-                        const merged = window.mergeRapportiniStores(localMem, serverStore, true);
-                        const serverMs = window.parseRapportinoUpdatedMs(serverStore.lastUpdate);
-                        const backupMs = backupStore ? window.parseRapportinoUpdatedMs(backupStore.lastUpdate) : 0;
-                        if (backupStore && backupStore.items && backupMs > serverMs) {
-                            window.__rapportiniStore = window.mergeRapportiniStores(merged, backupStore, false);
-                            if (typeof window.pushRapportiniStoreToCloud === 'function') {
-                                void window.pushRapportiniStoreToCloud(window.__rapportiniStore);
-                            }
-                        } else if (typeof window.applyRapportiniStoreFromCloud === 'function') {
+                        if (typeof window.applyRapportiniStoreFromCloud === 'function') {
                             window.applyRapportiniStoreFromCloud(serverStore, { force: true });
                         }
                     } else if (backupStore && backupStore.items) {

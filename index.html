@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-fix-erase-sync';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-multi-device-sync';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -1043,8 +1043,6 @@ window.colorPreviewNumber = function(tankName, value) {
 
         window.__appliedPlantSyncRevision = 0;
         window.__lastPushedPlantRevision = 0;
-        window.__plantTypingQuietUntil = 0;
-        window.__plantFieldDirtyUntil = {};
         window.__cloudPlantHydrated = false;
         window.__cloudPlantCache = null;
         window.__plantSyncPollInterval = null;
@@ -1073,27 +1071,14 @@ window.colorPreviewNumber = function(tankName, value) {
             if (el && msg) el.textContent = msg;
         };
 
-        window.__markPlantUserTyping = function () {
-            window.__plantTypingQuietUntil = Date.now() + 10000;
-        };
-
-        window.__touchPlantFieldDirty = function (fieldId) {
-            if (!fieldId) return;
-            if (!window.__plantFieldDirtyUntil) window.__plantFieldDirtyUntil = {};
-            window.__plantFieldDirtyUntil[fieldId] = Date.now() + 12000;
-            window.__markPlantUserTyping();
-        };
-
+        /** Solo il campo sotto il dito/cursore o il numpad aperto: non bloccare tutto il cloud per secondi. */
         window.__isPlantFieldProtected = function (fieldId, el) {
             if (el && document.activeElement === el) return true;
             const npt = window.currentNumpadTarget;
-            if (npt && fieldId && npt.id === fieldId) return true;
-            const until = window.__plantFieldDirtyUntil && window.__plantFieldDirtyUntil[fieldId];
-            return !!(until && Date.now() < until);
+            return !!(npt && fieldId && npt.id === fieldId);
         };
 
         window.__isPlantUserTypingNow = function () {
-            if (Date.now() < (window.__plantTypingQuietUntil || 0)) return true;
             const npModal = document.getElementById('numpad-modal');
             if (npModal && npModal.classList.contains('active')) return true;
             const ae = document.activeElement;
@@ -1183,10 +1168,15 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!window.__shouldApplyRemotePlantNow(opts)) return;
             d = window.__stripRapportinoKeysFromPlantPayload(d);
             const rev = __plantPayloadRevision(d);
-            if (!opts.bootstrap && rev > 0 && rev <= window.__appliedPlantSyncRevision) return;
+            if (!opts.bootstrap && rev > 0 && rev <= window.__appliedPlantSyncRevision) {
+                console.info('[ServiceHub] plant cloud ignorato (vecchio) rev=', rev, 'applied=', window.__appliedPlantSyncRevision);
+                return;
+            }
+            const myDev = typeof window.__getServiceHubDeviceId === 'function' ? window.__getServiceHubDeviceId() : '';
+            const fromOther = !!(d.savedBy && myDev && d.savedBy !== myDev);
             if (rev > 0) window.__appliedPlantSyncRevision = rev;
             window.__cloudPlantHydrated = true;
-            applyData(d, { fromRemote: true });
+            applyData(d, { fromRemote: true, fromOtherDevice: fromOther });
             cacheCloudPlantPayload(d);
             if (typeof window.__updatePlantSyncDiagnostic === 'function') {
                 window.__updatePlantSyncDiagnostic(d);
@@ -1366,18 +1356,17 @@ window.colorPreviewNumber = function(tankName, value) {
                     return getDoc(dataDoc);
                 })
                 .then((snap) => {
-                    if (snap.exists()) {
-                        const d = window.__stripRapportinoKeysFromPlantPayload(snap.data());
-                        __applyRemotePlantPayload(d, { bootstrap: true });
-                        return;
-                    }
+                    const serverRaw = snap.exists() ? snap.data() : null;
+                    const serverData = serverRaw ? window.__stripRapportinoKeysFromPlantPayload(serverRaw) : null;
                     const backup = window.__readPlantBackupLocal();
-                    if (backup) {
-                        const picked = window.__stripRapportinoKeysFromPlantPayload(backup);
-                        __applyRemotePlantPayload(picked, { bootstrap: true });
-                        if (user && user.uid) {
-                            void setDoc(dataDoc, picked);
-                        }
+                    const backupData = backup ? window.__stripRapportinoKeysFromPlantPayload(backup) : null;
+                    const picked = window.__pickNewestPlantPayload(serverData, backupData);
+                    if (!picked) return;
+                    __applyRemotePlantPayload(picked, { bootstrap: true });
+                    const revServer = serverData ? __plantPayloadRevision(serverData) : 0;
+                    const revPicked = __plantPayloadRevision(picked);
+                    if (user && user.uid && revPicked > revServer) {
+                        void setDoc(dataDoc, picked);
                     }
                 })
                 .catch((err) => {
@@ -1390,6 +1379,12 @@ window.colorPreviewNumber = function(tankName, value) {
                 })
                 .finally(function () {
                     __wirePlantSnapshotListener();
+                    if (window.__plantSyncPollInterval) clearInterval(window.__plantSyncPollInterval);
+                    window.__plantSyncPollInterval = setInterval(function () {
+                        if (!user || !user.uid || !db) return;
+                        if (typeof window.__isPlantUserTypingNow === 'function' && window.__isPlantUserTypingNow()) return;
+                        if (typeof window.__pullPlantFromServerNow === 'function') void window.__pullPlantFromServerNow();
+                    }, 5000);
                 });
 
             const settingsDoc = doc(db, 'artifacts', appId, 'sharedDial', 'settings');
@@ -3957,7 +3952,6 @@ window.updateStoricoButton = async function() {
                     if (!t || !t.closest || !t.closest('.main-container')) return;
                     if (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA') return;
                     if (t.closest('#settings-modal') || t.closest('#management-modal') || t.closest('#shift-modal')) return;
-                    if (t.id && typeof window.__touchPlantFieldDirty === 'function') window.__touchPlantFieldDirty(t.id);
                     if (__plantPersistTimer) clearTimeout(__plantPersistTimer);
                     __plantPersistTimer = setTimeout(function () {
                         __plantPersistTimer = null;
@@ -3972,7 +3966,6 @@ window.updateStoricoButton = async function() {
                     const t = e.target;
                     if (!t || !t.closest || !t.closest('.main-container')) return;
                     if (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA') return;
-                    if (t.id && typeof window.__touchPlantFieldDirty === 'function') window.__touchPlantFieldDirty(t.id);
                 },
                 true
             );
@@ -4007,14 +4000,12 @@ window.updateStoricoButton = async function() {
                         void window.saveData(true);
                     }
                 } else if (document.visibilityState === 'visible') {
-                    if (typeof window.__isPlantUserTypingNow === 'function' && window.__isPlantUserTypingNow()) return;
                     if (typeof window.__pullAllCloudStateNow === 'function') {
                         void window.__pullAllCloudStateNow();
                     }
                 }
             });
             window.addEventListener('online', function () {
-                if (typeof window.__isPlantUserTypingNow === 'function' && window.__isPlantUserTypingNow()) return;
                 if (typeof window.__pullAllCloudStateNow === 'function') {
                     void window.__pullAllCloudStateNow();
                 }
@@ -4240,7 +4231,6 @@ window.updateStoricoButton = async function() {
             const input = row.querySelector('input');
             if (!input || input.readOnly || input.style.pointerEvents === 'none') return;
             currentNumpadTarget = input;
-            if (input.id && typeof window.__touchPlantFieldDirty === 'function') window.__touchPlantFieldDirty(input.id);
             const section = labelEl.closest('.col-section');
             const sectionLabel = section ? section.querySelector('.v-label-text').textContent : "N/D";
             document.getElementById('numpad-context').textContent = sectionLabel.toUpperCase();
@@ -4362,7 +4352,6 @@ window.updateStoricoButton = async function() {
             if (currentNumpadTarget) {
                 const val = numpadDisplay.value;
                 const npt = currentNumpadTarget;
-                if (npt.id && typeof window.__touchPlantFieldDirty === 'function') window.__touchPlantFieldDirty(npt.id);
                 if (currentNumpadTarget.id === 'vwt-notes' && val !== "") currentNumpadTarget.value = val + " mc";
                 else currentNumpadTarget.value = val;
                 window.saveData();
@@ -4382,9 +4371,6 @@ window.updateStoricoButton = async function() {
             if (val === 'DEL') display.value = display.value.slice(0, -1);
             else if (val === 'CLR') display.value = '';
             else { if (val === '.' && display.value.includes('.')) return; display.value += val; }
-            if (window.currentNumpadTarget && window.currentNumpadTarget.id && typeof window.__touchPlantFieldDirty === 'function') {
-                window.__touchPlantFieldDirty(window.currentNumpadTarget.id);
-            }
             
             // Attiva calcoli real-time per popup analisi
             if (window.currentAnalisiPopupInput) {
@@ -5485,7 +5471,8 @@ window.updateStoricoButton = async function() {
         function applyData(data, opts) {
             if (!data) return;
             const fromRemote = opts && opts.fromRemote === true;
-            const skipBoilerSideEffects = fromRemote && typeof window.__isPlantUserTypingNow === 'function' && window.__isPlantUserTypingNow();
+            const fromOtherDevice = opts && opts.fromOtherDevice === true;
+            const skipBoilerSideEffects = fromRemote && !fromOtherDevice && typeof window.__isPlantUserTypingNow === 'function' && window.__isPlantUserTypingNow();
             if (data.manualShift !== undefined) { manualShift = data.manualShift; updateDeviceInfo(); }
             if (data.shift !== undefined && document.getElementById('current-shift-label')) {
                 document.getElementById('current-shift-label').innerText = data.shift;

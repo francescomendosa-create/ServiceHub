@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.04-sync-other-device';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-cloud-push-verify';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -1043,6 +1043,8 @@ window.colorPreviewNumber = function(tankName, value) {
 
         window.__appliedPlantSyncRevision = 0;
         window.__lastPushedPlantRevision = 0;
+        window.__plantHasPendingWrites = false;
+        window.__plantPushMismatchSince = 0;
         window.__cloudPlantHydrated = false;
         window.__cloudPlantCache = null;
         window.__plantSyncPollInterval = null;
@@ -1087,21 +1089,59 @@ window.colorPreviewNumber = function(tankName, value) {
         };
 
         window.__updatePlantSyncDiagnostic = function (serverData) {
-            const localRev = window.__lastPushedPlantRevision || window.__lastLocalPlantRevision || 0;
+            const localRev = window.__lastPushedPlantRevision || 0;
             const serverRev = serverData ? __plantPayloadRevision(serverData) : (window.__lastServerPlantRevision || 0);
             if (serverRev > 0) window.__lastServerPlantRevision = serverRev;
             const localShort = window.__formatPlantRevShort(localRev);
             const serverShort = window.__formatPlantRevShort(serverRev);
             let msg = 'Tu ' + localShort + ' · Cloud ' + serverShort;
-            if (localRev > 0 && serverRev > 0 && localRev !== serverRev) {
-                msg += ' · aggiornamento in corso…';
+            if (window.__plantHasPendingWrites) {
+                msg += ' · invio al cloud…';
+            } else if (localRev > 0 && serverRev > 0 && localRev !== serverRev) {
+                if (localRev > serverRev) {
+                    if (!window.__plantPushMismatchSince) window.__plantPushMismatchSince = Date.now();
+                    if (Date.now() - window.__plantPushMismatchSince > 8000) {
+                        msg += ' · cloud NON aggiornato (ritenta)';
+                    } else {
+                        msg += ' · invio al cloud…';
+                    }
+                } else {
+                    window.__plantPushMismatchSince = 0;
+                    msg += ' · ricezione dati…';
+                }
             } else if (localRev > 0 && serverRev > 0) {
+                window.__plantPushMismatchSince = 0;
                 msg += ' · OK';
             }
             if (serverData && serverData.savedBy) {
                 msg += ' · da ' + String(serverData.savedBy).slice(-6);
             }
             if (typeof window.__setPlantSyncStatusUI === 'function') window.__setPlantSyncStatusUI(msg);
+        };
+
+        const __confirmPlantRevisionOnServer = async function (expectedRev) {
+            if (!db || !user || !user.uid || !expectedRev) return false;
+            try {
+                await enableNetwork(db);
+                const snap = await getDocFromServer(doc(db, 'artifacts', appId, 'sharedDial', 'plant'));
+                if (!snap.exists()) return false;
+                const d = snap.data();
+                const serverRev = __plantPayloadRevision(d);
+                const myDev = typeof window.__getServiceHubDeviceId === 'function' ? window.__getServiceHubDeviceId() : '';
+                window.__lastServerPlantRevision = serverRev;
+                if (typeof window.__updatePlantSyncDiagnostic === 'function') {
+                    window.__updatePlantSyncDiagnostic(d);
+                }
+                if (serverRev === expectedRev && d.savedBy === myDev) return true;
+                if (serverRev > expectedRev && d.savedBy && myDev && d.savedBy !== myDev) {
+                    __applyRemotePlantPayload(d, { force: true });
+                    return false;
+                }
+                if (serverRev >= expectedRev && d.savedBy === myDev) return true;
+            } catch (e) {
+                console.warn('[ServiceHub] verifica plant su server:', e && e.message);
+            }
+            return false;
         };
 
         const __plantPayloadRevision = function (d) {
@@ -1206,16 +1246,12 @@ window.colorPreviewNumber = function(tankName, value) {
         window.flushPlantBackupNow = function () {
             if (typeof window.buildPlantPayloadFromDOM !== 'function') return null;
             const data = window.buildPlantPayloadFromDOM();
-            const rev = __plantPayloadRevision(data);
-            if (rev > 0) window.__lastLocalPlantRevision = rev;
             __writePlantLocalBackup(data);
-            if (typeof window.__updatePlantSyncDiagnostic === 'function') {
-                window.__updatePlantSyncDiagnostic(window.__cloudPlantCache || data);
-            }
             return data;
         };
 
         let __plantSaveInFlight = null;
+        let __plantSaveRunAgain = false;
 
         window.buildPlantPayloadFromDOM = function() {
             const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
@@ -1323,7 +1359,13 @@ window.colorPreviewNumber = function(tankName, value) {
                         if (!snapshot.exists()) return;
                         const d = snapshot.data();
                         const md = snapshot.metadata;
-                        if (md && md.hasPendingWrites) return;
+                        window.__plantHasPendingWrites = !!(md && md.hasPendingWrites);
+                        if (md && md.hasPendingWrites) {
+                            if (typeof window.__updatePlantSyncDiagnostic === 'function') {
+                                window.__updatePlantSyncDiagnostic(d);
+                            }
+                            return;
+                        }
                         if (md && md.fromCache) {
                             const revCache = __plantPayloadRevision(d);
                             if (!window.__cloudPlantHydrated || revCache > (window.__appliedPlantSyncRevision || 0)) {
@@ -1892,8 +1934,6 @@ window.colorPreviewNumber = function(tankName, value) {
         window.saveData = async function (skipHistory) {
             const skipHist = skipHistory === true;
             const doSave = async function () {
-            if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
-
             if (!user || !user.uid || !db) {
                 if (!(window.isEditingArchive && window.editingArchiveId)) {
                     const localOnly = typeof window.buildPlantPayloadFromDOM === 'function'
@@ -2048,32 +2088,37 @@ window.colorPreviewNumber = function(tankName, value) {
 
             try {
                 __writePlantLocalBackup(data);
-                await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data);
-                cacheCloudPlantPayload(data);
                 const rev = __plantPayloadRevision(data);
-                if (rev > 0) {
-                    window.__appliedPlantSyncRevision = rev;
-                    window.__lastPushedPlantRevision = rev;
+                await enableNetwork(db);
+                await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data);
+                const confirmed = await __confirmPlantRevisionOnServer(rev);
+                if (confirmed) {
+                    cacheCloudPlantPayload(data);
+                    if (rev > 0) {
+                        window.__appliedPlantSyncRevision = Math.max(window.__appliedPlantSyncRevision || 0, rev);
+                        window.__lastPushedPlantRevision = rev;
+                        window.__plantPushMismatchSince = 0;
+                    }
+                    window.__cloudPlantHydrated = true;
+                    __plantRetrySaveAfterAuth = false;
+                    __writePlantLocalBackup(data);
+                    console.info('[ServiceHub] plant confermato su server, rev=', rev, 'by', data.savedBy);
+                    if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
+                } else {
+                    window.__plantPushMismatchSince = window.__plantPushMismatchSince || Date.now();
+                    console.warn('[ServiceHub] plant inviato ma server rev non confermata, rev attesa=', rev);
+                    if (typeof window.__setPlantSyncStatusUI === 'function') {
+                        window.__setPlantSyncStatusUI('Cloud NON aggiornato — ritento…');
+                    }
+                    if (typeof window.__showPlantCloudSyncBanner === 'function') {
+                        window.__showPlantCloudSyncBanner(
+                            'Il cloud non conferma il salvataggio (rete o cache). Controlla la connessione; i dati restano in backup locale.'
+                        );
+                    }
+                    setTimeout(function () {
+                        if (typeof window.saveData === 'function') void window.saveData(true);
+                    }, 2000);
                 }
-                window.__cloudPlantHydrated = true;
-                __plantRetrySaveAfterAuth = false;
-                __writePlantLocalBackup(data);
-                console.info('[ServiceHub] plant salvato su cloud, rev=', rev, 'by', data.savedBy);
-                window.__lastServerPlantRevision = rev;
-                if (typeof window.__updatePlantSyncDiagnostic === 'function') {
-                    window.__updatePlantSyncDiagnostic(data);
-                }
-                setTimeout(function () {
-                    if (!db || !user || !user.uid) return;
-                    getDocFromServer(doc(db, 'artifacts', appId, 'sharedDial', 'plant'))
-                        .then(function (snap) {
-                            if (snap.exists() && typeof window.__updatePlantSyncDiagnostic === 'function') {
-                                window.__updatePlantSyncDiagnostic(snap.data());
-                            }
-                        })
-                        .catch(function () {});
-                }, 1200);
-                if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
                 if (typeof window.flushPublicDigitalSnapshotNow === "function") {
                     window.flushPublicDigitalSnapshotNow();
                 } else if (typeof window.schedulePublicDigitalSnapshotSync === "function") {
@@ -2100,13 +2145,18 @@ window.colorPreviewNumber = function(tankName, value) {
             };
 
             if (__plantSaveInFlight) {
-                try { await __plantSaveInFlight; } catch (_) {}
+                __plantSaveRunAgain = true;
+                return __plantSaveInFlight;
             }
-            const p = doSave();
-            __plantSaveInFlight = p;
-            return p.finally(function () {
+            const p = doSave().finally(function () {
                 __plantSaveInFlight = null;
+                if (__plantSaveRunAgain) {
+                    __plantSaveRunAgain = false;
+                    if (typeof window.saveData === 'function') void window.saveData(true);
+                }
             });
+            __plantSaveInFlight = p;
+            return p;
         };
 
         // NUOVO SISTEMA DI SYNC AUTOMATICO BACKUP

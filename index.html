@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.04-fix-stoccaggio-sync';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-realtime-all-devices';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -1063,7 +1063,7 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__formatPlantRevShort = function (rev) {
             const n = Number(rev) || 0;
             if (n <= 0) return '0';
-            return String(n % 1000).padStart(3, '0');
+            return String(n % 1000000).padStart(6, '0');
         };
 
         window.__setPlantSyncStatusUI = function (msg) {
@@ -1094,9 +1094,12 @@ window.colorPreviewNumber = function(tankName, value) {
             const serverShort = window.__formatPlantRevShort(serverRev);
             let msg = 'Tu ' + localShort + ' · Cloud ' + serverShort;
             if (localRev > 0 && serverRev > 0 && localRev !== serverRev) {
-                msg += ' · NON ALLINEATI (aspetta o ricarica)';
+                msg += ' · aggiornamento in corso…';
             } else if (localRev > 0 && serverRev > 0) {
                 msg += ' · OK';
+            }
+            if (serverData && serverData.savedBy) {
+                msg += ' · da ' + String(serverData.savedBy).slice(-6);
             }
             if (typeof window.__setPlantSyncStatusUI === 'function') window.__setPlantSyncStatusUI(msg);
         };
@@ -1172,8 +1175,12 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!d || typeof d !== 'object') return;
             d = window.__stripRapportinoKeysFromPlantPayload(d);
             const rev = __plantPayloadRevision(d);
-            if (!opts.force && rev > 0 && rev <= window.__appliedPlantSyncRevision) return;
-            if (rev > 0) window.__appliedPlantSyncRevision = rev;
+            const myDev = typeof window.__getServiceHubDeviceId === 'function' ? window.__getServiceHubDeviceId() : '';
+            if (!opts.force && rev > 0 && rev < window.__appliedPlantSyncRevision) return;
+            if (!opts.force && rev > 0 && rev === window.__appliedPlantSyncRevision && d.savedBy && myDev && d.savedBy === myDev) {
+                return;
+            }
+            if (rev > 0) window.__appliedPlantSyncRevision = Math.max(window.__appliedPlantSyncRevision || 0, rev);
             window.__cloudPlantHydrated = true;
             applyData(d, { fromRemote: true });
             cacheCloudPlantPayload(d);
@@ -1305,9 +1312,9 @@ window.colorPreviewNumber = function(tankName, value) {
                 __plantTruthTimer = setTimeout(function () {
                     __plantTruthTimer = null;
                     if (typeof window.__pullPlantFromServerNow === 'function') {
-                        void window.__pullPlantFromServerNow();
+                        void window.__pullPlantFromServerNow({ force: true });
                     }
-                }, 120);
+                }, 80);
             };
 
             const __wirePlantSnapshotListener = function () {
@@ -1320,6 +1327,10 @@ window.colorPreviewNumber = function(tankName, value) {
                         const md = snapshot.metadata;
                         if (md && md.hasPendingWrites) return;
                         if (md && md.fromCache) {
+                            const revCache = __plantPayloadRevision(d);
+                            if (!window.__cloudPlantHydrated || revCache > (window.__appliedPlantSyncRevision || 0)) {
+                                __applyRemotePlantPayload(d, { force: true });
+                            }
                             schedulePlantTruthFromServer();
                             return;
                         }
@@ -1399,9 +1410,13 @@ window.colorPreviewNumber = function(tankName, value) {
 
             const rapportiniDoc = doc(db, 'artifacts', appId, 'sharedDial', 'rapportini');
             const __wireRapportiniSnapshotListener = function () {
-                __shUnsubRapportini = onSnapshot(rapportiniDoc, (snapshot) => {
+                __shUnsubRapportini = onSnapshot(
+                    rapportiniDoc,
+                    { includeMetadataChanges: true },
+                    (snapshot) => {
                     const md = snapshot.metadata;
                     if (md && md.hasPendingWrites) return;
+                    if (md && md.fromCache) return;
                     window.__rapportiniCloudHydrated = true;
                     if (!snapshot.exists()) {
                         window.__rapportiniCloudDocMissing = true;
@@ -3956,7 +3971,10 @@ window.updateStoricoButton = async function() {
                     __plantPersistTimer = setTimeout(function () {
                         __plantPersistTimer = null;
                         if (typeof window.saveData === 'function') void window.saveData(true);
-                    }, 400);
+                        if (typeof window.saveActiveRapportinoFromUI === 'function') {
+                            try { window.saveActiveRapportinoFromUI(); } catch (_) {}
+                        }
+                    }, 280);
                 },
                 true
             );
@@ -7396,16 +7414,15 @@ window.updateStoricoButton = async function() {
         };
 
         /** Lettura forzata plant dal server (aggira cache SDK / tab in background / rete difficile). */
-        window.__pullPlantFromServerNow = function () {
+        window.__pullPlantFromServerNow = function (opts) {
+            opts = opts || {};
             if (!db || !user || !user.uid) return Promise.resolve();
             const dataDoc = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
             return getDocFromServer(dataDoc)
                 .then(function (snap) {
                     if (!snap.exists()) return;
                     const d = snap.data();
-                    const rev = __plantPayloadRevision(d);
-                    if (rev > 0 && rev <= (window.__appliedPlantSyncRevision || 0)) return;
-                    __applyRemotePlantPayload(d, { force: true });
+                    __applyRemotePlantPayload(d, { force: opts.force === true });
                     if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                         window.schedulePublicDigitalSnapshotSync();
                     }

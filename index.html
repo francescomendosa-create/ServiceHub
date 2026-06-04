@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-no-erase-while-typing';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-fix-erase-sync';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -1044,6 +1044,7 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__appliedPlantSyncRevision = 0;
         window.__lastPushedPlantRevision = 0;
         window.__plantTypingQuietUntil = 0;
+        window.__plantFieldDirtyUntil = {};
         window.__cloudPlantHydrated = false;
         window.__cloudPlantCache = null;
         window.__plantSyncPollInterval = null;
@@ -1073,11 +1074,28 @@ window.colorPreviewNumber = function(tankName, value) {
         };
 
         window.__markPlantUserTyping = function () {
-            window.__plantTypingQuietUntil = Date.now() + 2800;
+            window.__plantTypingQuietUntil = Date.now() + 10000;
+        };
+
+        window.__touchPlantFieldDirty = function (fieldId) {
+            if (!fieldId) return;
+            if (!window.__plantFieldDirtyUntil) window.__plantFieldDirtyUntil = {};
+            window.__plantFieldDirtyUntil[fieldId] = Date.now() + 12000;
+            window.__markPlantUserTyping();
+        };
+
+        window.__isPlantFieldProtected = function (fieldId, el) {
+            if (el && document.activeElement === el) return true;
+            const npt = window.currentNumpadTarget;
+            if (npt && fieldId && npt.id === fieldId) return true;
+            const until = window.__plantFieldDirtyUntil && window.__plantFieldDirtyUntil[fieldId];
+            return !!(until && Date.now() < until);
         };
 
         window.__isPlantUserTypingNow = function () {
             if (Date.now() < (window.__plantTypingQuietUntil || 0)) return true;
+            const npModal = document.getElementById('numpad-modal');
+            if (npModal && npModal.classList.contains('active')) return true;
             const ae = document.activeElement;
             if (!ae || (ae.tagName !== 'INPUT' && ae.tagName !== 'TEXTAREA')) return false;
             return !!(ae.closest && ae.closest('.main-container'));
@@ -1085,7 +1103,7 @@ window.colorPreviewNumber = function(tankName, value) {
 
         window.__shouldApplyRemotePlantNow = function (opts) {
             opts = opts || {};
-            if (opts.force) return true;
+            if (opts.bootstrap) return true;
             return !window.__isPlantUserTypingNow();
         };
 
@@ -1165,12 +1183,10 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!window.__shouldApplyRemotePlantNow(opts)) return;
             d = window.__stripRapportinoKeysFromPlantPayload(d);
             const rev = __plantPayloadRevision(d);
-            if (!opts.force && rev > 0 && rev === window.__lastPushedPlantRevision) return;
-            if (!opts.force && rev > 0 && rev < window.__appliedPlantSyncRevision) return;
+            if (!opts.bootstrap && rev > 0 && rev <= window.__appliedPlantSyncRevision) return;
             if (rev > 0) window.__appliedPlantSyncRevision = rev;
             window.__cloudPlantHydrated = true;
-            applyData(d, { forceRemotePlant: true });
-            __writePlantLocalBackup(d);
+            applyData(d, { fromRemote: true });
             cacheCloudPlantPayload(d);
             if (typeof window.__updatePlantSyncDiagnostic === 'function') {
                 window.__updatePlantSyncDiagnostic(d);
@@ -1204,17 +1220,12 @@ window.colorPreviewNumber = function(tankName, value) {
             opts = opts || {};
             const bump = opts.bumpRevision === true;
             const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
-            let syncRevision = window.__appliedPlantSyncRevision || 0;
-            let lastUpdate = __readPrevPlantLastUpdateIso() || new Date().toISOString();
-            if (bump) {
-                syncRevision = Date.now();
-                lastUpdate = new Date().toISOString();
-            } else {
+            let syncRevision = Date.now();
+            let lastUpdate = new Date().toISOString();
+            if (!bump) {
                 const local = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
-                if (local) {
-                    if (local.syncRevision) syncRevision = local.syncRevision;
-                    if (local.lastUpdate) lastUpdate = local.lastUpdate;
-                }
+                if (local && local.syncRevision) syncRevision = local.syncRevision;
+                if (local && local.lastUpdate) lastUpdate = local.lastUpdate;
             }
             const data = {
                 shift: currentShift,
@@ -1299,17 +1310,34 @@ window.colorPreviewNumber = function(tankName, value) {
                 clearInterval(window.__plantSyncPollInterval);
                 window.__plantSyncPollInterval = null;
             }
+            let __plantTruthTimer = null;
+            const schedulePlantTruthFromServer = function () {
+                if (__plantTruthTimer) clearTimeout(__plantTruthTimer);
+                __plantTruthTimer = setTimeout(function () {
+                    __plantTruthTimer = null;
+                    if (typeof window.__pullPlantFromServerNow === 'function') {
+                        void window.__pullPlantFromServerNow();
+                    }
+                }, 120);
+            };
 
             const __wirePlantSnapshotListener = function () {
                 __shUnsubPlant = onSnapshot(
                     dataDoc,
+                    { includeMetadataChanges: true },
                     (snapshot) => {
                         if (!snapshot.exists()) return;
+                        const d = snapshot.data();
                         const md = snapshot.metadata;
                         if (md && md.hasPendingWrites) return;
-                        const d = snapshot.data();
-                        const rev = __plantPayloadRevision(d);
-                        if (rev > 0 && rev === window.__lastPushedPlantRevision) return;
+                        if (md && md.fromCache) {
+                            const revCache = __plantPayloadRevision(d);
+                            if (!window.__cloudPlantHydrated || revCache > (window.__appliedPlantSyncRevision || 0)) {
+                                __applyRemotePlantPayload(d, { bootstrap: true });
+                            }
+                            schedulePlantTruthFromServer();
+                            return;
+                        }
                         __applyRemotePlantPayload(d);
                         if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                             window.schedulePublicDigitalSnapshotSync();
@@ -1340,13 +1368,13 @@ window.colorPreviewNumber = function(tankName, value) {
                 .then((snap) => {
                     if (snap.exists()) {
                         const d = window.__stripRapportinoKeysFromPlantPayload(snap.data());
-                        __applyRemotePlantPayload(d, { force: true });
+                        __applyRemotePlantPayload(d, { bootstrap: true });
                         return;
                     }
                     const backup = window.__readPlantBackupLocal();
                     if (backup) {
                         const picked = window.__stripRapportinoKeysFromPlantPayload(backup);
-                        __applyRemotePlantPayload(picked, { force: true });
+                        __applyRemotePlantPayload(picked, { bootstrap: true });
                         if (user && user.uid) {
                             void setDoc(dataDoc, picked);
                         }
@@ -1357,7 +1385,7 @@ window.colorPreviewNumber = function(tankName, value) {
                     const backup = window.__readPlantBackupLocal();
                     if (backup) {
                         const picked = window.__stripRapportinoKeysFromPlantPayload(backup);
-                        __applyRemotePlantPayload(picked, { force: true });
+                        __applyRemotePlantPayload(picked, { bootstrap: true });
                     }
                 })
                 .finally(function () {
@@ -3929,12 +3957,12 @@ window.updateStoricoButton = async function() {
                     if (!t || !t.closest || !t.closest('.main-container')) return;
                     if (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA') return;
                     if (t.closest('#settings-modal') || t.closest('#management-modal') || t.closest('#shift-modal')) return;
-                    if (typeof window.__markPlantUserTyping === 'function') window.__markPlantUserTyping();
+                    if (t.id && typeof window.__touchPlantFieldDirty === 'function') window.__touchPlantFieldDirty(t.id);
                     if (__plantPersistTimer) clearTimeout(__plantPersistTimer);
                     __plantPersistTimer = setTimeout(function () {
                         __plantPersistTimer = null;
                         if (typeof window.saveData === 'function') void window.saveData(true);
-                    }, 650);
+                    }, 400);
                 },
                 true
             );
@@ -3944,7 +3972,7 @@ window.updateStoricoButton = async function() {
                     const t = e.target;
                     if (!t || !t.closest || !t.closest('.main-container')) return;
                     if (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA') return;
-                    if (typeof window.__markPlantUserTyping === 'function') window.__markPlantUserTyping();
+                    if (t.id && typeof window.__touchPlantFieldDirty === 'function') window.__touchPlantFieldDirty(t.id);
                 },
                 true
             );
@@ -3979,12 +4007,14 @@ window.updateStoricoButton = async function() {
                         void window.saveData(true);
                     }
                 } else if (document.visibilityState === 'visible') {
+                    if (typeof window.__isPlantUserTypingNow === 'function' && window.__isPlantUserTypingNow()) return;
                     if (typeof window.__pullAllCloudStateNow === 'function') {
                         void window.__pullAllCloudStateNow();
                     }
                 }
             });
             window.addEventListener('online', function () {
+                if (typeof window.__isPlantUserTypingNow === 'function' && window.__isPlantUserTypingNow()) return;
                 if (typeof window.__pullAllCloudStateNow === 'function') {
                     void window.__pullAllCloudStateNow();
                 }
@@ -4210,6 +4240,7 @@ window.updateStoricoButton = async function() {
             const input = row.querySelector('input');
             if (!input || input.readOnly || input.style.pointerEvents === 'none') return;
             currentNumpadTarget = input;
+            if (input.id && typeof window.__touchPlantFieldDirty === 'function') window.__touchPlantFieldDirty(input.id);
             const section = labelEl.closest('.col-section');
             const sectionLabel = section ? section.querySelector('.v-label-text').textContent : "N/D";
             document.getElementById('numpad-context').textContent = sectionLabel.toUpperCase();
@@ -4331,6 +4362,7 @@ window.updateStoricoButton = async function() {
             if (currentNumpadTarget) {
                 const val = numpadDisplay.value;
                 const npt = currentNumpadTarget;
+                if (npt.id && typeof window.__touchPlantFieldDirty === 'function') window.__touchPlantFieldDirty(npt.id);
                 if (currentNumpadTarget.id === 'vwt-notes' && val !== "") currentNumpadTarget.value = val + " mc";
                 else currentNumpadTarget.value = val;
                 window.saveData();
@@ -4350,6 +4382,9 @@ window.updateStoricoButton = async function() {
             if (val === 'DEL') display.value = display.value.slice(0, -1);
             else if (val === 'CLR') display.value = '';
             else { if (val === '.' && display.value.includes('.')) return; display.value += val; }
+            if (window.currentNumpadTarget && window.currentNumpadTarget.id && typeof window.__touchPlantFieldDirty === 'function') {
+                window.__touchPlantFieldDirty(window.currentNumpadTarget.id);
+            }
             
             // Attiva calcoli real-time per popup analisi
             if (window.currentAnalisiPopupInput) {
@@ -5449,8 +5484,8 @@ window.updateStoricoButton = async function() {
         
         function applyData(data, opts) {
             if (!data) return;
-            const forcePlant =
-                opts && opts.forceRemotePlant === true;
+            const fromRemote = opts && opts.fromRemote === true;
+            const skipBoilerSideEffects = fromRemote && typeof window.__isPlantUserTypingNow === 'function' && window.__isPlantUserTypingNow();
             if (data.manualShift !== undefined) { manualShift = data.manualShift; updateDeviceInfo(); }
             if (data.shift !== undefined && document.getElementById('current-shift-label')) {
                 document.getElementById('current-shift-label').innerText = data.shift;
@@ -5467,7 +5502,7 @@ window.updateStoricoButton = async function() {
                 const inputs = document.querySelectorAll('input[id="' + id + '"]');
                 if (inputs.length) {
                     inputs.forEach(function(el) {
-                        if (document.activeElement === el) return;
+                        if (window.__isPlantFieldProtected && window.__isPlantFieldProtected(id, el)) return;
                         el.value = strVal;
                         if (id === 'osmosi' && typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(el);
                     });
@@ -5476,7 +5511,7 @@ window.updateStoricoButton = async function() {
                 const el = document.getElementById(id);
                 if (!el) continue;
                 if (el.tagName === 'INPUT') {
-                    if (document.activeElement === el) return;
+                    if (window.__isPlantFieldProtected && window.__isPlantFieldProtected(id, el)) return;
                     el.value = strVal;
                     if (id === 'osmosi' && typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(el);
                 }
@@ -5486,15 +5521,15 @@ window.updateStoricoButton = async function() {
                     if (val.style) el.setAttribute('style', val.style);
                 }
             }
-            updateBoilerInputs(); 
+            if (!skipBoilerSideEffects) updateBoilerInputs();
             
             // Applica i colori agli input SCAM dopo aver caricato i dati
-            if (window.colorScamInputs) {
+            if (!skipBoilerSideEffects && window.colorScamInputs) {
                 window.colorScamInputs();
             }
             
             // Applica i colori agli input serbatoi dopo aver caricato i dati
-            if (window.colorAllTankInputs) {
+            if (!skipBoilerSideEffects && window.colorAllTankInputs) {
                 window.colorAllTankInputs();
             }
 
@@ -7356,7 +7391,7 @@ window.updateStoricoButton = async function() {
         window.__applyPlantFromLocalStorageFallback = function () {
             const backup = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
             if (backup) {
-                __applyRemotePlantPayload(backup, { force: true });
+                __applyRemotePlantPayload(backup, { bootstrap: true });
             }
         };
 
@@ -7371,8 +7406,6 @@ window.updateStoricoButton = async function() {
                 .then(function (snap) {
                     if (!snap.exists()) return;
                     const d = snap.data();
-                    const rev = __plantPayloadRevision(d);
-                    if (rev > 0 && rev === window.__lastPushedPlantRevision) return;
                     __applyRemotePlantPayload(d);
                     if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                         window.schedulePublicDigitalSnapshotSync();
@@ -8100,7 +8133,13 @@ window.updateStoricoButton = async function() {
                         inputEl.style.opacity = isRunning ? "1" : "0.3";
                         inputEl.style.pointerEvents = isRunning ? "auto" : "none";
                         inputEl.readOnly = !isRunning;
-                        if(!isRunning) inputEl.value = "";
+                        if (!isRunning) {
+                            if (window.__isPlantFieldProtected && window.__isPlantFieldProtected(inputId, inputEl)) {
+                                /* non cancellare mentre l'utente sta scrivendo */
+                            } else {
+                                inputEl.value = "";
+                            }
+                        }
                     }
                 });
                 
@@ -8136,7 +8175,13 @@ window.updateStoricoButton = async function() {
                         inputEl.style.opacity = isRunning ? "1" : "0.3";
                         inputEl.style.pointerEvents = isRunning ? "auto" : "none";
                         inputEl.readOnly = !isRunning;
-                        if(!isRunning) inputEl.value = "";
+                        if (!isRunning) {
+                            if (window.__isPlantFieldProtected && window.__isPlantFieldProtected(inputId, inputEl)) {
+                                /* non cancellare mentre l'utente sta scrivendo */
+                            } else {
+                                inputEl.value = "";
+                            }
+                        }
                     }
                 });
                 

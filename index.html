@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-fix-cache-blocks-sync';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-persist-local-first';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -1156,6 +1156,17 @@ window.colorPreviewNumber = function(tankName, value) {
 
         window.__updatePlantSaveStatusUI = function () {};
 
+        window.__hydratePlantFromLocalBackup = function () {
+            const backup = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
+            if (!backup) return false;
+            const picked = window.__stripRapportinoKeysFromPlantPayload(backup);
+            applyData(picked);
+            const rev = __plantPayloadRevision(picked);
+            if (rev > 0) window.__appliedPlantSyncRevision = rev;
+            console.info('[ServiceHub] plant caricato da backup locale, rev=', rev);
+            return true;
+        };
+
         const __applyRemotePlantPayload = function (d, opts) {
             opts = opts || {};
             if (!d || typeof d !== 'object') return;
@@ -1261,8 +1272,6 @@ window.colorPreviewNumber = function(tankName, value) {
         const syncWithCloud = () => {
             if (!user || !user.uid || !db) return;
             void enableNetwork(db).catch(function () {});
-            window.__appliedPlantSyncRevision = 0;
-            window.__cloudPlantHydrated = false;
             __migratePlantBackupToStabileCurrentData();
             __purgeLegacySyncLocalStorage();
             const sessOnSync = typeof window.readSessionPrefs === 'function' ? window.readSessionPrefs() : null;
@@ -1342,18 +1351,16 @@ window.colorPreviewNumber = function(tankName, value) {
                     return getDoc(dataDoc);
                 })
                 .then((snap) => {
-                    if (snap.exists()) {
-                        const d = window.__stripRapportinoKeysFromPlantPayload(snap.data());
-                        __applyRemotePlantPayload(d, { force: true });
-                        return;
-                    }
+                    const serverData = snap.exists() ? window.__stripRapportinoKeysFromPlantPayload(snap.data()) : null;
                     const backup = window.__readPlantBackupLocal();
-                    if (backup) {
-                        const picked = window.__stripRapportinoKeysFromPlantPayload(backup);
-                        __applyRemotePlantPayload(picked, { force: true });
-                        if (user && user.uid) {
-                            void setDoc(dataDoc, picked);
-                        }
+                    const backupData = backup ? window.__stripRapportinoKeysFromPlantPayload(backup) : null;
+                    const picked = window.__pickNewestPlantPayload(serverData, backupData);
+                    if (!picked) return;
+                    __applyRemotePlantPayload(picked, { force: true });
+                    const revServer = serverData ? __plantPayloadRevision(serverData) : 0;
+                    const revPicked = __plantPayloadRevision(picked);
+                    if (user && user.uid && revPicked > revServer) {
+                        void setDoc(dataDoc, picked);
                     }
                 })
                 .catch((err) => {
@@ -1366,12 +1373,6 @@ window.colorPreviewNumber = function(tankName, value) {
                 })
                 .finally(function () {
                     __wirePlantSnapshotListener();
-                    if (window.__plantSyncPollInterval) clearInterval(window.__plantSyncPollInterval);
-                    window.__plantSyncPollInterval = setInterval(function () {
-                        if (!user || !user.uid || !db) return;
-                        if (typeof window.__isPlantUserTypingNow === 'function' && window.__isPlantUserTypingNow()) return;
-                        if (typeof window.__pullPlantFromServerNow === 'function') void window.__pullPlantFromServerNow();
-                    }, 3000);
                 });
 
             const settingsDoc = doc(db, 'artifacts', appId, 'sharedDial', 'settings');
@@ -1874,10 +1875,15 @@ window.colorPreviewNumber = function(tankName, value) {
         window.saveData = async function (skipHistory) {
             const skipHist = skipHistory === true;
             const doSave = async function () {
+            if (!(window.isEditingArchive && window.editingArchiveId)) {
+                const localSnap = typeof window.buildPlantPayloadFromDOM === 'function'
+                    ? window.buildPlantPayloadFromDOM({ preserveRevision: true })
+                    : null;
+                if (localSnap) __writePlantLocalBackup(localSnap);
+            }
 
             if (!user || !user.uid || !db) {
                 if (!(window.isEditingArchive && window.editingArchiveId)) {
-                    if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
                     __plantRetrySaveAfterAuth = true;
                 }
                 return;
@@ -3923,6 +3929,10 @@ window.updateStoricoButton = async function() {
                 });
             }
             
+            if (typeof window.__hydratePlantFromLocalBackup === 'function') {
+                window.__hydratePlantFromLocalBackup();
+            }
+
             initAuth();
 
             const bt0 = document.getElementById('sh-build-tag');
@@ -7376,6 +7386,10 @@ window.updateStoricoButton = async function() {
                 .then(function (snap) {
                     if (!snap.exists()) return;
                     const d = snap.data();
+                    const rev = __plantPayloadRevision(d);
+                    const local = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
+                    const revLocal = local ? __plantPayloadRevision(local) : 0;
+                    if (rev <= revLocal && rev <= (window.__appliedPlantSyncRevision || 0)) return;
                     __applyRemotePlantPayload(d, { force: true });
                     if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                         window.schedulePublicDigitalSnapshotSync();

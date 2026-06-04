@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-fix-realtime-sync-v2';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-sync-brutal';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -520,7 +520,7 @@ window.colorPreviewNumber = function(tankName, value) {
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, getDocFromServer, onSnapshot, collection, addDoc, query, getDocs, limit, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, getDoc, getDocFromServer, onSnapshot, collection, addDoc, query, getDocs, limit, deleteDoc, enableNetwork } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Configurazione Firebase del progetto ServiceHub (servicehub-18309)
         // Usata su GitHub Pages e ovunque non sia disponibile la config iniettata da Canvas.
@@ -927,6 +927,11 @@ window.colorPreviewNumber = function(tankName, value) {
                 const led = document.getElementById('cloud-status-led');
                 if (user && user.uid) {
                     if(led) led.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_10px_#10b981]"; 
+                    const bt = document.getElementById('sh-build-tag');
+                    if (bt) bt.textContent = window.SERVICEHUB_BUILD || '';
+                    if (typeof window.__setPlantSyncStatusUI === 'function') {
+                        window.__setPlantSyncStatusUI('Cloud connesso · ' + (window.SERVICEHUB_BUILD || ''));
+                    }
                     syncWithCloud();
                     window.__hydrateDigitalShareKeyFromCloud();
                     window.initAlarmConfigListener();
@@ -1037,8 +1042,15 @@ window.colorPreviewNumber = function(tankName, value) {
         };
 
         window.__appliedPlantSyncRevision = 0;
+        window.__lastPushedPlantRevision = 0;
         window.__cloudPlantHydrated = false;
         window.__cloudPlantCache = null;
+        window.__plantSyncPollInterval = null;
+
+        window.__setPlantSyncStatusUI = function (msg) {
+            const el = document.getElementById('sh-sync-status-text');
+            if (el && msg) el.textContent = msg;
+        };
 
         const __plantPayloadRevision = function (d) {
             if (!d || typeof d !== 'object') return 0;
@@ -1106,6 +1118,11 @@ window.colorPreviewNumber = function(tankName, value) {
             applyData(d, { forceRemotePlant: true });
             __writePlantLocalBackup(d);
             cacheCloudPlantPayload(d);
+            const t = new Date().toLocaleTimeString();
+            if (typeof window.__setPlantSyncStatusUI === 'function') {
+                window.__setPlantSyncStatusUI('Sync cloud OK · ' + t + ' · rev ' + rev);
+            }
+            console.info('[ServiceHub] plant applicato da cloud, rev=', rev);
             if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
             if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
             if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
@@ -1200,6 +1217,7 @@ window.colorPreviewNumber = function(tankName, value) {
 
         const syncWithCloud = () => {
             if (!user || !user.uid || !db) return;
+            void enableNetwork(db).catch(function () {});
             __migratePlantBackupToStabileCurrentData();
             __purgeLegacySyncLocalStorage();
             const sessOnSync = typeof window.readSessionPrefs === 'function' ? window.readSessionPrefs() : null;
@@ -1223,46 +1241,35 @@ window.colorPreviewNumber = function(tankName, value) {
                 __shUnsubRapportini = null;
             }
             const dataDoc = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
-            let __plantTruthTimer = null;
-            const schedulePlantTruthFromServer = function () {
-                if (__plantTruthTimer) clearTimeout(__plantTruthTimer);
-                __plantTruthTimer = setTimeout(function () {
-                    __plantTruthTimer = null;
-                    if (typeof window.__pullPlantFromServerNow === 'function') {
-                        void window.__pullPlantFromServerNow();
-                    }
-                }, 80);
-            };
+            if (window.__plantSyncPollInterval) {
+                clearInterval(window.__plantSyncPollInterval);
+                window.__plantSyncPollInterval = null;
+            }
 
             const __wirePlantSnapshotListener = function () {
                 __shUnsubPlant = onSnapshot(
                     dataDoc,
-                    { includeMetadataChanges: true },
                     (snapshot) => {
-                        if (snapshot.exists()) {
-                            const d = snapshot.data();
-                            const md = snapshot.metadata;
-                            if (md && md.hasPendingWrites) return;
-                            if (md && md.fromCache) {
-                                const revCache = __plantPayloadRevision(d);
-                                if (!window.__cloudPlantHydrated || revCache > (window.__appliedPlantSyncRevision || 0)) {
-                                    __applyRemotePlantPayload(d, { force: true });
-                                }
-                                schedulePlantTruthFromServer();
-                                return;
-                            }
-                            __applyRemotePlantPayload(d);
-                            if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
-                                window.schedulePublicDigitalSnapshotSync();
-                            }
+                        if (!snapshot.exists()) return;
+                        const md = snapshot.metadata;
+                        if (md && md.hasPendingWrites) return;
+                        const d = snapshot.data();
+                        const rev = __plantPayloadRevision(d);
+                        if (rev > 0 && rev <= window.__lastPushedPlantRevision) return;
+                        __applyRemotePlantPayload(d);
+                        if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
+                            window.schedulePublicDigitalSnapshotSync();
                         }
                     },
                     (error) => {
                         console.warn('[ServiceHub] plant Firestore:', error && error.message);
+                        if (typeof window.__setPlantSyncStatusUI === 'function') {
+                            window.__setPlantSyncStatusUI('Errore sync: ' + (error && error.message));
+                        }
                         if (window.__isFirestorePermissionError && window.__isFirestorePermissionError(error)) {
                             const pid = window.__SERVICEHUB_FIREBASE_PROJECT || 'Firebase';
                             window.__showPlantCloudSyncBanner(
-                                'Impossibile leggere il cruscotto dal cloud (permessi Firestore). Gli altri dispositivi non ricevono aggiornamenti in tempo reale. Apri Firebase Console → Firestore → Regole e pubblica il file firestore.rules del repository (progetto ' + pid + ').'
+                                'Impossibile leggere/scrivere il cloud (regole Firestore). Pubblica firestore.rules nel progetto ' + pid + '.'
                             );
                         }
                     }
@@ -1277,16 +1284,16 @@ window.colorPreviewNumber = function(tankName, value) {
                     return getDoc(dataDoc);
                 })
                 .then((snap) => {
-                    const serverData = snap.exists() ? snap.data() : null;
+                    if (snap.exists()) {
+                        const d = window.__stripRapportinoKeysFromPlantPayload(snap.data());
+                        __applyRemotePlantPayload(d, { force: true });
+                        return;
+                    }
                     const backup = window.__readPlantBackupLocal();
-                    const serverStripped = serverData ? window.__stripRapportinoKeysFromPlantPayload(serverData) : null;
-                    const backupStripped = backup ? window.__stripRapportinoKeysFromPlantPayload(backup) : null;
-                    const picked = window.__pickNewestPlantPayload(serverStripped, backupStripped);
-                    if (picked) {
+                    if (backup) {
+                        const picked = window.__stripRapportinoKeysFromPlantPayload(backup);
                         __applyRemotePlantPayload(picked, { force: true });
-                        const pickedRev = __plantPayloadRevision(picked);
-                        const serverRev = serverStripped ? __plantPayloadRevision(serverStripped) : 0;
-                        if (user && user.uid && pickedRev > serverRev) {
+                        if (user && user.uid) {
                             void setDoc(dataDoc, picked);
                         }
                     }
@@ -1301,6 +1308,11 @@ window.colorPreviewNumber = function(tankName, value) {
                 })
                 .finally(function () {
                     __wirePlantSnapshotListener();
+                    window.__plantSyncPollInterval = setInterval(function () {
+                        if (user && user.uid && db && typeof window.__pullPlantFromServerNow === 'function') {
+                            void window.__pullPlantFromServerNow();
+                        }
+                    }, 4000);
                 });
 
             const settingsDoc = doc(db, 'artifacts', appId, 'sharedDial', 'settings');
@@ -1955,10 +1967,17 @@ window.colorPreviewNumber = function(tankName, value) {
                 await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data);
                 cacheCloudPlantPayload(data);
                 const rev = __plantPayloadRevision(data);
-                if (rev > 0) window.__appliedPlantSyncRevision = rev;
+                if (rev > 0) {
+                    window.__appliedPlantSyncRevision = rev;
+                    window.__lastPushedPlantRevision = rev;
+                }
                 window.__cloudPlantHydrated = true;
                 __plantRetrySaveAfterAuth = false;
                 __writePlantLocalBackup(data);
+                console.info('[ServiceHub] plant salvato su cloud, rev=', rev);
+                if (typeof window.__setPlantSyncStatusUI === 'function') {
+                    window.__setPlantSyncStatusUI('Salvato cloud · rev ' + rev);
+                }
                 if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
                 if (typeof window.flushPublicDigitalSnapshotNow === "function") {
                     window.flushPublicDigitalSnapshotNow();
@@ -1968,6 +1987,9 @@ window.colorPreviewNumber = function(tankName, value) {
             } catch (e) { 
                 console.error('[ServiceHub] saveData Firestore:', e && e.code, e && e.message);
                 __writePlantLocalBackup(data);
+                if (typeof window.__setPlantSyncStatusUI === 'function') {
+                    window.__setPlantSyncStatusUI('Salvataggio cloud FALLITO — solo locale');
+                }
                 const msg = window.__isFirestorePermissionError && window.__isFirestorePermissionError(e)
                     ? ('Salvataggio cloud rifiutato (regole Firestore). Progetto ' + (window.__SERVICEHUB_FIREBASE_PROJECT || 'Firebase') + '. Pubblica firestore.rules.')
                     : ('Salvataggio cloud fallito: ' + ((e && e.code) || '') + ' ' + ((e && e.message) || 'rete?') + ' — backup locale ok.');
@@ -3831,9 +3853,6 @@ window.updateStoricoButton = async function() {
             initAuth();
 
             __migratePlantBackupToStabileCurrentData();
-            if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
-                window.__applyPlantFromLocalStorageFallback();
-            }
 
             const sessPrefs = typeof window.readSessionPrefs === 'function' ? window.readSessionPrefs() : null;
             if (sessPrefs && sessPrefs.activeId) window.__sessionActiveIdHint = sessPrefs.activeId;
@@ -7274,11 +7293,13 @@ window.updateStoricoButton = async function() {
             const dataDoc = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
             return getDocFromServer(dataDoc)
                 .then(function (snap) {
-                    if (snap.exists()) {
-                        __applyRemotePlantPayload(snap.data(), { force: true });
-                        if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
-                            window.schedulePublicDigitalSnapshotSync();
-                        }
+                    if (!snap.exists()) return;
+                    const d = snap.data();
+                    const rev = __plantPayloadRevision(d);
+                    if (rev > 0 && rev <= window.__lastPushedPlantRevision) return;
+                    __applyRemotePlantPayload(d);
+                    if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
+                        window.schedulePublicDigitalSnapshotSync();
                     }
                 })
                 .catch(function (e) {
@@ -12925,6 +12946,7 @@ window.convertToHtml = async () => {
         <div class="main-header">
             <div class="flex items-center gap-2">
                 <div id="cloud-status-led" class="w-2.5 h-2.5 rounded-full bg-slate-500 shadow-[0_0_8px_#64748b]" title="Verde = connesso al cloud. Rosso = non connesso."></div>
+                <span id="sh-build-tag" class="text-[9px] font-bold text-slate-500 dark:text-slate-400 max-w-[120px] truncate" title="Build app"></span>
                 <span class="font-black italic text-[15px] tracking-tighter uppercase text-white cursor-pointer" onclick="showResetModal()">STABILE 2026</span>
                 <span id="device-tag" class="px-2 py-0.5 bg-emerald-500/30 text-emerald-300 rounded text-[8px] font-black">V4.5</span>
             </div>
@@ -12939,6 +12961,7 @@ window.convertToHtml = async () => {
             </div>
         </div>
 
+        <div id="sh-sync-status-text" class="px-2 py-0.5 text-[9px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 border-b border-emerald-200 dark:border-emerald-800">Cloud: in connessione…</div>
         <div id="plant-cloud-sync-banner" role="alert" class="hidden flex-row items-center justify-between gap-2 px-3 py-2 bg-amber-400 text-slate-900 text-[10px] font-bold leading-snug border-b-2 border-amber-600">
             <span id="plant-cloud-sync-banner-text">Sincronizzazione cloud non disponibile. Controlla le regole Firestore nel progetto indicato dalla console (file firestore.rules nel repository).</span>
             <button type="button" class="shrink-0 px-2 py-1 rounded bg-slate-900/15 text-[9px] font-black uppercase border border-slate-900/30" onclick="if(typeof window.__hidePlantCloudSyncBanner==='function')window.__hidePlantCloudSyncBanner()">Chiudi</button>

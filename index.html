@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.04-sync-firestore-merge';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-quota-fix';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -609,20 +609,29 @@ window.colorPreviewNumber = function(tankName, value) {
             }
             const ref = doc(db, 'artifacts', appId, 'sharedDial', 'alarmConfig');
 
+            let __lastAlarmConfigJson = '';
             __shUnsubAlarm = onSnapshot(ref, (snap) => {
-                if (snap.exists()) {
-                    const data = snap.data().config;
-
-                    window.alarmConfig = data;
-                    
-                    // ✅ CRITICO: Salva anche in APP_DB.alarms per persistenza dopo aggiornamento
-                    if (!window.APP_DB) window.APP_DB = { alarms: {}, updatedAt: null };
-                    window.APP_DB.alarms = data;
-                    window.saveDB();
-
-                    localStorage.setItem('alarmConfig', JSON.stringify(data));
-
-                    console.log('Allarmi sincronizzati dal cloud e salvati in APP_DB');
+                if (window.__firestoreQuotaBlocked) return;
+                if (!snap.exists()) return;
+                const data = snap.data().config;
+                let json = '';
+                try {
+                    json = JSON.stringify(data || {});
+                } catch (_) {
+                    json = '';
+                }
+                if (json === __lastAlarmConfigJson) return;
+                __lastAlarmConfigJson = json;
+                window.alarmConfig = data;
+                if (!window.APP_DB) window.APP_DB = { alarms: {}, updatedAt: null };
+                window.APP_DB.alarms = data;
+                window.saveDB();
+                try {
+                    localStorage.setItem('alarmConfig', json);
+                } catch (_) {}
+            }, function (err) {
+                if (window.__isFirestoreQuotaError && window.__isFirestoreQuotaError(err)) {
+                    window.__onFirestoreQuotaExceeded();
                 }
             });
         };
@@ -640,60 +649,12 @@ window.colorPreviewNumber = function(tankName, value) {
             syncStatus: 'offline' // 'offline' | 'syncing' | 'synced' | 'conflict'
         };
         
-        // Funzione migliorata per ottenere configurazione con gestione conflitti
-        window.getAlarmConfig = function() {
-            // 1. Carica dati locali con timestamp
-            const localData = window.APP_DB.alarms || {};
-            const localTimestamp = window.APP_DB.updatedAt;
-            
-            // 2. Carica dati cloud con timestamp
+        /** Solo lettura locale/cloud in memoria — MAI setDoc qui (bruciava la quota Firestore). */
+        window.getAlarmConfig = function () {
+            const localData = (window.APP_DB && window.APP_DB.alarms) || {};
             const cloudData = window.alarmConfig || {};
-            const cloudTimestamp = window.alarmSyncState.cloudTimestamp;
-            
-            // 3. Gestione intelligente dei conflitti basata su timestamp
-            if (!user || !user.uid) {
-                // UTENTE OFFLINE - Usa solo dati locali
-                window.alarmSyncState.syncStatus = 'offline';
-                return localData;
-            }
-            
-            if (!cloudTimestamp && !localTimestamp) {
-                // PRIMO AVVIO - Nessun dato disponibile
-                return {};
-            }
-            
-            if (!cloudTimestamp && localTimestamp) {
-                // SOLO DATI LOCALI - Sync al cloud
-                window.syncLocalToCloud(localData);
-                return localData;
-            }
-            
-            if (cloudTimestamp && !localTimestamp) {
-                // SOLO DATI CLOUD - Sync da cloud
-                window.syncCloudToLocal(cloudData, cloudTimestamp);
-                return cloudData;
-            }
-            
-            // ENTRAMBI I DATI PRESENTI - Confronta timestamp
-            if (new Date(cloudTimestamp) > new Date(localTimestamp)) {
-                // Cloud più recente - Sync da cloud
-                window.syncCloudToLocal(cloudData, cloudTimestamp);
-                return cloudData;
-            } else if (new Date(localTimestamp) > new Date(cloudTimestamp)) {
-                // Locale più recente - Sync al cloud
-                window.syncLocalToCloud(localData);
-                return localData;
-            } else {
-                // Stesso timestamp - Verifica contenuto per sicurezza
-                if (JSON.stringify(localData) !== JSON.stringify(cloudData)) {
-                    // CONFLITTO REALE - Stesso timestamp ma contenuti diversi
-                    window.handleSyncConflict(localData, cloudData);
-                    return localData; // Mantiene locale come fallback
-                }
-                // Dati sincronizzati correttamente
-                window.alarmSyncState.syncStatus = 'synced';
-                return localData;
-            }
+            if (cloudData && Object.keys(cloudData).length) return cloudData;
+            return localData;
         };
         
         // Sync da locale a cloud
@@ -1246,6 +1207,25 @@ window.colorPreviewNumber = function(tankName, value) {
             return snap;
         };
 
+        window.__firestoreQuotaBlocked = false;
+
+        window.__isFirestoreQuotaError = function (e) {
+            const c = e && e.code;
+            const m = e && e.message;
+            return c === 'resource-exhausted' || (m && String(m).toLowerCase().indexOf('quota') >= 0);
+        };
+
+        window.__onFirestoreQuotaExceeded = function () {
+            if (window.__firestoreQuotaBlocked) return;
+            window.__firestoreQuotaBlocked = true;
+            console.error('[ServiceHub] QUOTA FIRESTORE SUPERATA — sync cloud sospesa.');
+            if (typeof window.__showPlantCloudSyncBanner === 'function') {
+                window.__showPlantCloudSyncBanner(
+                    'Quota Firestore superata (limite giornaliero Firebase). La sync tra dispositivi è sospesa. I dati restano salvati in locale su questo tablet. Domani si riprova oppure in Firebase Console → Usage verifica il piano Blaze.'
+                );
+            }
+        };
+
         window.__isFirestorePermissionError = function (e) {
             const c = e && e.code;
             return c === 'permission-denied' || c === 'missing-or-insufficient-permissions';
@@ -1300,47 +1280,27 @@ window.colorPreviewNumber = function(tankName, value) {
                 __shUnsubRapportini = null;
             }
             const dataDoc = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
-            let __plantTruthTimer = null;
-            const schedulePlantTruthFromServer = function () {
-                if (__plantTruthTimer) clearTimeout(__plantTruthTimer);
-                __plantTruthTimer = setTimeout(function () {
-                    __plantTruthTimer = null;
-                    if (typeof window.__pullPlantFromServerNow === 'function') {
-                        void window.__pullPlantFromServerNow();
-                    }
-                }, 80);
-            };
 
             const __wirePlantSnapshotListener = function () {
                 __shUnsubPlant = onSnapshot(
                     dataDoc,
-                    { includeMetadataChanges: true },
                     (snapshot) => {
-                        if (snapshot.exists()) {
-                            const d = snapshot.data();
-                            const md = snapshot.metadata;
-                            if (md && md.hasPendingWrites) return;
-                            if (md && md.fromCache) {
-                                const revCache = __plantPayloadRevision(d);
-                                if (!window.__cloudPlantHydrated || revCache > (window.__appliedPlantSyncRevision || 0)) {
-                                    __applyRemotePlantPayload(d, { force: true });
-                                }
-                                schedulePlantTruthFromServer();
-                                return;
-                            }
-                            const revLive = __plantPayloadRevision(d);
-                            if (revLive > (window.__appliedPlantSyncRevision || 0)) {
-                                __applyRemotePlantPayload(d, { force: true });
-                            } else {
-                                __applyRemotePlantPayload(d);
-                            }
-                            if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
-                                window.schedulePublicDigitalSnapshotSync();
-                            }
+                        if (window.__firestoreQuotaBlocked) return;
+                        if (!snapshot.exists()) return;
+                        const d = snapshot.data();
+                        const md = snapshot.metadata;
+                        if (md && md.hasPendingWrites) return;
+                        const revLive = __plantPayloadRevision(d);
+                        if (revLive > (window.__appliedPlantSyncRevision || 0)) {
+                            __applyRemotePlantPayload(d, { force: true });
                         }
                     },
                     (error) => {
                         console.warn('[ServiceHub] plant Firestore:', error && error.message);
+                        if (window.__isFirestoreQuotaError && window.__isFirestoreQuotaError(error)) {
+                            window.__onFirestoreQuotaExceeded();
+                            return;
+                        }
                         if (window.__isFirestorePermissionError && window.__isFirestorePermissionError(error)) {
                             const pid = window.__SERVICEHUB_FIREBASE_PROJECT || 'Firebase';
                             window.__showPlantCloudSyncBanner(
@@ -1353,9 +1313,7 @@ window.colorPreviewNumber = function(tankName, value) {
 
             Promise.resolve()
                 .then(function () {
-                    return getDocFromServer(dataDoc);
-                })
-                .catch(function () {
+                    if (window.__firestoreQuotaBlocked) return getDoc(dataDoc);
                     return getDoc(dataDoc);
                 })
                 .then((snap) => {
@@ -1448,9 +1406,6 @@ window.colorPreviewNumber = function(tankName, value) {
 
             Promise.resolve()
                 .then(function () {
-                    return getDocFromServer(rapportiniDoc);
-                })
-                .catch(function () {
                     return getDoc(rapportiniDoc);
                 })
                 .then(function (snap) {
@@ -1509,6 +1464,7 @@ window.colorPreviewNumber = function(tankName, value) {
         window.saveCurrentData = async function() {
             if (!user || !user.uid || !db) return;
             if (!window.__cloudPlantHydrated) return;
+            if (window.__firestoreQuotaBlocked) return;
             
             const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
             const patch = typeof window.buildPlantCloudPatch === 'function'
@@ -1536,12 +1492,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (typeof window.__refreshPlantBaselineFromDOM === 'function') {
                     window.__refreshPlantBaselineFromDOM(patch);
                 }
-                try {
-                    const snap = await getDocFromServer(plantRef);
-                    if (snap.exists()) cacheCloudPlantPayload(snap.data());
-                } catch (_) {
-                    cacheCloudPlantPayload(patch);
-                }
+                cacheCloudPlantPayload(patch);
                 if (typeof window.__writePlantLocalBackupFromDOM === 'function') {
                     window.__writePlantLocalBackupFromDOM(patch);
                 }
@@ -1552,6 +1503,9 @@ window.colorPreviewNumber = function(tankName, value) {
                 }
             } catch (e) { 
                 console.error('[ServiceHub] saveCurrentData Firestore:', e && e.code, e && e.message);
+                if (window.__isFirestoreQuotaError && window.__isFirestoreQuotaError(e)) {
+                    window.__onFirestoreQuotaExceeded();
+                }
                 if (window.__isFirestorePermissionError && window.__isFirestorePermissionError(e)) {
                     const pid = window.__SERVICEHUB_FIREBASE_PROJECT || 'Firebase';
                     window.__showPlantCloudSyncBanner(
@@ -1938,6 +1892,9 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!window.__cloudPlantHydrated) {
                 return;
             }
+            if (window.__firestoreQuotaBlocked) {
+                return;
+            }
             
             // SE SIAMO IN MODALITÀ MODIFICA, GESTISCE IL SALVATAGGIO DEL BACKUP
             if (window.isEditingArchive && window.editingArchiveId) {
@@ -2098,12 +2055,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (typeof window.__refreshPlantBaselineFromDOM === 'function') {
                     window.__refreshPlantBaselineFromDOM(patch);
                 }
-                try {
-                    const snap = await getDocFromServer(plantRef);
-                    if (snap.exists()) cacheCloudPlantPayload(snap.data());
-                } catch (_) {
-                    cacheCloudPlantPayload(patch);
-                }
+                cacheCloudPlantPayload(patch);
                 if (typeof window.__writePlantLocalBackupFromDOM === 'function') {
                     window.__writePlantLocalBackupFromDOM(patch);
                 }
@@ -2116,10 +2068,15 @@ window.colorPreviewNumber = function(tankName, value) {
                 }
             } catch (e) { 
                 console.error('[ServiceHub] saveData Firestore:', e && e.code, e && e.message);
+                if (window.__isFirestoreQuotaError && window.__isFirestoreQuotaError(e)) {
+                    window.__onFirestoreQuotaExceeded();
+                }
                 if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
-                const msg = window.__isFirestorePermissionError && window.__isFirestorePermissionError(e)
+                const msg = window.__isFirestoreQuotaError && window.__isFirestoreQuotaError(e)
+                    ? 'Quota Firestore superata: sync tra tablet sospesa. Dati salvati in locale.'
+                    : (window.__isFirestorePermissionError && window.__isFirestorePermissionError(e)
                     ? ('Salvataggio cloud rifiutato (regole Firestore). Progetto ' + (window.__SERVICEHUB_FIREBASE_PROJECT || 'Firebase') + '. Pubblica firestore.rules.')
-                    : ('Salvataggio cloud fallito: ' + ((e && e.code) || '') + ' ' + ((e && e.message) || 'rete?') + ' — backup locale ok.');
+                    : ('Salvataggio cloud fallito: ' + ((e && e.code) || '') + ' ' + ((e && e.message) || 'rete?') + ' — backup locale ok.'));
                 if (typeof window.__showPlantCloudSyncBanner === 'function') {
                     window.__showPlantCloudSyncBanner(msg);
                 }
@@ -4003,7 +3960,7 @@ window.updateStoricoButton = async function() {
                     __plantPersistTimer = setTimeout(function () {
                         __plantPersistTimer = null;
                         if (typeof window.saveData === 'function') void window.saveData(true);
-                    }, 80);
+                    }, 500);
                 },
                 true
             );
@@ -6079,7 +6036,7 @@ window.updateStoricoButton = async function() {
                 let mergedStore = store;
                 try {
                     const rapportiniDoc = doc(db, 'artifacts', appId, 'sharedDial', 'rapportini');
-                    const snap = await getDocFromServer(rapportiniDoc);
+                    const snap = await getDoc(rapportiniDoc);
                     if (snap.exists() && typeof window.mergeRapportiniStores === 'function') {
                         mergedStore = window.mergeRapportiniStores(store, snap.data(), false);
                     }
@@ -7447,6 +7404,7 @@ window.updateStoricoButton = async function() {
         /** Lettura forzata plant dal server (aggira cache SDK / tab in background / rete difficile). */
         window.__pullPlantFromServerNow = function () {
             if (!db || !user || !user.uid) return Promise.resolve();
+            if (window.__firestoreQuotaBlocked) return Promise.resolve();
             if (window.__lastLocalPlantSaveMs && Date.now() - window.__lastLocalPlantSaveMs < 4000) {
                 return Promise.resolve();
             }
@@ -7455,7 +7413,7 @@ window.updateStoricoButton = async function() {
                 return Promise.resolve();
             }
             const dataDoc = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
-            return getDocFromServer(dataDoc)
+            return getDoc(dataDoc)
                 .then(function (snap) {
                     if (!snap.exists()) return;
                     const serverStripped = window.__stripRapportinoKeysFromPlantPayload(snap.data());
@@ -7477,7 +7435,7 @@ window.updateStoricoButton = async function() {
         window.__pullRapportiniFromServerNow = function () {
             if (!db || !user || !user.uid) return Promise.resolve();
             const rapportiniDoc = doc(db, 'artifacts', appId, 'sharedDial', 'rapportini');
-            return getDocFromServer(rapportiniDoc)
+            return getDoc(rapportiniDoc)
                 .then(function (snap) {
                     if (snap.exists() && typeof window.applyRapportiniStoreFromCloud === 'function') {
                         window.applyRapportiniStoreFromCloud(snap.data(), { force: true });

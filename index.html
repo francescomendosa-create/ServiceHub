@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.03-sync-brutal';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.03-sync-unified-rev';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -1047,9 +1047,43 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__cloudPlantCache = null;
         window.__plantSyncPollInterval = null;
 
+        window.__getServiceHubDeviceId = function () {
+            try {
+                let id = localStorage.getItem('servicehub_device_id');
+                if (!id) {
+                    id = 'd-' + Math.random().toString(36).slice(2, 8) + '-' + Date.now().toString(36);
+                    localStorage.setItem('servicehub_device_id', id);
+                }
+                return id;
+            } catch (_) {
+                return 'd-unknown';
+            }
+        };
+
+        window.__formatPlantRevShort = function (rev) {
+            const n = Number(rev) || 0;
+            if (n <= 0) return '0';
+            return String(n % 1000).padStart(3, '0');
+        };
+
         window.__setPlantSyncStatusUI = function (msg) {
             const el = document.getElementById('sh-sync-status-text');
             if (el && msg) el.textContent = msg;
+        };
+
+        window.__updatePlantSyncDiagnostic = function (serverData) {
+            const localRev = window.__lastPushedPlantRevision || 0;
+            const serverRev = serverData ? __plantPayloadRevision(serverData) : (window.__lastServerPlantRevision || 0);
+            if (serverRev > 0) window.__lastServerPlantRevision = serverRev;
+            const localShort = window.__formatPlantRevShort(localRev);
+            const serverShort = window.__formatPlantRevShort(serverRev);
+            let msg = 'Tu ' + localShort + ' · Cloud ' + serverShort;
+            if (localRev > 0 && serverRev > 0 && localRev !== serverRev) {
+                msg += ' · NON ALLINEATI (aspetta o ricarica)';
+            } else if (localRev > 0 && serverRev > 0) {
+                msg += ' · OK';
+            }
+            if (typeof window.__setPlantSyncStatusUI === 'function') window.__setPlantSyncStatusUI(msg);
         };
 
         const __plantPayloadRevision = function (d) {
@@ -1112,17 +1146,17 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!d || typeof d !== 'object') return;
             d = window.__stripRapportinoKeysFromPlantPayload(d);
             const rev = __plantPayloadRevision(d);
-            if (!opts.force && rev > 0 && rev <= window.__appliedPlantSyncRevision) return;
+            if (!opts.force && rev > 0 && rev === window.__lastPushedPlantRevision) return;
+            if (!opts.force && rev > 0 && rev < window.__appliedPlantSyncRevision) return;
             if (rev > 0) window.__appliedPlantSyncRevision = rev;
             window.__cloudPlantHydrated = true;
             applyData(d, { forceRemotePlant: true });
             __writePlantLocalBackup(d);
             cacheCloudPlantPayload(d);
-            const t = new Date().toLocaleTimeString();
-            if (typeof window.__setPlantSyncStatusUI === 'function') {
-                window.__setPlantSyncStatusUI('Sync cloud OK · ' + t + ' · rev ' + rev);
+            if (typeof window.__updatePlantSyncDiagnostic === 'function') {
+                window.__updatePlantSyncDiagnostic(d);
             }
-            console.info('[ServiceHub] plant applicato da cloud, rev=', rev);
+            console.info('[ServiceHub] plant da cloud rev=', rev, 'by', d && d.savedBy);
             if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
             if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
             if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
@@ -1166,7 +1200,8 @@ window.colorPreviewNumber = function(tankName, value) {
             const data = {
                 shift: currentShift,
                 lastUpdate: lastUpdate,
-                syncRevision: syncRevision
+                syncRevision: syncRevision,
+                savedBy: typeof window.__getServiceHubDeviceId === 'function' ? window.__getServiceHubDeviceId() : 'dev'
             };
             document.querySelectorAll('input').forEach(function(input) {
                 if (!input.id) return;
@@ -1255,7 +1290,7 @@ window.colorPreviewNumber = function(tankName, value) {
                         if (md && md.hasPendingWrites) return;
                         const d = snapshot.data();
                         const rev = __plantPayloadRevision(d);
-                        if (rev > 0 && rev <= window.__lastPushedPlantRevision) return;
+                        if (rev > 0 && rev === window.__lastPushedPlantRevision) return;
                         __applyRemotePlantPayload(d);
                         if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                             window.schedulePublicDigitalSnapshotSync();
@@ -1977,10 +2012,21 @@ window.colorPreviewNumber = function(tankName, value) {
                 window.__cloudPlantHydrated = true;
                 __plantRetrySaveAfterAuth = false;
                 __writePlantLocalBackup(data);
-                console.info('[ServiceHub] plant salvato su cloud, rev=', rev);
-                if (typeof window.__setPlantSyncStatusUI === 'function') {
-                    window.__setPlantSyncStatusUI('Salvato cloud · rev ' + rev);
+                console.info('[ServiceHub] plant salvato su cloud, rev=', rev, 'by', data.savedBy);
+                window.__lastServerPlantRevision = rev;
+                if (typeof window.__updatePlantSyncDiagnostic === 'function') {
+                    window.__updatePlantSyncDiagnostic(data);
                 }
+                setTimeout(function () {
+                    if (!db || !user || !user.uid) return;
+                    getDocFromServer(doc(db, 'artifacts', appId, 'sharedDial', 'plant'))
+                        .then(function (snap) {
+                            if (snap.exists() && typeof window.__updatePlantSyncDiagnostic === 'function') {
+                                window.__updatePlantSyncDiagnostic(snap.data());
+                            }
+                        })
+                        .catch(function () {});
+                }, 1200);
                 if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
                 if (typeof window.flushPublicDigitalSnapshotNow === "function") {
                     window.flushPublicDigitalSnapshotNow();
@@ -7300,7 +7346,7 @@ window.updateStoricoButton = async function() {
                     if (!snap.exists()) return;
                     const d = snap.data();
                     const rev = __plantPayloadRevision(d);
-                    if (rev > 0 && rev <= window.__lastPushedPlantRevision) return;
+                    if (rev > 0 && rev === window.__lastPushedPlantRevision) return;
                     __applyRemotePlantPayload(d);
                     if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                         window.schedulePublicDigitalSnapshotSync();
@@ -12965,7 +13011,7 @@ window.convertToHtml = async () => {
             </div>
         </div>
 
-        <div id="sh-sync-status-text" class="px-2 py-0.5 text-[9px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 border-b border-emerald-200 dark:border-emerald-800">Cloud: in connessione…</div>
+        <div id="sh-sync-status-text" class="px-2 py-0.5 text-[9px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 border-b border-emerald-200 dark:border-emerald-800">Cloud: in connessione… (Tu 000 · Cloud 000 — le ultime 3 cifre della rev devono coincidere su tutti i device)</div>
         <div id="plant-cloud-sync-banner" role="alert" class="hidden flex-row items-center justify-between gap-2 px-3 py-2 bg-amber-400 text-slate-900 text-[10px] font-bold leading-snug border-b-2 border-amber-600">
             <span id="plant-cloud-sync-banner-text">Sincronizzazione cloud non disponibile. Controlla le regole Firestore nel progetto indicato dalla console (file firestore.rules nel repository).</span>
             <button type="button" class="shrink-0 px-2 py-1 rounded bg-slate-900/15 text-[9px] font-black uppercase border border-slate-900/30" onclick="if(typeof window.__hidePlantCloudSyncBanner==='function')window.__hidePlantCloudSyncBanner()">Chiudi</button>

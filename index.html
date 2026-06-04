@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.04-quota-fix';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-ui-storico-fix';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -2378,14 +2378,11 @@ window.colorPreviewNumber = function(tankName, value) {
         };
 
         window.archiveCurrentData = async function() {
-            if (!user || !user.uid) return;
-
             const btn = document.getElementById('btn-archive-now');
             if (!btn) {
                 console.warn('[ServiceHub] archiveCurrentData: btn-archive-now non trovato');
                 return;
             }
-            const originalText = btn.innerHTML;
             const originalClassName = btn.className;
             const sleep = function (ms) {
                 return new Promise(function (resolve) {
@@ -2395,7 +2392,7 @@ window.colorPreviewNumber = function(tankName, value) {
             const restoreArchiveButton = function () {
                 const b = document.getElementById('btn-archive-now');
                 if (!b) return;
-                b.innerHTML = originalText;
+                b.innerHTML = '<span class="text-[12px] uppercase">Salva</span>';
                 b.className = originalClassName;
                 b.classList.remove('bg-yellow-500', 'bg-emerald-600', 'bg-red-600', 'border-yellow-700');
                 if (!b.classList.contains('bg-blue-600')) {
@@ -2404,6 +2401,17 @@ window.colorPreviewNumber = function(tankName, value) {
                 b.style.animation = '';
                 b.style.backgroundColor = '';
                 b.style.borderColor = '';
+            };
+            const firestoreOp = function (promise, label, ms) {
+                const timeoutMs = ms || 12000;
+                return Promise.race([
+                    promise,
+                    new Promise(function (_, reject) {
+                        setTimeout(function () {
+                            reject(new Error((label || 'Firestore') + ' timeout'));
+                        }, timeoutMs);
+                    })
+                ]);
             };
 
             /** Non bloccare il tasto Salva: publicDigital è secondario rispetto allo snapshot backup. */
@@ -2424,6 +2432,24 @@ window.colorPreviewNumber = function(tankName, value) {
             };
 
             btn.innerHTML = window.isEditingArchive ? "MODIFICA..." : "SALVATAGGIO...";
+
+            if (!user || !user.uid || !db) {
+                btn.innerHTML = "OFFLINE";
+                btn.classList.add('bg-red-600');
+                await sleep(1200);
+                restoreArchiveButton();
+                return;
+            }
+            if (window.__firestoreQuotaBlocked) {
+                btn.innerHTML = "QUOTA";
+                btn.classList.add('bg-red-600');
+                await sleep(1200);
+                restoreArchiveButton();
+                if (typeof window.__showPlantCloudSyncBanner === 'function') {
+                    window.__showPlantCloudSyncBanner('Quota Firestore superata: impossibile salvare lo storico sul cloud ora.');
+                }
+                return;
+            }
 
             const now = new Date();
 
@@ -2484,25 +2510,15 @@ window.colorPreviewNumber = function(tankName, value) {
 
                     if (window.tankStatuses) data.tankStatuses = window.tankStatuses;
 
-                    await setDoc(
-                        doc(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots', window.editingArchiveId),
-                        data
+                    await firestoreOp(
+                        setDoc(
+                            doc(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots', window.editingArchiveId),
+                            data
+                        ),
+                        'salva modifica archivio'
                     );
 
-                    // PublicDigital: leggere il DOM ancora "nuovo" prima del ripristino sotto — con timeout per non bloccare il tasto Salva.
-                    try {
-                        if (typeof window.__serviceHubWithTimeout === "function") {
-                            await window.__serviceHubWithTimeout(
-                                window.pushPublicDigitalSnapshotQuiet(),
-                                22000,
-                                "archiveCurrentData edit publicDigital"
-                            );
-                        } else {
-                            await window.pushPublicDigitalSnapshotQuiet();
-                        }
-                    } catch (e) {
-                        console.warn("[ServiceHub] archiveCurrentData edit publicDigital:", e && e.message);
-                    }
+                    schedulePublicDigitalAfterArchive('archiveCurrentData edit publicDigital');
 
                     // ✅ AGGIUNGI STORICO DEI SALVATAGGI PER TREND (anche per modifiche)
                     window.addToHistory(data);
@@ -2594,14 +2610,16 @@ window.colorPreviewNumber = function(tankName, value) {
                     }
                     btn.classList.add('bg-yellow-500');
 
-                    await sleep(1500);
+                    btn.innerHTML = "SALVATO!";
+                    btn.classList.add('bg-emerald-600');
+                    await sleep(1200);
                     restoreArchiveButton();
                     updateDeviceInfo();
                     return;
                 }
 
                 // ✅ MODALITÀ NORMALE = NUOVO BACKUP
-                await addDoc(archiveRef, data);
+                await firestoreOp(addDoc(archiveRef, data), 'nuovo archivio');
 
                 if (window.setTankLevelBaselineFromSnapshotData) window.setTankLevelBaselineFromSnapshotData(data);
                 if (window.refreshAllTankLevelArrows) window.refreshAllTankLevelArrows();
@@ -2611,18 +2629,19 @@ window.colorPreviewNumber = function(tankName, value) {
                 btn.innerHTML = "SALVATO!";
                 btn.classList.add('bg-emerald-600');
 
-                await sleep(1500);
+                await sleep(1200);
                 restoreArchiveButton();
                 window.updateStoricoButton();
 
             } catch (e) {
                 console.error('[ServiceHub] archiveCurrentData:', e);
-                const b = document.getElementById('btn-archive-now');
-                if (b) {
-                    b.innerHTML = "ERRORE";
-                    b.classList.add('bg-red-600');
+                if (window.__isFirestoreQuotaError && window.__isFirestoreQuotaError(e)) {
+                    window.__onFirestoreQuotaExceeded();
                 }
-                await sleep(1500);
+                btn.innerHTML = "ERRORE";
+                btn.classList.add('bg-red-600');
+                await sleep(1200);
+            } finally {
                 restoreArchiveButton();
             }
         };
@@ -3155,7 +3174,6 @@ window.updateStoricoButton = async function() {
 
         window.openArchiveList = async function() {
     if (window.archiveListLocked) return;
-    if (!user || !user.uid) return;
 
     const listContainer = document.getElementById('archive-list-content');
     const modal = document.getElementById('archive-list-modal');
@@ -3167,7 +3185,8 @@ window.updateStoricoButton = async function() {
 
     let snapshots = [];
 
-    // CLOUD
+    // CLOUD (solo se autenticato e quota ok)
+    if (user && user.uid && db && !window.__firestoreQuotaBlocked) {
     try {
         const archiveRef = collection(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots');
         const q = query(archiveRef, limit(20));
@@ -3182,6 +3201,7 @@ window.updateStoricoButton = async function() {
         });
     } catch (e) {
         console.log('Firebase non disponibile per archivi');
+    }
     }
 
     // LOCAL
@@ -12217,6 +12237,8 @@ window.convertToHtml = async () => {
         .a4-sheet { width: 105mm; background: white; min-height: 148.5mm; height: fit-content; margin: 0 auto; box-sizing: border-box; }
         
         #settings-modal { z-index: 10070; align-items: stretch; }
+        #archive-list-modal { z-index: 10120; }
+        #archive-list-modal.active { background: rgba(0,0,0,0.75); backdrop-filter: blur(5px); visibility: visible; pointer-events: auto; }
         #settings-modal.active { background: rgba(0,0,0,0.45); }
         .settings-sheet {
             transform: translateY(-100%);

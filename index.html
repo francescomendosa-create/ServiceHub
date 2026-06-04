@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.04-sync-local-first';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-sync-baseline-v1';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -1039,17 +1039,28 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__appliedPlantSyncRevision = 0;
         window.__cloudPlantHydrated = false;
         window.__cloudPlantCache = null;
-        window.__dirtyPlantKeys = new Set();
+        window.__plantSyncBaseline = null;
+        const __PLANT_META_KEYS = ['shift', 'lastUpdate', 'syncRevision'];
 
-        window.__markPlantFieldDirty = function (key) {
-            if (!key || typeof key !== 'string') return;
-            if (window.isRapportinoOnlyDataKey && window.isRapportinoOnlyDataKey(key)) return;
-            if (!window.__dirtyPlantKeys) window.__dirtyPlantKeys = new Set();
-            window.__dirtyPlantKeys.add(key);
+        window.__plantValueEquals = function (a, b) {
+            if (a === b) return true;
+            try {
+                return JSON.stringify(a) === JSON.stringify(b);
+            } catch (_) {
+                return false;
+            }
         };
 
-        window.__clearPlantDirtyKeys = function () {
-            if (window.__dirtyPlantKeys) window.__dirtyPlantKeys.clear();
+        window.__setPlantSyncBaseline = function (data) {
+            if (!data || typeof data !== 'object') {
+                window.__plantSyncBaseline = null;
+                return;
+            }
+            try {
+                window.__plantSyncBaseline = JSON.parse(JSON.stringify(data));
+            } catch (_) {
+                window.__plantSyncBaseline = data;
+            }
         };
 
         const __plantPayloadRevision = function (d) {
@@ -1118,9 +1129,13 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!opts.force && rev > 0 && rev <= window.__appliedPlantSyncRevision) return;
             if (rev > 0) window.__appliedPlantSyncRevision = rev;
             window.__cloudPlantHydrated = true;
-            if (typeof window.__clearPlantDirtyKeys === 'function') window.__clearPlantDirtyKeys();
             applyData(d, { forceRemotePlant: true });
-            __writePlantLocalBackup(d);
+            if (typeof window.__setPlantSyncBaseline === 'function') window.__setPlantSyncBaseline(d);
+            if (typeof window.__writePlantLocalBackupFromDOM === 'function') {
+                window.__writePlantLocalBackupFromDOM({ syncRevision: d.syncRevision, lastUpdate: d.lastUpdate });
+            } else {
+                __writePlantLocalBackup(d);
+            }
             cacheCloudPlantPayload(d);
             if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
             if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
@@ -1184,6 +1199,43 @@ window.colorPreviewNumber = function(tankName, value) {
             });
             if (window.tankStatuses) data.tankStatuses = window.tankStatuses;
             return data;
+        };
+
+        /**
+         * Cloud: server + solo campi cambiati rispetto all'ultimo stato applicato (baseline).
+         * Così il tablet B non riscrive i numeri aggiornati dal tablet A.
+         */
+        window.buildPlantPayloadForCloudSave = async function () {
+            const local = window.buildPlantPayloadFromDOM({ bumpRevision: true });
+            if (!db || !user || !user.uid) return local;
+
+            let server = null;
+            try {
+                const snap = await getDocFromServer(doc(db, 'artifacts', appId, 'sharedDial', 'plant'));
+                if (snap.exists()) {
+                    server = window.__stripRapportinoKeysFromPlantPayload(snap.data());
+                }
+            } catch (_) {}
+            if (!server && window.__cloudPlantCache) {
+                server = window.__stripRapportinoKeysFromPlantPayload(window.__cloudPlantCache);
+            }
+
+            const baseline = window.__plantSyncBaseline || server || {};
+            const merged = server ? Object.assign({}, server) : {};
+
+            Object.keys(local).forEach(function (k) {
+                if (__PLANT_META_KEYS.indexOf(k) >= 0) return;
+                if (!window.__plantValueEquals(local[k], baseline[k])) {
+                    merged[k] = local[k];
+                }
+            });
+            merged.shift = local.shift;
+            merged.lastUpdate = local.lastUpdate;
+            merged.syncRevision = local.syncRevision;
+            if (local.tankStatuses && !window.__plantValueEquals(local.tankStatuses, baseline.tankStatuses)) {
+                merged.tankStatuses = local.tankStatuses;
+            }
+            return merged;
         };
 
         /** Backup locale sempre dal DOM completo (mai da payload cloud parziale). */
@@ -1350,9 +1402,13 @@ window.colorPreviewNumber = function(tankName, value) {
 
             const rapportiniDoc = doc(db, 'artifacts', appId, 'sharedDial', 'rapportini');
             const __wireRapportiniSnapshotListener = function () {
-                __shUnsubRapportini = onSnapshot(rapportiniDoc, (snapshot) => {
+                __shUnsubRapportini = onSnapshot(
+                    rapportiniDoc,
+                    { includeMetadataChanges: true },
+                    (snapshot) => {
                     const md = snapshot.metadata;
                     if (md && md.hasPendingWrites) return;
+                    if (md && md.fromCache && window.__rapportiniCloudHydrated) return;
                     window.__rapportiniCloudHydrated = true;
                     if (!snapshot.exists()) {
                         window.__rapportiniCloudDocMissing = true;
@@ -1435,19 +1491,16 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!user || !user.uid || !db) return;
             
             const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
-            const data = typeof window.buildPlantPayloadFromDOM === 'function'
-                ? window.buildPlantPayloadFromDOM({ bumpRevision: true })
-                : { shift: currentShift, lastUpdate: new Date().toISOString(), syncRevision: Date.now() };
+            const data = typeof window.buildPlantPayloadForCloudSave === 'function'
+                ? await window.buildPlantPayloadForCloudSave()
+                : (typeof window.buildPlantPayloadFromDOM === 'function'
+                    ? window.buildPlantPayloadFromDOM({ bumpRevision: true })
+                    : { shift: currentShift, lastUpdate: new Date().toISOString(), syncRevision: Date.now() });
             
             // AGGIUNGI STORICO DEI SALVATAGGI PER TREND
             window.addToHistory(data);
             
             try {
-                if (typeof window.__writePlantLocalBackupFromDOM === 'function') {
-                    window.__writePlantLocalBackupFromDOM(data);
-                } else {
-                    __writePlantLocalBackup(data);
-                }
                 await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data);
                 cacheCloudPlantPayload(data);
                 const rev = __plantPayloadRevision(data);
@@ -1455,6 +1508,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 window.__cloudPlantHydrated = true;
                 window.__lastLocalPlantSaveMs = Date.now();
                 __plantRetrySaveAfterAuth = false;
+                if (typeof window.__setPlantSyncBaseline === 'function') window.__setPlantSyncBaseline(data);
                 if (typeof window.__writePlantLocalBackupFromDOM === 'function') {
                     window.__writePlantLocalBackupFromDOM(data);
                 } else {
@@ -1982,20 +2036,17 @@ window.colorPreviewNumber = function(tankName, value) {
                 await window.ensureBackupHistory();
             }
             
-            const data = typeof window.buildPlantPayloadFromDOM === 'function'
-                ? window.buildPlantPayloadFromDOM({ bumpRevision: true })
-                : { shift: '', lastUpdate: new Date().toISOString(), syncRevision: Date.now() };
+            const data = typeof window.buildPlantPayloadForCloudSave === 'function'
+                ? await window.buildPlantPayloadForCloudSave()
+                : (typeof window.buildPlantPayloadFromDOM === 'function'
+                    ? window.buildPlantPayloadFromDOM({ bumpRevision: true })
+                    : { shift: '', lastUpdate: new Date().toISOString(), syncRevision: Date.now() });
 
             if (!skipHist) {
                 window.addToHistory(data);
             }
 
             try {
-                if (typeof window.__writePlantLocalBackupFromDOM === 'function') {
-                    window.__writePlantLocalBackupFromDOM(data);
-                } else {
-                    __writePlantLocalBackup(data);
-                }
                 await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data);
                 cacheCloudPlantPayload(data);
                 const rev = __plantPayloadRevision(data);
@@ -2003,6 +2054,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 window.__cloudPlantHydrated = true;
                 window.__lastLocalPlantSaveMs = Date.now();
                 __plantRetrySaveAfterAuth = false;
+                if (typeof window.__setPlantSyncBaseline === 'function') window.__setPlantSyncBaseline(data);
                 if (typeof window.__writePlantLocalBackupFromDOM === 'function') {
                     window.__writePlantLocalBackupFromDOM(data);
                 } else {
@@ -5976,16 +6028,24 @@ window.updateStoricoButton = async function() {
             if (!user || !user.uid || !db || !store) return;
             if (window.__rapportiniApplyingFromCloud) return;
             try {
+                let mergedStore = store;
+                try {
+                    const rapportiniDoc = doc(db, 'artifacts', appId, 'sharedDial', 'rapportini');
+                    const snap = await getDocFromServer(rapportiniDoc);
+                    if (snap.exists() && typeof window.mergeRapportiniStores === 'function') {
+                        mergedStore = window.mergeRapportiniStores(store, snap.data(), false);
+                    }
+                } catch (_) {}
                 const slimItems = {};
-                Object.keys(store.items || {}).forEach(function (rid) {
+                Object.keys(mergedStore.items || {}).forEach(function (rid) {
                     const item = JSON.parse(JSON.stringify(store.items[rid]));
                     item.data = window.extractRapportinoOnlyData(item.data || {});
                     slimItems[rid] = item;
                 });
                 const payload = {
-                    activeId: store.activeId || 'generale',
+                    activeId: mergedStore.activeId || 'generale',
                     items: slimItems,
-                    lastUpdate: store.lastUpdate || new Date().toISOString()
+                    lastUpdate: mergedStore.lastUpdate || new Date().toISOString()
                 };
                 await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'rapportini'), payload);
             } catch (e) {

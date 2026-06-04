@@ -2,7 +2,7 @@
 
 ## Build da usare adesso
 
-- **BUILD in app:** `2026.06.04-sync-local-first`
+- **BUILD in app:** `2026.06.04-sync-baseline-v1`
 - **Git base ripristinata:** commit `0d8932c` (messaggio: fix realtime sync v2)
 - **BUILD originale di quel commit:** `2026.06.03-fix-realtime-sync-v2`
 
@@ -12,11 +12,17 @@ Verifica sul telefono/PC (console del browser):
 window.SERVICEHUB_BUILD
 ```
 
-Deve essere esattamente `2026.06.04-sync-local-first`. Aggiorna con Ctrl+F5 su ogni dispositivo.
+Deve essere esattamente `2026.06.04-sync-baseline-v1`. Aggiorna con Ctrl+F5 su ogni dispositivo.
 
-## Salvataggio sullo stesso dispositivo
+## Chat persa — codice recuperabile
 
-Il backup in `localStorage` (`stabileCurrentData`) viene sempre scritto dal **DOM completo**, non da payload cloud parziali. All’avvio si usa il più recente tra server e backup locale (`pickNewest`).
+Vedi `RIPRISTINO-VERSIONE-FUNZIONANTE.md` (commit `30e6136` sempre ripristinabile da Git).
+
+## Come funziona la sync ora
+
+1. **Locale:** backup = DOM completo (`stabileCurrentData`) — non sparisce al reload.
+2. **Cloud:** invia server Firestore + **solo i campi cambiati** rispetto all’ultimo stato applicato (`__plantSyncBaseline`).
+3. **Listener:** quando un altro tablet salva, `onSnapshot` aggiorna lo schermo e rinnova la baseline.
 
 ## Commit storici (quando “funzionava”)
 

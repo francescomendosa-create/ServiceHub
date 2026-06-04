@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.04-sync-30e6136-plus';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-restore-0d8932c';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -930,14 +930,12 @@ window.colorPreviewNumber = function(tankName, value) {
                     syncWithCloud();
                     window.__hydrateDigitalShareKeyFromCloud();
                     window.initAlarmConfigListener();
-                    if (__plantRetrySaveAfterAuth && typeof window.saveData === 'function') {
-                        setTimeout(function () {
-                            if (__plantRetrySaveAfterAuth) {
-                                __plantRetrySaveAfterAuth = false;
-                                void window.saveData(true);
-                            }
-                        }, 2500);
-                    }
+                    setTimeout(function () {
+                        if (user && user.uid && db && __plantRetrySaveAfterAuth && typeof window.saveData === 'function') {
+                            __plantRetrySaveAfterAuth = false;
+                            void window.saveData(true);
+                        }
+                    }, 2000);
                 } else {
                     if(led) led.className = "w-2.5 h-2.5 rounded-full bg-red-600 shadow-[0_0_10px_#dc2626]";
                 }
@@ -958,23 +956,34 @@ window.colorPreviewNumber = function(tankName, value) {
             } catch (_) {}
         };
 
-        /** Ultimo lastUpdate ISO dalla cache cloud in memoria (nessun localStorage). */
+        /** Ultimo lastUpdate ISO in stabileCurrentData (modello sync validato). */
         const __readPrevPlantLastUpdateIso = () => {
-            const p = window.__cloudPlantCache;
-            if (
-                p &&
-                typeof p === 'object' &&
-                typeof p.lastUpdate === 'string' &&
-                Number.isFinite(Date.parse(p.lastUpdate))
-            ) {
-                return p.lastUpdate;
-            }
+            try {
+                const raw = localStorage.getItem('stabileCurrentData');
+                if (!raw) return null;
+                const p = JSON.parse(raw);
+                if (
+                    p &&
+                    typeof p === 'object' &&
+                    typeof p.lastUpdate === 'string' &&
+                    Number.isFinite(Date.parse(p.lastUpdate))
+                ) {
+                    return p.lastUpdate;
+                }
+            } catch (_) {}
             return null;
+        };
+
+        const __migratePlantBackupToStabileCurrentData = function () {
+            try {
+                if (localStorage.getItem('stabileCurrentData')) return;
+                const bk = localStorage.getItem('stabilePlantBackup');
+                if (bk) localStorage.setItem('stabileCurrentData', bk);
+            } catch (_) {}
         };
 
         const __purgeLegacySyncLocalStorage = function () {
             try {
-                localStorage.removeItem('stabileCurrentData');
                 localStorage.removeItem('datiAppGlobali');
             } catch (_) {}
         };
@@ -1027,21 +1036,9 @@ window.colorPreviewNumber = function(tankName, value) {
             return Number.isFinite(t) ? t : null;
         };
 
-        window.__lastLocalPlantEditMs = 0;
         window.__appliedPlantSyncRevision = 0;
-
-        window.__getServiceHubDeviceId = function () {
-            try {
-                let id = localStorage.getItem('servicehub_device_id');
-                if (!id) {
-                    id = 'd-' + Math.random().toString(36).slice(2, 8) + '-' + Date.now().toString(36);
-                    localStorage.setItem('servicehub_device_id', id);
-                }
-                return id;
-            } catch (_) {
-                return 'd-unknown';
-            }
-        };
+        window.__cloudPlantHydrated = false;
+        window.__cloudPlantCache = null;
 
         const __plantPayloadRevision = function (d) {
             if (!d || typeof d !== 'object') return 0;
@@ -1051,10 +1048,6 @@ window.colorPreviewNumber = function(tankName, value) {
             return ms != null ? ms : 0;
         };
 
-        /** Applica il documento plant condiviso (stessi numeri su tutti i dispositivi). */
-        window.__cloudPlantHydrated = false;
-        window.__cloudPlantCache = null;
-
         const cacheCloudPlantPayload = function (remote) {
             if (!remote || typeof remote !== 'object') return;
             try {
@@ -1062,14 +1055,6 @@ window.colorPreviewNumber = function(tankName, value) {
             } catch (_) {
                 window.__cloudPlantCache = remote;
             }
-        };
-
-        const __writePlantLocalBackup = function (data) {
-            if (!data) return;
-            try {
-                localStorage.setItem('stabilePlantBackup', JSON.stringify(data));
-                localStorage.setItem('stabileCurrentData', JSON.stringify(data));
-            } catch (_) {}
         };
 
         window.__readPlantBackupLocal = function () {
@@ -1097,71 +1082,18 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__pickNewestPlantPayload = function (serverData, backupData) {
             if (!serverData || typeof serverData !== 'object') return backupData || null;
             if (!backupData || typeof backupData !== 'object') return serverData;
-            const sRev = __plantPayloadRevision(serverData);
-            const bRev = __plantPayloadRevision(backupData);
-            return bRev > sRev ? backupData : serverData;
+            return __plantPayloadRevision(backupData) > __plantPayloadRevision(serverData) ? backupData : serverData;
         };
 
-        /** Backup locale: valori attuali dal DOM ma NON alza syncRevision (evita di battere il cloud altri device). */
-        window.buildPlantPayloadLocalOnly = function () {
-            const base = window.__cloudPlantCache || window.__readPlantBackupLocal();
-            const prevRev = base ? __plantPayloadRevision(base) : 0;
-            const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
-            const data = {
-                shift: currentShift,
-                lastUpdate: (base && base.lastUpdate) || new Date().toISOString(),
-                syncRevision: prevRev > 0 ? prevRev : Date.now(),
-                savedBy: (base && base.savedBy) || (typeof window.__getServiceHubDeviceId === 'function' ? window.__getServiceHubDeviceId() : 'dev')
-            };
-            document.querySelectorAll('input').forEach(function (input) {
-                if (!input.id) return;
-                if (window.isRapportinoOnlyDataKey && window.isRapportinoOnlyDataKey(input.id)) return;
-                if (window.__shouldSkipInputForPlantPayload && window.__shouldSkipInputForPlantPayload(input)) return;
-                data[input.id] = input.value;
-            });
-            document.querySelectorAll('.status-cell-btn, .status-header, .vwt-label-dynamic, .osmosi-label-dynamic').forEach(function (btn) {
-                if (btn.id && btn.id !== 'numpad-tank-btn') {
-                    data[btn.id] = {
-                        text: btn.innerHTML,
-                        class: btn.className,
-                        style: btn.getAttribute('style') || ''
-                    };
-                }
-            });
-            if (window.tankStatuses) data.tankStatuses = window.tankStatuses;
-            return data;
+        const __writePlantLocalBackup = function (data) {
+            if (!data) return;
+            try {
+                localStorage.setItem('stabilePlantBackup', JSON.stringify(data));
+                localStorage.setItem('stabileCurrentData', JSON.stringify(data));
+            } catch (_) {}
         };
 
-        window.flushPlantBackupNow = function () {
-            const data = typeof window.buildPlantPayloadLocalOnly === 'function'
-                ? window.buildPlantPayloadLocalOnly()
-                : null;
-            if (!data) return null;
-            __writePlantLocalBackup(data);
-            cacheCloudPlantPayload(data);
-            return data;
-        };
-
-        window.__updatePlantSaveStatusUI = function (state, detail) {
-            const led = document.getElementById('cloud-status-led');
-            if (!led) return;
-            const d = detail ? String(detail) : '';
-            if (state === 'pending') {
-                led.className = 'w-2.5 h-2.5 rounded-full bg-blue-500 shadow-[0_0_10px_#3b82f6]';
-                led.title = 'Salvataggio sul cloud in corso…';
-            } else if (state === 'ok') {
-                led.className = 'w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_10px_#10b981]';
-                led.title = 'Cloud connesso · salvato' + (d ? ' ' + d : '');
-            } else if (state === 'local') {
-                led.className = 'w-2.5 h-2.5 rounded-full bg-amber-500 shadow-[0_0_10px_#f59e0b]';
-                led.title = 'Backup locale (cloud in attesa)' + (d ? ' · ' + d : '');
-            } else if (state === 'error') {
-                led.className = 'w-2.5 h-2.5 rounded-full bg-red-600 shadow-[0_0_10px_#dc2626]';
-                led.title = 'Errore salvataggio cloud' + (d ? ' · ' + d : '');
-            }
-        };
-
-        let __plantSaveInFlight = null;
+        window.__updatePlantSaveStatusUI = function () {};
 
         const __applyRemotePlantPayload = function (d, opts) {
             opts = opts || {};
@@ -1172,9 +1104,8 @@ window.colorPreviewNumber = function(tankName, value) {
             if (rev > 0) window.__appliedPlantSyncRevision = rev;
             window.__cloudPlantHydrated = true;
             applyData(d, { forceRemotePlant: true });
-            cacheCloudPlantPayload(d);
             __writePlantLocalBackup(d);
-            console.info('[ServiceHub] plant da cloud rev=', rev, 'by', d && d.savedBy);
+            cacheCloudPlantPayload(d);
             if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
             if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
             if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
@@ -1190,14 +1121,35 @@ window.colorPreviewNumber = function(tankName, value) {
             }
         };
 
-        window.buildPlantPayloadFromDOM = function() {
+        window.flushPlantBackupNow = function () {
+            if (typeof window.buildPlantPayloadFromDOM !== 'function') return null;
+            const data = window.buildPlantPayloadFromDOM({ bumpRevision: false });
+            __writePlantLocalBackup(data);
+            return data;
+        };
+
+        let __plantSaveInFlight = null;
+
+        window.buildPlantPayloadFromDOM = function(opts) {
+            opts = opts || {};
+            const bump = opts.bumpRevision === true;
             const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
-            const syncRevision = Date.now();
+            let syncRevision = window.__appliedPlantSyncRevision || 0;
+            let lastUpdate = __readPrevPlantLastUpdateIso() || new Date().toISOString();
+            if (bump) {
+                syncRevision = Date.now();
+                lastUpdate = new Date().toISOString();
+            } else {
+                const local = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
+                if (local) {
+                    if (local.syncRevision) syncRevision = local.syncRevision;
+                    if (local.lastUpdate) lastUpdate = local.lastUpdate;
+                }
+            }
             const data = {
                 shift: currentShift,
-                lastUpdate: new Date().toISOString(),
-                syncRevision: syncRevision,
-                savedBy: typeof window.__getServiceHubDeviceId === 'function' ? window.__getServiceHubDeviceId() : 'dev'
+                lastUpdate: lastUpdate,
+                syncRevision: syncRevision
             };
             document.querySelectorAll('input').forEach(function(input) {
                 if (!input.id) return;
@@ -1249,6 +1201,7 @@ window.colorPreviewNumber = function(tankName, value) {
 
         const syncWithCloud = () => {
             if (!user || !user.uid || !db) return;
+            __migratePlantBackupToStabileCurrentData();
             __purgeLegacySyncLocalStorage();
             const sessOnSync = typeof window.readSessionPrefs === 'function' ? window.readSessionPrefs() : null;
             if (sessOnSync && sessOnSync.activeId) window.__sessionActiveIdHint = sessOnSync.activeId;
@@ -1273,11 +1226,11 @@ window.colorPreviewNumber = function(tankName, value) {
             const dataDoc = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
             let __plantTruthTimer = null;
             const schedulePlantTruthFromServer = function () {
-                    if (__plantTruthTimer) clearTimeout(__plantTruthTimer);
+                if (__plantTruthTimer) clearTimeout(__plantTruthTimer);
                 __plantTruthTimer = setTimeout(function () {
                     __plantTruthTimer = null;
                     if (typeof window.__pullPlantFromServerNow === 'function') {
-                        void window.__pullPlantFromServerNow({ force: true });
+                        void window.__pullPlantFromServerNow();
                     }
                 }, 80);
             };
@@ -1317,8 +1270,6 @@ window.colorPreviewNumber = function(tankName, value) {
                 );
             };
 
-            // Prima allinea con il server (getDocFromServer), POI attiva onSnapshot: così il primo evento listener
-            // non passa prima del bootstrap e non ti cancella il numero buono con una copia cache vecchia.
             Promise.resolve()
                 .then(function () {
                     return getDocFromServer(dataDoc);
@@ -1329,27 +1280,15 @@ window.colorPreviewNumber = function(tankName, value) {
                 .then((snap) => {
                     const serverData = snap.exists() ? snap.data() : null;
                     const backup = window.__readPlantBackupLocal();
-                    let picked = null;
-                    if (serverData && backup) {
-                        picked = window.__pickNewestPlantPayload(serverData, backup);
-                    } else if (serverData) {
-                        picked = serverData;
-                    } else if (backup) {
-                        picked = backup;
-                    }
+                    const serverStripped = serverData ? window.__stripRapportinoKeysFromPlantPayload(serverData) : null;
+                    const backupStripped = backup ? window.__stripRapportinoKeysFromPlantPayload(backup) : null;
+                    const picked = window.__pickNewestPlantPayload(serverStripped, backupStripped);
                     if (picked) {
-                        const d = window.__stripRapportinoKeysFromPlantPayload(picked);
-                        __applyRemotePlantPayload(d, { force: true });
-                        if (
-                            user &&
-                            user.uid &&
-                            backup &&
-                            serverData &&
-                            __plantPayloadRevision(backup) > __plantPayloadRevision(serverData)
-                        ) {
-                            void setDoc(dataDoc, d);
-                        } else if (!serverData && user && user.uid) {
-                            void setDoc(dataDoc, d);
+                        __applyRemotePlantPayload(picked, { force: true });
+                        const pickedRev = __plantPayloadRevision(picked);
+                        const serverRev = serverStripped ? __plantPayloadRevision(serverStripped) : 0;
+                        if (user && user.uid && pickedRev > serverRev) {
+                            void setDoc(dataDoc, picked);
                         }
                     }
                 })
@@ -1383,13 +1322,9 @@ window.colorPreviewNumber = function(tankName, value) {
 
             const rapportiniDoc = doc(db, 'artifacts', appId, 'sharedDial', 'rapportini');
             const __wireRapportiniSnapshotListener = function () {
-                __shUnsubRapportini = onSnapshot(
-                    rapportiniDoc,
-                    { includeMetadataChanges: true },
-                    (snapshot) => {
+                __shUnsubRapportini = onSnapshot(rapportiniDoc, (snapshot) => {
                     const md = snapshot.metadata;
                     if (md && md.hasPendingWrites) return;
-                    if (md && md.fromCache) return;
                     window.__rapportiniCloudHydrated = true;
                     if (!snapshot.exists()) {
                         window.__rapportiniCloudDocMissing = true;
@@ -1421,7 +1356,17 @@ window.colorPreviewNumber = function(tankName, value) {
                     const backupStore = window.__readRapportiniBackupLocal && window.__readRapportiniBackupLocal();
                     if (serverStore && serverStore.items) {
                         window.__rapportiniCloudDocMissing = false;
-                        if (typeof window.applyRapportiniStoreFromCloud === 'function') {
+                        if (backupStore && backupStore.items && typeof window.mergeRapportiniStores === 'function') {
+                            const merged = window.mergeRapportiniStores(backupStore, serverStore, true);
+                            if (typeof window.applyRapportiniStoreFromCloud === 'function') {
+                                window.applyRapportiniStoreFromCloud(merged, { force: true });
+                            }
+                            const bMs = window.parseRapportinoUpdatedMs(backupStore.lastUpdate);
+                            const sMs = window.parseRapportinoUpdatedMs(serverStore.lastUpdate);
+                            if (bMs > sMs && typeof window.pushRapportiniStoreToCloud === 'function') {
+                                void window.pushRapportiniStoreToCloud(merged);
+                            }
+                        } else if (typeof window.applyRapportiniStoreFromCloud === 'function') {
                             window.applyRapportiniStoreFromCloud(serverStore, { force: true });
                         }
                     } else if (backupStore && backupStore.items) {
@@ -1463,23 +1408,21 @@ window.colorPreviewNumber = function(tankName, value) {
             
             const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
             const data = typeof window.buildPlantPayloadFromDOM === 'function'
-                ? window.buildPlantPayloadFromDOM()
+                ? window.buildPlantPayloadFromDOM({ bumpRevision: true })
                 : { shift: currentShift, lastUpdate: new Date().toISOString(), syncRevision: Date.now() };
             
             // AGGIUNGI STORICO DEI SALVATAGGI PER TREND
             window.addToHistory(data);
             
-            try { 
+            try {
+                __writePlantLocalBackup(data);
                 await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data);
                 cacheCloudPlantPayload(data);
                 const rev = __plantPayloadRevision(data);
                 if (rev > 0) window.__appliedPlantSyncRevision = rev;
-                window.__lastLocalPlantEditMs = rev;
                 window.__cloudPlantHydrated = true;
                 __plantRetrySaveAfterAuth = false;
-                try {
-                    localStorage.setItem('stabilePlantBackup', JSON.stringify(data));
-                } catch (_) {}
+                __writePlantLocalBackup(data);
                 if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
                 if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                     window.schedulePublicDigitalSnapshotSync();
@@ -1851,6 +1794,10 @@ window.colorPreviewNumber = function(tankName, value) {
 
         window.refreshTankLevelAlarmVisuals = window.colorAllTankInputs;
 
+        window.__snapshotStabilePlantLocalOnly = function () {
+            if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
+        };
+
         window.saveData = async function (skipHistory) {
             const skipHist = skipHistory === true;
             const doSave = async function () {
@@ -1859,15 +1806,8 @@ window.colorPreviewNumber = function(tankName, value) {
 
             if (!user || !user.uid || !db) {
                 if (!(window.isEditingArchive && window.editingArchiveId)) {
+                    if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
                     __plantRetrySaveAfterAuth = true;
-                    if (typeof window.__updatePlantSaveStatusUI === 'function') {
-                        window.__updatePlantSaveStatusUI('local', new Date().toLocaleTimeString());
-                    }
-                    if (typeof window.__showPlantCloudSyncBanner === 'function') {
-                        window.__showPlantCloudSyncBanner(
-                            'Cloud non connesso: i dati sono nel backup locale. Attendi il LED verde, poi ricarica.'
-                        );
-                    }
                 }
                 return;
             }
@@ -2006,29 +1946,22 @@ window.colorPreviewNumber = function(tankName, value) {
             }
             
             const data = typeof window.buildPlantPayloadFromDOM === 'function'
-                ? window.buildPlantPayloadFromDOM()
+                ? window.buildPlantPayloadFromDOM({ bumpRevision: true })
                 : { shift: '', lastUpdate: new Date().toISOString(), syncRevision: Date.now() };
-            const syncRevision = data.syncRevision;
 
             if (!skipHist) {
                 window.addToHistory(data);
             }
 
             try {
-                if (!skipHist && typeof window.__updatePlantSaveStatusUI === 'function') {
-                    window.__updatePlantSaveStatusUI('pending', '');
-                }
+                __writePlantLocalBackup(data);
                 await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), data);
                 cacheCloudPlantPayload(data);
-                window.__appliedPlantSyncRevision = syncRevision;
-                window.__lastLocalPlantEditMs = syncRevision;
+                const rev = __plantPayloadRevision(data);
+                if (rev > 0) window.__appliedPlantSyncRevision = rev;
                 window.__cloudPlantHydrated = true;
                 __plantRetrySaveAfterAuth = false;
                 __writePlantLocalBackup(data);
-                const t = new Date().toLocaleTimeString();
-                if (typeof window.__updatePlantSaveStatusUI === 'function') {
-                    window.__updatePlantSaveStatusUI('ok', t);
-                }
                 if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
                 if (typeof window.flushPublicDigitalSnapshotNow === "function") {
                     window.flushPublicDigitalSnapshotNow();
@@ -2037,10 +1970,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 }
             } catch (e) { 
                 console.error('[ServiceHub] saveData Firestore:', e && e.code, e && e.message);
-                window.flushPlantBackupNow();
-                if (typeof window.__updatePlantSaveStatusUI === 'function') {
-                    window.__updatePlantSaveStatusUI('error', (e && e.code) || 'errore');
-                }
+                __writePlantLocalBackup(data);
                 const msg = window.__isFirestorePermissionError && window.__isFirestorePermissionError(e)
                     ? ('Salvataggio cloud rifiutato (regole Firestore). Progetto ' + (window.__SERVICEHUB_FIREBASE_PROJECT || 'Firebase') + '. Pubblica firestore.rules.')
                     : ('Salvataggio cloud fallito: ' + ((e && e.code) || '') + ' ' + ((e && e.message) || 'rete?') + ' — backup locale ok.');
@@ -3903,6 +3833,11 @@ window.updateStoricoButton = async function() {
             
             initAuth();
 
+            __migratePlantBackupToStabileCurrentData();
+            if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
+                window.__applyPlantFromLocalStorageFallback();
+            }
+
             const sessPrefs = typeof window.readSessionPrefs === 'function' ? window.readSessionPrefs() : null;
             if (sessPrefs && sessPrefs.activeId) window.__sessionActiveIdHint = sessPrefs.activeId;
 
@@ -3917,12 +3852,8 @@ window.updateStoricoButton = async function() {
                     if (__plantPersistTimer) clearTimeout(__plantPersistTimer);
                     __plantPersistTimer = setTimeout(function () {
                         __plantPersistTimer = null;
-                        if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
                         if (typeof window.saveData === 'function') void window.saveData(true);
-                        if (typeof window.saveActiveRapportinoFromUI === 'function') {
-                            try { window.saveActiveRapportinoFromUI(); } catch (_) {}
-                        }
-                    }, 200);
+                    }, 80);
                 },
                 true
             );
@@ -3931,7 +3862,9 @@ window.updateStoricoButton = async function() {
                     clearTimeout(__plantPersistTimer);
                     __plantPersistTimer = null;
                 }
-                if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
+                if (typeof window.__snapshotStabilePlantLocalOnly === 'function') {
+                    window.__snapshotStabilePlantLocalOnly();
+                }
                 if (typeof window.flushRapportiniBackupNow === 'function') window.flushRapportiniBackupNow();
                 if (typeof window.saveActiveRapportinoFromUI === 'function') {
                     try { window.saveActiveRapportinoFromUI(); } catch (_) {}
@@ -3944,7 +3877,9 @@ window.updateStoricoButton = async function() {
                         clearTimeout(__plantPersistTimer);
                         __plantPersistTimer = null;
                     }
-                    if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
+                    if (typeof window.__snapshotStabilePlantLocalOnly === 'function') {
+                        window.__snapshotStabilePlantLocalOnly();
+                    }
                     if (typeof window.flushRapportiniBackupNow === 'function') window.flushRapportiniBackupNow();
                     if (typeof window.saveActiveRapportinoFromUI === 'function') {
                         try { window.saveActiveRapportinoFromUI(); } catch (_) {}
@@ -5540,8 +5475,6 @@ window.updateStoricoButton = async function() {
             { id: 'sec-stoccaggio-interno', name: 'STOCCAGGIO INTERNO' },
             { id: 'sec-chemicals', name: 'CHEMICALS' }
         ];
-
-        window.__STOCCAGGIO_FIELD_IDS = null;
 
         window.__shouldSkipInputForPlantPayload = function (input) {
             if (!input || !input.id) return true;
@@ -7346,16 +7279,21 @@ window.updateStoricoButton = async function() {
             window.refreshNotturnoFiltraTotals();
         };
 
+        window.__applyPlantFromLocalStorageFallback = function () {
+            const backup = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
+            if (backup) {
+                __applyRemotePlantPayload(backup, { force: true });
+            }
+        };
+
         /** Lettura forzata plant dal server (aggira cache SDK / tab in background / rete difficile). */
-        window.__pullPlantFromServerNow = function (opts) {
-            opts = opts || {};
+        window.__pullPlantFromServerNow = function () {
             if (!db || !user || !user.uid) return Promise.resolve();
             const dataDoc = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
             return getDocFromServer(dataDoc)
                 .then(function (snap) {
                     if (snap.exists()) {
-                        const d = snap.data();
-                        __applyRemotePlantPayload(d, { force: true });
+                        __applyRemotePlantPayload(snap.data(), { force: true });
                         if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                             window.schedulePublicDigitalSnapshotSync();
                         }
@@ -7382,7 +7320,7 @@ window.updateStoricoButton = async function() {
 
         window.__pullAllCloudStateNow = function () {
             const p1 = typeof window.__pullPlantFromServerNow === 'function'
-                ? window.__pullPlantFromServerNow({ force: true }) : Promise.resolve();
+                ? window.__pullPlantFromServerNow() : Promise.resolve();
             const p2 = typeof window.__pullRapportiniFromServerNow === 'function'
                 ? window.__pullRapportiniFromServerNow() : Promise.resolve();
             return Promise.all([p1, p2]);
@@ -13004,7 +12942,7 @@ window.convertToHtml = async () => {
     <div class="main-container">
         <div class="main-header">
             <div class="flex items-center gap-2">
-                <div id="cloud-status-led" class="w-2.5 h-2.5 rounded-full bg-slate-500 shadow-[0_0_8px_#64748b]" title="Verde = connesso. Se non si sincronizzano gli altri dispositivi, controlla le regole Firestore (banner sotto)."></div>
+                <div id="cloud-status-led" class="w-2.5 h-2.5 rounded-full bg-slate-500 shadow-[0_0_8px_#64748b]" title="Verde = connesso al cloud. Rosso = non connesso."></div>
                 <span class="font-black italic text-[15px] tracking-tighter uppercase text-white cursor-pointer" onclick="showResetModal()">STABILE 2026</span>
                 <span id="device-tag" class="px-2 py-0.5 bg-emerald-500/30 text-emerald-300 rounded text-[8px] font-black">V4.5</span>
             </div>

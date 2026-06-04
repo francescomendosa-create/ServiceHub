@@ -1072,6 +1072,23 @@ window.colorPreviewNumber = function(tankName, value) {
             if (el && msg) el.textContent = msg;
         };
 
+        window.__markPlantUserTyping = function () {
+            window.__plantTypingQuietUntil = Date.now() + 2800;
+        };
+
+        window.__isPlantUserTypingNow = function () {
+            if (Date.now() < (window.__plantTypingQuietUntil || 0)) return true;
+            const ae = document.activeElement;
+            if (!ae || (ae.tagName !== 'INPUT' && ae.tagName !== 'TEXTAREA')) return false;
+            return !!(ae.closest && ae.closest('.main-container'));
+        };
+
+        window.__shouldApplyRemotePlantNow = function (opts) {
+            opts = opts || {};
+            if (opts.force) return true;
+            return !window.__isPlantUserTypingNow();
+        };
+
         window.__updatePlantSyncDiagnostic = function (serverData) {
             const localRev = window.__lastPushedPlantRevision || 0;
             const serverRev = serverData ? __plantPayloadRevision(serverData) : (window.__lastServerPlantRevision || 0);
@@ -1145,6 +1162,7 @@ window.colorPreviewNumber = function(tankName, value) {
         const __applyRemotePlantPayload = function (d, opts) {
             opts = opts || {};
             if (!d || typeof d !== 'object') return;
+            if (!window.__shouldApplyRemotePlantNow(opts)) return;
             d = window.__stripRapportinoKeysFromPlantPayload(d);
             const rev = __plantPayloadRevision(d);
             if (!opts.force && rev > 0 && rev === window.__lastPushedPlantRevision) return;
@@ -1344,11 +1362,6 @@ window.colorPreviewNumber = function(tankName, value) {
                 })
                 .finally(function () {
                     __wirePlantSnapshotListener();
-                    window.__plantSyncPollInterval = setInterval(function () {
-                        if (user && user.uid && db && typeof window.__pullPlantFromServerNow === 'function') {
-                            void window.__pullPlantFromServerNow();
-                        }
-                    }, 4000);
                 });
 
             const settingsDoc = doc(db, 'artifacts', appId, 'sharedDial', 'settings');
@@ -3916,11 +3929,22 @@ window.updateStoricoButton = async function() {
                     if (!t || !t.closest || !t.closest('.main-container')) return;
                     if (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA') return;
                     if (t.closest('#settings-modal') || t.closest('#management-modal') || t.closest('#shift-modal')) return;
+                    if (typeof window.__markPlantUserTyping === 'function') window.__markPlantUserTyping();
                     if (__plantPersistTimer) clearTimeout(__plantPersistTimer);
                     __plantPersistTimer = setTimeout(function () {
                         __plantPersistTimer = null;
                         if (typeof window.saveData === 'function') void window.saveData(true);
-                    }, 80);
+                    }, 650);
+                },
+                true
+            );
+            document.addEventListener(
+                'focusin',
+                function (e) {
+                    const t = e.target;
+                    if (!t || !t.closest || !t.closest('.main-container')) return;
+                    if (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA') return;
+                    if (typeof window.__markPlantUserTyping === 'function') window.__markPlantUserTyping();
                 },
                 true
             );
@@ -5437,26 +5461,24 @@ window.updateStoricoButton = async function() {
             // NON toccare più gli allarmi qui
             // Gli allarmi sono gestiti separatamente (cloud dedicato)
             for (const [id, val] of Object.entries(data)) {
-                if (['hiddenModules', 'isDarkMode', 'lastUpdate', 'manualShift', 'archiveTime', 'createdAt', 'shift', 'syncRevision'].includes(id)) continue;
+                if (['hiddenModules', 'isDarkMode', 'lastUpdate', 'manualShift', 'archiveTime', 'createdAt', 'shift', 'syncRevision', 'savedBy'].includes(id)) continue;
                 if (window.isRapportinoOnlyDataKey && window.isRapportinoOnlyDataKey(id)) continue;
                 const strVal = val != null && val !== undefined ? String(val) : '';
                 const inputs = document.querySelectorAll('input[id="' + id + '"]');
                 if (inputs.length) {
                     inputs.forEach(function(el) {
-                        if (forcePlant || document.activeElement !== el) {
-                            el.value = strVal;
-                            if (id === 'osmosi' && typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(el);
-                        }
+                        if (document.activeElement === el) return;
+                        el.value = strVal;
+                        if (id === 'osmosi' && typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(el);
                     });
                     continue;
                 }
                 const el = document.getElementById(id);
                 if (!el) continue;
                 if (el.tagName === 'INPUT') {
-                    if (forcePlant || document.activeElement !== el) {
-                        el.value = strVal;
-                        if (id === 'osmosi' && typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(el);
-                    }
+                    if (document.activeElement === el) return;
+                    el.value = strVal;
+                    if (id === 'osmosi' && typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(el);
                 }
                 else if (typeof val === 'object') {
                     el.innerHTML = val.text;
@@ -7341,6 +7363,9 @@ window.updateStoricoButton = async function() {
         /** Lettura forzata plant dal server (aggira cache SDK / tab in background / rete difficile). */
         window.__pullPlantFromServerNow = function () {
             if (!db || !user || !user.uid) return Promise.resolve();
+            if (typeof window.__isPlantUserTypingNow === 'function' && window.__isPlantUserTypingNow()) {
+                return Promise.resolve();
+            }
             const dataDoc = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
             return getDocFromServer(dataDoc)
                 .then(function (snap) {

@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.04-ui-storico-fix';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-local-persist-fix';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -600,6 +600,7 @@ window.colorPreviewNumber = function(tankName, value) {
 
         window.initAlarmConfigListener = function() {
             if (!user || !user.uid || !db) return;
+            if (window.__firestoreQuotaBlocked) return;
 
             if (__shUnsubAlarm) {
                 try {
@@ -1066,7 +1067,12 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__pickNewestPlantPayload = function (serverData, backupData) {
             if (!serverData || typeof serverData !== 'object') return backupData || null;
             if (!backupData || typeof backupData !== 'object') return serverData;
-            return __plantPayloadRevision(backupData) > __plantPayloadRevision(serverData) ? backupData : serverData;
+            const sMs = __plantLastUpdateMs(serverData.lastUpdate);
+            const bMs = __plantLastUpdateMs(backupData.lastUpdate);
+            if (sMs != null && bMs != null) {
+                return bMs >= sMs ? backupData : serverData;
+            }
+            return __plantPayloadRevision(backupData) >= __plantPayloadRevision(serverData) ? backupData : serverData;
         };
 
         const __writePlantLocalBackup = function (data) {
@@ -1113,7 +1119,9 @@ window.colorPreviewNumber = function(tankName, value) {
         window.flushPlantBackupNow = function () {
             if (typeof window.buildPlantPayloadFromDOM !== 'function') return null;
             const data = window.buildPlantPayloadFromDOM({ bumpRevision: false });
+            data.lastUpdate = new Date().toISOString();
             __writePlantLocalBackup(data);
+            window.__lastLocalPlantSaveMs = Date.now();
             return data;
         };
 
@@ -1259,6 +1267,18 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!user || !user.uid || !db) return;
             __migratePlantBackupToStabileCurrentData();
             __purgeLegacySyncLocalStorage();
+
+            if (window.__firestoreQuotaBlocked) {
+                const backupOnly = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
+                if (backupOnly) {
+                    __applyRemotePlantPayload(
+                        window.__stripRapportinoKeysFromPlantPayload(backupOnly),
+                        { force: true }
+                    );
+                }
+                window.__cloudPlantHydrated = true;
+                return;
+            }
             const sessOnSync = typeof window.readSessionPrefs === 'function' ? window.readSessionPrefs() : null;
             if (sessOnSync && sessOnSync.activeId) window.__sessionActiveIdHint = sessOnSync.activeId;
             if (__shUnsubPlant) {
@@ -1351,6 +1371,9 @@ window.colorPreviewNumber = function(tankName, value) {
                 })
                 .catch((err) => {
                     console.warn('[ServiceHub] plant getDoc:', err && err.message);
+                    if (window.__isFirestoreQuotaError && window.__isFirestoreQuotaError(err)) {
+                        window.__onFirestoreQuotaExceeded();
+                    }
                     const backup = window.__readPlantBackupLocal();
                     if (backup) {
                         const picked = window.__stripRapportinoKeysFromPlantPayload(backup);
@@ -1889,10 +1912,10 @@ window.colorPreviewNumber = function(tankName, value) {
                 return;
             }
 
-            if (!window.__cloudPlantHydrated) {
+            if (window.__firestoreQuotaBlocked) {
                 return;
             }
-            if (window.__firestoreQuotaBlocked) {
+            if (!window.__cloudPlantHydrated) {
                 return;
             }
             
@@ -2095,6 +2118,7 @@ window.colorPreviewNumber = function(tankName, value) {
             __plantSaveInFlight = p;
             return p.finally(function () {
                 __plantSaveInFlight = null;
+                if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
             });
         };
 
@@ -2613,7 +2637,6 @@ window.colorPreviewNumber = function(tankName, value) {
                     btn.innerHTML = "SALVATO!";
                     btn.classList.add('bg-emerald-600');
                     await sleep(1200);
-                    restoreArchiveButton();
                     updateDeviceInfo();
                     return;
                 }
@@ -2628,9 +2651,7 @@ window.colorPreviewNumber = function(tankName, value) {
 
                 btn.innerHTML = "SALVATO!";
                 btn.classList.add('bg-emerald-600');
-
                 await sleep(1200);
-                restoreArchiveButton();
                 window.updateStoricoButton();
 
             } catch (e) {
@@ -3979,8 +4000,9 @@ window.updateStoricoButton = async function() {
                     if (__plantPersistTimer) clearTimeout(__plantPersistTimer);
                     __plantPersistTimer = setTimeout(function () {
                         __plantPersistTimer = null;
+                        if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
                         if (typeof window.saveData === 'function') void window.saveData(true);
-                    }, 500);
+                    }, 400);
                 },
                 true
             );

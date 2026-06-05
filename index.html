@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.04-local-persist-fix';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-chem-persist-fix';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -1275,6 +1275,16 @@ window.colorPreviewNumber = function(tankName, value) {
                         window.__stripRapportinoKeysFromPlantPayload(backupOnly),
                         { force: true }
                     );
+                }
+                const rBackup = window.__readRapportiniBackupLocal && window.__readRapportiniBackupLocal();
+                if (rBackup && rBackup.items) {
+                    window.__rapportiniStore = rBackup;
+                    window.__rapportiniCloudHydrated = true;
+                    if (typeof window.applyRapportiniStoreFromCloud === 'function') {
+                        window.applyRapportiniStoreFromCloud(rBackup, { force: true });
+                    }
+                } else if (typeof window.ensureRapportiniInitialized === 'function') {
+                    window.ensureRapportiniInitialized({ allowBootstrap: true, applyActiveItem: true });
                 }
                 window.__cloudPlantHydrated = true;
                 return;
@@ -6020,6 +6030,11 @@ window.updateStoricoButton = async function() {
         window.loadRapportiniStore = function() {
             const mem = window.__rapportiniStore;
             if (mem && mem.items) return mem;
+            const backup = window.__readRapportiniBackupLocal && window.__readRapportiniBackupLocal();
+            if (backup && backup.items) {
+                window.__rapportiniStore = backup;
+                return backup;
+            }
             return null;
         };
 
@@ -6285,7 +6300,11 @@ window.updateStoricoButton = async function() {
             let store = window.loadRapportiniStore();
             const sess = typeof window.readSessionPrefs === 'function' ? window.readSessionPrefs() : null;
             if (!store || !store.items || !store.items.generale) {
-                if (!opts.allowBootstrap) {
+                const localBackup = window.__readRapportiniBackupLocal && window.__readRapportiniBackupLocal();
+                if (localBackup && localBackup.items && localBackup.items.generale) {
+                    store = window.migrateRapportiniSchedeConfig(localBackup);
+                    window.__rapportiniStore = store;
+                } else if (!opts.allowBootstrap) {
                     store = window.buildMinimalRapportiniScaffold();
                     window.__rapportiniStore = store;
                     if (sess && sess.activeId && store.items[sess.activeId]) store.activeId = sess.activeId;
@@ -6296,18 +6315,19 @@ window.updateStoricoButton = async function() {
                         window.applyRapportinoSchedeConfig(activeItem.schedeConfig);
                     }
                     return store;
+                } else {
+                    const fullCfg = window.buildFullRapportinoConfigFromDOM();
+                    const genSnap = window.captureEmptyRapportinoSnapshot(null, [], 'generale');
+                    const nottSnap = window.captureEmptyRapportinoSnapshot(null, [], 'notturno');
+                    store = {
+                        activeId: (sess && sess.activeId) || window.__sessionActiveIdHint || 'generale',
+                        items: {
+                            generale: Object.assign({ id: 'generale', name: 'Generale', schedeConfig: fullCfg }, genSnap),
+                            notturno: Object.assign({ id: 'notturno', name: 'Notturno', schedeConfig: window.buildNotturnoRapportinoConfig() }, nottSnap)
+                        }
+                    };
+                    window.saveRapportiniStore(store, { pushCloud: !!window.__rapportiniCloudDocMissing });
                 }
-                const fullCfg = window.buildFullRapportinoConfigFromDOM();
-                const genSnap = window.captureEmptyRapportinoSnapshot(null, [], 'generale');
-                const nottSnap = window.captureEmptyRapportinoSnapshot(null, [], 'notturno');
-                store = {
-                    activeId: (sess && sess.activeId) || window.__sessionActiveIdHint || 'generale',
-                    items: {
-                        generale: Object.assign({ id: 'generale', name: 'Generale', schedeConfig: fullCfg }, genSnap),
-                        notturno: Object.assign({ id: 'notturno', name: 'Notturno', schedeConfig: window.buildNotturnoRapportinoConfig() }, nottSnap)
-                    }
-                };
-                window.saveRapportiniStore(store, { pushCloud: !!window.__rapportiniCloudDocMissing });
             } else {
                 store = window.migrateRapportiniSchedeConfig(store);
             }
@@ -7059,21 +7079,30 @@ window.updateStoricoButton = async function() {
                 window.ensureRapportiniInitialized();
             }
             const store = window.loadRapportiniStore();
-            if (!store || store.activeId !== 'notturno' || !store.items.notturno) return;
+            if (!store) return;
+            if (!store.items.notturno) {
+                const nottSnap = window.captureEmptyRapportinoSnapshot(null, [], 'notturno');
+                store.items.notturno = Object.assign({
+                    id: 'notturno',
+                    name: 'Notturno',
+                    schedeConfig: window.buildNotturnoRapportinoConfig()
+                }, nottSnap);
+            }
             if (!store.items.notturno.data) store.items.notturno.data = {};
             store.items.notturno.data._nottChemPass = Math.max(0, pass | 0);
             store.items.notturno.data._nottChemHp = Math.max(0, hp | 0);
             store.items.notturno.updatedAt = new Date().toISOString();
             window.updateNotturnoChemCounterUI(pass, hp);
             if (typeof window.saveRapportiniStore === 'function') {
-                window.saveRapportiniStore(store);
+                window.saveRapportiniStore(store, { pushCloud: !window.__firestoreQuotaBlocked });
             }
+            if (typeof window.flushRapportiniBackupNow === 'function') window.flushRapportiniBackupNow();
         };
 
         window.incrementNotturnoChemCounter = function(which) {
             if (!window.isNotturnoFiltraLayoutActive || !window.isNotturnoFiltraLayoutActive()) return;
             const store = window.loadRapportiniStore();
-            if (!store || store.activeId !== 'notturno' || !store.items.notturno) return;
+            if (!store || !store.items.notturno) return;
             const c = window.getNotturnoChemCounts(store.items.notturno.data);
             if (which === 'pass') c.pass += 1;
             else if (which === 'hp') c.hp += 1;
@@ -7144,8 +7173,12 @@ window.updateStoricoButton = async function() {
         };
 
         window.restoreNotturnoChemicalsAfterApplyData = function(data) {
-            if (!data || !window.isNotturnoFiltraLayoutActive()) return;
-            const c = window.getNotturnoChemCounts(data);
+            if (!window.isNotturnoFiltraLayoutActive || !window.isNotturnoFiltraLayoutActive()) return;
+            const store = window.loadRapportiniStore && window.loadRapportiniStore();
+            const src = (data && (data._nottChemPass != null || data._nottChemHp != null))
+                ? data
+                : (store && store.items.notturno && store.items.notturno.data) || data || {};
+            const c = window.getNotturnoChemCounts(src);
             window.updateNotturnoChemCounterUI(c.pass, c.hp);
         };
 

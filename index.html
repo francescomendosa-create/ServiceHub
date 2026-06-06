@@ -521,7 +521,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.04-settings-header-phone';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-stocc-digital-fix';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -5845,7 +5845,9 @@ window.updateStoricoButton = async function() {
         window.isRapportinoOnlyDataKey = function (key) {
             if (!key || typeof key !== 'string') return false;
             if (key.indexOf('_nott') === 0) return true;
-            return /^nott-f-s\d+(-start|-end|-pi|-pf)$/.test(key);
+            if (/^nott-f-s\d+(-start|-end|-pi|-pf)$/.test(key)) return true;
+            if (window.isNotturnoStoccaggioFieldKey && window.isNotturnoStoccaggioFieldKey(key)) return true;
+            return false;
         };
 
         window.extractRapportinoOnlyData = function (data) {
@@ -5934,7 +5936,8 @@ window.updateStoricoButton = async function() {
                 '<span class="nott-stocc-sigla-txt">' + safe + '</span></div>' +
                 '<div class="nott-stocc-inp-cell">' +
                 '<input type="tel" class="nott-stocc-inp" id="' + t.fieldId + '" inputmode="decimal" placeholder="mm" ' +
-                'oninput="window.refreshStoccaggioInternoTons()" onchange="window.saveData()">' +
+                'oninput="window.refreshStoccaggioInternoTons(); window.persistNotturnoStoccaggioToRapportino && window.persistNotturnoStoccaggioToRapportino()" ' +
+                'onchange="window.saveData(); window.persistNotturnoStoccaggioToRapportino && window.persistNotturnoStoccaggioToRapportino()">' +
                 '</div>' +
                 '<div class="nott-stocc-ton-cell">' +
                 '<span class="nott-stocc-ton-val" id="' + t.fieldId + '-ton" aria-live="polite">—</span>' +
@@ -5969,17 +5972,68 @@ window.updateStoricoButton = async function() {
             return tank ? tank.label : '';
         };
 
+        window.isNotturnoStoccaggioFieldKey = function(fieldId) {
+            if (!fieldId) return false;
+            if (!window.__STOCCAGGIO_FIELD_IDS) {
+                window.__STOCCAGGIO_FIELD_IDS = new Set(
+                    (window.STOCCAGGIO_INTERNO_TANKS || []).map(function (t) { return t.fieldId; })
+                );
+            }
+            if (!window.__STOCCAGGIO_FIELD_IDS.has(fieldId)) return false;
+            return !!(window.isNotturnoStoccaggioModuleActive && window.isNotturnoStoccaggioModuleActive());
+        };
+
         window.getStoccaggioInternoFieldRaw = function(fieldId) {
             if (!fieldId) return '';
             const inp = document.getElementById(fieldId);
             if (inp && inp.value != null && String(inp.value).trim() !== '') {
                 return String(inp.value).trim();
             }
+            const store = window.loadRapportiniStore && window.loadRapportiniStore();
+            if (store && store.activeId === 'notturno' && store.items.notturno && store.items.notturno.data) {
+                const stored = store.items.notturno.data[fieldId];
+                if (stored != null && String(stored).trim() !== '') {
+                    return String(stored).trim();
+                }
+            }
             const backup = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
             if (backup && backup[fieldId] != null && String(backup[fieldId]).trim() !== '') {
                 return String(backup[fieldId]).trim();
             }
             return '';
+        };
+
+        window.hydrateNotturnoStoccaggioInputsFromStore = function() {
+            if (!window.isNotturnoStoccaggioModuleActive()) return;
+            if (typeof window.renderStoccaggioInternoPanel === 'function') {
+                window.renderStoccaggioInternoPanel();
+            }
+            const store = window.loadRapportiniStore();
+            const nottData = store && store.items.notturno && store.items.notturno.data;
+            if (!nottData) return;
+            (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
+                if (nottData[t.fieldId] == null || String(nottData[t.fieldId]).trim() === '') return;
+                const el = document.getElementById(t.fieldId);
+                if (el && String(el.value || '').trim() === '') {
+                    el.value = String(nottData[t.fieldId]);
+                }
+            });
+            if (typeof window.refreshStoccaggioInternoTons === 'function') {
+                window.refreshStoccaggioInternoTons();
+            }
+        };
+
+        window.persistNotturnoStoccaggioToRapportino = function() {
+            if (!window.isNotturnoStoccaggioModuleActive()) return;
+            const store = window.loadRapportiniStore();
+            if (!store || !store.items.notturno) return;
+            if (!store.items.notturno.data) store.items.notturno.data = {};
+            (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
+                const raw = window.getStoccaggioInternoFieldRaw(t.fieldId);
+                if (raw) store.items.notturno.data[t.fieldId] = raw;
+                else delete store.items.notturno.data[t.fieldId];
+            });
+            window.saveRapportiniStore(store, { pushCloud: false });
         };
 
         window.formatStoccaggioInternoReportValue = function(inp, tankDbKey) {
@@ -6016,11 +6070,14 @@ window.updateStoricoButton = async function() {
         };
 
         window.getNotturnoStoccaggioReportData = function() {
-            if (typeof window.renderStoccaggioInternoPanel === 'function') {
-                window.renderStoccaggioInternoPanel();
+            if (!window.isNotturnoStoccaggioModuleActive()) {
+                return { title: 'STOCCAGGIO INTERNO', rows: [] };
             }
-            if (typeof window.refreshStoccaggioInternoTons === 'function') {
-                window.refreshStoccaggioInternoTons();
+            if (typeof window.persistNotturnoStoccaggioToRapportino === 'function') {
+                window.persistNotturnoStoccaggioToRapportino();
+            }
+            if (typeof window.hydrateNotturnoStoccaggioInputsFromStore === 'function') {
+                window.hydrateNotturnoStoccaggioInputsFromStore();
             }
             const titleEl = document.getElementById('lbl-sec-stoccaggio-interno-tendina');
             const rows = [];
@@ -6047,7 +6104,10 @@ window.updateStoricoButton = async function() {
             const sent = window.hiddenModules || [];
             return sent.filter(function (id) {
                 if (['sec-amb', 'sec-ambiente2'].includes(id)) return false;
-                if ((id === 'sec-stoccaggio-interno' || id === 'sec-chemicals') && !window.isNotturnoFiltraLayoutActive()) {
+                if (id === 'sec-stoccaggio-interno' && !window.isNotturnoStoccaggioModuleActive()) {
+                    return false;
+                }
+                if (id === 'sec-chemicals' && !window.isNotturnoFiltraLayoutActive()) {
                     return false;
                 }
                 return true;
@@ -6842,6 +6902,15 @@ window.updateStoricoButton = async function() {
                 if (passEl) data._nottChemPass = parseInt(passEl.textContent, 10) || 0;
                 if (hpEl) data._nottChemHp = parseInt(hpEl.textContent, 10) || 0;
             }
+            if (window.isNotturnoStoccaggioModuleActive && window.isNotturnoStoccaggioModuleActive()) {
+                if (typeof window.persistNotturnoStoccaggioToRapportino === 'function') {
+                    window.persistNotturnoStoccaggioToRapportino();
+                }
+                (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
+                    const raw = window.getStoccaggioInternoFieldRaw(t.fieldId);
+                    if (raw) data[t.fieldId] = raw;
+                });
+            }
             return {
                 data: window.extractRapportinoOnlyData(data),
                 sectionsLayout: window.captureSectionsLayout(),
@@ -7002,6 +7071,9 @@ window.updateStoricoButton = async function() {
             }
             if (typeof window.restoreNotturnoChemicalsAfterApplyData === 'function') {
                 window.restoreNotturnoChemicalsAfterApplyData(rapportinoOnly);
+            }
+            if (typeof window.hydrateNotturnoStoccaggioInputsFromStore === 'function') {
+                window.hydrateNotturnoStoccaggioInputsFromStore();
             }
             requestAnimationFrame(function () {
                 if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
@@ -7520,6 +7592,14 @@ window.updateStoricoButton = async function() {
             const cfg = store.items.notturno && store.items.notturno.schedeConfig;
             const mod = cfg && cfg.modules && cfg.modules['sec-filtra'];
             return !!(mod && mod.enabled !== false && mod.layout === 'turni-produzione');
+        };
+
+        window.isNotturnoStoccaggioModuleActive = function() {
+            const store = window.loadRapportiniStore();
+            if (!store || store.activeId !== 'notturno') return false;
+            const cfg = store.items.notturno && store.items.notturno.schedeConfig;
+            const mod = cfg && cfg.modules && cfg.modules['sec-stoccaggio-interno'];
+            return !!(mod && mod.enabled !== false);
         };
 
         window.__withNotturnoTendinaInstant = function(fn) {
@@ -9704,6 +9784,14 @@ window.updateStoricoButton = async function() {
         function buildPreview() {
             const container = document.getElementById('preview-sheet');
             if(!container) return;
+            if (window.isNotturnoStoccaggioModuleActive && window.isNotturnoStoccaggioModuleActive()) {
+                if (typeof window.persistNotturnoStoccaggioToRapportino === 'function') {
+                    window.persistNotturnoStoccaggioToRapportino();
+                }
+                if (typeof window.hydrateNotturnoStoccaggioInputsFromStore === 'function') {
+                    window.hydrateNotturnoStoccaggioInputsFromStore();
+                }
+            }
             const now = new Date();
             
             // DISABILITATO: Non ricaricare archivi cloud in buildPreview per non sovrascrivere i dati istantanei
@@ -10098,7 +10186,7 @@ if (hiddenModules.length === 0) {
             return;
         }
 
-        if (id === 'sec-stoccaggio-interno' && window.isNotturnoFiltraLayoutActive()) {
+        if (id === 'sec-stoccaggio-interno' && window.isNotturnoStoccaggioModuleActive()) {
             const stoccData = window.getNotturnoStoccaggioReportData();
             if (!stoccData.rows.length) return;
             html += '<div style="margin-bottom: 6px; width: 100%; break-inside: avoid; display: inline-block;"><div style="font-size: ' + (parseInt(previewFont, 10) - 1) + 'px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 5px; letter-spacing: 0.3px;">' + stoccData.title + '</div><div style="display: flex; flex-direction: column;">';
@@ -10767,9 +10855,9 @@ window.expandDigitalModule = function (cardEl) {
 };
 
 window.buildDigitalCardsHTML = function() {
-        if (window.isNotturnoFiltraLayoutActive && window.isNotturnoFiltraLayoutActive()) {
-            if (typeof window.renderStoccaggioInternoPanel === 'function') {
-                window.renderStoccaggioInternoPanel();
+        if (window.isNotturnoStoccaggioModuleActive && window.isNotturnoStoccaggioModuleActive()) {
+            if (typeof window.hydrateNotturnoStoccaggioInputsFromStore === 'function') {
+                window.hydrateNotturnoStoccaggioInputsFromStore();
             }
         }
         // LOGICA ORDINE FLESSIBILE CON BLOCCO AMBIENTE 1 (come nel Report Preview)
@@ -11081,7 +11169,7 @@ window.buildDigitalCardsHTML = function() {
                             contentHTML += '<div class="digital-row"><span class="digital-row-label">' + r.label + '</span><span class="digital-row-value digital-row-value--text" style="font-size:1.35em;font-weight:900">' + r.val + '</span></div>';
                         });
                         contentHTML += '</div>';
-                    } else if (moduleId === 'sec-stoccaggio-interno' && window.isNotturnoFiltraLayoutActive()) {
+                    } else if (moduleId === 'sec-stoccaggio-interno' && window.isNotturnoStoccaggioModuleActive()) {
                         const stoccData = window.getNotturnoStoccaggioReportData();
                         if (!stoccData.rows.length) return '';
                         contentHTML = '<div class="digital-rows">';
@@ -11205,6 +11293,7 @@ window.buildDigitalCardsHTML = function() {
                 }
                 
                 if (!contentHTML.trim()) return '';
+                if (/^<div class="digital-rows"><\/div>\s*$/i.test(contentHTML.trim())) return '';
                 
                 return `
                 <div class="digital-card" data-module-id="${moduleId}" tabindex="0" role="button" aria-label="Apri anteprima ingrandita ${cardTitle}" style="
@@ -11281,6 +11370,12 @@ window.openDigitalPreview = () => {
             document.body.appendChild(digitalContainer);
         }
         
+        if (typeof window.saveActiveRapportinoFromUI === 'function') {
+            window.saveActiveRapportinoFromUI();
+        }
+        if (typeof window.persistNotturnoStoccaggioToRapportino === 'function') {
+            window.persistNotturnoStoccaggioToRapportino();
+        }
         const cardsHTML = window.buildDigitalCardsHTML();
 
     // Inserisci contenuto nel container SEPARATO
@@ -11727,6 +11822,12 @@ window.schedulePublicDigitalSnapshotSync = function () {
 window.pushPublicDigitalSnapshotQuiet = async function () {
     if (!db || !user || !user.uid) return false;
     if (typeof window.buildDigitalCardsHTML !== "function") return false;
+    if (typeof window.saveActiveRapportinoFromUI === 'function') {
+        window.saveActiveRapportinoFromUI();
+    }
+    if (typeof window.persistNotturnoStoccaggioToRapportino === 'function') {
+        window.persistNotturnoStoccaggioToRapportino();
+    }
     let cardsHTML;
     try {
         cardsHTML = window.buildDigitalCardsHTML();
@@ -13250,12 +13351,151 @@ window.convertToHtml = async () => {
             background: inherit;
         }
         @media (max-width: 599px) {
+            /* Popup standard: centrati, scroll dall'alto, safe-area */
+            .modal-overlay.active:not(#settings-modal):not(#management-modal):not(#archive-list-modal) {
+                align-items: flex-start;
+                justify-content: center;
+                padding: max(18px, calc(env(safe-area-inset-top, 0px) + 12px)) 14px max(18px, env(safe-area-inset-bottom, 0px));
+                overflow-y: auto;
+                -webkit-overflow-scrolling: touch;
+            }
+            .modal-overlay.active:not(#settings-modal):not(#management-modal):not(#archive-list-modal) .modal-content-centered {
+                transform: translateY(0) scale(1) !important;
+                opacity: 1 !important;
+                margin: 0 auto;
+                width: min(94vw, 400px);
+                flex-shrink: 0;
+            }
+            #settings-modal {
+                align-items: flex-start !important;
+                justify-content: center !important;
+            }
+            #settings-modal.active {
+                padding: max(18px, calc(env(safe-area-inset-top, 0px) + 12px)) 12px max(16px, env(safe-area-inset-bottom, 0px));
+                overflow-y: auto;
+                -webkit-overflow-scrolling: touch;
+            }
+            #settings-modal .settings-sheet {
+                transform: translateY(16px);
+                width: min(94vw, 420px);
+                height: auto;
+                max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 36px);
+                min-height: 0;
+                border-radius: 24px;
+                margin: 0 auto;
+                flex: 0 0 auto;
+                box-shadow: 0 20px 44px rgba(0, 0, 0, 0.35);
+                border: 2px solid var(--border-main);
+                overflow-y: auto;
+                -webkit-overflow-scrolling: touch;
+            }
+            #settings-modal.active .settings-sheet {
+                transform: translateY(0);
+            }
             #settings-modal .settings-sheet-header {
-                padding-top: max(28px, calc(env(safe-area-inset-top, 0px) + 20px)) !important;
+                padding-top: 16px !important;
                 padding-bottom: 12px !important;
+                border-radius: 22px 22px 0 0;
             }
             #settings-modal .settings-sheet-header h2 {
                 line-height: 1.15;
+            }
+            #management-modal.active,
+            #archive-list-modal.active {
+                align-items: flex-start;
+                justify-content: center;
+                padding: max(18px, calc(env(safe-area-inset-top, 0px) + 12px)) 12px max(16px, env(safe-area-inset-bottom, 0px));
+                overflow-y: auto;
+                -webkit-overflow-scrolling: touch;
+            }
+            #management-modal .management-sheet,
+            #archive-list-modal .management-sheet {
+                transform: translateY(16px);
+                width: min(94vw, 420px);
+                height: auto;
+                max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 36px);
+                border-radius: 24px;
+                border-bottom: 3px solid var(--border-main);
+                margin: 0 auto;
+                flex-shrink: 0;
+                overflow-y: auto;
+                -webkit-overflow-scrolling: touch;
+            }
+            #management-modal.active .management-sheet,
+            #archive-list-modal.active .management-sheet {
+                transform: translateY(0);
+            }
+            #management-modal .management-sheet > div:first-child,
+            #archive-list-modal .management-sheet > div:first-child {
+                padding-top: 14px;
+            }
+            /* Report Preview */
+            #preview-screen {
+                padding-top: env(safe-area-inset-top, 0px);
+                padding-bottom: env(safe-area-inset-bottom, 0px);
+                box-sizing: border-box;
+            }
+            #preview-screen .preview-toolbar {
+                padding: 12px 14px 14px !important;
+                flex-direction: column;
+                align-items: stretch;
+                gap: 12px;
+            }
+            #preview-screen .preview-toolbar h2 {
+                text-align: center;
+                font-size: 14px;
+                margin: 0;
+            }
+            #preview-screen .preview-toolbar-actions {
+                display: flex;
+                justify-content: center;
+                flex-wrap: wrap;
+                gap: 8px;
+                width: 100%;
+            }
+            #preview-screen .preview-toolbar-actions button {
+                flex: 1 1 30%;
+                min-width: 88px;
+                touch-action: manipulation;
+            }
+            /* Digital Report HD */
+            #digital-preview-container {
+                padding-top: env(safe-area-inset-top, 0px);
+                padding-bottom: env(safe-area-inset-bottom, 0px);
+                box-sizing: border-box;
+            }
+            #digital-preview-container #digital-preview-header {
+                padding: 12px 14px 14px !important;
+                flex-wrap: wrap;
+                align-items: stretch;
+                gap: 10px;
+            }
+            #digital-preview-container #digital-preview-title {
+                width: 100%;
+                text-align: center;
+                font-size: 14px;
+            }
+            #digital-preview-container #digital-preview-actions {
+                width: 100%;
+                justify-content: center;
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+            #digital-preview-container #digital-preview-actions button {
+                flex: 1 1 calc(33% - 8px);
+                min-width: 72px;
+                touch-action: manipulation;
+                padding: 10px 8px !important;
+                font-size: 10px !important;
+            }
+            #digital-preview-container #digital-preview-scroll {
+                padding: 14px 14px 24px;
+            }
+            #digital-preview-container .digital-cards-wrap {
+                justify-items: center;
+            }
+            #digital-preview-container.digital-focus-active .digital-module-focus-bar {
+                margin-top: 4px;
             }
         }
         #btn-close-settings {
@@ -14464,9 +14704,9 @@ window.convertToHtml = async () => {
 
     <!-- Schermata Preview Report -->
     <div id="preview-screen" class="preview-screen">
-        <div class="p-4 bg-black flex justify-between items-center text-white shrink-0 shadow-lg">
+        <div class="preview-toolbar p-4 bg-black flex justify-between items-center text-white shrink-0 shadow-lg">
             <h2 class="font-black uppercase italic text-base">PREVIEW REPORT</h2>
-            <div class="flex gap-3">
+            <div class="preview-toolbar-actions flex gap-3">
                 <button onclick="window.closePreview()" class="bg-slate-800 px-4 py-2 rounded-lg font-black text-[10px] uppercase outline-none">Torna</button>
                 <button onclick="window.sharePreview()" class="bg-emerald-600 px-6 py-2 rounded-lg font-black text-[10px] uppercase shadow-lg outline-none"><span id="share-btn-text">INVIA REPORT</span></button>
                 <button onclick="window.openDigitalPreview()" class="bg-gradient-to-r from-blue-500 to-blue-600 px-4 py-2 rounded-lg font-black text-[10px] uppercase shadow-lg outline-none" style="background:linear-gradient(135deg,#0ea5e9,#2563eb);">DIGITAL</button>

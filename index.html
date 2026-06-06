@@ -521,7 +521,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.04-digital-stocc-sticky';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-stocc-row-digital';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -5969,29 +5969,78 @@ window.updateStoricoButton = async function() {
             return tank ? tank.label : '';
         };
 
-        window.formatStoccaggioInternoReportValue = function(inp) {
-            if (!inp || inp.value === '') return '';
-            let val = String(inp.value).trim() + ' mm';
-            const tonEl = document.getElementById(inp.id + '-ton');
-            if (tonEl && tonEl.classList.contains('has-value') && tonEl.textContent && tonEl.textContent !== '—') {
-                val += ' · ' + tonEl.textContent.trim();
+        window.getStoccaggioInternoFieldRaw = function(fieldId) {
+            if (!fieldId) return '';
+            const inp = document.getElementById(fieldId);
+            if (inp && inp.value != null && String(inp.value).trim() !== '') {
+                return String(inp.value).trim();
+            }
+            const backup = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
+            if (backup && backup[fieldId] != null && String(backup[fieldId]).trim() !== '') {
+                return String(backup[fieldId]).trim();
+            }
+            return '';
+        };
+
+        window.formatStoccaggioInternoReportValue = function(inp, tankDbKey) {
+            let raw = '';
+            let dbKey = tankDbKey || '';
+            if (typeof inp === 'string') {
+                raw = inp.trim();
+            } else if (inp) {
+                if (inp.value != null) raw = String(inp.value).trim();
+                if (!dbKey && inp.id) {
+                    const tank = (window.STOCCAGGIO_INTERNO_TANKS || []).find(function (t) {
+                        return t.fieldId === inp.id;
+                    });
+                    if (tank) dbKey = tank.tankDbKey;
+                }
+            }
+            if (!raw) return '';
+            let val = raw + ' mm';
+            let tons = null;
+            if (dbKey && typeof window.calculateTons === 'function') {
+                tons = window.calculateTons(dbKey, raw);
+            }
+            if (tons == null && inp && inp.id) {
+                const tonEl = document.getElementById(inp.id + '-ton');
+                if (tonEl && tonEl.classList.contains('has-value') && tonEl.textContent && tonEl.textContent !== '—') {
+                    val += ' <span class="nott-stocc-report-ton" style="font-size:0.82em;font-weight:700;opacity:0.88">(' + tonEl.textContent.trim() + ')</span>';
+                    return val;
+                }
+            }
+            if (tons != null) {
+                val += ' <span class="nott-stocc-report-ton" style="font-size:0.82em;font-weight:700;opacity:0.88">(' + tons + ' t)</span>';
             }
             return val;
         };
 
-        window.buildNotturnoStoccaggioReportRows = function() {
+        window.getNotturnoStoccaggioReportData = function() {
+            if (typeof window.renderStoccaggioInternoPanel === 'function') {
+                window.renderStoccaggioInternoPanel();
+            }
+            if (typeof window.refreshStoccaggioInternoTons === 'function') {
+                window.refreshStoccaggioInternoTons();
+            }
+            const titleEl = document.getElementById('lbl-sec-stoccaggio-interno-tendina');
             const rows = [];
-            const panel = document.getElementById('stoccaggio-panel-notturno');
-            if (!panel) return rows;
-            panel.querySelectorAll('.nott-stocc-row').forEach(function (row) {
-                const fid = row.getAttribute('data-field-for');
-                const inp = fid ? document.getElementById(fid) : row.querySelector('input.nott-stocc-inp');
-                if (!inp || inp.value === '') return;
-                const label = window.getStoccaggioInternoInputLabel(inp) || fid || '—';
-                const val = window.formatStoccaggioInternoReportValue(inp);
-                rows.push({ label: label, val: val, isStatus: false });
+            (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
+                const raw = window.getStoccaggioInternoFieldRaw(t.fieldId);
+                if (!raw) return;
+                rows.push({
+                    label: t.label,
+                    val: window.formatStoccaggioInternoReportValue(raw, t.tankDbKey),
+                    isStatus: false
+                });
             });
-            return rows;
+            return {
+                title: (titleEl && titleEl.textContent.trim()) || 'STOCCAGGIO INTERNO',
+                rows: rows
+            };
+        };
+
+        window.buildNotturnoStoccaggioReportRows = function() {
+            return window.getNotturnoStoccaggioReportData().rows;
         };
 
         window.getReportSentModuleIds = function() {
@@ -6038,6 +6087,13 @@ window.updateStoricoButton = async function() {
             const panel = document.getElementById('stoccaggio-panel-notturno');
             if (!panel || panel.dataset.built === 'v9-stocc-frecce') return;
             const tanks = window.STOCCAGGIO_INTERNO_TANKS || [];
+            const saved = {};
+            tanks.forEach(function (t) {
+                const raw = window.getStoccaggioInternoFieldRaw
+                    ? window.getStoccaggioInternoFieldRaw(t.fieldId)
+                    : '';
+                if (raw) saved[t.fieldId] = raw;
+            });
             const splitAt = Math.ceil(tanks.length / 2);
             panel.innerHTML =
                 '<div class="nott-stocc-layout">' +
@@ -6045,6 +6101,10 @@ window.updateStoricoButton = async function() {
                 window.buildStoccaggioInternoColumnHtml(tanks.slice(splitAt)) +
                 '</div>';
             panel.dataset.built = 'v9-stocc-frecce';
+            Object.keys(saved).forEach(function (fid) {
+                const el = document.getElementById(fid);
+                if (el) el.value = saved[fid];
+            });
             window.refreshStoccaggioInternoTons();
             if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
         };
@@ -10039,16 +10099,13 @@ if (hiddenModules.length === 0) {
         }
 
         if (id === 'sec-stoccaggio-interno' && window.isNotturnoFiltraLayoutActive()) {
-            const stoccRows = window.buildNotturnoStoccaggioReportRows();
-            if (!stoccRows.length) return;
-            let displayTitle = 'STOCCAGGIO INTERNO';
-            const tendinaLbl = document.getElementById('lbl-sec-stoccaggio-interno-tendina');
-            if (tendinaLbl && tendinaLbl.textContent) displayTitle = tendinaLbl.textContent.trim();
-            html += '<div style="margin-bottom: 6px; width: 100%; break-inside: avoid; display: inline-block;"><div style="font-size: ' + (parseInt(previewFont, 10) - 1) + 'px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 5px; letter-spacing: 0.3px;">' + displayTitle + '</div><div style="display: flex; flex-direction: column;">';
-            stoccRows.forEach(function (r) {
-                html += '<div style="display:flex; justify-content:space-between; border-bottom:0.1px solid #eee; padding:3px 0;">' +
-                    '<span style="font-weight:600; text-transform:uppercase;">' + r.label + '</span>' +
-                    '<span style="font-weight:850;">' + r.val + '</span></div>';
+            const stoccData = window.getNotturnoStoccaggioReportData();
+            if (!stoccData.rows.length) return;
+            html += '<div style="margin-bottom: 6px; width: 100%; break-inside: avoid; display: inline-block;"><div style="font-size: ' + (parseInt(previewFont, 10) - 1) + 'px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 5px; letter-spacing: 0.3px;">' + stoccData.title + '</div><div style="display: flex; flex-direction: column;">';
+            stoccData.rows.forEach(function (r) {
+                html += '<div style="display:flex; align-items:center; justify-content:space-between; gap:6px; border-bottom:0.1px solid #eee; padding:3px 0; white-space:nowrap;">' +
+                    '<span style="font-weight:600; text-transform:uppercase; flex-shrink:0;">' + r.label + '</span>' +
+                    '<span style="font-weight:850; text-align:right; white-space:nowrap;">' + r.val + '</span></div>';
             });
             html += '</div></div>';
             return;
@@ -10710,6 +10767,11 @@ window.expandDigitalModule = function (cardEl) {
 };
 
 window.buildDigitalCardsHTML = function() {
+        if (window.isNotturnoFiltraLayoutActive && window.isNotturnoFiltraLayoutActive()) {
+            if (typeof window.renderStoccaggioInternoPanel === 'function') {
+                window.renderStoccaggioInternoPanel();
+            }
+        }
         // LOGICA ORDINE FLESSIBILE CON BLOCCO AMBIENTE 1 (come nel Report Preview)
         const ambiente1Inviato = document.getElementById('sec-amb') !== null;
         const ambiente2Inviato = document.getElementById('sec-ambiente2') !== null;
@@ -11020,10 +11082,11 @@ window.buildDigitalCardsHTML = function() {
                         });
                         contentHTML += '</div>';
                     } else if (moduleId === 'sec-stoccaggio-interno' && window.isNotturnoFiltraLayoutActive()) {
-                        const stoccRows = window.buildNotturnoStoccaggioReportRows();
+                        const stoccData = window.getNotturnoStoccaggioReportData();
+                        if (!stoccData.rows.length) return '';
                         contentHTML = '<div class="digital-rows">';
-                        stoccRows.forEach(function (r) {
-                            contentHTML += '<div class="digital-row"><span class="digital-row-label">' + r.label + '</span><span class="digital-row-value">' + r.val + '</span></div>';
+                        stoccData.rows.forEach(function (r) {
+                            contentHTML += '<div class="digital-row" style="white-space:nowrap"><span class="digital-row-label" style="flex-shrink:0">' + r.label + '</span><span class="digital-row-value" style="white-space:nowrap">' + r.val + '</span></div>';
                         });
                         contentHTML += '</div>';
                     } else {
@@ -12963,8 +13026,13 @@ window.convertToHtml = async () => {
         #stoccaggio-panel-notturno .nott-stocc-sigla-txt {
             min-width: 0;
             flex: 0 1 auto;
-            word-break: break-word;
+            white-space: nowrap;
         }
+        #stoccaggio-panel-notturno .nott-stocc-sigla-cell,
+        #stoccaggio-panel-notturno .nott-stocc-row {
+            white-space: nowrap;
+        }
+        .nott-stocc-report-ton { font-size: 0.82em; font-weight: 700; opacity: 0.88; }
         #stoccaggio-panel-notturno .nott-stocc-level-arrow {
             flex-shrink: 0;
             font-size: 15px;

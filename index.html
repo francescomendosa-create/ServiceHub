@@ -521,7 +521,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.04-stocc-snap-android';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-stocc-digital-v2';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -5997,26 +5997,49 @@ window.updateStoricoButton = async function() {
             return '';
         };
 
+        window.saveNotturnoStoccLocalSnapshot = function(snap) {
+            try {
+                localStorage.setItem('servicehub_nott_stocc_snapshot', JSON.stringify(snap || {}));
+            } catch (_) {}
+        };
+
+        window.loadNotturnoStoccLocalSnapshot = function() {
+            try {
+                const raw = localStorage.getItem('servicehub_nott_stocc_snapshot');
+                if (!raw) return null;
+                const p = JSON.parse(raw);
+                if (p && typeof p === 'object' && Object.keys(p).length) return p;
+            } catch (_) {}
+            return null;
+        };
+
         window.getNotturnoStoccaggioSnapshot = function() {
+            const snap = {};
             const store = window.loadRapportiniStore && window.loadRapportiniStore();
             const d = store && store.items.notturno && store.items.notturno.data;
-            if (!d) return null;
-            if (d._nottStocc && typeof d._nottStocc === 'object') return d._nottStocc;
-            const snap = {};
-            let any = false;
-            (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
-                if (d[t.fieldId] != null && String(d[t.fieldId]).trim() !== '') {
-                    snap[t.fieldId] = String(d[t.fieldId]).trim();
-                    any = true;
-                }
-            });
-            return any ? snap : null;
+            if (d && d._nottStocc && typeof d._nottStocc === 'object') {
+                Object.assign(snap, d._nottStocc);
+            }
+            if (d) {
+                (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
+                    if (d[t.fieldId] != null && String(d[t.fieldId]).trim() !== '') {
+                        snap[t.fieldId] = String(d[t.fieldId]).trim();
+                    }
+                });
+            }
+            const local = window.loadNotturnoStoccLocalSnapshot();
+            if (local) Object.assign(snap, local);
+            return Object.keys(snap).length ? snap : null;
         };
 
         window.getStoccaggioInternoFieldRaw = function(fieldId) {
             if (!fieldId) return '';
             const fromPanel = window.readStoccaggioPanelInputValue(fieldId);
             if (fromPanel) return fromPanel;
+            const local = window.loadNotturnoStoccLocalSnapshot && window.loadNotturnoStoccLocalSnapshot();
+            if (local && local[fieldId] != null && String(local[fieldId]).trim() !== '') {
+                return String(local[fieldId]).trim();
+            }
             const snap = window.getNotturnoStoccaggioSnapshot();
             if (snap && snap[fieldId] != null && String(snap[fieldId]).trim() !== '') {
                 return String(snap[fieldId]).trim();
@@ -6034,7 +6057,6 @@ window.updateStoricoButton = async function() {
         };
 
         window.hydrateNotturnoStoccaggioInputsFromStore = function() {
-            if (!window.isNotturnoStoccaggioModuleActive()) return;
             if (typeof window.renderStoccaggioInternoPanel === 'function') {
                 window.renderStoccaggioInternoPanel();
             }
@@ -6056,21 +6078,25 @@ window.updateStoricoButton = async function() {
         };
 
         window.persistNotturnoStoccaggioToRapportino = function() {
-            if (!window.isNotturnoStoccaggioModuleActive()) return;
-            const store = window.loadRapportiniStore();
-            if (!store || !store.items.notturno) return;
-            if (!store.items.notturno.data) store.items.notturno.data = {};
+            if (typeof window.renderStoccaggioInternoPanel === 'function') {
+                window.renderStoccaggioInternoPanel();
+            }
             const existing = window.getNotturnoStoccaggioSnapshot() || {};
             const snap = {};
             (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
                 const raw = window.readStoccaggioPanelInputValue(t.fieldId) || existing[t.fieldId] || '';
                 const clean = raw != null ? String(raw).trim() : '';
-                if (clean) {
-                    snap[t.fieldId] = clean;
-                    store.items.notturno.data[t.fieldId] = clean;
-                } else {
-                    delete store.items.notturno.data[t.fieldId];
-                }
+                if (clean) snap[t.fieldId] = clean;
+            });
+            if (typeof window.saveNotturnoStoccLocalSnapshot === 'function') {
+                window.saveNotturnoStoccLocalSnapshot(snap);
+            }
+            const store = window.loadRapportiniStore && window.loadRapportiniStore();
+            if (!store || !store.items.notturno) return;
+            if (!store.items.notturno.data) store.items.notturno.data = {};
+            (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
+                if (snap[t.fieldId]) store.items.notturno.data[t.fieldId] = snap[t.fieldId];
+                else delete store.items.notturno.data[t.fieldId];
             });
             if (Object.keys(snap).length) {
                 store.items.notturno.data._nottStocc = snap;
@@ -6114,19 +6140,15 @@ window.updateStoricoButton = async function() {
         };
 
         window.getNotturnoStoccaggioReportData = function() {
-            if (!window.isNotturnoStoccaggioModuleActive()) {
-                return { title: 'STOCCAGGIO INTERNO', rows: [] };
-            }
             if (typeof window.persistNotturnoStoccaggioToRapportino === 'function') {
                 window.persistNotturnoStoccaggioToRapportino();
             }
-            if (typeof window.hydrateNotturnoStoccaggioInputsFromStore === 'function') {
-                window.hydrateNotturnoStoccaggioInputsFromStore();
-            }
             const titleEl = document.getElementById('lbl-sec-stoccaggio-interno-tendina');
+            const snap = window.getNotturnoStoccaggioSnapshot() || {};
             const rows = [];
             (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
-                const raw = window.getStoccaggioInternoFieldRaw(t.fieldId);
+                let raw = window.getStoccaggioInternoFieldRaw(t.fieldId);
+                if (!raw && snap[t.fieldId] != null) raw = String(snap[t.fieldId]).trim();
                 if (!raw) return;
                 rows.push({
                     label: t.label,
@@ -6140,6 +6162,23 @@ window.updateStoricoButton = async function() {
             };
         };
 
+        window.buildStoccaggioDigitalCardHTML = function(index) {
+            const stoccData = window.getNotturnoStoccaggioReportData();
+            if (!stoccData.rows.length) return '';
+            const cardTitle = stoccData.title || 'STOCCAGGIO INTERNO';
+            let contentHTML = '<div class="digital-rows">';
+            stoccData.rows.forEach(function (r) {
+                contentHTML += '<div class="digital-row" style="white-space:nowrap"><span class="digital-row-label" style="flex-shrink:0">' + r.label + '</span><span class="digital-row-value" style="white-space:nowrap">' + r.val + '</span></div>';
+            });
+            contentHTML += '</div>';
+            const idx = index != null ? index : 0;
+            return '<div class="digital-card" data-module-id="sec-stoccaggio-interno" tabindex="0" role="button" aria-label="Apri anteprima ingrandita ' + cardTitle + '" style="background:transparent;border:none;border-radius:0;padding:0;box-shadow:none;min-height:0;height:auto;overflow:visible;position:relative;transform:translateY(0);transition:transform 0.3s ease,filter 0.3s ease;animation:slideInUp 0.6s ease-out ' + (idx * 0.1) + 's both;hyphens:none;cursor:pointer;outline:none;">' +
+                '<div class="digital-card-surface" style="background:linear-gradient(155deg,#1e293b 0%,#273549 45%,#334155 100%);border:1px solid rgba(96,165,250,0.28);border-radius:16px;padding:14px 16px;backdrop-filter:blur(12px);box-shadow:0 10px 32px rgba(0,0,0,0.28);height:auto;min-height:0;overflow:auto;">' +
+                '<div class="digital-card-zoom-cols"><div class="digital-card-title-col">' +
+                '<div class="digital-card-title" style="font-size:17px;font-weight:800;color:#60a5fa;margin-bottom:14px;text-transform:uppercase;letter-spacing:0.08em;border-bottom:1px solid rgba(96,165,250,0.35);padding-bottom:8px;white-space:nowrap;hyphens:none;word-break:keep-all;overflow:visible;">' + cardTitle + '</div>' +
+                '</div><div class="digital-card-body-col" style="font-size:14px;line-height:1.45;color:#e2e8f0;font-weight:500;">' + contentHTML + '</div></div></div></div>';
+        };
+
         window.buildNotturnoStoccaggioReportRows = function() {
             return window.getNotturnoStoccaggioReportData().rows;
         };
@@ -6148,9 +6187,6 @@ window.updateStoricoButton = async function() {
             const sent = window.hiddenModules || [];
             return sent.filter(function (id) {
                 if (['sec-amb', 'sec-ambiente2'].includes(id)) return false;
-                if (id === 'sec-stoccaggio-interno' && !window.isNotturnoStoccaggioModuleActive()) {
-                    return false;
-                }
                 if (id === 'sec-chemicals' && !window.isNotturnoFiltraLayoutActive()) {
                     return false;
                 }
@@ -6948,7 +6984,16 @@ window.updateStoricoButton = async function() {
                 if (passEl) data._nottChemPass = parseInt(passEl.textContent, 10) || 0;
                 if (hpEl) data._nottChemHp = parseInt(hpEl.textContent, 10) || 0;
             }
-            if (window.isNotturnoStoccaggioModuleActive && window.isNotturnoStoccaggioModuleActive()) {
+            if (window.isNotturnoFiltraLayoutActive && window.isNotturnoFiltraLayoutActive()) {
+                const panel = document.getElementById('stoccaggio-panel-notturno');
+                if (panel && window.STOCCAGGIO_INTERNO_TANKS) {
+                    window.STOCCAGGIO_INTERNO_TANKS.forEach(function (t) {
+                        const raw = window.readStoccaggioPanelInputValue
+                            ? window.readStoccaggioPanelInputValue(t.fieldId)
+                            : '';
+                        if (raw) data[t.fieldId] = raw;
+                    });
+                }
                 if (typeof window.persistNotturnoStoccaggioToRapportino === 'function') {
                     window.persistNotturnoStoccaggioToRapportino();
                 }
@@ -9971,6 +10016,14 @@ if (hiddenModules.length === 0) {
     }
     
     orderedModules.push(...otherModules);
+    if (hiddenModules.includes('sec-stoccaggio-interno') && orderedModules.indexOf('sec-stoccaggio-interno') < 0) {
+        orderedModules.push('sec-stoccaggio-interno');
+    }
+    const stoccSnapPreview = window.getNotturnoStoccaggioSnapshot && window.getNotturnoStoccaggioSnapshot();
+    if (stoccSnapPreview && Object.keys(stoccSnapPreview).length &&
+        orderedModules.indexOf('sec-stoccaggio-interno') < 0) {
+        orderedModules.push('sec-stoccaggio-interno');
+    }
 
     orderedModules.forEach(id => {
         // GESTIONE_SERBATOI_SPECIAL è un modulo virtuale, non ha un elemento DOM
@@ -10237,7 +10290,7 @@ if (hiddenModules.length === 0) {
             return;
         }
 
-        if (id === 'sec-stoccaggio-interno' && window.isNotturnoStoccaggioModuleActive()) {
+        if (id === 'sec-stoccaggio-interno') {
             const stoccData = window.getNotturnoStoccaggioReportData();
             if (!stoccData.rows.length) return;
             html += '<div style="margin-bottom: 6px; width: 100%; break-inside: avoid; display: inline-block;"><div style="font-size: ' + (parseInt(previewFont, 10) - 1) + 'px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 5px; letter-spacing: 0.3px;">' + stoccData.title + '</div><div style="display: flex; flex-direction: column;">';
@@ -10906,7 +10959,10 @@ window.expandDigitalModule = function (cardEl) {
 };
 
 window.buildDigitalCardsHTML = function() {
-        if (window.isNotturnoStoccaggioModuleActive && window.isNotturnoStoccaggioModuleActive()) {
+        if (window.isNotturnoFiltraLayoutActive && window.isNotturnoFiltraLayoutActive()) {
+            if (typeof window.renderStoccaggioInternoPanel === 'function') {
+                window.renderStoccaggioInternoPanel();
+            }
             if (typeof window.hydrateNotturnoStoccaggioInputsFromStore === 'function') {
                 window.hydrateNotturnoStoccaggioInputsFromStore();
             }
@@ -10963,6 +11019,16 @@ window.buildDigitalCardsHTML = function() {
         }
         
         orderedModules.push(...otherModules);
+
+        const hmStocc = window.hiddenModules || hiddenModules || [];
+        if (hmStocc.includes('sec-stoccaggio-interno') && orderedModules.indexOf('sec-stoccaggio-interno') < 0) {
+            orderedModules.push('sec-stoccaggio-interno');
+        }
+        const stoccSnapForDigital = window.getNotturnoStoccaggioSnapshot && window.getNotturnoStoccaggioSnapshot();
+        if (stoccSnapForDigital && Object.keys(stoccSnapForDigital).length &&
+            orderedModules.indexOf('sec-stoccaggio-interno') < 0) {
+            orderedModules.push('sec-stoccaggio-interno');
+        }
         
         // Mappa i nomi delle schede correttamente
         const getCardTitle = (moduleId) => {
@@ -10991,6 +11057,11 @@ window.buildDigitalCardsHTML = function() {
         // Genera le card digitali con gli stessi dati del Report Preview
         const cardsHTML = orderedModules.length > 0 
             ? orderedModules.map((moduleId, index) => {
+                if (moduleId === 'sec-stoccaggio-interno') {
+                    return window.buildStoccaggioDigitalCardHTML
+                        ? window.buildStoccaggioDigitalCardHTML(index)
+                        : '';
+                }
                 let cardTitle = getCardTitle(moduleId);
                 if (moduleId === 'sec-filtra' && window.isNotturnoFiltraLayoutActive()) {
                     cardTitle = window.getNotturnoFiltraReportData().title;
@@ -11927,11 +11998,16 @@ window.pushPublicDigitalSnapshotQuiet = async function () {
     } catch (e) {
         console.warn("[ServiceHub] pushPublicDigitalSnapshotQuiet read publicDigital:", e);
     }
+    const stoccPayload = window.getNotturnoStoccaggioReportData
+        ? window.getNotturnoStoccaggioReportData()
+        : { title: 'STOCCAGGIO INTERNO', rows: [] };
     const payload = {
         teamAppId: appId,
         updatedAt: new Date().toISOString(),
         shiftLabel,
-        cardsHTML
+        cardsHTML,
+        stoccaggioTitle: stoccPayload.title || 'STOCCAGGIO INTERNO',
+        stoccaggioRows: stoccPayload.rows || []
     };
     // Regole Firestore: su update ownerUid non deve cambiare. Non reinviarlo se il doc esiste già
     // (altrimenti ogni tablet con utente diverso riceve permission-denied e il link remoto non si pubblica).

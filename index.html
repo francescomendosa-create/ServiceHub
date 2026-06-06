@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.04-ambiente2-labels-fix';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-press-perf-fix';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -1011,12 +1011,42 @@ window.colorPreviewNumber = function(tankName, value) {
         window.originalInterfaceDate = '';
 
         const MOVE_THRESHOLD = 15; 
-        const LONG_PRESS_DURATION = 450; 
-        const VISUAL_DELAY = 60; 
+        const LONG_PRESS_DURATION = 500; 
+        const VISUAL_DELAY = 40; 
         
         // ✅ DELAY OTTIMIZZATO PER iOS
         const isIOSDevice = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-        const IOS_VISUAL_DELAY = isIOSDevice ? 40 : 60; // Più veloce su iOS 
+        const IOS_VISUAL_DELAY = isIOSDevice ? 30 : 40;
+        const IOS_LONG_PRESS_DURATION = 480;
+
+        window.__pendingHeavyUiWork = null;
+        window.__isUserPressingLabel = function () {
+            return !!(pressTimer || globalInteractionLock || isLongPress);
+        };
+        window.__deferHeavyUiWork = function (fn) {
+            if (!fn) return false;
+            if (!window.__isUserPressingLabel()) {
+                fn();
+                return false;
+            }
+            if (!window.__pendingHeavyUiWork) window.__pendingHeavyUiWork = [];
+            window.__pendingHeavyUiWork.push(fn);
+            return true;
+        };
+        window.__flushPendingHeavyUiWork = function () {
+            const q = window.__pendingHeavyUiWork;
+            if (!q || !q.length) return;
+            window.__pendingHeavyUiWork = null;
+            requestAnimationFrame(function () {
+                q.forEach(function (fn) {
+                    try { fn(); } catch (_) {}
+                });
+            });
+        };
+        window.__setLongPressInputLock = function (on) {
+            if (on) document.body.classList.add('sh-long-press-lock');
+            else document.body.classList.remove('sh-long-press-lock');
+        };
 
         const GROUPS = [
             ['sec-chpp', 'sec-well', 'sec-amb', 'sec-ambiente2'], 
@@ -1259,6 +1289,10 @@ window.colorPreviewNumber = function(tankName, value) {
         const __applyRemotePlantPayload = function (d, opts) {
             opts = opts || {};
             if (!d || typeof d !== 'object') return;
+            if (!opts.force && typeof window.__deferHeavyUiWork === 'function' &&
+                window.__deferHeavyUiWork(function () { __applyRemotePlantPayload(d, Object.assign({}, opts, { force: true })); })) {
+                return;
+            }
             d = window.__stripRapportinoKeysFromPlantPayload(d);
             const rev = __plantPayloadRevision(d);
             if (!opts.force && rev > 0 && rev < (window.__appliedPlantSyncRevision || 0)) return;
@@ -5941,6 +5975,16 @@ window.updateStoricoButton = async function() {
         window.resetAmbiente2DomLabels = function() {
             const sec = document.getElementById('sec-ambiente2');
             if (!sec) return;
+            const needsFix = Object.keys(window.AMBIENTE2_DEFAULT_FIELD_LABELS).some(function(fieldId) {
+                const el = document.getElementById(fieldId);
+                if (!el) return false;
+                const amb = el.closest('.amb-row');
+                const lab = amb && amb.querySelector('.amb-label');
+                if (!lab) return false;
+                const text = (lab.innerText || '').replace(/\s+/g, ' ').trim();
+                return window.isTechnicalFieldLabel(text, fieldId);
+            });
+            if (!needsFix) return;
             Object.keys(window.AMBIENTE2_DEFAULT_FIELD_LABELS).forEach(function(fieldId) {
                 const el = document.getElementById(fieldId);
                 if (!el) return;
@@ -6449,15 +6493,22 @@ window.updateStoricoButton = async function() {
             window.__rapportiniStore = merged;
             window.__rapportiniApplyingFromCloud = false;
             if (remoteWon || opts.force || activeChanged || dataChanged) {
-                if (typeof window.applyDeviceHiddenModulesForActiveRapportino === 'function') {
-                    window.applyDeviceHiddenModulesForActiveRapportino();
-                }
-                if (merged.items[merged.activeId] && typeof window.applyRapportinoItem === 'function') {
-                    if (window.__cloudPlantHydrated) {
-                        window.applyRapportinoItem(merged.items[merged.activeId]);
-                    } else {
-                        window.__pendingActiveRapportinoItem = merged.items[merged.activeId];
+                const applyActive = function () {
+                    if (typeof window.applyDeviceHiddenModulesForActiveRapportino === 'function') {
+                        window.applyDeviceHiddenModulesForActiveRapportino();
                     }
+                    if (merged.items[merged.activeId] && typeof window.applyRapportinoItem === 'function') {
+                        if (window.__cloudPlantHydrated) {
+                            window.applyRapportinoItem(merged.items[merged.activeId]);
+                        } else {
+                            window.__pendingActiveRapportinoItem = merged.items[merged.activeId];
+                        }
+                    }
+                };
+                if (typeof window.__deferHeavyUiWork === 'function' && window.__deferHeavyUiWork(applyActive)) {
+                    /* applica dopo long-press */
+                } else {
+                    applyActive();
                 }
                 if (typeof window.updateRapportinoSettingsButton === 'function') {
                     window.updateRapportinoSettingsButton();
@@ -7255,11 +7306,11 @@ window.updateStoricoButton = async function() {
                 pressTimer = null;
                 if (!isLongPress) window.toggleNotturnoFiltraTendina(e);
             }
-            document.querySelectorAll('input').forEach(function(input) {
-                input.style.pointerEvents = 'auto';
-                input.readOnly = false;
-            });
-            setTimeout(function() { globalInteractionLock = false; }, 50);
+            window.__setLongPressInputLock(false);
+            setTimeout(function () {
+                globalInteractionLock = false;
+                if (typeof window.__flushPendingHeavyUiWork === 'function') window.__flushPendingHeavyUiWork();
+            }, 50);
         };
 
         window.toggleNotturnoStoccaggioTendina = function(e) {
@@ -7283,11 +7334,11 @@ window.updateStoricoButton = async function() {
                 pressTimer = null;
                 if (!isLongPress) window.toggleNotturnoStoccaggioTendina(e);
             }
-            document.querySelectorAll('input').forEach(function(input) {
-                input.style.pointerEvents = 'auto';
-                input.readOnly = false;
-            });
-            setTimeout(function() { globalInteractionLock = false; }, 50);
+            window.__setLongPressInputLock(false);
+            setTimeout(function () {
+                globalInteractionLock = false;
+                if (typeof window.__flushPendingHeavyUiWork === 'function') window.__flushPendingHeavyUiWork();
+            }, 50);
         };
 
         window.getNotturnoFiltraReportData = function() {
@@ -7504,11 +7555,11 @@ window.updateStoricoButton = async function() {
                 pressTimer = null;
                 if (!isLongPress) window.toggleNotturnoChemicalsTendina(e);
             }
-            document.querySelectorAll('input').forEach(function(input) {
-                input.style.pointerEvents = 'auto';
-                input.readOnly = false;
-            });
-            setTimeout(function() { globalInteractionLock = false; }, 50);
+            window.__setLongPressInputLock(false);
+            setTimeout(function () {
+                globalInteractionLock = false;
+                if (typeof window.__flushPendingHeavyUiWork === 'function') window.__flushPendingHeavyUiWork();
+            }, 50);
         };
 
         window.restoreNotturnoChemicalsAfterApplyData = function(data) {
@@ -7998,6 +8049,14 @@ window.updateStoricoButton = async function() {
 
         window.hideModule = (id, userInitiated) => {
             if (!hiddenModules.includes(id)) {
+                const sec = document.getElementById(id);
+                const lbl = document.getElementById('lbl-' + id);
+                if (lbl) lbl.classList.remove('pressing');
+                if (sec) {
+                    sec.classList.remove('col-collapsed');
+                    sec.classList.add('col-expanded');
+                }
+                document.body.classList.add('sh-instant-layout');
                 hiddenModules.push(id);
                 window.hiddenModules = hiddenModules;
                 if (window.isNotturnoFiltraLayoutActive() && id === 'sec-filtra') {
@@ -8017,9 +8076,9 @@ window.updateStoricoButton = async function() {
                 updateModulesVisibility();
                 window.persistHiddenModulesForActiveRapportino();
                 globalInteractionLock = false;
-                document.querySelectorAll('input').forEach(input => {
-                    input.style.pointerEvents = 'auto';
-                    input.readOnly = false;
+                window.__setLongPressInputLock(false);
+                requestAnimationFrame(function () {
+                    document.body.classList.remove('sh-instant-layout');
                 });
                 if (userInitiated && window.isNotturnoFiltraLayoutActive() &&
                     (id === 'sec-filtra' || id === 'sec-stoccaggio-interno' || id === 'sec-chemicals')) {
@@ -8083,9 +8142,6 @@ window.updateStoricoButton = async function() {
         };
 
         window.startPress = (e, id) => {
-            // ✅ BLOCCO SOLO NAVIGAZIONE SCHEDE SU ANDROID TABLET
-            const isTablet = window.isServiceHubTablet && window.isServiceHubTablet();
-            
             // ✅ BLOCCO MOUSE EVENTS SU IOS E ANDROID PER EVITARE CONFLITTI
             if (e.type === 'mousedown' && (/iPhone|iPad|Android/i.test(navigator.userAgent))) {
                 e.preventDefault();
@@ -8093,22 +8149,24 @@ window.updateStoricoButton = async function() {
                 return;
             }
             
-            // ✅ BLOCCO COMPLETO INPUT DURANTE LONG PRESS
-            forceBlur(); isLongPress = false; 
-            // DISABILITA TUTTI GL INPUT IMMEDIATAMENTE
-            document.querySelectorAll('input').forEach(input => {
-                input.style.pointerEvents = 'none';
-                input.readOnly = true;
-            });const label = e.currentTarget;
+            const touch = e.touches ? e.touches[0] : e;
+            startX = touch.clientX;
+            startY = touch.clientY;
+            forceBlur();
+            isLongPress = false;
+            window.__setLongPressInputLock(true);
+            const label = e.currentTarget;
             if (pressTimer) clearTimeout(pressTimer);
             if (visualFeedbackTimer) clearTimeout(visualFeedbackTimer);
-            visualFeedbackTimer = setTimeout(() => label.classList.add('pressing'), isIOSDevice ? IOS_VISUAL_DELAY : VISUAL_DELAY);
-            pressTimer = setTimeout(() => {
-                isLongPress = true; 
-                globalInteractionLock = true; 
+            visualFeedbackTimer = setTimeout(function () {
+                label.classList.add('pressing');
+            }, isIOSDevice ? IOS_VISUAL_DELAY : VISUAL_DELAY);
+            pressTimer = setTimeout(function () {
+                isLongPress = true;
+                globalInteractionLock = true;
                 label.classList.remove('pressing');
                 window.hideModule(id, true);
-            }, isIOSDevice ? 380 : LONG_PRESS_DURATION); // ✅ iOS: 380ms invece di 450ms
+            }, isIOSDevice ? IOS_LONG_PRESS_DURATION : LONG_PRESS_DURATION);
         };
 
         window.movePress = (e) => {
@@ -8123,18 +8181,18 @@ window.updateStoricoButton = async function() {
         window.endPress = (e, id) => {
             e.currentTarget.classList.remove('pressing');
             if (visualFeedbackTimer) { clearTimeout(visualFeedbackTimer); visualFeedbackTimer = null; }
-            if (pressTimer) { 
-                clearTimeout(pressTimer); 
-                pressTimer = null; 
-                if (!isLongPress) window.handleLabelClick(id); 
+            if (pressTimer) {
+                clearTimeout(pressTimer);
+                pressTimer = null;
+                if (!isLongPress) window.handleLabelClick(id);
             }
-            // RIABILITA TUTTI GL INPUT ALLA FINE DEL LONG PRESS
-            document.querySelectorAll('input').forEach(input => {
-                input.style.pointerEvents = 'auto';
-                input.readOnly = false;
-            });
-            // Ridotto il tempo di blocco per non interferire con i pulsanti marcia/arresto
-            setTimeout(() => { globalInteractionLock = false; }, 50);
+            window.__setLongPressInputLock(false);
+            setTimeout(function () {
+                globalInteractionLock = false;
+                if (typeof window.__flushPendingHeavyUiWork === 'function') {
+                    window.__flushPendingHeavyUiWork();
+                }
+            }, 50);
         };
 
         window.handleLabelClick = (id, force = false) => {
@@ -12452,6 +12510,9 @@ window.convertToHtml = async () => {
         .main-container { width: 100%; max-width: 1400px; margin: 0 auto; border: 2px solid var(--border-main); background-color: transparent; border-radius: 4px; overflow: hidden; }
         .v-label-container { min-width: 48px; width: 48px; display: flex; align-items: center; justify-content: center; height: 100%; border-right: 1px solid var(--border-main); position: relative; z-index: 50; box-shadow: var(--shadow-3d); border-top-right-radius: 12px; border-bottom-right-radius: 12px; }
         .v-label-container.pressing { transform: scale(0.96) translateX(2px); filter: brightness(1.3); }
+        body.sh-long-press-lock .main-container input,
+        body.sh-long-press-lock .main-container textarea { pointer-events: none !important; }
+        body.sh-instant-layout .col-section { transition: none !important; }
         .v-label-text { transform: rotate(-90deg); white-space: nowrap; font-weight: 800; font-size: 11px; color: white; text-transform: uppercase; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
         .row-block { display: flex; width: 100%; border-bottom: 2px solid var(--border-main); align-items: stretch; overflow: hidden; }
         .col-expanded { flex: 1 1 0% !important; min-width: 0 !important; }

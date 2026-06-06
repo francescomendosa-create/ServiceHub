@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.04-all-sections-pc-tablet';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-hidden-modules-local';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -565,6 +565,76 @@ window.colorPreviewNumber = function(tankName, value) {
         let hiddenModules = [];
         let isDarkMode = false;
         window.DEVICE_DARK_MODE_KEY = 'servicehub_device_dark_mode';
+        /** Gestione moduli (invio a report): solo questo dispositivo, mai Firestore. */
+        window.DEVICE_HIDDEN_MODULES_KEY = 'servicehub_device_hidden_modules_v1';
+
+        window.loadDeviceHiddenModulesMap = function () {
+            try {
+                const raw = localStorage.getItem(window.DEVICE_HIDDEN_MODULES_KEY);
+                if (!raw) return {};
+                const p = JSON.parse(raw);
+                return p && typeof p === 'object' ? p : {};
+            } catch (_) {
+                return {};
+            }
+        };
+
+        window.saveDeviceHiddenModulesMap = function (map) {
+            try {
+                localStorage.setItem(window.DEVICE_HIDDEN_MODULES_KEY, JSON.stringify(map || {}));
+            } catch (_) {}
+        };
+
+        window.getDeviceHiddenModulesForRapportino = function (rapportinoId) {
+            const map = window.loadDeviceHiddenModulesMap();
+            const id = rapportinoId || 'generale';
+            return Array.isArray(map[id]) ? map[id].slice() : [];
+        };
+
+        window.setDeviceHiddenModulesForRapportino = function (rapportinoId, modules) {
+            const map = window.loadDeviceHiddenModulesMap();
+            map[rapportinoId || 'generale'] = Array.isArray(modules) ? modules.slice() : [];
+            window.saveDeviceHiddenModulesMap(map);
+        };
+
+        window.applyDeviceHiddenModulesForActiveRapportino = function () {
+            if (typeof window.ensureRapportiniInitialized === 'function') {
+                window.ensureRapportiniInitialized();
+            }
+            const store = window.loadRapportiniStore && window.loadRapportiniStore();
+            const rid = store && store.activeId ? store.activeId : 'generale';
+            hiddenModules = window.getDeviceHiddenModulesForRapportino(rid);
+            window.hiddenModules = hiddenModules;
+        };
+
+        window.migrateHiddenModulesToDeviceLocalOnce = function () {
+            const map = window.loadDeviceHiddenModulesMap();
+            const store = window.loadRapportiniStore && window.loadRapportiniStore();
+            if (!store || !store.items) return;
+            let mapChanged = false;
+            Object.keys(store.items).forEach(function (rid) {
+                const item = store.items[rid];
+                if (!item) return;
+                if ((!map[rid] || !map[rid].length) && Array.isArray(item.hiddenModules) && item.hiddenModules.length) {
+                    map[rid] = item.hiddenModules.slice();
+                    mapChanged = true;
+                }
+                if (item.hiddenModules) {
+                    delete item.hiddenModules;
+                }
+            });
+            if (mapChanged) window.saveDeviceHiddenModulesMap(map);
+        };
+
+        window.stripHiddenModulesFromRapportinoStore = function (store) {
+            if (!store || !store.items) return store;
+            Object.keys(store.items).forEach(function (rid) {
+                if (store.items[rid] && store.items[rid].hiddenModules) {
+                    delete store.items[rid].hiddenModules;
+                }
+            });
+            return store;
+        };
 
         window.loadLocalDarkMode = function () {
             try {
@@ -1083,6 +1153,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 Object.keys(store.items).forEach(function (rid) {
                     const item = JSON.parse(JSON.stringify(store.items[rid]));
                     item.data = window.extractRapportinoOnlyData(item.data || {});
+                    delete item.hiddenModules;
                     slim.items[rid] = item;
                 });
                 localStorage.setItem('stabileRapportiniBackup', JSON.stringify(slim));
@@ -5919,32 +5990,19 @@ window.updateStoricoButton = async function() {
             return !!(store && store.activeId === 'notturno');
         };
 
-        /** Moduli nascosti: per rapportino (localStorage) ha priorità su Firebase settings (evita race al ripristino). */
-        window.applyHiddenModulesFromActiveRapportino = function(fallbackFromSettings) {
-            if (typeof window.ensureRapportiniInitialized === 'function') {
-                window.ensureRapportiniInitialized();
-            }
-            const store = window.loadRapportiniStore && window.loadRapportiniStore();
-            if (store && store.activeId && store.items[store.activeId] &&
-                Array.isArray(store.items[store.activeId].hiddenModules)) {
-                hiddenModules = store.items[store.activeId].hiddenModules.slice();
-            } else {
-                hiddenModules = Array.isArray(fallbackFromSettings) ? fallbackFromSettings.slice() : [];
-            }
-            window.hiddenModules = hiddenModules;
+        /** Moduli in gestione: solo locale per dispositivo (non sync cloud). */
+        window.applyHiddenModulesFromActiveRapportino = function () {
+            window.applyDeviceHiddenModulesForActiveRapportino();
         };
 
-        window.persistHiddenModulesForActiveRapportino = function() {
+        window.persistHiddenModulesForActiveRapportino = function () {
             window.hiddenModules = hiddenModules;
             if (typeof window.ensureRapportiniInitialized === 'function') {
                 window.ensureRapportiniInitialized();
             }
             const store = window.loadRapportiniStore && window.loadRapportiniStore();
-            if (store && store.activeId && store.items[store.activeId]) {
-                store.items[store.activeId].hiddenModules = hiddenModules.slice();
-                store.items[store.activeId].updatedAt = new Date().toISOString();
-                window.saveRapportiniStore(store);
-            }
+            const rid = store && store.activeId ? store.activeId : 'generale';
+            window.setDeviceHiddenModulesForRapportino(rid, hiddenModules);
         };
 
         window.syncNotturnoModulesAfterVisibility = function() {
@@ -6237,6 +6295,7 @@ window.updateStoricoButton = async function() {
                 Object.keys(mergedStore.items || {}).forEach(function (rid) {
                     const item = JSON.parse(JSON.stringify(store.items[rid]));
                     item.data = window.extractRapportinoOnlyData(item.data || {});
+                    delete item.hiddenModules;
                     slimItems[rid] = item;
                 });
                 const payload = {
@@ -6272,12 +6331,15 @@ window.updateStoricoButton = async function() {
                 ? merged.items[merged.activeId].updatedAt : null;
             const activeChanged = merged.activeId !== prevActive;
             const dataChanged = newUpdated && newUpdated !== prevUpdated;
+            if (typeof window.stripHiddenModulesFromRapportinoStore === 'function') {
+                window.stripHiddenModulesFromRapportinoStore(merged);
+            }
             window.__rapportiniApplyingFromCloud = true;
             window.__rapportiniStore = merged;
             window.__rapportiniApplyingFromCloud = false;
             if (remoteWon || opts.force || activeChanged || dataChanged) {
-                if (typeof window.applyHiddenModulesFromActiveRapportino === 'function') {
-                    window.applyHiddenModulesFromActiveRapportino();
+                if (typeof window.applyDeviceHiddenModulesForActiveRapportino === 'function') {
+                    window.applyDeviceHiddenModulesForActiveRapportino();
                 }
                 if (merged.items[merged.activeId] && typeof window.applyRapportinoItem === 'function') {
                     if (window.__cloudPlantHydrated) {
@@ -6400,7 +6462,6 @@ window.updateStoricoButton = async function() {
             }
             return {
                 data: window.extractRapportinoOnlyData(data),
-                hiddenModules: (window.hiddenModules || hiddenModules || []).slice(),
                 sectionsLayout: window.captureSectionsLayout(),
                 manualShift: manualShift || null,
                 updatedAt: new Date().toISOString()
@@ -6413,7 +6474,6 @@ window.updateStoricoButton = async function() {
                 : {};
             return {
                 data: data,
-                hiddenModules: Array.isArray(hiddenFrom) ? hiddenFrom.slice() : [],
                 sectionsLayout: layoutFrom ? JSON.parse(JSON.stringify(layoutFrom)) : window.captureSectionsLayout(),
                 manualShift: null,
                 updatedAt: new Date().toISOString()
@@ -6493,12 +6553,21 @@ window.updateStoricoButton = async function() {
                 store.activeId = window.__sessionActiveIdHint;
             }
             if (!store.activeId || !store.items[store.activeId]) store.activeId = 'generale';
+            if (typeof window.migrateHiddenModulesToDeviceLocalOnce === 'function') {
+                window.migrateHiddenModulesToDeviceLocalOnce();
+            }
+            if (typeof window.stripHiddenModulesFromRapportinoStore === 'function') {
+                window.stripHiddenModulesFromRapportinoStore(store);
+            }
             window.__rapportiniStore = store;
             if (typeof window.persistSessionPrefs === 'function') window.persistSessionPrefs();
             window.updateRapportinoSettingsButton();
             const activeItem = store.items[store.activeId];
             if (activeItem && activeItem.schedeConfig) {
                 window.applyRapportinoSchedeConfig(activeItem.schedeConfig);
+            }
+            if (typeof window.applyDeviceHiddenModulesForActiveRapportino === 'function') {
+                window.applyDeviceHiddenModulesForActiveRapportino();
             }
             if (activeItem && typeof window.applyRapportinoItem === 'function' && opts.applyActiveItem) {
                 window.applyRapportinoItem(activeItem);
@@ -6524,7 +6593,8 @@ window.updateStoricoButton = async function() {
         window.applyRapportinoItem = function(item) {
             if (!item) return;
             if (item.manualShift !== undefined) manualShift = item.manualShift;
-            hiddenModules = (item.hiddenModules || []).slice();
+            const rid = item.id || (window.loadRapportiniStore && window.loadRapportiniStore() && window.loadRapportiniStore().activeId) || 'generale';
+            hiddenModules = window.getDeviceHiddenModulesForRapportino(rid);
             window.hiddenModules = hiddenModules;
             window.applySectionsLayout(item.sectionsLayout);
             updateModulesVisibility();
@@ -6622,7 +6692,9 @@ window.updateStoricoButton = async function() {
                 const isActive = store.activeId === rid;
                 const isPending = pending === rid;
                 const schedeN = window.countRapportinoEnabledSchede(item.schedeConfig);
-                const modCount = (item.hiddenModules || []).length;
+                const modCount = window.getDeviceHiddenModulesForRapportino
+                    ? window.getDeviceHiddenModulesForRapportino(rid).length
+                    : 0;
                 const modHint = schedeN
                     ? (' · ' + schedeN + ' schede')
                     : ' · nessuna scheda';
@@ -7833,9 +7905,6 @@ window.updateStoricoButton = async function() {
                 }
                 updateModulesVisibility();
                 window.persistHiddenModulesForActiveRapportino();
-                if (typeof window.saveActiveRapportinoFromUI === 'function') {
-                    window.saveActiveRapportinoFromUI();
-                }
                 globalInteractionLock = false;
                 document.querySelectorAll('input').forEach(input => {
                     input.style.pointerEvents = 'auto';
@@ -7872,9 +7941,6 @@ window.updateStoricoButton = async function() {
                 window.handleLabelClick(id, true);
             }
             window.persistHiddenModulesForActiveRapportino();
-            if (typeof window.saveActiveRapportinoFromUI === 'function') {
-                window.saveActiveRapportinoFromUI();
-            }
         };
 
         window.restoreAllModules = () => {
@@ -7891,9 +7957,6 @@ window.updateStoricoButton = async function() {
                 window.handleLabelClick('sec-azoto', true);
             }
             window.persistHiddenModulesForActiveRapportino();
-            if (typeof window.saveActiveRapportinoFromUI === 'function') {
-                window.saveActiveRapportinoFromUI();
-            }
             window.closeManagement();
         };
 

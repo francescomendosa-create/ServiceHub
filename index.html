@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.04-iphone-longpress-shield';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-rapportini-notturno-ux';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -6808,32 +6808,35 @@ window.updateStoricoButton = async function() {
             updateModulesVisibility();
             window.applyRapportinoSchedeConfig(item.schedeConfig);
             const rapportinoOnly = window.extractRapportinoOnlyData(item.data || {});
+            updateBoilerInputs();
+            if (typeof window.syncFiltraPanelForActiveRapportino === 'function') {
+                window.syncFiltraPanelForActiveRapportino();
+            }
             if (typeof window.restoreNotturnoFiltraAfterApplyData === 'function') {
                 window.restoreNotturnoFiltraAfterApplyData(rapportinoOnly);
             }
             if (typeof window.restoreNotturnoChemicalsAfterApplyData === 'function') {
                 window.restoreNotturnoChemicalsAfterApplyData(rapportinoOnly);
             }
-            updateBoilerInputs();
-            if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
-            if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
-            if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
-            if (typeof window.syncFiltraPanelForActiveRapportino === 'function') window.syncFiltraPanelForActiveRapportino();
-            if (typeof window.syncNotturnoStoccaggioPanel === 'function') window.syncNotturnoStoccaggioPanel();
-            if (typeof window.refreshNotturnoFiltraTotals === 'function') window.refreshNotturnoFiltraTotals();
+            requestAnimationFrame(function () {
+                if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
+                if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
+                if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
+            });
         };
 
         window.switchToRapportino = async function(id) {
             window.ensureRapportiniInitialized();
             const store = window.loadRapportiniStore();
             if (!store || !store.items[id]) return;
-            if (store.activeId !== id) {
-                window.saveActiveRapportinoFromUI();
-                store.activeId = id;
-                window.saveRapportiniStore(store);
-                window.applyRapportinoItem(store.items[id]);
-                window.saveActiveRapportinoFromUI();
+            if (store.activeId === id) {
+                window._rapportiniPendingId = id;
+                return;
             }
+            window.saveActiveRapportinoFromUI();
+            store.activeId = id;
+            window.saveRapportiniStore(store);
+            window.applyRapportinoItem(store.items[id]);
             window._rapportiniPendingId = id;
             window.updateRapportinoSettingsButton();
             if (typeof window.renderRapportiniList === 'function') window.renderRapportiniList();
@@ -6856,14 +6859,24 @@ window.updateStoricoButton = async function() {
             if (modal) modal.classList.add('active');
         };
 
-        window.closeRapportiniModal = function() {
+        window.closeRapportiniModal = async function() {
+            const store = window.loadRapportiniStore();
+            const pending = window._rapportiniPendingId || (store && store.activeId);
+            if (pending && store && store.activeId !== pending) {
+                await window.switchToRapportino(pending);
+            }
             const modal = document.getElementById('rapportini-modal');
             if (modal) modal.classList.remove('active');
         };
 
-        window.selectRapportinoPending = function(id) {
+        window.selectRapportinoPending = async function(id) {
             window._rapportiniPendingId = id;
-            window.renderRapportiniList();
+            const store = window.loadRapportiniStore();
+            if (store && store.activeId !== id) {
+                await window.switchToRapportino(id);
+            } else {
+                window.renderRapportiniList();
+            }
         };
 
         window.renameRapportino = function(id) {
@@ -6915,13 +6928,6 @@ window.updateStoricoButton = async function() {
                     '<button type="button" class="shrink-0 px-3 py-2 rounded-lg bg-slate-200 dark:bg-slate-700 text-[9px] font-black uppercase text-slate-800 dark:text-white" onclick="event.stopPropagation(); window.renameRapportino(\'' + rid + '\')">Rinomina</button>' +
                     '</div>';
             }).join('');
-        };
-
-        window.applySelectedRapportino = async function() {
-            const id = window._rapportiniPendingId;
-            if (!id) return;
-            await window.switchToRapportino(id);
-            window.closeRapportiniModal();
         };
 
         window.cloneRapportinoConfig = function(cfg) {
@@ -7331,17 +7337,28 @@ window.updateStoricoButton = async function() {
             return !!(mod && mod.enabled !== false && mod.layout === 'turni-produzione');
         };
 
+        window.__withNotturnoTendinaInstant = function(fn) {
+            document.body.classList.add('notturno-tendina-instant');
+            try { fn(); } finally {
+                requestAnimationFrame(function () {
+                    document.body.classList.remove('notturno-tendina-instant');
+                });
+            }
+        };
+
         window.toggleNotturnoFiltraTendina = function(e) {
             if (e && e.stopPropagation) e.stopPropagation();
             const tendina = document.getElementById('notturno-filtra-tendina');
             const bar = tendina && tendina.querySelector('.nott-filtra-tendina-bar');
             if (!tendina) return;
-            const collapsed = tendina.classList.toggle('notturno-filtra-tendina-collapsed');
-            if (collapsed) tendina.removeAttribute('data-user-expanded');
-            else tendina.dataset.userExpanded = '1';
-            const ch = document.getElementById('nott-filtra-tendina-chevron');
-            if (ch) ch.textContent = collapsed ? '▼' : '▲';
-            if (bar) bar.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+            window.__withNotturnoTendinaInstant(function () {
+                const collapsed = tendina.classList.toggle('notturno-filtra-tendina-collapsed');
+                if (collapsed) tendina.removeAttribute('data-user-expanded');
+                else tendina.dataset.userExpanded = '1';
+                const ch = document.getElementById('nott-filtra-tendina-chevron');
+                if (ch) ch.textContent = collapsed ? '▼' : '▲';
+                if (bar) bar.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+            });
         };
 
         window.endPressNotturnoFiltraTendina = function(e) {
@@ -7367,12 +7384,14 @@ window.updateStoricoButton = async function() {
             const tendina = document.getElementById('sec-stoccaggio-interno');
             const bar = tendina && tendina.querySelector('.nott-stocc-tendina-bar');
             if (!tendina) return;
-            const collapsed = tendina.classList.toggle('notturno-stoccaggio-tendina-collapsed');
-            if (collapsed) tendina.removeAttribute('data-user-expanded');
-            else tendina.dataset.userExpanded = '1';
-            const ch = document.getElementById('nott-stocc-tendina-chevron');
-            if (ch) ch.textContent = collapsed ? '▼' : '▲';
-            if (bar) bar.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+            window.__withNotturnoTendinaInstant(function () {
+                const collapsed = tendina.classList.toggle('notturno-stoccaggio-tendina-collapsed');
+                if (collapsed) tendina.removeAttribute('data-user-expanded');
+                else tendina.dataset.userExpanded = '1';
+                const ch = document.getElementById('nott-stocc-tendina-chevron');
+                if (ch) ch.textContent = collapsed ? '▼' : '▲';
+                if (bar) bar.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+            });
         };
 
         window.endPressNotturnoStoccaggioTendina = function(e) {
@@ -7496,9 +7515,6 @@ window.updateStoricoButton = async function() {
             const lbl = document.getElementById('lbl-sec-stoccaggio-interno');
             if (lbl) lbl.textContent = (stoccMod && stoccMod.title) || 'STOCCAGGIO INTERNO';
             window.renderStoccaggioInternoPanel();
-            (stoccMod.fields || []).forEach(function(f) {
-                if (f.enabled !== false) window.applyFieldLabelInDom(f.id, f.label);
-            });
         };
 
         window.getNotturnoChemCounts = function(data) {
@@ -7591,12 +7607,14 @@ window.updateStoricoButton = async function() {
             if (e) { e.preventDefault(); e.stopPropagation(); }
             const tendina = document.getElementById('notturno-chemicals-tendina');
             if (!tendina) return;
-            tendina.dataset.userExpanded = '1';
-            const collapsed = tendina.classList.toggle('notturno-chemicals-tendina-collapsed');
-            const ch = document.getElementById('nott-chem-tendina-chevron');
-            if (ch) ch.textContent = collapsed ? '▼' : '▲';
-            const bar = tendina.querySelector('.nott-chem-tendina-bar');
-            if (bar) bar.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+            window.__withNotturnoTendinaInstant(function () {
+                tendina.dataset.userExpanded = '1';
+                const collapsed = tendina.classList.toggle('notturno-chemicals-tendina-collapsed');
+                const ch = document.getElementById('nott-chem-tendina-chevron');
+                if (ch) ch.textContent = collapsed ? '▼' : '▲';
+                const bar = tendina.querySelector('.nott-chem-tendina-bar');
+                if (bar) bar.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+            });
         };
 
         window.endPressNotturnoChemicalsTendina = function(e) {
@@ -7824,6 +7842,11 @@ window.updateStoricoButton = async function() {
             const panel = document.getElementById('filtra-panel-notturno');
             if (!panel || !window.isNotturnoFiltraLayoutActive()) return;
             const steps = window.getNotturnoFiltraStepCount();
+            if (panel.dataset.builtSteps === String(steps) && panel.querySelector('.nott-filtra-steps-stack')) {
+                window.syncNotturnoFiltraTimeDisplays();
+                window.refreshNotturnoFiltraTotals();
+                return;
+            }
             let groups = '';
             for (let i = 0; i < steps; i++) {
                 groups += window.buildNotturnoFiltraStepGroupHtml(i);
@@ -7839,6 +7862,7 @@ window.updateStoricoButton = async function() {
                 '<div class="nott-f-total-box"><div class="nott-f-total-lbl">Ora totale</div><div class="nott-f-total-val" id="nott-f-ora-totale">0 h</div></div>' +
                 '<div class="nott-f-total-box"><div class="nott-f-total-lbl">Produzione totale</div><div class="nott-f-total-val" id="nott-f-prod-totale">0</div></div>' +
                 '</div></div>';
+            panel.dataset.builtSteps = String(steps);
             window.syncNotturnoFiltraTimeDisplays();
             window.refreshNotturnoFiltraTotals();
         };
@@ -7900,7 +7924,10 @@ window.updateStoricoButton = async function() {
             if (!data || !window.isNotturnoFiltraLayoutActive()) return;
             const steps = data._nottFiltraSteps ? Math.max(1, parseInt(data._nottFiltraSteps, 10)) : window.getNotturnoFiltraStepCount();
             if (data._nottFiltraSteps) window.setNotturnoFiltraStepCount(steps);
-            window.renderNotturnoFiltraPanel();
+            const panel = document.getElementById('filtra-panel-notturno');
+            if (!panel || panel.dataset.builtSteps !== String(steps)) {
+                window.renderNotturnoFiltraPanel();
+            }
             for (let i = 0; i < steps; i++) {
                 const sid = 'nott-f-s' + i;
                 ['-start', '-end', '-pi', '-pf'].forEach(function(suf) {
@@ -12640,6 +12667,40 @@ window.convertToHtml = async () => {
         .nott-stocc-tendina-body { overflow: hidden; max-height: 2000px; transition: max-height 0.35s ease, padding 0.3s ease; padding: 6px 8px 8px; }
         .notturno-stoccaggio-tendina-collapsed .nott-stocc-tendina-body { max-height: 0; padding-top: 0; padding-bottom: 0; }
         #stoccaggio-panel-notturno.nott-stocc-panel { width: 100%; max-height: min(58vh, 520px); overflow-y: auto; -webkit-overflow-scrolling: touch; }
+        body.notturno-tendina-instant .nott-filtra-tendina-body,
+        body.notturno-tendina-instant .nott-stocc-tendina-body,
+        body.notturno-tendina-instant .nott-chem-tendina-body { transition: none !important; }
+        @media (min-width: 600px) {
+            .notturno-stoccaggio-tendina:not(.notturno-stoccaggio-tendina-collapsed) .nott-stocc-tendina-body {
+                max-height: none !important;
+                overflow: visible !important;
+            }
+            #stoccaggio-panel-notturno.nott-stocc-panel {
+                max-height: none !important;
+                overflow: visible !important;
+            }
+            #stoccaggio-panel-notturno .nott-stocc-table tbody {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                column-gap: 6px;
+            }
+            #stoccaggio-panel-notturno .nott-stocc-tr {
+                display: table;
+                width: 100%;
+                table-layout: fixed;
+            }
+            #stoccaggio-panel-notturno .nott-stocc-inp-cell { height: 28px; }
+            #stoccaggio-panel-notturno input.nott-stocc-inp {
+                height: 24px !important;
+                min-height: 24px !important;
+                max-height: 26px !important;
+                font-size: 12px !important;
+            }
+            #stoccaggio-panel-notturno .nott-stocc-sigla-cell {
+                font-size: 11px;
+                padding: 3px 6px;
+            }
+        }
         #stoccaggio-panel-notturno .nott-stocc-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
         #stoccaggio-panel-notturno .nott-stocc-th td { border: 1px solid var(--border-main); background: #e2e8f0; font-size: 9px; font-weight: 900; text-transform: uppercase; text-align: center; height: 26px; padding: 2px 4px; color: #0f766e; }
         .dark #stoccaggio-panel-notturno .nott-stocc-th td { background: #1e293b; color: #5eead4; }
@@ -14001,7 +14062,6 @@ window.convertToHtml = async () => {
             <div id="rapportini-list" class="px-4 pb-2 flex flex-col gap-2 max-h-[45vh] overflow-y-auto"></div>
             <div class="p-4 border-t border-slate-200 dark:border-slate-700 flex flex-col gap-2">
                 <button type="button" onclick="window.openRapportinoManagerForPending()" class="w-full bg-slate-700 text-white font-black py-3 rounded-xl uppercase text-[10px] border-b-4 border-slate-900 active:scale-95">Aggiungi schede al selezionato</button>
-                <button type="button" id="btn-rapportini-apply" onclick="window.applySelectedRapportino()" class="w-full bg-emerald-600 text-white font-black py-4 rounded-xl uppercase border-b-4 border-emerald-900 active:scale-95">Applica tutto</button>
                 <button type="button" onclick="window.closeRapportiniModal()" class="w-full bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-white font-black py-3 rounded-xl uppercase active:scale-95">Chiudi</button>
             </div>
         </div>

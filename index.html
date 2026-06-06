@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.04-gemini-ocr-fix';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-tablet-layout-local';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -564,6 +564,60 @@ window.colorPreviewNumber = function(tankName, value) {
         let user = null;
         let hiddenModules = [];
         let isDarkMode = false;
+        window.DEVICE_DARK_MODE_KEY = 'servicehub_device_dark_mode';
+
+        window.loadLocalDarkMode = function () {
+            try {
+                const v = localStorage.getItem(window.DEVICE_DARK_MODE_KEY);
+                if (v === '1') isDarkMode = true;
+                else if (v === '0') isDarkMode = false;
+            } catch (_) {}
+        };
+
+        window.persistLocalDarkMode = function () {
+            try {
+                localStorage.setItem(window.DEVICE_DARK_MODE_KEY, isDarkMode ? '1' : '0');
+            } catch (_) {}
+        };
+
+        /** Tablet vero (non telefono in landscape): layout multi-scheda solo qui. */
+        window.isServiceHubTablet = function () {
+            const ua = navigator.userAgent || '';
+            if (/iPhone|iPod/i.test(ua)) return false;
+            if (/iPad/i.test(ua)) return true;
+            if (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) return true;
+            if (/Android/i.test(ua)) {
+                return Math.min(window.screen.width, window.screen.height) >= 600;
+            }
+            return false;
+        };
+
+        window.normalizePhoneSectionsLayout = function () {
+            if (window.isServiceHubTablet()) return;
+            (GROUPS || []).forEach(function (group) {
+                const visible = group.filter(function (mid) { return !hiddenModules.includes(mid); });
+                let keptExpanded = false;
+                group.forEach(function (sid) {
+                    const el = document.getElementById(sid);
+                    if (!el) return;
+                    if (el.classList.contains('col-expanded')) {
+                        if (keptExpanded) {
+                            el.classList.remove('col-expanded');
+                            el.classList.add('col-collapsed');
+                        } else {
+                            keptExpanded = true;
+                        }
+                    }
+                });
+                if (!keptExpanded && visible.length) {
+                    const first = document.getElementById(visible[0]);
+                    if (first) {
+                        first.classList.remove('col-collapsed');
+                        first.classList.add('col-expanded');
+                    }
+                }
+            });
+        };
         let manualShift = null;
 
         // Esponi hiddenModules come proprietà di window per accessibilità globale
@@ -1407,19 +1461,8 @@ window.colorPreviewNumber = function(tankName, value) {
                 });
 
             const settingsDoc = doc(db, 'artifacts', appId, 'sharedDial', 'settings');
-            __shUnsubSettings = onSnapshot(settingsDoc, (snapshot) => {
-                if (snapshot.exists()) {
-                    const settings = snapshot.data();
-                    isDarkMode = settings.isDarkMode || false;
-                    if (typeof window.applyHiddenModulesFromActiveRapportino === 'function') {
-                        window.applyHiddenModulesFromActiveRapportino(settings.hiddenModules);
-                    } else {
-                        hiddenModules = settings.hiddenModules || [];
-                        window.hiddenModules = hiddenModules;
-                    }
-                    updateThemeUI();
-                    updateModulesVisibility();
-                }
+            __shUnsubSettings = onSnapshot(settingsDoc, function () {
+                /* Impostazioni cloud legacy: tema e moduli nascosti sono per-dispositivo / per-rapportino. */
             }, (error) => {});
 
             const rapportiniDoc = doc(db, 'artifacts', appId, 'sharedDial', 'rapportini');
@@ -3775,9 +3818,7 @@ window.updateStoricoButton = async function() {
         };
 
         window.saveSettings = async function() {
-            if (!user || !user.uid) return;
-            const settings = { hiddenModules, isDarkMode };
-            try { await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'settings'), settings); } catch (e) {}
+            /* Moduli nascosti → rapportini; tema scuro → localStorage. Niente sync settings globali. */
         };
 
         window.saveAIMemory = async function(memory) {
@@ -3966,6 +4007,9 @@ window.updateStoricoButton = async function() {
             window.loadDB();
             window.alarmConfig = window.APP_DB.alarms || {};
             if (typeof window.loadGeminiKeySettings === 'function') window.loadGeminiKeySettings();
+            if (typeof window.loadLocalDarkMode === 'function') window.loadLocalDarkMode();
+            if (typeof updateThemeUI === 'function') updateThemeUI();
+            if (typeof window.normalizePhoneSectionsLayout === 'function') window.normalizePhoneSectionsLayout();
 
             const btnShModifica = document.getElementById('btn-sh-settings-modifica');
             if (btnShModifica) {
@@ -6234,6 +6278,9 @@ window.updateStoricoButton = async function() {
         };
 
         window.captureSectionsLayout = function() {
+            if (typeof window.isServiceHubTablet === 'function' && !window.isServiceHubTablet()) {
+                return null;
+            }
             const layout = {};
             (window.RAPPORTINI_SECTION_IDS || []).forEach(function(id) {
                 const el = document.getElementById(id);
@@ -6244,6 +6291,12 @@ window.updateStoricoButton = async function() {
 
         window.applySectionsLayout = function(layout) {
             if (!layout) return;
+            if (typeof window.isServiceHubTablet === 'function' && !window.isServiceHubTablet()) {
+                if (typeof window.normalizePhoneSectionsLayout === 'function') {
+                    window.normalizePhoneSectionsLayout();
+                }
+                return;
+            }
             Object.keys(layout).forEach(function(id) {
                 const el = document.getElementById(id);
                 if (!el) return;
@@ -6417,6 +6470,11 @@ window.updateStoricoButton = async function() {
             const store = window.loadRapportiniStore();
             if (!store || !store.activeId || !store.items[store.activeId]) return;
             const snap = window.captureRapportinoSnapshot();
+            if (typeof window.isServiceHubTablet === 'function' && !window.isServiceHubTablet()) {
+                const prevLayout = store.items[store.activeId].sectionsLayout;
+                if (prevLayout) snap.sectionsLayout = prevLayout;
+                else delete snap.sectionsLayout;
+            }
             const name = store.items[store.activeId].name || store.activeId;
             const schedeConfig = store.items[store.activeId].schedeConfig || window.buildEmptyRapportinoConfig();
             store.items[store.activeId] = Object.assign({ id: store.activeId, name: name, schedeConfig: schedeConfig }, snap);
@@ -6457,7 +6515,6 @@ window.updateStoricoButton = async function() {
                 window.saveRapportiniStore(store);
                 window.applyRapportinoItem(store.items[id]);
                 window.saveActiveRapportinoFromUI();
-                if (typeof window.saveSettings === 'function') await window.saveSettings();
             }
             window._rapportiniPendingId = id;
             window.updateRapportinoSettingsButton();
@@ -7588,7 +7645,11 @@ window.updateStoricoButton = async function() {
             return Promise.all([p1, p2]);
         };
 
-        window.toggleDarkMode = () => { isDarkMode = !isDarkMode; updateThemeUI(); window.saveSettings(); };
+        window.toggleDarkMode = () => {
+            isDarkMode = !isDarkMode;
+            updateThemeUI();
+            if (typeof window.persistLocalDarkMode === 'function') window.persistLocalDarkMode();
+        };
         
         function updateThemeUI() {
             const html = document.documentElement;
@@ -7709,7 +7770,7 @@ window.updateStoricoButton = async function() {
             window.syncNotturnoModulesAfterVisibility();
         };
 
-        window.hideModule = (id) => {
+        window.hideModule = (id, userInitiated) => {
             if (!hiddenModules.includes(id)) {
                 hiddenModules.push(id);
                 window.hiddenModules = hiddenModules;
@@ -7729,7 +7790,6 @@ window.updateStoricoButton = async function() {
                 }
                 updateModulesVisibility();
                 window.persistHiddenModulesForActiveRapportino();
-                window.saveSettings();
                 if (typeof window.saveActiveRapportinoFromUI === 'function') {
                     window.saveActiveRapportinoFromUI();
                 }
@@ -7738,19 +7798,8 @@ window.updateStoricoButton = async function() {
                     input.style.pointerEvents = 'auto';
                     input.readOnly = false;
                 });
-                if (window.isNotturnoFiltraLayoutActive() && id === 'sec-filtra') {
-                    if (navigator.vibrate) {
-                        try { navigator.vibrate(40); } catch (_) {}
-                    }
-                    return;
-                }
-                if (window.isNotturnoFiltraLayoutActive() && id === 'sec-stoccaggio-interno') {
-                    if (navigator.vibrate) {
-                        try { navigator.vibrate(40); } catch (_) {}
-                    }
-                    return;
-                }
-                if (window.isNotturnoFiltraLayoutActive() && id === 'sec-chemicals') {
+                if (userInitiated && window.isNotturnoFiltraLayoutActive() &&
+                    (id === 'sec-filtra' || id === 'sec-stoccaggio-interno' || id === 'sec-chemicals')) {
                     if (navigator.vibrate) {
                         try { navigator.vibrate(40); } catch (_) {}
                     }
@@ -7774,7 +7823,6 @@ window.updateStoricoButton = async function() {
                 window.handleLabelClick(id, true);
             }
             window.persistHiddenModulesForActiveRapportino();
-            window.saveSettings();
             if (typeof window.saveActiveRapportinoFromUI === 'function') {
                 window.saveActiveRapportinoFromUI();
             }
@@ -7792,7 +7840,6 @@ window.updateStoricoButton = async function() {
                 window.handleLabelClick('sec-azoto', true);
             }
             window.persistHiddenModulesForActiveRapportino();
-            window.saveSettings();
             if (typeof window.saveActiveRapportinoFromUI === 'function') {
                 window.saveActiveRapportinoFromUI();
             }
@@ -7807,13 +7854,12 @@ window.updateStoricoButton = async function() {
                 }
             });
             updateModulesVisibility();
-            window.saveSettings();
+            window.persistHiddenModulesForActiveRapportino();
         };
 
         window.startPress = (e, id) => {
             // ✅ BLOCCO SOLO NAVIGAZIONE SCHEDE SU ANDROID TABLET
-            const isAndroid = /Android/i.test(navigator.userAgent);
-            const isTablet = window.screen.width >= 768;
+            const isTablet = window.isServiceHubTablet && window.isServiceHubTablet();
             
             // ✅ BLOCCO MOUSE EVENTS SU IOS E ANDROID PER EVITARE CONFLITTI
             if (e.type === 'mousedown' && (/iPhone|iPad|Android/i.test(navigator.userAgent))) {
@@ -7836,7 +7882,7 @@ window.updateStoricoButton = async function() {
                 isLongPress = true; 
                 globalInteractionLock = true; 
                 label.classList.remove('pressing');
-                window.hideModule(id);
+                window.hideModule(id, true);
             }, isIOSDevice ? 380 : LONG_PRESS_DURATION); // ✅ iOS: 380ms invece di 450ms
         };
 
@@ -7867,11 +7913,9 @@ window.updateStoricoButton = async function() {
         };
 
         window.handleLabelClick = (id, force = false) => {
-            // ✅ BLOCCO SOLO NAVIGAZIONE SCHEDE SU ANDROID TABLET
-            const isAndroid = /Android/i.test(navigator.userAgent);
-            const isTablet = window.screen.width >= 768;
+            const isTablet = window.isServiceHubTablet && window.isServiceHubTablet();
             
-            if (isAndroid && isTablet && !force) {
+            if (isTablet && !force) {
                 // SU ANDROID TABLET: BLOCCA SOLO LA NAVIGAZIONE DELLE SCHEDE
                 return;
             }
@@ -8342,24 +8386,12 @@ window.updateStoricoButton = async function() {
 
         function updateDeviceInfo() {
             const tag = document.getElementById('device-tag');
-            const ua = navigator.userAgent;
-            let deviceType = 'DESKTOP';
-            
-            if (/Android|iPhone|iPad/i.test(ua)) {
-                // Distinguiamo tra tablet e mobile
-                if (/iPad/i.test(ua) || (/Android/i.test(ua) && window.screen.width >= 768)) {
-                    deviceType = 'TABLET';
-                } else {
-                    deviceType = 'MOBILE';
-                }
-            }
+            const isTablet = window.isServiceHubTablet && window.isServiceHubTablet();
+            const deviceType = isTablet ? 'TABLET' : (/Android|iPhone|iPad/i.test(navigator.userAgent) ? 'MOBILE' : 'DESKTOP');
             
             if (tag) tag.innerText = deviceType;
             
-            // ✅ VERSIONE LANDSCAPE MIGLIORATA PER TABLET
-            if (deviceType === 'TABLET' && window.innerWidth > window.innerHeight) {
-                // APRI AUTOMATICAMENTE TUTTE LE SCHEDE IN LANDSCAPE SU TABLET
-                console.log('Tablet landscape rilevato - apro tutte le schede');
+            if (isTablet && window.innerWidth > window.innerHeight) {
                 const allSections = ['sec-chpp', 'sec-well', 'sec-amb', 'sec-ambiente2', 'sec-acqua', 'sec-scam', 'sec-filtra', 'sec-bluedown', 'sec-aria', 'sec-azoto', 'sec-stoccaggio-interno'];
                 allSections.forEach(sectionId => {
                     if (sectionId === 'sec-stoccaggio-interno' && !window.isNotturnoFiltraLayoutActive()) return;
@@ -8369,11 +8401,12 @@ window.updateStoricoButton = async function() {
                         section.classList.add('col-expanded');
                     }
                 });
-                
-                // MIGLIORAMENTI LAYOUT PER TABLET LANDSCAPE
                 document.body.classList.add('tablet-landscape');
             } else {
                 document.body.classList.remove('tablet-landscape');
+                if (!isTablet && typeof window.normalizePhoneSectionsLayout === 'function') {
+                    window.normalizePhoneSectionsLayout();
+                }
             }
             
             const now = new Date();

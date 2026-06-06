@@ -509,7 +509,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.04-chem-persist-fix';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-quota-optimize-abc';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -903,6 +903,18 @@ window.colorPreviewNumber = function(tankName, value) {
                 }
             });
         }
+
+        /** Auto-sync publicDigital solo dopo aver aperto LINK REMOTO (risparmio quota Firestore). */
+        window.__publicDigitalAutoSyncEnabled = false;
+        try {
+            if (sessionStorage.getItem('servicehub_public_digital_auto_sync') === '1') {
+                window.__publicDigitalAutoSyncEnabled = true;
+            }
+        } catch (_) {}
+        window.__enablePublicDigitalAutoSync = function () {
+            window.__publicDigitalAutoSyncEnabled = true;
+            try { sessionStorage.setItem('servicehub_public_digital_auto_sync', '1'); } catch (_) {}
+        };
 
         /** Chiave Digital remota condivisa tra tutti i dispositivi (salvata in sharedDial/meta). */
         window.__hydrateDigitalShareKeyFromCloud = async function () {
@@ -1414,7 +1426,6 @@ window.colorPreviewNumber = function(tankName, value) {
             const __wireRapportiniSnapshotListener = function () {
                 __shUnsubRapportini = onSnapshot(
                     rapportiniDoc,
-                    { includeMetadataChanges: true },
                     (snapshot) => {
                     const md = snapshot.metadata;
                     if (md && md.hasPendingWrites) return;
@@ -2450,6 +2461,7 @@ window.colorPreviewNumber = function(tankName, value) {
 
             /** Non bloccare il tasto Salva: publicDigital è secondario rispetto allo snapshot backup. */
             const schedulePublicDigitalAfterArchive = function (logTag) {
+                if (!window.__publicDigitalAutoSyncEnabled) return;
                 try {
                     const tag = logTag || "archiveCurrentData publicDigital";
                     const pushPromise = Promise.resolve(window.pushPublicDigitalSnapshotQuiet());
@@ -4028,6 +4040,9 @@ window.updateStoricoButton = async function() {
                 if (typeof window.saveActiveRapportinoFromUI === 'function') {
                     try { window.saveActiveRapportinoFromUI(); } catch (_) {}
                 }
+                if (typeof window.flushRapportiniPushToCloudNow === 'function') {
+                    void window.flushRapportiniPushToCloudNow();
+                }
                 if (typeof window.saveData === 'function') void window.saveData(true);
             });
             document.addEventListener('visibilitychange', function () {
@@ -4042,6 +4057,9 @@ window.updateStoricoButton = async function() {
                     if (typeof window.flushRapportiniBackupNow === 'function') window.flushRapportiniBackupNow();
                     if (typeof window.saveActiveRapportinoFromUI === 'function') {
                         try { window.saveActiveRapportinoFromUI(); } catch (_) {}
+                    }
+                    if (typeof window.flushRapportiniPushToCloudNow === 'function') {
+                        void window.flushRapportiniPushToCloudNow();
                     }
                     if (typeof window.saveData === 'function') {
                         void window.saveData(true);
@@ -6086,6 +6104,40 @@ window.updateStoricoButton = async function() {
             };
         };
 
+        window.__rapportiniPushTimer = null;
+        window.__rapportiniPushDebounceMs = 2500;
+
+        window.flushRapportiniPushToCloudNow = function () {
+            if (window.__rapportiniPushTimer) {
+                clearTimeout(window.__rapportiniPushTimer);
+                window.__rapportiniPushTimer = null;
+            }
+            window.__rapportiniPushPendingStore = null;
+            if (!user || !user.uid || !db) return Promise.resolve();
+            if (window.__firestoreQuotaBlocked) return Promise.resolve();
+            const store = window.__rapportiniStore || (window.loadRapportiniStore && window.loadRapportiniStore());
+            if (!store || window.__rapportiniApplyingFromCloud) return Promise.resolve();
+            if (typeof window.pushRapportiniStoreToCloud === 'function') {
+                return window.pushRapportiniStoreToCloud(store);
+            }
+            return Promise.resolve();
+        };
+
+        window.scheduleRapportiniPushToCloud = function (store) {
+            if (!store || !user || !user.uid || !db) return;
+            if (window.__firestoreQuotaBlocked) return;
+            window.__rapportiniPushPendingStore = store;
+            if (window.__rapportiniPushTimer) clearTimeout(window.__rapportiniPushTimer);
+            window.__rapportiniPushTimer = setTimeout(function () {
+                window.__rapportiniPushTimer = null;
+                const pending = window.__rapportiniPushPendingStore;
+                window.__rapportiniPushPendingStore = null;
+                if (pending && typeof window.pushRapportiniStoreToCloud === 'function') {
+                    void window.pushRapportiniStoreToCloud(pending);
+                }
+            }, window.__rapportiniPushDebounceMs || 2500);
+        };
+
         window.pushRapportiniStoreToCloud = async function(store) {
             if (!user || !user.uid || !db || !store) return;
             if (window.__rapportiniApplyingFromCloud) return;
@@ -6166,8 +6218,14 @@ window.updateStoricoButton = async function() {
                 if (typeof window.flushRapportiniBackupNow === 'function') window.flushRapportiniBackupNow();
                 if (typeof window.persistSessionPrefs === 'function') window.persistSessionPrefs();
                 const mayPush = opts.pushCloud !== false && !window.__rapportiniApplyingFromCloud && window.__rapportiniCloudHydrated;
-                if (mayPush && typeof window.pushRapportiniStoreToCloud === 'function') {
-                    void window.pushRapportiniStoreToCloud(store);
+                if (mayPush) {
+                    if (opts.flushCloud && typeof window.flushRapportiniPushToCloudNow === 'function') {
+                        void window.flushRapportiniPushToCloudNow();
+                    } else if (typeof window.scheduleRapportiniPushToCloud === 'function') {
+                        window.scheduleRapportiniPushToCloud(store);
+                    } else if (typeof window.pushRapportiniStoreToCloud === 'function') {
+                        void window.pushRapportiniStoreToCloud(store);
+                    }
                 }
             } catch (e) {
                 console.warn('[ServiceHub] save rapportini:', e);
@@ -10906,6 +10964,7 @@ window.closeDigitalPreview = () => {
 /** Esegue subito (dopo 2 frame) la pubblicazione su publicDigital — usato dopo saveData così il client remoto non aspetta il debounce. */
 window.flushPublicDigitalSnapshotNow = function () {
     if (!db || !user || !user.uid) return;
+    if (!window.__publicDigitalAutoSyncEnabled) return;
     if (window.__publicDigitalSyncTimer) {
         clearTimeout(window.__publicDigitalSyncTimer);
         window.__publicDigitalSyncTimer = null;
@@ -10932,6 +10991,7 @@ window.flushPublicDigitalSnapshotNow = function () {
 /** Dopo ricezione plant da altro tablet (onSnapshot), debounce leggero per non spammare Firestore. */
 window.schedulePublicDigitalSnapshotSync = function () {
     if (!db || !user || !user.uid) return;
+    if (!window.__publicDigitalAutoSyncEnabled) return;
     if (window.__publicDigitalSyncTimer) clearTimeout(window.__publicDigitalSyncTimer);
     window.__publicDigitalSyncTimer = setTimeout(function () {
         window.__publicDigitalSyncTimer = null;
@@ -11277,6 +11337,9 @@ window.__serviceHubShowDigitalRemoteLinkModal = function (href, options) {
 
 window.publishDigitalRemoteReport = async () => {
     try {
+        if (typeof window.__enablePublicDigitalAutoSync === 'function') {
+            window.__enablePublicDigitalAutoSync();
+        }
         if (!db || !user || !user.uid) {
             var needAuth =
                 "Serve il cloud attivo (LED verde). Accedi e riprova.";

@@ -557,7 +557,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.05-digital-focus-stocc';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.06-digital-refresh-live';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -6073,12 +6073,27 @@ window.updateStoricoButton = async function() {
         };
 
         window.readStoccaggioPanelInputValue = function(fieldId) {
+            return window.readStoccaggioLiveInputValue
+                ? window.readStoccaggioLiveInputValue(fieldId)
+                : '';
+        };
+
+        /** Valore live da pannello notturno o sezione stoccaggio (rapportino generale). */
+        window.readStoccaggioLiveInputValue = function(fieldId) {
             if (!fieldId) return '';
             const panel = document.getElementById('stoccaggio-panel-notturno');
-            if (!panel) return '';
-            const inp = panel.querySelector('input.nott-stocc-inp[id="' + fieldId + '"]');
-            if (inp && inp.value != null && String(inp.value).trim() !== '') {
-                return String(inp.value).trim();
+            if (panel) {
+                const inpNott = panel.querySelector('input.nott-stocc-inp[id="' + fieldId + '"]');
+                if (inpNott && inpNott.value != null && String(inpNott.value).trim() !== '') {
+                    return String(inpNott.value).trim();
+                }
+            }
+            const secInp = document.getElementById(fieldId);
+            if (secInp && secInp.value != null && String(secInp.value).trim() !== '') {
+                const inStocc =
+                    (secInp.closest && secInp.closest('#sec-stoccaggio-interno')) ||
+                    (secInp.closest && secInp.closest('#stoccaggio-panel-notturno'));
+                if (inStocc) return String(secInp.value).trim();
             }
             return '';
         };
@@ -6120,8 +6135,10 @@ window.updateStoricoButton = async function() {
 
         window.getStoccaggioInternoFieldRaw = function(fieldId) {
             if (!fieldId) return '';
-            const fromPanel = window.readStoccaggioPanelInputValue(fieldId);
-            if (fromPanel) return fromPanel;
+            const live = window.readStoccaggioLiveInputValue
+                ? window.readStoccaggioLiveInputValue(fieldId)
+                : '';
+            if (live) return live;
             const local = window.loadNotturnoStoccLocalSnapshot && window.loadNotturnoStoccLocalSnapshot();
             if (local && local[fieldId] != null && String(local[fieldId]).trim() !== '') {
                 return String(local[fieldId]).trim();
@@ -6133,11 +6150,6 @@ window.updateStoricoButton = async function() {
             const backup = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
             if (backup && backup[fieldId] != null && String(backup[fieldId]).trim() !== '') {
                 return String(backup[fieldId]).trim();
-            }
-            const inp = document.getElementById(fieldId);
-            if (inp && inp.closest && inp.closest('#stoccaggio-panel-notturno') &&
-                inp.value != null && String(inp.value).trim() !== '') {
-                return String(inp.value).trim();
             }
             return '';
         };
@@ -6170,7 +6182,9 @@ window.updateStoricoButton = async function() {
             const existing = window.getNotturnoStoccaggioSnapshot() || {};
             const snap = {};
             (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
-                const raw = window.readStoccaggioPanelInputValue(t.fieldId) || existing[t.fieldId] || '';
+                const raw = (window.readStoccaggioLiveInputValue
+                    ? window.readStoccaggioLiveInputValue(t.fieldId)
+                    : window.readStoccaggioPanelInputValue(t.fieldId)) || existing[t.fieldId] || '';
                 const clean = raw != null ? String(raw).trim() : '';
                 if (clean) snap[t.fieldId] = clean;
             });
@@ -7204,9 +7218,11 @@ window.updateStoricoButton = async function() {
                 const panel = document.getElementById('stoccaggio-panel-notturno');
                 if (panel && window.STOCCAGGIO_INTERNO_TANKS) {
                     window.STOCCAGGIO_INTERNO_TANKS.forEach(function (t) {
-                        const raw = window.readStoccaggioPanelInputValue
-                            ? window.readStoccaggioPanelInputValue(t.fieldId)
-                            : '';
+                        const raw = window.readStoccaggioLiveInputValue
+                            ? window.readStoccaggioLiveInputValue(t.fieldId)
+                            : (window.readStoccaggioPanelInputValue
+                                ? window.readStoccaggioPanelInputValue(t.fieldId)
+                                : '');
                         if (raw) data[t.fieldId] = raw;
                     });
                 }
@@ -11209,9 +11225,6 @@ window.buildDigitalCardsHTML = function() {
             if (typeof window.renderStoccaggioInternoPanel === 'function') {
                 window.renderStoccaggioInternoPanel();
             }
-            if (typeof window.hydrateNotturnoStoccaggioInputsFromStore === 'function') {
-                window.hydrateNotturnoStoccaggioInputsFromStore();
-            }
         }
         // LOGICA ORDINE FLESSIBILE CON BLOCCO AMBIENTE 1 (come nel Report Preview)
         const ambiente1Inviato = document.getElementById('sec-amb') !== null;
@@ -12133,7 +12146,7 @@ window.openDigitalPreview = () => {
         <div id="digital-preview-header">
             <div id="digital-preview-title">DIGITAL REPORT HD</div>
             <div id="digital-preview-actions">
-                <button onclick="window.refreshDigitalPreview()" style="
+                <button id="btn-digital-refresh" onclick="window.refreshDigitalPreview()" style="
                     background: linear-gradient(135deg, #22c55e, #16a34a);
                     border: 1px solid rgba(34, 197, 94, 0.3);
                     color: white;
@@ -12271,9 +12284,64 @@ window.openDigitalPreview = () => {
     }
 };
 
-window.refreshDigitalPreview = () => {
-    // Ricarica i dati e riapre
+window.__enablePublicDigitalAutoSyncIfShareKeyExists = function () {
+    var hasKey = false;
+    try {
+        hasKey =
+            !!sessionStorage.getItem('servicehub_digital_share_key') ||
+            sessionStorage.getItem('servicehub_public_digital_auto_sync') === '1';
+    } catch (_) {}
+    if (hasKey && typeof window.__enablePublicDigitalAutoSync === 'function') {
+        window.__enablePublicDigitalAutoSync();
+    }
+    return hasKey;
+};
+
+/** Legge i valori live dall'interfaccia e pubblica su publicDigital se esiste un link remoto. */
+window.pushDigitalSnapshotFromLiveUI = function () {
+    if (!db || !user || !user.uid) return Promise.resolve(false);
+    if (typeof window.saveActiveRapportinoFromUI === 'function') {
+        window.saveActiveRapportinoFromUI();
+    }
+    if (typeof window.persistNotturnoStoccaggioToRapportino === 'function') {
+        window.persistNotturnoStoccaggioToRapportino();
+    }
+    if (typeof window.pushPublicDigitalSnapshotQuiet !== 'function') return Promise.resolve(false);
+    return Promise.resolve(window.pushPublicDigitalSnapshotQuiet());
+};
+
+window.refreshDigitalPreview = function () {
+    var hadRemoteLink = false;
+    if (typeof window.__enablePublicDigitalAutoSyncIfShareKeyExists === 'function') {
+        hadRemoteLink = !!window.__enablePublicDigitalAutoSyncIfShareKeyExists();
+    }
     window.openDigitalPreview();
+    if (!hadRemoteLink) return;
+    var btn = document.getElementById('btn-digital-refresh');
+    var prevLabel = btn ? btn.textContent : '';
+    if (btn) btn.textContent = '…';
+    Promise.resolve(
+        typeof window.pushDigitalSnapshotFromLiveUI === 'function'
+            ? window.pushDigitalSnapshotFromLiveUI()
+            : false
+    )
+        .then(function (ok) {
+            if (ok && typeof window.__serviceHubFlashToast === 'function') {
+                window.__serviceHubFlashToast('Digital pubblicato sul link remoto.', false, 'ok');
+            } else if (!ok && typeof window.__serviceHubFlashToast === 'function') {
+                window.__serviceHubFlashToast(
+                    'Anteprima aggiornata in locale; cloud non pubblicato (rete o permessi).',
+                    false,
+                    'warn'
+                );
+            }
+        })
+        .catch(function (e) {
+            console.warn('[ServiceHub] refreshDigitalPreview push:', e && e.message);
+        })
+        .finally(function () {
+            if (btn) btn.textContent = prevLabel || 'AGGIORNA';
+        });
 };
 
 window.closeDigitalPreview = () => {

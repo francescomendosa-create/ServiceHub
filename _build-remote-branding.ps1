@@ -172,13 +172,15 @@ function Overlay-RemoteIconOnSplash($splashPath, $iconPath, $outPath, [int]$ix, 
     Write-Host "Salvato $outPath"
 }
 
-$iconSrc = Join-Path $root 'sh-icon-512.png'
 $iconMaster = Join-Path $root '_remote-icon-master.png'
-Build-RemoteIconMaster $iconSrc $iconMaster
-Save-ResizedFrom $iconMaster 512 (Join-Path $root 'sh-remote-icon-512.png')
-Save-ResizedFrom $iconMaster 192 (Join-Path $root 'sh-remote-icon-192.png')
-Save-ResizedFrom $iconMaster 180 (Join-Path $root 'sh-remote-touch.png')
-Save-ResizedFrom $iconMaster 32  (Join-Path $root 'sh-remote-favicon.png')
+if (-not (Test-Path $iconMaster)) {
+    $iconSrc = Join-Path $root 'sh-icon-512.png'
+    Build-RemoteIconMaster $iconSrc $iconMaster
+    Save-ResizedFrom $iconMaster 512 (Join-Path $root 'sh-remote-icon-512.png')
+    Save-ResizedFrom $iconMaster 192 (Join-Path $root 'sh-remote-icon-192.png')
+    Save-ResizedFrom $iconMaster 180 (Join-Path $root 'sh-remote-touch.png')
+    Save-ResizedFrom $iconMaster 32  (Join-Path $root 'sh-remote-favicon.png')
+}
 
 Overlay-RemoteIconOnSplash `
     (Join-Path $root 'splash-mobile.png') `

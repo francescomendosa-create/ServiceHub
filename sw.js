@@ -15,9 +15,11 @@ const SHELL_FILES = [
   './sh-favicon.png?v=shpc4',
   './manifest.json?v=shpc4',
   './watch-manifest.json?v=sw14',
-  './digital-manifest.json?v=dr1',
-  './sh-remote-icon-192.png?v=dr1',
-  './sh-remote-icon-512.png?v=dr1'
+  './digital-manifest.json?v=dr2',
+  './sh-remote-icon-192.png?v=dr2',
+  './sh-remote-icon-512.png?v=dr2',
+  './splash-remote-mobile.png?v=dr2',
+  './splash-remote-pc.png?v=dr2'
 ];
 
 self.addEventListener('install', (event) => {

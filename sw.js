@@ -14,7 +14,7 @@ const SHELL_FILES = [
   './sh-touch.png?v=shpc4',
   './sh-favicon.png?v=shpc4',
   './manifest.json?v=shpc4',
-  './watch-manifest.json?v=sw1'
+  './watch-manifest.json?v=sw7'
 ];
 
 self.addEventListener('install', (event) => {

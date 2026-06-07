@@ -131,9 +131,9 @@
   }
 
   function bindUI() {
-    var home = $('view-home');
-    if (home) {
-      home.addEventListener('click', openMenuFromHome);
+    var homeMain = document.querySelector('#view-home .sw-home-main');
+    if (homeMain) {
+      homeMain.addEventListener('click', openMenuFromHome);
     }
     var backMenu = $('sw-back-menu');
     if (backMenu) backMenu.addEventListener('click', function () { showView('view-home'); });

@@ -20,7 +20,8 @@
   function setScrollTheme(viewId) {
     document.body.classList.remove('sw-bg-home', 'sw-bg-panel');
     document.body.classList.add(viewId === 'view-home' ? 'sw-bg-home' : 'sw-bg-panel');
-    window.scrollTo(0, 0);
+    var topPad = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sw-scroll-top')) || 40;
+    window.scrollTo(0, topPad);
     if (window.swUpdateScrollbar) window.swUpdateScrollbar();
   }
 

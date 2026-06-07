@@ -557,7 +557,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.06-stocc-preview-align';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.06-bd-measure-labels';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -6482,9 +6482,56 @@ window.updateStoricoButton = async function() {
 
         window.normalizePlantFieldLabel = function(fieldId, label) {
             const clean = String(label || '').replace(/\s+/g, ' ').trim();
+            if (window.isBdCompressorMeasureInput && window.isBdCompressorMeasureInput(fieldId)) {
+                return window.shortBdCompressorMeasureLabel(clean, fieldId);
+            }
             if (!window.isTechnicalFieldLabel(clean, fieldId)) return clean;
             const derived = window.deriveLabelFromInputId(fieldId);
             return derived || clean;
+        };
+
+        window.isGeneraleRapportinoActive = function () {
+            const store = window.loadRapportiniStore && window.loadRapportiniStore();
+            return !!(store && store.activeId === 'generale');
+        };
+
+        window.isBdCompressorMeasureInput = function (fieldId) {
+            return /^v(105a|105b|mk10600)_(fic|pc|lc)$/i.test(String(fieldId || ''));
+        };
+
+        /** Sigla misura compressore Blowdown: solo FIC / PIC / LIC (senza ripetere MK 10500…). */
+        window.shortBdCompressorMeasureLabel = function (label, fieldId) {
+            const id = String(fieldId || '').toLowerCase();
+            if (id.endsWith('_fic')) return 'FIC';
+            if (id.endsWith('_pc')) return 'PIC';
+            if (id.endsWith('_lc')) return 'LIC';
+            const clean = String(label || '').replace(/\s+/g, ' ').trim();
+            if (!clean) return '';
+            const parts = clean.split(/\s*[·\-—]\s*/);
+            const tail = parts[parts.length - 1].trim().toUpperCase();
+            if (tail === 'FIC' || tail === 'PIC' || tail === 'LIC' || tail === 'LC') {
+                return tail === 'LC' ? 'LIC' : tail;
+            }
+            const up = clean.toUpperCase();
+            if (up === 'FIC' || up === 'PIC' || up === 'LIC' || up === 'LC') {
+                return up === 'LC' ? 'LIC' : up;
+            }
+            const m = clean.match(/\b(FIC|PIC|LIC|LC)\b/i);
+            if (m) return m[1].toUpperCase() === 'LC' ? 'LIC' : m[1].toUpperCase();
+            return clean;
+        };
+
+        window.syncBluedownCompressorShortLabels = function () {
+            if (!window.isGeneraleRapportinoActive || !window.isGeneraleRapportinoActive()) return;
+            const sec = document.getElementById('sec-bluedown');
+            if (!sec) return;
+            sec.querySelectorAll('.bd-input-row input[id]').forEach(function (inp) {
+                if (!window.isBdCompressorMeasureInput(inp.id)) return;
+                const bd = inp.closest('.bd-input-row');
+                const bdLab = bd && bd.querySelector('.bd-label');
+                if (!bdLab) return;
+                bdLab.innerText = window.shortBdCompressorMeasureLabel(bdLab.innerText, inp.id);
+            });
         };
 
         window.applyAmbLabelText = function(ambLabel, labelText, fieldId) {
@@ -6586,13 +6633,12 @@ window.updateStoricoButton = async function() {
                     if (cell) label = cell.innerText.replace(/\s+/g, ' ').trim();
                 }
                 const bd = inp.closest('.bd-input-row');
-                if (bd && !label) {
-                    const col = inp.closest('.bd-column');
-                    const head = col && col.querySelector('.status-header');
+                if (bd) {
                     const bdLab = bd.querySelector('.bd-label');
-                    const headPart = head ? head.innerText.split('\n')[0].trim() : '';
                     const labPart = bdLab ? bdLab.innerText.replace(/\s+/g, ' ').trim() : '';
-                    label = [headPart, labPart].filter(Boolean).join(' · ');
+                    label = window.shortBdCompressorMeasureLabel
+                        ? window.shortBdCompressorMeasureLabel(labPart, inp.id)
+                        : labPart;
                 }
                 add(inp.id, window.normalizePlantFieldLabel(inp.id, label || inp.id), 'input');
             });
@@ -6803,7 +6849,17 @@ window.updateStoricoButton = async function() {
             const bd = el.closest('.bd-input-row');
             if (bd) {
                 const bdLab = bd.querySelector('.bd-label');
-                if (bdLab) bdLab.innerText = labelText;
+                if (bdLab) {
+                    if (
+                        window.isBdCompressorMeasureInput(fieldId) &&
+                        window.isGeneraleRapportinoActive &&
+                        window.isGeneraleRapportinoActive()
+                    ) {
+                        bdLab.innerText = window.shortBdCompressorMeasureLabel(labelText, fieldId);
+                    } else {
+                        bdLab.innerText = labelText;
+                    }
+                }
             }
         };
 
@@ -6846,6 +6902,9 @@ window.updateStoricoButton = async function() {
                         window.applyFieldLabelInDom(f.id, window.normalizePlantFieldLabel(f.id, f.label));
                     }
                 });
+                if (tab.id === 'sec-bluedown' && typeof window.syncBluedownCompressorShortLabels === 'function') {
+                    window.syncBluedownCompressorShortLabels();
+                }
                 if (tab.id === 'sec-ambiente2') window.resetAmbiente2DomLabels();
             });
             window.updateRapportiniRowBlocksVisibility();
@@ -6940,7 +6999,10 @@ window.updateStoricoButton = async function() {
                         const mod = item.schedeConfig.modules[secId];
                         if (!mod || !mod.fields) return;
                         mod.fields.forEach(function(f) {
-                            const fixed = window.normalizePlantFieldLabel(f.id, f.label);
+                            let fixed = window.normalizePlantFieldLabel(f.id, f.label);
+                            if (window.isBdCompressorMeasureInput && window.isBdCompressorMeasureInput(f.id)) {
+                                fixed = window.shortBdCompressorMeasureLabel(f.label, f.id);
+                            }
                             if (fixed && fixed !== f.label) {
                                 f.label = fixed;
                                 changed = true;
@@ -10641,8 +10703,11 @@ if (hiddenModules.length === 0) {
                     
                     // Valori di questo compressore in ordine
                     comp.querySelectorAll('.bd-input-row').forEach(row => {
-                        const label = row.querySelector('.bd-label')?.innerText || "";
                         const input = row.querySelector('input');
+                        const rawLabel = row.querySelector('.bd-label')?.innerText || "";
+                        const label = window.shortBdCompressorMeasureLabel
+                            ? window.shortBdCompressorMeasureLabel(rawLabel, input && input.id)
+                            : rawLabel;
                         if (input && input.value !== "") {
                             rows.push({
                                 label: label,
@@ -11475,8 +11540,11 @@ window.buildDigitalCardsHTML = function() {
                             
                             // Valori di questo compressore in ordine
                             comp.querySelectorAll('.bd-input-row').forEach(row => {
-                                const label = row.querySelector('.bd-label')?.innerText || "";
                                 const input = row.querySelector('input');
+                                const rawLabel = row.querySelector('.bd-label')?.innerText || "";
+                                const label = window.shortBdCompressorMeasureLabel
+                                    ? window.shortBdCompressorMeasureLabel(rawLabel, input && input.id)
+                                    : rawLabel;
                                 if (input && input.value !== "") {
                                     rows.push({
                                         label: label,

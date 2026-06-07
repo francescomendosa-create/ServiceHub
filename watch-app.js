@@ -22,9 +22,10 @@
     document.body.classList.add(viewId === 'view-home' ? 'sw-bg-home' : 'sw-bg-panel');
     var root = $('sw-scroll-root');
     if (!root) return;
-    var topPad = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sw-scroll-top')) || 72;
+    var topPad = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sw-scroll-top')) || 88;
     root.scrollTop = topPad;
     try { root.focus({ preventScroll: true }); } catch (_) { root.focus(); }
+    if (window.swUpdateScrollbar) window.swUpdateScrollbar();
   }
 
   function showView(name) {

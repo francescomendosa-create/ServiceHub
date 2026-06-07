@@ -3,7 +3,7 @@
 // NON facciamo cache offline aggressiva per evitare di servire versioni stantie
 // del index.html: l'app si aggiorna automaticamente a ogni reload.
 
-const CACHE_NAME = 'servicehub-shell-realtime-sync-v2-v112';
+const CACHE_NAME = 'servicehub-shell-realtime-sync-v2-v113';
 
 self.addEventListener('message', (event) => {
   if (event && event.data === 'SKIP_WAITING') self.skipWaiting();
@@ -15,12 +15,11 @@ const SHELL_FILES = [
   './sh-favicon.png?v=shpc4',
   './manifest.json?v=shpc4',
   './watch-manifest.json?v=sw14',
-  './remote/manifest.json?v=dr3',
-  './remote/sw-remote.js?v=dr3',
-  './sh-remote-icon-192.png?v=dr3',
-  './sh-remote-icon-512.png?v=dr3',
-  './splash-remote-mobile.png?v=dr3',
-  './splash-remote-pc.png?v=dr3'
+  './remote/manifest.json?v=dr4',
+  './sh-remote-icon-192.png?v=dr4',
+  './sh-remote-icon-512.png?v=dr4',
+  './splash-remote-mobile.png?v=dr4',
+  './splash-remote-pc.png?v=dr4'
 ];
 
 self.addEventListener('install', (event) => {

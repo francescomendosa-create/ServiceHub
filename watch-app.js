@@ -159,7 +159,8 @@
     var resetBtn = $('sw-btn-reset');
     if (resetBtn) {
       resetBtn.addEventListener('click', function () {
-        if (confirm('Azzerare PASS e HP?')) persistChemCounts(0, 0);
+        persistChemCounts(0, 0);
+        try { navigator.vibrate(15); } catch (_) {}
       });
     }
   }

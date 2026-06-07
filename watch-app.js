@@ -18,10 +18,17 @@
   function $(id) { return document.getElementById(id); }
 
   function setScrollTheme(viewId) {
-    document.body.classList.remove('sw-bg-home', 'sw-bg-panel');
-    document.body.classList.add(viewId === 'view-home' ? 'sw-bg-home' : 'sw-bg-panel');
-    var topPad = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sw-scroll-top')) || 54;
-    window.scrollTo(0, topPad);
+    var isHome = viewId === 'view-home';
+    document.body.classList.remove('sw-bg-home', 'sw-bg-panel', 'sw-home-only');
+    document.body.classList.add(isHome ? 'sw-bg-home' : 'sw-bg-panel');
+    if (isHome) {
+      document.body.classList.add('sw-home-only');
+      window.scrollTo(0, 0);
+    } else {
+      var topPad = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sw-scroll-top')) || 54;
+      window.scrollTo(0, topPad);
+    }
+    if (window.swEnsurePageHeight) window.swEnsurePageHeight();
   }
 
   function showView(name) {

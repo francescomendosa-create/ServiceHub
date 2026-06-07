@@ -13,7 +13,7 @@
   <meta name="apple-mobile-web-app-title" content="STABILE Digital" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <link rel="apple-touch-icon" href="sh-touch.png?v=shpc4" />
-  <link rel="stylesheet" href="digital-remote.css?v=dig17" />
+  <link rel="stylesheet" href="digital-remote.css?v=dig18" />
   <style>
     html, body {
       margin: 0;
@@ -634,6 +634,31 @@
 
     /** Evita re-render identici (onSnapshot / metadata). */
     let __lastDigitalRemoteSig = "";
+    let __lastRenderedUpdatedAt = "";
+    let __remoteSnapshotDebounce = null;
+    let __lastPublicDigitalPullMs = 0;
+    let __remoteRefreshInFlight = false;
+
+    function clearRemoteSnapshotDebounce() {
+      if (__remoteSnapshotDebounce) {
+        clearTimeout(__remoteSnapshotDebounce);
+        __remoteSnapshotDebounce = null;
+      }
+    }
+
+    function markRemotePayloadRendered(d) {
+      if (d && d.updatedAt) {
+        __lastRenderedUpdatedAt = String(d.updatedAt);
+      }
+    }
+
+    function isRemotePayloadNewer(d) {
+      if (!d) return false;
+      const ts = String(d.updatedAt || "");
+      if (!ts) return true;
+      if (!__lastRenderedUpdatedAt) return true;
+      return ts >= __lastRenderedUpdatedAt;
+    }
 
     function updateRemoteMetaStrip(d) {
       const meta1 = bodyEl.querySelector(".digital-remote-top__meta");
@@ -744,44 +769,89 @@
         })();
         prefRef = doc(db, "artifacts", appIdParam, "publicDigital", shareKey);
 
-        refreshHandler = async function () {
-          const btn = document.getElementById("btn-remote-refresh");
-          if (btn) btn.textContent = "…";
-          try {
+        /**
+         * Lettura sempre dal server Firestore (non dalla cache locale del listener).
+         * @param {{ fullRefresh?: boolean, userInitiated?: boolean }} opts
+         */
+        async function fetchAndRenderPublicDigital(opts) {
+          const o = opts || {};
+          const forceFull = o.fullRefresh !== false;
+          const userInitiated = !!o.userInitiated;
+          clearRemoteSnapshotDebounce();
+          const snap = await getDocFromServer(prefRef);
+          if (!snap.exists()) {
             __lastDigitalRemoteSig = "";
-            const snap = await getDocFromServer(prefRef);
-            if (!snap.exists()) {
-              bodyEl.innerHTML =
-                '<div class="remote-error-banner">Nessun report su questo link. Dall app operatore apri Digital Report e premi AGGIORNA (o LINK REMOTO una volta).</div>';
-              return;
+            __lastRenderedUpdatedAt = "";
+            bodyEl.innerHTML =
+              '<div class="remote-error-banner">Nessun report su questo link. Dall app operatore apri Digital Report e premi AGGIORNA (o LINK REMOTO una volta).</div>';
+            return { ok: false, reason: "missing" };
+          }
+          const d = snap.data();
+          if (!userInitiated && !isRemotePayloadNewer(d)) {
+            return { ok: true, reason: "stale-skipped" };
+          }
+          __lastDigitalRemoteSig = "";
+          renderFromData(d, { fullRefresh: forceFull });
+          markRemotePayloadRendered(d);
+          return { ok: true, reason: "rendered" };
+        }
+
+        refreshHandler = async function () {
+          if (__remoteRefreshInFlight) return;
+          const btn = document.getElementById("btn-remote-refresh");
+          if (btn) {
+            btn.disabled = true;
+            btn.textContent = "…";
+          }
+          __remoteRefreshInFlight = true;
+          try {
+            const result = await fetchAndRenderPublicDigital({
+              fullRefresh: true,
+              userInitiated: true
+            });
+            if (result && result.ok && result.reason === "rendered" && btn) {
+              const prev = btn.textContent;
+              btn.textContent = "OK";
+              setTimeout(function () {
+                if (btn) btn.textContent = prev === "OK" ? "AGGIORNA" : prev;
+              }, 900);
             }
-            renderFromData(snap.data(), { fullRefresh: true });
           } catch (err) {
             __lastDigitalRemoteSig = "";
             bodyEl.innerHTML =
               '<div class="remote-error-banner">Aggiornamento non riuscito: ' +
               esc(err && err.message) +
-              "</div>";
+              ". Controlla la connessione e riprova.</div>";
           } finally {
+            __remoteRefreshInFlight = false;
             const b = document.getElementById("btn-remote-refresh");
-            if (b) b.textContent = "AGGIORNA";
+            if (b) {
+              b.disabled = false;
+              if (b.textContent === "…") b.textContent = "AGGIORNA";
+            }
           }
         };
 
-        var __remoteSnapshotDebounce = null;
-
         function applySnapshot(snap) {
+          if (__remoteRefreshInFlight) return;
+
           const flush = function () {
             __remoteSnapshotDebounce = null;
+            if (__remoteRefreshInFlight) return;
             if (!snap.exists()) {
               __lastDigitalRemoteSig = "";
+              __lastRenderedUpdatedAt = "";
               bodyEl.innerHTML =
                 '<div class="remote-error-banner">In attesa del primo salvataggio o pubblicazione Digital…</div>';
               return;
             }
             const d = snap.data();
-            var isFirst = !bodyEl.querySelector("#digital-cards-grid");
+            if (!isRemotePayloadNewer(d)) {
+              return;
+            }
+            const isFirst = !bodyEl.querySelector("#digital-cards-grid");
             renderFromData(d, { fullRefresh: isFirst });
+            markRemotePayloadRendered(d);
             try {
               if (snap.metadata && snap.metadata.fromCache) {
                 setTimeout(function () {
@@ -792,20 +862,14 @@
           };
 
           if (!snap.exists()) {
-            if (__remoteSnapshotDebounce) {
-              clearTimeout(__remoteSnapshotDebounce);
-              __remoteSnapshotDebounce = null;
-            }
+            clearRemoteSnapshotDebounce();
             flush();
             return;
           }
 
-          var isFirstNow = !bodyEl.querySelector("#digital-cards-grid");
+          const isFirstNow = !bodyEl.querySelector("#digital-cards-grid");
           if (isFirstNow) {
-            if (__remoteSnapshotDebounce) {
-              clearTimeout(__remoteSnapshotDebounce);
-              __remoteSnapshotDebounce = null;
-            }
+            clearRemoteSnapshotDebounce();
             flush();
             return;
           }
@@ -828,20 +892,25 @@
           }
         );
 
-        var __lastPublicDigitalPullMs = 0;
-
-        /** Lettura forzata da server (evita cache SDK / tab in background). */
+        /** Lettura forzata da server (pulsante AGGIORNA, tab visibile, ecc.). */
         async function pullFromServer(reason) {
-          var now = Date.now();
-          if (now - __lastPublicDigitalPullMs < 450) return;
+          if (__remoteRefreshInFlight) return;
+          const now = Date.now();
+          if (reason !== "btn" && now - __lastPublicDigitalPullMs < 450) return;
           __lastPublicDigitalPullMs = now;
           try {
-            const snap = await getDocFromServer(prefRef);
-            applySnapshot(snap);
+            await fetchAndRenderPublicDigital({
+              fullRefresh: reason === "btn",
+              userInitiated: reason === "btn" || reason === "visibility" || reason === "focus"
+            });
           } catch (err) {
             console.warn("[Digital remoto] pull server:", reason, err && err.message);
           }
         }
+
+        setTimeout(function () {
+          pullFromServer("init");
+        }, 400);
 
         document.addEventListener("visibilitychange", function () {
           if (document.visibilityState === "visible") {

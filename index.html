@@ -274,6 +274,42 @@ window.gestioneResize = function(e) {
 window.addEventListener('resize', window.gestioneResize);
 window.addEventListener('orientationchange', window.gestioneResize);
 
+/** Tablet Android (non telefono). */
+window.__shIsAndroidTablet = function () {
+    var ua = navigator.userAgent || '';
+    if (!/Android/i.test(ua)) return false;
+    return Math.min(window.screen.width, window.screen.height) >= 600;
+};
+
+/* Disabilita pull-to-refresh su tablet Android: evita reload e ritorno alla home/splash. */
+(function () {
+    if (typeof history !== 'undefined' && 'scrollRestoration' in history) {
+        history.scrollRestoration = 'manual';
+    }
+    if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
+    var lastTouchY = 0;
+    document.addEventListener('touchstart', function (e) {
+        if (e.touches && e.touches.length === 1) lastTouchY = e.touches[0].clientY;
+    }, { passive: true });
+    document.addEventListener('touchmove', function (e) {
+        if (!e.touches || e.touches.length !== 1) return;
+        var touchY = e.touches[0].clientY;
+        var deltaY = touchY - lastTouchY;
+        lastTouchY = touchY;
+        if (deltaY <= 0) return;
+        var node = e.target;
+        while (node && node !== document.documentElement) {
+            try {
+                var oy = window.getComputedStyle(node).overflowY;
+                if ((oy === 'auto' || oy === 'scroll' || oy === 'overlay') && node.scrollTop > 0) return;
+            } catch (_) {}
+            node = node.parentElement;
+        }
+        var scrollTop = window.scrollY || document.documentElement.scrollTop || 0;
+        if (scrollTop <= 0) e.preventDefault();
+    }, { passive: false });
+})();
+
 // Auto-salvataggio intelligente durante input
 document.addEventListener('input', function(e) {
     if (window.bloccaSalvataggio) return;
@@ -521,7 +557,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.04-digital-phone-center-v2';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.04-android-no-ptr-restore';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -4206,6 +4242,10 @@ window.updateStoricoButton = async function() {
                 window.expandAllSectionsLayout();
             }
 
+            if (typeof window.restoreUiScrollIfNeeded === 'function') {
+                setTimeout(window.restoreUiScrollIfNeeded, 120);
+            }
+
             const btnShModifica = document.getElementById('btn-sh-settings-modifica');
             if (btnShModifica) {
                 btnShModifica.addEventListener('click', (e) => {
@@ -4287,6 +4327,7 @@ window.updateStoricoButton = async function() {
             });
             document.addEventListener('visibilitychange', function () {
                 if (document.visibilityState === 'hidden') {
+                    if (typeof window.saveUiScrollRestore === 'function') window.saveUiScrollRestore();
                     if (__plantPersistTimer) {
                         clearTimeout(__plantPersistTimer);
                         __plantPersistTimer = null;
@@ -4313,6 +4354,23 @@ window.updateStoricoButton = async function() {
             window.addEventListener('online', function () {
                 if (typeof window.__pullAllCloudStateNow === 'function') {
                     void window.__pullAllCloudStateNow();
+                }
+            });
+
+            var __uiScrollSaveTimer = null;
+            window.addEventListener('scroll', function () {
+                if (__uiScrollSaveTimer) return;
+                __uiScrollSaveTimer = setTimeout(function () {
+                    __uiScrollSaveTimer = null;
+                    if (typeof window.saveUiScrollRestore === 'function') window.saveUiScrollRestore();
+                }, 200);
+            }, { passive: true });
+            window.addEventListener('pagehide', function () {
+                if (typeof window.saveUiScrollRestore === 'function') window.saveUiScrollRestore();
+            });
+            window.addEventListener('pageshow', function (ev) {
+                if (ev.persisted && typeof window.restoreUiScrollIfNeeded === 'function') {
+                    setTimeout(window.restoreUiScrollIfNeeded, 80);
                 }
             });
 
@@ -5877,6 +5935,34 @@ window.updateStoricoButton = async function() {
                     window.SERVICEHUB_SESSION_KEY,
                     JSON.stringify({ activeId: store.activeId, updatedAt: new Date().toISOString() })
                 );
+            } catch (_) {}
+        };
+
+        window.SERVICEHUB_SPLASH_ENTERED_KEY = 'servicehub_splash_entered';
+        window.SERVICEHUB_UI_RESTORE_KEY = 'servicehub_ui_restore_v1';
+
+        window.saveUiScrollRestore = function () {
+            try {
+                sessionStorage.setItem(window.SERVICEHUB_UI_RESTORE_KEY, JSON.stringify({
+                    x: window.scrollX || 0,
+                    y: window.scrollY || 0,
+                    t: Date.now()
+                }));
+            } catch (_) {}
+        };
+
+        window.restoreUiScrollIfNeeded = function () {
+            try {
+                var raw = sessionStorage.getItem(window.SERVICEHUB_UI_RESTORE_KEY);
+                if (!raw) return;
+                var o = JSON.parse(raw);
+                if (!o || typeof o.y !== 'number') return;
+                if (Date.now() - (o.t || 0) > 180000) return;
+                var x = o.x || 0;
+                var y = o.y || 0;
+                requestAnimationFrame(function () {
+                    window.scrollTo(x, y);
+                });
             } catch (_) {}
         };
         window.RAPPORTINI_SECTION_IDS = ['sec-chpp', 'sec-well', 'sec-amb', 'sec-ambiente2', 'sec-acqua', 'sec-scam', 'sec-filtra', 'sec-bluedown', 'sec-aria', 'sec-azoto', 'sec-stoccaggio-interno', 'sec-chemicals'];
@@ -13269,6 +13355,7 @@ window.convertToHtml = async () => {
         
         .col-section { transition: flex 0.4s cubic-bezier(0.4, 0, 0.2, 1); will-change: flex, transform; transform: translateZ(0); display: flex; background-color: var(--bg-card); overflow: hidden; position: relative; }
         
+        html, body { overscroll-behavior-y: none; }
         body { background-color: transparent; font-family: system-ui, sans-serif; color: var(--text-main); user-select: none; -webkit-user-select: none; padding-bottom: 90px; margin: 0; padding-top: env(safe-area-inset-top); }
         
         /* ✅ OTTIMIZZAZIONE iOS */
@@ -13659,19 +13746,60 @@ window.convertToHtml = async () => {
                 transform: translateZ(0);
                 -webkit-transform: translateZ(0);
             }
-            /* Popup standard: centrati, scroll dall'alto, safe-area */
-            .modal-overlay.active:not(#settings-modal):not(#management-modal):not(#archive-list-modal) {
+            /* Notturno: stesso fondo schermo del rapportino Generale (documento corto su iOS) */
+            body.notturno-filtra-active {
+                min-height: 100dvh !important;
+                padding-top: 0 !important;
+                display: flex;
+                flex-direction: column;
+            }
+            body.notturno-filtra-active .main-container {
+                flex: 1 1 auto;
+                min-height: 0;
+                overflow-x: hidden;
+                overflow-y: auto;
+                -webkit-overflow-scrolling: touch;
+                padding-bottom: calc(68px + env(safe-area-inset-bottom, 0px));
+            }
+            body.notturno-filtra-active .fixed-management-container {
+                position: fixed !important;
+                left: 0 !important;
+                right: 0 !important;
+                bottom: 0 !important;
+                width: 100% !important;
+                margin: 0 !important;
+                padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px)) !important;
+                z-index: 1005 !important;
+                transform: none !important;
+                -webkit-transform: none !important;
+            }
+            /* Popup standard: in alto con scroll; aggiornamento app resta centrato */
+            .modal-overlay.active:not(#settings-modal):not(#management-modal):not(#archive-list-modal):not(#app-update-modal) {
                 align-items: flex-start;
                 justify-content: center;
                 padding: max(18px, calc(env(safe-area-inset-top, 0px) + 12px)) 14px max(18px, env(safe-area-inset-bottom, 0px));
                 overflow-y: auto;
                 -webkit-overflow-scrolling: touch;
             }
-            .modal-overlay.active:not(#settings-modal):not(#management-modal):not(#archive-list-modal) .modal-content-centered {
+            .modal-overlay.active:not(#settings-modal):not(#management-modal):not(#archive-list-modal):not(#app-update-modal) .modal-content-centered {
                 transform: translateY(0) scale(1) !important;
                 opacity: 1 !important;
                 margin: 0 auto;
                 width: min(94vw, 400px);
+                flex-shrink: 0;
+            }
+            #app-update-modal.active {
+                align-items: center !important;
+                justify-content: center !important;
+                padding: max(16px, env(safe-area-inset-top, 0px)) 14px max(16px, env(safe-area-inset-bottom, 0px)) !important;
+                overflow-y: auto;
+                -webkit-overflow-scrolling: touch;
+            }
+            #app-update-modal.active .modal-content-centered {
+                transform: translateY(0) scale(1) !important;
+                opacity: 1 !important;
+                margin: auto !important;
+                width: min(92vw, 400px) !important;
                 flex-shrink: 0;
             }
             /* Impostazioni: full screen; solo safe-area sul titolo */
@@ -14218,12 +14346,22 @@ window.convertToHtml = async () => {
             const enterBtn = document.getElementById('splash-enter');
             if (!splash || !enterBtn) return;
 
-            function dismissSplash() {
+            function dismissSplash(persist) {
                 splash.classList.add('fade-out');
                 setTimeout(() => { splash.style.display = 'none'; }, 650);
+                if (persist !== false) {
+                    try { sessionStorage.setItem('servicehub_splash_entered', '1'); } catch (_) {}
+                }
             }
 
-            enterBtn.addEventListener('click', dismissSplash);
+            try {
+                if (sessionStorage.getItem('servicehub_splash_entered') === '1') {
+                    splash.style.display = 'none';
+                    splash.classList.add('fade-out');
+                }
+            } catch (_) {}
+
+            enterBtn.addEventListener('click', function () { dismissSplash(true); });
             document.addEventListener('keydown', (e) => {
                 if (e.key === 'Escape' || e.key === 'Enter') dismissSplash();
             });

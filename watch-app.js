@@ -17,10 +17,20 @@
 
   function $(id) { return document.getElementById(id); }
 
+  function trickHideUrlBar() {
+    if (typeof window.swTrickHideUrlBar === 'function') {
+      window.swTrickHideUrlBar();
+    }
+  }
+
   function showView(name) {
     ['view-home', 'view-menu', 'view-chemicals', 'view-empty'].forEach(function (id) {
       var el = $(id);
       if (el) el.classList.toggle('sw-view--hidden', id !== name);
+    });
+    requestAnimationFrame(function () {
+      trickHideUrlBar();
+      setTimeout(trickHideUrlBar, 120);
     });
   }
 
@@ -188,6 +198,7 @@
 
   bindUI();
   showView('view-home');
+  trickHideUrlBar();
   initFirebase().catch(function (e) {
     console.warn('[ServiceWatch] init:', e && e.message);
     state.ready = true;

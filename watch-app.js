@@ -17,10 +17,11 @@
 
   function $(id) { return document.getElementById(id); }
 
-  function microScrollUp() {
-    if (typeof window.swMicroScrollUp === 'function') {
-      window.swMicroScrollUp();
-    }
+  function setScrollTheme(viewId) {
+    document.body.classList.remove('sw-bg-home', 'sw-bg-panel');
+    document.body.classList.add(viewId === 'view-home' ? 'sw-bg-home' : 'sw-bg-panel');
+    var root = $('sw-scroll-root');
+    if (root) root.scrollTop = 0;
   }
 
   function showView(name) {
@@ -28,7 +29,7 @@
       var el = $(id);
       if (el) el.classList.toggle('sw-view--hidden', id !== name);
     });
-    setTimeout(microScrollUp, 90);
+    setScrollTheme(name);
   }
 
   function getChemCounts(data) {

@@ -3,7 +3,7 @@
 // NON facciamo cache offline aggressiva per evitare di servire versioni stantie
 // del index.html: l'app si aggiorna automaticamente a ogni reload.
 
-const CACHE_NAME = 'servicehub-shell-realtime-sync-v2-v114';
+const CACHE_NAME = 'servicehub-shell-realtime-sync-v2-v115';
 
 self.addEventListener('message', (event) => {
   if (event && event.data === 'SKIP_WAITING') self.skipWaiting();
@@ -15,10 +15,14 @@ const SHELL_FILES = [
   './sh-favicon.png?v=shpc4',
   './manifest.json?v=shpc4',
   './watch-manifest.json?v=sw14',
-  './sh-remote-icon-192.png?v=dr4',
-  './sh-remote-icon-512.png?v=dr4',
-  './splash-remote-mobile.png?v=dr4',
-  './splash-remote-pc.png?v=dr4'
+  './op/manifest.json?v=op5',
+  './op/sw-op.js?v=op5',
+  './remote/manifest.json?v=rm5',
+  './remote/sw-remote.js?v=rm5',
+  './sh-remote-icon-192.png?v=rm5',
+  './sh-remote-icon-512.png?v=rm5',
+  './splash-remote-mobile.png?v=rm5',
+  './splash-remote-pc.png?v=rm5'
 ];
 
 self.addEventListener('install', (event) => {
@@ -57,7 +61,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  if (url.pathname.includes('/remote/')) {
+  if (url.pathname.includes('/remote/') || url.pathname.includes('/op/')) {
     return;
   }
 

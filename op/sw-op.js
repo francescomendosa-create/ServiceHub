@@ -1,4 +1,4 @@
-const CACHE = 'servicehub-remote-sw-v1';
+const CACHE = 'servicehub-op-sw-v1';
 self.addEventListener('install', (e) => { e.waitUntil(self.skipWaiting()); });
 self.addEventListener('activate', (e) => { e.waitUntil(self.clients.claim()); });
 self.addEventListener('fetch', (e) => {

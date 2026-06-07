@@ -17,9 +17,9 @@
 
   function $(id) { return document.getElementById(id); }
 
-  function trickHideUrlBar() {
-    if (typeof window.swTrickHideUrlBar === 'function') {
-      window.swTrickHideUrlBar();
+  function microScrollUp() {
+    if (typeof window.swMicroScrollUp === 'function') {
+      window.swMicroScrollUp();
     }
   }
 
@@ -28,10 +28,7 @@
       var el = $(id);
       if (el) el.classList.toggle('sw-view--hidden', id !== name);
     });
-    requestAnimationFrame(function () {
-      trickHideUrlBar();
-      setTimeout(trickHideUrlBar, 120);
-    });
+    setTimeout(microScrollUp, 90);
   }
 
   function getChemCounts(data) {
@@ -198,7 +195,6 @@
 
   bindUI();
   showView('view-home');
-  trickHideUrlBar();
   initFirebase().catch(function (e) {
     console.warn('[ServiceWatch] init:', e && e.message);
     state.ready = true;

@@ -21,7 +21,10 @@
     document.body.classList.remove('sw-bg-home', 'sw-bg-panel');
     document.body.classList.add(viewId === 'view-home' ? 'sw-bg-home' : 'sw-bg-panel');
     var root = $('sw-scroll-root');
-    if (root) root.scrollTop = 0;
+    if (!root) return;
+    var topPad = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sw-scroll-top')) || 72;
+    root.scrollTop = topPad;
+    try { root.focus({ preventScroll: true }); } catch (_) { root.focus(); }
   }
 
   function showView(name) {
@@ -131,9 +134,9 @@
   }
 
   function bindUI() {
-    var homeMain = document.querySelector('#view-home .sw-home-main');
-    if (homeMain) {
-      homeMain.addEventListener('click', openMenuFromHome);
+    var home = $('view-home');
+    if (home) {
+      home.addEventListener('click', openMenuFromHome);
     }
     var backMenu = $('sw-back-menu');
     if (backMenu) backMenu.addEventListener('click', function () { showView('view-home'); });

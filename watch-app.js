@@ -2,6 +2,7 @@
   'use strict';
 
   var APP_ID = 'stabile-2026-v4';
+  var SW_CFG_KEY = 'servicehub_service_watch_v1';
   var state = {
     pass: 0,
     hp: 0,
@@ -54,10 +55,61 @@
     if (h) h.textContent = String(state.hp);
   }
 
+  function loadWatchLocalConfig() {
+    try {
+      var raw = localStorage.getItem(SW_CFG_KEY);
+      if (raw) {
+        var p = JSON.parse(raw);
+        if (p && p.modules) return p;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function saveWatchLocalConfig(cfg) {
+    try {
+      localStorage.setItem(SW_CFG_KEY, JSON.stringify(cfg));
+    } catch (_) {}
+  }
+
+  function mergeWatchModules(localMods, remoteMods) {
+    localMods = localMods || {};
+    remoteMods = remoteMods || {};
+    var out = JSON.parse(JSON.stringify(localMods));
+    Object.keys(remoteMods).forEach(function (mid) {
+      if (!out[mid]) out[mid] = {};
+      var locEn = !!(localMods[mid] && localMods[mid].enabled);
+      var remEn = !!(remoteMods[mid] && remoteMods[mid].enabled);
+      out[mid].enabled = locEn ? true : remEn;
+    });
+    return out;
+  }
+
+  function mergeWatchConfig(local, remote) {
+    local = local || { modules: state.modules };
+    remote = remote || { modules: {} };
+    var localTs = local.updatedAt ? new Date(local.updatedAt).getTime() : 0;
+    var remoteTs = remote.updatedAt ? new Date(remote.updatedAt).getTime() : 0;
+    if (localTs > remoteTs && local.modules) {
+      return { modules: JSON.parse(JSON.stringify(local.modules)), updatedAt: local.updatedAt };
+    }
+    return {
+      modules: mergeWatchModules(local.modules, remote.modules),
+      updatedAt: remoteTs > localTs
+        ? remote.updatedAt
+        : (local.updatedAt || remote.updatedAt || new Date().toISOString())
+    };
+  }
+
   function applyRemoteStore(remote) {
     if (!remote) return;
-    if (remote.serviceWatch && remote.serviceWatch.modules) {
-      state.modules = JSON.parse(JSON.stringify(remote.serviceWatch.modules));
+    var localCfg = loadWatchLocalConfig();
+    var remoteSw = remote.serviceWatch;
+    if (remoteSw && remoteSw.modules || localCfg) {
+      var merged = mergeWatchConfig(localCfg, remoteSw || {});
+      state.modules = merged.modules;
+      saveWatchLocalConfig(merged);
+      renderMenu();
     }
     var nott = remote.items && remote.items.notturno;
     var c = getChemCounts(nott && nott.data);
@@ -201,6 +253,13 @@
     if (first.exists()) applyRemoteStore(first.data());
     else state.ready = true;
   }
+
+  (function hydrateWatchModulesFromLocal() {
+    var localCfg = loadWatchLocalConfig();
+    if (localCfg && localCfg.modules) {
+      state.modules = JSON.parse(JSON.stringify(localCfg.modules));
+    }
+  })();
 
   bindUI();
   showView('view-home');

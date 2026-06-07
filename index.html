@@ -557,7 +557,7 @@ window.colorPreviewNumber = function(tankName, value) {
         console.log('RESET MEMORIA: Completato!');
     </script>
     <title>STABILE 2026 - V4.5</title>
-    <script>window.SERVICEHUB_BUILD = '2026.06.06-digital-labels-fix';</script>
+    <script>window.SERVICEHUB_BUILD = '2026.06.06-watch-sticky-modules';</script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' }
@@ -7560,6 +7560,9 @@ window.updateStoricoButton = async function() {
             }
             if (activeItem && typeof window.applyRapportinoItem === 'function' && opts.applyActiveItem) {
                 window.applyRapportinoItem(activeItem);
+            }
+            if (typeof window.syncServiceWatchSettingsUI === 'function') {
+                window.syncServiceWatchSettingsUI();
             }
             return store;
             } finally {
@@ -16268,23 +16271,66 @@ window.loadSettingsHome = function () {
 // ===============================
 window.SERVICE_WATCH_CONFIG_KEY = 'servicehub_service_watch_v1';
 
-window.loadServiceWatchConfig = function () {
-    if (window.__serviceWatchConfig) return window.__serviceWatchConfig;
+window.readServiceWatchConfigRaw = function () {
     try {
         var raw = localStorage.getItem(window.SERVICE_WATCH_CONFIG_KEY);
         if (raw) {
             var p = JSON.parse(raw);
-            if (p && p.modules) {
-                window.__serviceWatchConfig = p;
-                return p;
-            }
+            if (p && p.modules) return p;
         }
     } catch (_) {}
-    window.__serviceWatchConfig = { modules: { chemicals: { enabled: false } } };
+    return { modules: { chemicals: { enabled: false } } };
+};
+
+window.loadServiceWatchConfig = function () {
+    if (window.__serviceWatchConfig) return window.__serviceWatchConfig;
+    window.__serviceWatchConfig = window.readServiceWatchConfigRaw();
+    if (!window.__serviceWatchConfig.modules) {
+        window.__serviceWatchConfig.modules = { chemicals: { enabled: false } };
+    }
     return window.__serviceWatchConfig;
 };
 
+window.mergeServiceWatchModules = function (localMods, remoteMods) {
+    localMods = localMods || {};
+    remoteMods = remoteMods || {};
+    var out = JSON.parse(JSON.stringify(localMods));
+    Object.keys(remoteMods).forEach(function (mid) {
+        if (!out[mid]) out[mid] = {};
+        var locEn = !!(localMods[mid] && localMods[mid].enabled);
+        var remEn = !!(remoteMods[mid] && remoteMods[mid].enabled);
+        out[mid].enabled = locEn ? true : remEn;
+    });
+    return out;
+};
+
+window.mergeServiceWatchConfig = function (local, remote) {
+    local = local || { modules: {} };
+    remote = remote || { modules: {} };
+    var localTs = local.updatedAt ? new Date(local.updatedAt).getTime() : 0;
+    var remoteTs = remote.updatedAt ? new Date(remote.updatedAt).getTime() : 0;
+    if (localTs > remoteTs && local.modules) {
+        return JSON.parse(JSON.stringify(local));
+    }
+    return {
+        modules: window.mergeServiceWatchModules(local.modules, remote.modules),
+        updatedAt: remoteTs > localTs
+            ? remote.updatedAt
+            : (local.updatedAt || remote.updatedAt || new Date().toISOString())
+    };
+};
+
+window.serviceWatchConfigNeedsCloudCorrection = function (merged, remoteSw) {
+    if (!remoteSw || !remoteSw.modules || !merged || !merged.modules) return false;
+    var mm = merged.modules;
+    var rm = remoteSw.modules;
+    return Object.keys(mm).some(function (mid) {
+        return !!(mm[mid] && mm[mid].enabled) && !(rm[mid] && rm[mid].enabled);
+    });
+};
+
 window.saveServiceWatchConfig = function (cfg) {
+    cfg.updatedAt = new Date().toISOString();
     window.__serviceWatchConfig = cfg;
     try {
         localStorage.setItem(window.SERVICE_WATCH_CONFIG_KEY, JSON.stringify(cfg));
@@ -16302,16 +16348,31 @@ window.saveServiceWatchConfig = function (cfg) {
 
 window.applyServiceWatchConfigFromCloud = function (remoteSw) {
     if (!remoteSw || !remoteSw.modules) return;
-    var local = window.loadServiceWatchConfig();
-    var merged = {
-        modules: Object.assign({}, local.modules || {}, remoteSw.modules || {})
-    };
+    if (window.__serviceWatchRepushing) return;
+    var local = window.readServiceWatchConfigRaw();
+    var merged = window.mergeServiceWatchConfig(local, remoteSw);
+    var needsPush = window.serviceWatchConfigNeedsCloudCorrection(merged, remoteSw);
     window.__serviceWatchConfig = merged;
     try {
         localStorage.setItem(window.SERVICE_WATCH_CONFIG_KEY, JSON.stringify(merged));
     } catch (_) {}
     if (typeof window.syncServiceWatchSettingsUI === 'function') {
         window.syncServiceWatchSettingsUI();
+    }
+    if (needsPush) {
+        window.__serviceWatchRepushing = true;
+        try {
+            merged.updatedAt = new Date().toISOString();
+            window.__serviceWatchConfig = merged;
+            try {
+                localStorage.setItem(window.SERVICE_WATCH_CONFIG_KEY, JSON.stringify(merged));
+            } catch (_) {}
+            if (typeof window.flushRapportiniPushToCloudNow === 'function') {
+                void window.flushRapportiniPushToCloudNow();
+            }
+        } finally {
+            window.__serviceWatchRepushing = false;
+        }
     }
 };
 

@@ -3,7 +3,7 @@
 // NON facciamo cache offline aggressiva per evitare di servire versioni stantie
 // del index.html: l'app si aggiorna automaticamente a ogni reload.
 
-const CACHE_NAME = 'servicehub-shell-realtime-sync-v2-v81';
+const CACHE_NAME = 'servicehub-shell-realtime-sync-v2-v82';
 
 self.addEventListener('message', (event) => {
   if (event && event.data === 'SKIP_WAITING') self.skipWaiting();

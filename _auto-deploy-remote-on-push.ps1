@@ -30,7 +30,7 @@ function Test-RemoteFilesChanged {
 $branch = ""
 try { $branch = git -C $root rev-parse --abbrev-ref HEAD 2>$null } catch {}
 if ($branch -ne "main") {
-    Write-Host "[remote-auto] push su '$branch' — deploy automatico solo su main." -ForegroundColor DarkGray
+    Write-Host "[remote-auto] push su $branch - deploy automatico solo su main." -ForegroundColor DarkGray
     exit 0
 }
 
@@ -46,14 +46,14 @@ try {
 }
 
 if (-not (Test-RemoteFilesChanged -Files $changed)) {
-    Write-Host "[remote-auto] Nessun file remoto nel push — skip deploy." -ForegroundColor DarkGray
+    Write-Host "[remote-auto] Nessun file remoto nel push - skip deploy." -ForegroundColor DarkGray
     exit 0
 }
 
-Write-Host "[remote-auto] Modifiche remote rilevate — deploy Firebase in corso..." -ForegroundColor Cyan
+Write-Host "[remote-auto] Modifiche remote rilevate - deploy Firebase in corso..." -ForegroundColor Cyan
 
 if (-not (Get-Command firebase -ErrorAction SilentlyContinue)) {
-    Write-Host "[remote-auto] Firebase CLI assente — il push continua; la CI GitHub fara il deploy." -ForegroundColor Yellow
+    Write-Host "[remote-auto] Firebase CLI assente - il push continua; la CI GitHub fara il deploy." -ForegroundColor Yellow
     exit 0
 }
 
@@ -63,7 +63,7 @@ try {
     Write-Host "[remote-auto] Deploy locale OK." -ForegroundColor Green
 } catch {
     Write-Host "[remote-auto] Deploy locale fallito: $_" -ForegroundColor Yellow
-    Write-Host "[remote-auto] Il push continua — GitHub Actions pubblichera Service Remote." -ForegroundColor Yellow
+    Write-Host "[remote-auto] Il push continua - GitHub Actions pubblichera Service Remote." -ForegroundColor Yellow
 }
 
 exit 0

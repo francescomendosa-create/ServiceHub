@@ -7,7 +7,7 @@
     var SK = "servicehub_remote_share_k";
     var SA = "servicehub_remote_app_id";
     var FB_ORIGIN = "https://servicehub-18309.web.app";
-    window.SVCREMOTE_BUILD = "2026.06.08-v26";
+    window.SVCREMOTE_BUILD = "2026.06.08-v27";
 
     /** Vecchi link su GitHub → stesso remoto su Firebase. */
     (function redirectGithubToFirebase() {
@@ -225,7 +225,7 @@
   <link rel="manifest" href="manifest.json?v=fb5" />
   <link rel="apple-touch-icon" href="../sh-remote-touch.png?v=fb3" />
   <link rel="icon" type="image/png" sizes="32x32" href="../sh-remote-favicon.png?v=fb3" />
-  <link rel="stylesheet" href="../digital-remote.css?v=dig26" />
+  <link rel="stylesheet" href="../digital-remote.css?v=dig27" />
   <style>
     html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; overflow: hidden; }
     #digital-preview-container {
@@ -384,7 +384,7 @@
   </style>
 </head>
 <body>
-    <div id="svc-remote-ver" style="position:fixed;bottom:4px;right:8px;z-index:9999;font:700 10px monospace;color:rgba(255,255,255,0.35);pointer-events:none;">v26</div>
+    <div id="svc-remote-ver" style="position:fixed;bottom:4px;right:8px;z-index:9999;font:700 10px monospace;color:rgba(255,255,255,0.35);pointer-events:none;">v27</div>
     <div id="svc-remote-update-bar" role="status">
       Nuova versione disponibile.
       <button type="button" id="svc-remote-update-go">Aggiorna ora</button>
@@ -402,7 +402,6 @@
       memoryLocalCache,
       doc,
       collection,
-      onSnapshot,
       getDoc,
       getDocFromServer,
       getDocsFromServer
@@ -569,8 +568,19 @@
       root.querySelectorAll(".digital-card").forEach(function (card) {
         card.style.setProperty("width", "auto", "important");
         card.style.setProperty("max-width", "none", "important");
+        card.style.setProperty("overflow", "visible", "important");
         card.style.removeProperty("margin-left");
         card.style.removeProperty("margin-right");
+      });
+      root.querySelectorAll(".digital-card-surface").forEach(function (el) {
+        el.style.setProperty("overflow", "visible", "important");
+        el.style.setProperty("padding-top", "18px", "important");
+      });
+      root.querySelectorAll(".digital-card-title").forEach(function (el) {
+        el.style.setProperty("padding-top", "6px", "important");
+        el.style.setProperty("padding-bottom", "12px", "important");
+        el.style.setProperty("line-height", "1.45", "important");
+        el.style.setProperty("overflow", "visible", "important");
       });
     }
 
@@ -1253,26 +1263,6 @@
           }
         })();
         prefRef = doc(db, "artifacts", appIdParam, "publicDigital", activeKey);
-        let unsubPrefSnapshot = null;
-
-        function bindPrefSnapshotListener() {
-          if (typeof unsubPrefSnapshot === "function") {
-            try {
-              unsubPrefSnapshot();
-            } catch (_) {}
-          }
-          prefRef = doc(db, "artifacts", appIdParam, "publicDigital", activeKey);
-          unsubPrefSnapshot = onSnapshot(
-            prefRef,
-            function (snap) {
-              applySnapshot(snap);
-            },
-            function (err) {
-              __lastDigitalRemoteSig = "";
-              rootEl.innerHTML = buildErrorShell("Errore cloud: " + esc(err && err.message));
-            }
-          );
-        }
 
         function wireRetryFetchButton() {
           const retryBtn = document.getElementById("svc-remote-retry-fetch");
@@ -1344,11 +1334,11 @@
 
           if (hit.shareKey !== activeKey) {
             activeKey = hit.shareKey;
+            prefRef = doc(db, "artifacts", appIdParam, "publicDigital", activeKey);
             try {
               localStorage.setItem(REMOTE_SHARE_K_KEY, activeKey);
               sessionStorage.setItem(REMOTE_SHARE_K_KEY, activeKey);
             } catch (_) {}
-            bindPrefSnapshotListener();
           }
 
           if (!userInitiated && !isRemotePayloadNewer(hit.data) && unchangedOnScreen) {
@@ -1416,111 +1406,8 @@
           }
         };
 
-        function applySnapshot(snap) {
-          if (__remoteRefreshInFlight) return;
-
-          const flush = function () {
-            __remoteSnapshotDebounce = null;
-            if (__remoteRefreshInFlight) return;
-            if (!snap.exists()) {
-              __lastDigitalRemoteSig = "";
-              __lastRenderedUpdatedAt = "";
-              rootEl.innerHTML =
-                '<div class="remote-error-banner">In attesa del primo salvataggio o pubblicazione Digital…</div>';
-              return;
-            }
-            const d = snap.data();
-            if (!isRemotePayloadNewer(d)) {
-              return;
-            }
-            const isFirst = !rootEl.querySelector("#digital-cards-grid");
-            renderFromData(d, { fullRefresh: isFirst });
-            markRemotePayloadRendered(d);
-            try {
-              if (snap.metadata && snap.metadata.fromCache) {
-                setTimeout(function () {
-                  pullFromServer("snapshot-from-cache");
-                }, 300);
-              }
-            } catch (_) {}
-          };
-
-          if (!snap.exists()) {
-            clearRemoteSnapshotDebounce();
-            flush();
-            return;
-          }
-
-          const isFirstNow = !rootEl.querySelector("#digital-cards-grid");
-          if (isFirstNow) {
-            clearRemoteSnapshotDebounce();
-            flush();
-            return;
-          }
-
-          if (__remoteSnapshotDebounce) clearTimeout(__remoteSnapshotDebounce);
-          __remoteSnapshotDebounce = setTimeout(flush, 120);
-        }
-
+        /** Solo caricamento iniziale + pulsante AGGIORNA (niente sync live da ServiceHub). */
         await pullLatestFromCloud({ fullRefresh: true, userInitiated: false }).catch(function () {});
-
-        bindPrefSnapshotListener();
-
-        const latestPtrRef = doc(db, "artifacts", appIdParam, "publicDigital", "__latest");
-        onSnapshot(
-          latestPtrRef,
-          function () {
-            if (__remoteRefreshInFlight) return;
-            pullFromServer("latest-ptr");
-          },
-          function (err) {
-            console.warn("[SvcRemote] __latest listener:", err && err.message);
-          }
-        );
-
-        /** Lettura forzata da server (pulsante AGGIORNA, tab visibile, ecc.). */
-        async function pullFromServer(reason) {
-          if (__remoteRefreshInFlight) return;
-          const now = Date.now();
-          const userPull =
-            reason === "btn" ||
-            reason === "visibility" ||
-            reason === "focus" ||
-            reason === "latest-ptr" ||
-            reason === "init" ||
-            reason === "bfcache";
-          if (!userPull && now - __lastPublicDigitalPullMs < 450) return;
-          __lastPublicDigitalPullMs = now;
-          try {
-            await pullLatestFromCloud({
-              fullRefresh: reason === "btn" || reason === "init" || reason === "bfcache",
-              userInitiated: reason === "btn"
-            });
-          } catch (err) {
-            console.warn("[Digital remoto] pull server:", reason, err && err.message);
-          }
-        }
-
-        setTimeout(function () {
-          pullFromServer("init");
-        }, 600);
-
-        document.addEventListener("visibilitychange", function () {
-          if (document.visibilityState === "visible") {
-            pullFromServer("visibility");
-          }
-        });
-        window.addEventListener("pageshow", function (ev) {
-          if (ev.persisted) pullFromServer("bfcache");
-        });
-        window.addEventListener("focus", function () {
-          pullFromServer("focus");
-        });
-        setInterval(function () {
-          if (document.visibilityState === "visible") {
-            pullFromServer("interval");
-          }
-        }, 300000);
       })();
     }
 

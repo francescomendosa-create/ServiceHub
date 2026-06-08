@@ -43,6 +43,24 @@
     );
   }
 
+  function hasShareLinkInUrl() {
+    try {
+      var p = String(global.location.pathname || "");
+      if (/\/r\/[^/?#]+/i.test(p)) return true;
+      var q = new URLSearchParams(global.location.search || "");
+      if ((q.get("k") || q.get("K") || "").trim()) return true;
+    } catch (_) {}
+    return false;
+  }
+
+  function reportAlreadyVisible() {
+    try {
+      var grid = global.document.getElementById("digital-cards-grid");
+      if (grid && grid.querySelector(".digital-card")) return true;
+    } catch (_) {}
+    return false;
+  }
+
   global.__svcRemoteInstallHelp = {
     isStandalone: isStandalone,
     manualInstallHtml: manualInstallHtml,
@@ -55,6 +73,16 @@
       var msg = document.getElementById("svc-remote-install-msg");
       if (!panel || !msg) return;
       if (isStandalone()) {
+        panel.style.display = "none";
+        return;
+      }
+      /** Tablet/telefono con LINK REMOTO: solo Digital Report, niente barra installazione. */
+      if (hasShareLinkInUrl() || reportAlreadyVisible()) {
+        panel.style.display = "none";
+        return;
+      }
+      var onInstallPage = /\/install\.html$/i.test(String(global.location.pathname || ""));
+      if (!onInstallPage) {
         panel.style.display = "none";
         return;
       }

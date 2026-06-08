@@ -12452,38 +12452,86 @@ window.pushDigitalSnapshotFromLiveUI = function () {
     return Promise.resolve(window.pushPublicDigitalSnapshotQuiet());
 };
 
-window.refreshDigitalPreview = function () {
-    var hadRemoteLink = false;
-    if (typeof window.__enablePublicDigitalAutoSyncIfShareKeyExists === 'function') {
-        hadRemoteLink = !!window.__enablePublicDigitalAutoSyncIfShareKeyExists();
-    }
+window.refreshDigitalPreview = async function () {
     window.openDigitalPreview();
-    if (!hadRemoteLink) return;
     var btn = document.getElementById('btn-digital-refresh');
     var prevLabel = btn ? btn.textContent : '';
     if (btn) btn.textContent = '…';
-    Promise.resolve(
-        typeof window.pushDigitalSnapshotFromLiveUI === 'function'
-            ? window.pushDigitalSnapshotFromLiveUI()
-            : false
-    )
-        .then(function (ok) {
-            if (ok && typeof window.__serviceHubFlashToast === 'function') {
-                window.__serviceHubFlashToast('Digital pubblicato sul link remoto.', false, 'ok');
-            } else if (!ok && typeof window.__serviceHubFlashToast === 'function') {
-                window.__serviceHubFlashToast(
-                    'Anteprima aggiornata in locale; cloud non pubblicato (rete o permessi).',
-                    false,
-                    'warn'
-                );
+
+    if (!db || !user || !user.uid) {
+        if (btn) btn.textContent = prevLabel || 'AGGIORNA';
+        if (typeof window.__serviceHubFlashToast === 'function') {
+            window.__serviceHubFlashToast(
+                'Anteprima aggiornata in locale. Cloud non attivo (LED rosso): accedi e usa LINK REMOTO o AGGIORNA.',
+                false,
+                'warn'
+            );
+        }
+        return;
+    }
+
+    if (typeof window.__hydrateDigitalShareKeyFromCloud === 'function') {
+        try {
+            await window.__hydrateDigitalShareKeyFromCloud();
+        } catch (_) {}
+    }
+
+    var hasKey = false;
+    try {
+        hasKey =
+            !!sessionStorage.getItem('servicehub_digital_share_key') ||
+            sessionStorage.getItem('servicehub_public_digital_auto_sync') === '1';
+    } catch (_) {}
+    if (!hasKey) {
+        try {
+            const metaSnap = await getDoc(doc(db, "artifacts", appId, "sharedDial", "meta"));
+            if (metaSnap.exists() && metaSnap.data().digitalShareKey) {
+                try {
+                    sessionStorage.setItem("servicehub_digital_share_key", metaSnap.data().digitalShareKey);
+                } catch (_) {}
+                hasKey = true;
             }
-        })
-        .catch(function (e) {
-            console.warn('[ServiceHub] refreshDigitalPreview push:', e && e.message);
-        })
-        .finally(function () {
-            if (btn) btn.textContent = prevLabel || 'AGGIORNA';
-        });
+        } catch (e) {
+            console.warn('[ServiceHub] refreshDigitalPreview meta:', e && e.message);
+        }
+    }
+
+    if (!hasKey) {
+        if (btn) btn.textContent = prevLabel || 'AGGIORNA';
+        if (typeof window.__serviceHubFlashToast === 'function') {
+            window.__serviceHubFlashToast(
+                'Anteprima aggiornata. Per il client remoto premi prima LINK REMOTO (genera k e pubblica).',
+                false,
+                'warn'
+            );
+        }
+        return;
+    }
+
+    if (typeof window.__enablePublicDigitalAutoSync === 'function') {
+        window.__enablePublicDigitalAutoSync();
+    }
+
+    try {
+        const ok = await Promise.resolve(
+            typeof window.pushDigitalSnapshotFromLiveUI === 'function'
+                ? window.pushDigitalSnapshotFromLiveUI()
+                : false
+        );
+        if (ok && typeof window.__serviceHubFlashToast === 'function') {
+            window.__serviceHubFlashToast('Digital pubblicato sul link remoto.', false, 'ok');
+        } else if (!ok && typeof window.__serviceHubFlashToast === 'function') {
+            window.__serviceHubFlashToast(
+                'Anteprima aggiornata; cloud non pubblicato (rete, timeout o regole Firestore). Riprova o controlla LED verde.',
+                false,
+                'warn'
+            );
+        }
+    } catch (e) {
+        console.warn('[ServiceHub] refreshDigitalPreview push:', e && e.message);
+    } finally {
+        if (btn) btn.textContent = prevLabel || 'AGGIORNA';
+    }
 };
 
 window.closeDigitalPreview = () => {

@@ -40,6 +40,7 @@ Copy-Item (Join-Path $root "remote\sw-remote.js") (Join-Path $rh "sw.js") -Force
 
 Copy-Item (Join-Path $root "remote\manifest.firebase.json") (Join-Path $rh "manifest.json") -Force
 Copy-Item (Join-Path $root "remote\install.html") (Join-Path $rh "install.html") -Force
+Copy-Item (Join-Path $root "remote\install-help.js") (Join-Path $rh "install-help.js") -Force
 
 
 
@@ -47,10 +48,13 @@ $src = Get-Content (Join-Path $root "remote\index.html") -Raw -Encoding UTF8
 
 $src = $src -replace '\.\./', ''
 
-$src = $src -replace 'manifest\.firebase\.json\?v=fb3', 'manifest.json?v=fb3'
-$src = $src -replace 'remote/manifest\.firebase\.json\?v=fb3', 'manifest.json?v=fb3'
+$src = $src -replace 'manifest\.firebase\.json\?v=fb4', 'manifest.json?v=fb4'
+$src = $src -replace 'manifest\.json\?v=fb3', 'manifest.json?v=fb4'
+$src = $src -replace 'remote/manifest\.firebase\.json\?v=fb4', 'manifest.json?v=fb4'
 
-$src = $src -replace 'sw-remote\.js\?v=fb3', 'sw.js?v=fb3'
+$src = $src -replace 'sw-remote\.js\?v=fb4', 'sw.js?v=fb4'
+$src = $src -replace 'sw\.js\?v=fb3', 'sw.js?v=fb4'
+$src = $src -replace 'install-help\.js\?v=v14', 'install-help.js?v=v14'
 
 $src = $src -replace 'v=web5', 'v=fb2'
 

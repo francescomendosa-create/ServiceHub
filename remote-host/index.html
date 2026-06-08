@@ -7,7 +7,7 @@
     var SK = "servicehub_remote_share_k";
     var SA = "servicehub_remote_app_id";
     var FB_ORIGIN = "https://servicehub-18309.web.app";
-    window.SVCREMOTE_BUILD = "2026.06.08-app-v11";
+    window.SVCREMOTE_BUILD = "2026.06.08-app-v12";
 
     /** Da GitHub Pages → Firebase (dominio separato da ServiceHub operatore). */
     (function redirectGithubToFirebase() {
@@ -366,7 +366,7 @@
   </style>
 </head>
 <body>
-    <div id="svc-remote-ver" style="position:fixed;bottom:4px;right:8px;z-index:9999;font:700 10px monospace;color:rgba(255,255,255,0.4);pointer-events:none;">app-v11</div>
+    <div id="svc-remote-ver" style="position:fixed;bottom:4px;right:8px;z-index:9999;font:700 10px monospace;color:rgba(255,255,255,0.4);pointer-events:none;">app-v12</div>
     <div id="svc-remote-update-bar" role="status">
       Nuova versione disponibile.
       <button type="button" id="svc-remote-update-go">Aggiorna ora</button>
@@ -384,9 +384,11 @@
       initializeFirestore,
       memoryLocalCache,
       doc,
+      collection,
       onSnapshot,
       getDoc,
-      getDocFromServer
+      getDocFromServer,
+      getDocsFromServer
     } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
     const DEFAULT_FIREBASE_CONFIG = {
@@ -1012,70 +1014,78 @@
       applyDigitalPhoneLayoutIfNeeded(root);
     }
 
-    async function fetchLatestShareKeyFromCloud(appId) {
+    function initRemoteDb(appName) {
+      let app;
       try {
-        let app;
-        try {
-          app = getApp("digital-remote-bootstrap");
-        } catch (_) {
-          app = initializeApp(DEFAULT_FIREBASE_CONFIG, "digital-remote-bootstrap");
-        }
-        const db = (function () {
-          try {
-            return initializeFirestore(app, {
-              localCache: memoryLocalCache(),
-              experimentalForceLongPolling: true
-            });
-          } catch (_) {
-            return getFirestore(app);
-          }
-        })();
-        const snap = await getDocFromServer(doc(db, "artifacts", appId, "publicDigital", "__latest"));
-        if (snap.exists() && snap.data().shareKey) {
-          return String(snap.data().shareKey).trim();
-        }
-      } catch (err) {
-        console.warn("[SvcRemote] lettura __latest:", err && err.message);
+        app = getApp(appName);
+      } catch (_) {
+        app = initializeApp(DEFAULT_FIREBASE_CONFIG, appName);
       }
-      return "";
+      try {
+        return initializeFirestore(app, {
+          localCache: memoryLocalCache(),
+          experimentalForceLongPolling: true
+        });
+      } catch (_) {
+        return getFirestore(app);
+      }
+    }
+
+    /** Ultimo report con cardsHTML sul cloud (non dipende da __latest né da chiave nell'URL). */
+    async function fetchLatestPublicDigital(appId) {
+      try {
+        const db = initRemoteDb("digital-remote-bootstrap");
+        const snap = await getDocsFromServer(collection(db, "artifacts", appId, "publicDigital"));
+        let best = null;
+        snap.forEach(function (docSnap) {
+          if (docSnap.id === "__latest") return;
+          const d = docSnap.data() || {};
+          const html = String(d.cardsHTML || "");
+          if (html.length < 40) return;
+          if (!best || String(d.updatedAt || "") > String(best.data.updatedAt || "")) {
+            best = { shareKey: docSnap.id, data: d };
+          }
+        });
+        return best;
+      } catch (err) {
+        console.warn("[SvcRemote] scan publicDigital:", err && err.message);
+        return null;
+      }
+    }
+
+    async function fetchLatestShareKeyFromCloud(appId) {
+      const hit = await fetchLatestPublicDigital(appId);
+      return hit && hit.shareKey ? String(hit.shareKey).trim() : "";
     }
 
     async function remoteBootstrap() {
       let activeKey = shareKey;
+
       if (!activeKey) {
-        const isStandalone =
-          typeof window.__svcRemoteIsStandalone === "function" && window.__svcRemoteIsStandalone();
-        if (isStandalone) {
-          bodyEl.innerHTML = buildDigitalPreviewShell(
-            '<div class="remote-loading-pulse">Collegamento al Digital pubblicato…</div>',
-            { showRefresh: false, showExit: false, includeFocusBar: false }
-          );
-          activeKey = await fetchLatestShareKeyFromCloud(appIdParam);
-          if (activeKey) {
-            try {
-              localStorage.setItem(REMOTE_SHARE_K_KEY, activeKey);
-              sessionStorage.setItem(REMOTE_SHARE_K_KEY, activeKey);
-              localStorage.setItem(REMOTE_APP_ID_KEY, appIdParam);
-            } catch (_) {}
-            location.replace(buildCanonicalRemoteUrl(activeKey, appIdParam).href);
-            return;
-          }
+        bodyEl.innerHTML = buildDigitalPreviewShell(
+          '<div class="remote-loading-pulse">Caricamento Digital Report dal cloud…</div>',
+          { showRefresh: false, showExit: false, includeFocusBar: false }
+        );
+        const latest = await fetchLatestPublicDigital(appIdParam);
+        if (latest && latest.shareKey) {
+          activeKey = latest.shareKey;
+          try {
+            localStorage.setItem(REMOTE_SHARE_K_KEY, activeKey);
+            sessionStorage.setItem(REMOTE_SHARE_K_KEY, activeKey);
+            localStorage.setItem(REMOTE_APP_ID_KEY, appIdParam);
+          } catch (_) {}
+          location.replace(buildCanonicalRemoteUrl(activeKey, appIdParam).href);
+          return;
         }
-        const urlHint = esc(String(location.href || "").split("#")[0]).slice(0, 120);
         bodyEl.innerHTML = buildRemoteShell(
-          "<p><strong>Seconda app</strong> (Service Remote): installala una volta da " +
-            '<a href="./install.html" style="color:#93c5fd;">install.html</a> (menu → Installa app).</p>' +
-            "<p>Poi in <strong>ServiceHub</strong>: Digital Report → <strong>LINK REMOTO</strong> → apri l'<strong>icona Service Remote</strong> sul desktop.</p>" +
-            remotePasteLinkBlockHtml() +
-            (urlHint
-              ? '<p style="font-size:11px;opacity:0.75;margin-top:14px;word-break:break-all;">Indirizzo: <code>' +
-                urlHint +
-                "</code></p>"
-              : ""),
-          "Installa Service Remote (app separata)"
+          "<p>Nessun Digital trovato sul cloud per <code>" +
+            esc(appIdParam) +
+            "</code>.</p>" +
+            "<p>In ServiceHub: apri <strong>Digital Report</strong> (con le card visibili), poi <strong>LINK REMOTO</strong> e attendi il messaggio verde.</p>" +
+            remotePasteLinkBlockHtml(),
+          "Cloud vuoto"
         );
         wireRemotePasteLink();
-        showDigitalInstallHint();
         return;
       }
 
@@ -1122,7 +1132,19 @@
           clearRemoteSnapshotDebounce();
           const snap = await getDocFromServer(prefRef);
           if (!snap.exists()) {
-            if (isStandaloneApp && !userInitiated && __remoteAutoRetryCount < MAX_AUTO_RETRY) {
+            const fallback = await fetchLatestPublicDigital(appIdParam);
+            if (fallback && fallback.shareKey && fallback.shareKey !== activeKey && fallback.data) {
+              activeKey = fallback.shareKey;
+              prefRef = doc(db, "artifacts", appIdParam, "publicDigital", activeKey);
+              try {
+                localStorage.setItem(REMOTE_SHARE_K_KEY, activeKey);
+                sessionStorage.setItem(REMOTE_SHARE_K_KEY, activeKey);
+              } catch (_) {}
+              renderFromData(fallback.data, { fullRefresh: true });
+              markRemotePayloadRendered(fallback.data);
+              return { ok: true, reason: "fallback-latest" };
+            }
+            if (!userInitiated && __remoteAutoRetryCount < MAX_AUTO_RETRY) {
               __remoteAutoRetryCount++;
               bodyEl.innerHTML = buildDigitalPreviewShell(
                 '<div class="remote-loading-pulse">Pubblicazione in corso su Firebase… (' +

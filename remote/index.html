@@ -7,7 +7,7 @@
     var SK = "servicehub_remote_share_k";
     var SA = "servicehub_remote_app_id";
     var FB_ORIGIN = "https://servicehub-18309.web.app";
-    window.SVCREMOTE_BUILD = "2026.06.08-v22";
+    window.SVCREMOTE_BUILD = "2026.06.08-v23";
 
     /** Vecchi link su GitHub → stesso remoto su Firebase. */
     (function redirectGithubToFirebase() {
@@ -225,7 +225,7 @@
   <link rel="manifest" href="manifest.json?v=fb5" />
   <link rel="apple-touch-icon" href="../sh-remote-touch.png?v=fb3" />
   <link rel="icon" type="image/png" sizes="32x32" href="../sh-remote-favicon.png?v=fb3" />
-  <link rel="stylesheet" href="../digital-remote.css?v=dig23" />
+  <link rel="stylesheet" href="../digital-remote.css?v=dig24" />
   <style>
     html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; overflow: hidden; }
     #digital-preview-container {
@@ -384,7 +384,7 @@
   </style>
 </head>
 <body>
-    <div id="svc-remote-ver" style="position:fixed;bottom:4px;right:8px;z-index:9999;font:700 10px monospace;color:rgba(255,255,255,0.35);pointer-events:none;">v22</div>
+    <div id="svc-remote-ver" style="position:fixed;bottom:4px;right:8px;z-index:9999;font:700 10px monospace;color:rgba(255,255,255,0.35);pointer-events:none;">v23</div>
     <div id="svc-remote-update-bar" role="status">
       Nuova versione disponibile.
       <button type="button" id="svc-remote-update-go">Aggiorna ora</button>
@@ -536,12 +536,44 @@
       });
     }
 
+    function isDigitalRemoteTablet() {
+      if (isDigitalRemotePhone()) return false;
+      var ua = navigator.userAgent || "";
+      var minScreen = Math.min(window.screen.width || 0, window.screen.height || 0);
+      var minViewport = Math.min(window.innerWidth || 0, window.innerHeight || 0);
+      if (/iPad|Tablet|PlayBook|Silk/i.test(ua)) return true;
+      if (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1) return true;
+      if (/Android/i.test(ua) && minScreen >= 600) return true;
+      if (minViewport >= 600 && navigator.maxTouchPoints > 1) return true;
+      return false;
+    }
+
+    function updateRemoteSyncStatus(msg, isErr) {
+      var el = document.getElementById("digital-remote-sync-status");
+      if (!el) {
+        var titleEl = document.getElementById("digital-preview-title");
+        if (titleEl && titleEl.parentNode) {
+          el = document.createElement("div");
+          el.id = "digital-remote-sync-status";
+          el.style.cssText =
+            "font-size:10px;font-weight:700;margin-top:4px;line-height:1.35;max-width:min(420px,72vw);";
+          titleEl.parentNode.appendChild(el);
+        }
+      }
+      if (el) {
+        el.style.color = isErr ? "#fecaca" : "#86efac";
+        el.textContent = msg;
+      }
+    }
+
     function applyDigitalPhoneLayoutIfNeeded(root) {
       root = root || document.getElementById("digital-preview-container");
       if (!root) return;
       var isPhone = isDigitalRemotePhone();
+      var isTablet = isDigitalRemoteTablet();
       root.classList.toggle("digital-phone-layout", isPhone);
-      root.classList.toggle("digital-pc-layout", !isPhone);
+      root.classList.toggle("digital-pc-layout", !isPhone && !isTablet);
+      root.classList.toggle("digital-tablet-layout", isTablet);
       if (!isPhone) {
         clearDigitalPhoneInlineOverrides(root);
         return;
@@ -940,7 +972,7 @@
       navigator.serviceWorker.addEventListener("controllerchange", function () {
         window.location.reload();
       });
-      navigator.serviceWorker.register("./sw.js?v=fb9", { scope: "./" }).then(function (reg) {
+      navigator.serviceWorker.register("./sw.js?v=fb10", { scope: "./" }).then(function (reg) {
         if (reg.waiting) reg.waiting.postMessage({ type: "SKIP_WAITING" });
         reg.addEventListener("updatefound", function () {
           var nw = reg.installing;
@@ -1085,10 +1117,31 @@
       }
     }
 
-    /** Ultimo report con cardsHTML sul cloud (non dipende da __latest né da chiave nell'URL). */
+    /** Ultimo report sul cloud: prima __latest, poi scan collection. */
     async function fetchLatestPublicDigital(appId) {
+      const db = initRemoteDb("digital-remote-bootstrap");
       try {
-        const db = initRemoteDb("digital-remote-bootstrap");
+        const latestSnap = await getDocFromServer(
+          doc(db, "artifacts", appId, "publicDigital", "__latest")
+        );
+        if (latestSnap.exists()) {
+          const sk = String((latestSnap.data() || {}).shareKey || "").trim();
+          if (sk) {
+            const dataSnap = await getDocFromServer(
+              doc(db, "artifacts", appId, "publicDigital", sk)
+            );
+            if (dataSnap.exists()) {
+              const d = dataSnap.data() || {};
+              if (String(d.cardsHTML || "").trim().length >= 40) {
+                return { shareKey: sk, data: d };
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("[SvcRemote] read __latest:", err && err.message);
+      }
+      try {
         const snap = await getDocsFromServer(collection(db, "artifacts", appId, "publicDigital"));
         let best = null;
         snap.forEach(function (docSnap) {
@@ -1225,6 +1278,7 @@
             __lastDigitalRemoteSig = "";
             __lastRenderedUpdatedAt = "";
             if (userInitiated) {
+              updateRemoteSyncStatus("Nessun report sul cloud — pubblica da ServiceHub", true);
               rootEl.innerHTML = buildErrorShell(
                 "<strong>Nessun report sul cloud.</strong>" +
                   '<p style="margin:12px 0 0;color:#fecaca;">Da ServiceHub: Digital Report → <strong>AGGIORNA</strong> o <strong>LINK REMOTO</strong> (LED verde).</p>' +
@@ -1260,9 +1314,14 @@
           bindCardZoomOnce();
           applyDigitalPhoneLayoutIfNeeded(document.getElementById("digital-preview-container"));
 
+          var when = hit.data.updatedAt
+            ? new Date(hit.data.updatedAt).toLocaleString("it-IT")
+            : "—";
           if (userInitiated && unchangedOnScreen) {
+            updateRemoteSyncStatus("Già allineato al cloud · " + when, false);
             return { ok: true, reason: "unchanged", updatedAt: hit.data.updatedAt };
           }
+          updateRemoteSyncStatus("Aggiornato dal cloud · " + when, false);
           return { ok: true, reason: "rendered", updatedAt: hit.data.updatedAt };
         }
 
@@ -1291,6 +1350,7 @@
             }
           } catch (err) {
             __lastDigitalRemoteSig = "";
+            updateRemoteSyncStatus("Errore lettura cloud", true);
             rootEl.innerHTML = buildErrorShell(
               "Aggiornamento non riuscito: " +
                 esc(err && err.message) +

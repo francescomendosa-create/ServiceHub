@@ -7,7 +7,7 @@
     var SK = "servicehub_remote_share_k";
     var SA = "servicehub_remote_app_id";
     var FB_ORIGIN = "https://servicehub-18309.web.app";
-    window.SVCREMOTE_BUILD = "2026.06.08-v21";
+    window.SVCREMOTE_BUILD = "2026.06.08-v22";
 
     /** Vecchi link su GitHub → stesso remoto su Firebase. */
     (function redirectGithubToFirebase() {
@@ -384,7 +384,7 @@
   </style>
 </head>
 <body>
-    <div id="svc-remote-ver" style="position:fixed;bottom:4px;right:8px;z-index:9999;font:700 10px monospace;color:rgba(255,255,255,0.35);pointer-events:none;">v21</div>
+    <div id="svc-remote-ver" style="position:fixed;bottom:4px;right:8px;z-index:9999;font:700 10px monospace;color:rgba(255,255,255,0.35);pointer-events:none;">v22</div>
     <div id="svc-remote-update-bar" role="status">
       Nuova versione disponibile.
       <button type="button" id="svc-remote-update-go">Aggiorna ora</button>
@@ -940,7 +940,7 @@
       navigator.serviceWorker.addEventListener("controllerchange", function () {
         window.location.reload();
       });
-      navigator.serviceWorker.register("./sw.js?v=fb8", { scope: "./" }).then(function (reg) {
+      navigator.serviceWorker.register("./sw.js?v=fb9", { scope: "./" }).then(function (reg) {
         if (reg.waiting) reg.waiting.postMessage({ type: "SKIP_WAITING" });
         reg.addEventListener("updatefound", function () {
           var nw = reg.installing;
@@ -1173,29 +1173,45 @@
         })();
         prefRef = doc(db, "artifacts", appIdParam, "publicDigital", activeKey);
 
+        function wireRetryFetchButton() {
+          const retryBtn = document.getElementById("svc-remote-retry-fetch");
+          if (!retryBtn) return;
+          retryBtn.addEventListener("click", function () {
+            retryBtn.disabled = true;
+            retryBtn.textContent = "…";
+            pullLatestFromCloud({ fullRefresh: true, userInitiated: true }).finally(function () {
+              retryBtn.disabled = false;
+              retryBtn.textContent = "Riprova";
+            });
+          });
+        }
+
         /**
-         * Lettura sempre dal server Firestore (non dalla cache locale del listener).
+         * Legge l ultimo Digital Report pubblicato sul cloud (scan + chiave corrente).
          * @param {{ fullRefresh?: boolean, userInitiated?: boolean }} opts
          */
-        async function fetchAndRenderPublicDigital(opts) {
+        async function pullLatestFromCloud(opts) {
           const o = opts || {};
           const forceFull = o.fullRefresh !== false;
           const userInitiated = !!o.userInitiated;
           clearRemoteSnapshotDebounce();
-          const snap = await getDocFromServer(prefRef);
-          if (!snap.exists()) {
-            const fallback = await fetchLatestPublicDigital(appIdParam);
-            if (fallback && fallback.shareKey && fallback.shareKey !== activeKey && fallback.data) {
-              activeKey = fallback.shareKey;
-              prefRef = doc(db, "artifacts", appIdParam, "publicDigital", activeKey);
-              try {
-                localStorage.setItem(REMOTE_SHARE_K_KEY, activeKey);
-                sessionStorage.setItem(REMOTE_SHARE_K_KEY, activeKey);
-              } catch (_) {}
-              renderFromData(fallback.data, { fullRefresh: true });
-              markRemotePayloadRendered(fallback.data);
-              return { ok: true, reason: "fallback-latest" };
+
+          let hit = await fetchLatestPublicDigital(appIdParam);
+          if ((!hit || !hit.data) && prefRef) {
+            try {
+              const snap = await getDocFromServer(prefRef);
+              if (snap.exists()) {
+                const d = snap.data();
+                if (String(d.cardsHTML || "").trim().length >= 40) {
+                  hit = { shareKey: activeKey, data: d };
+                }
+              }
+            } catch (err) {
+              console.warn("[SvcRemote] pullLatest prefRef:", err && err.message);
             }
+          }
+
+          if (!hit || !hit.data || String(hit.data.cardsHTML || "").trim().length < 40) {
             if (!userInitiated && __remoteAutoRetryCount < MAX_AUTO_RETRY) {
               __remoteAutoRetryCount++;
               rootEl.innerHTML = buildLoadingShell(
@@ -1204,37 +1220,54 @@
               await new Promise(function (resolve) {
                 setTimeout(resolve, 1500);
               });
-              return fetchAndRenderPublicDigital(opts);
+              return pullLatestFromCloud(opts);
             }
             __lastDigitalRemoteSig = "";
             __lastRenderedUpdatedAt = "";
-            rootEl.innerHTML = buildErrorShell(
-              "<strong>Report non ancora sul cloud.</strong>" +
-                '<p style="margin:12px 0 0;color:#fecaca;">Da ServiceHub: Digital Report HD aperto → LINK REMOTO → attendi conferma.</p>' +
-                '<button type="button" id="svc-remote-retry-fetch" style="cursor:pointer;margin-top:14px;padding:10px 16px;border-radius:10px;border:none;background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;font-weight:800;font-size:13px;">Riprova</button>'
-            );
-            wireButtons();
-            const retryBtn = document.getElementById("svc-remote-retry-fetch");
-            if (retryBtn) {
-              retryBtn.addEventListener("click", function () {
-                retryBtn.disabled = true;
-                retryBtn.textContent = "…";
-                fetchAndRenderPublicDigital({ fullRefresh: true, userInitiated: true }).finally(function () {
-                  retryBtn.disabled = false;
-                  retryBtn.textContent = "Riprova lettura";
-                });
-              });
+            if (userInitiated) {
+              rootEl.innerHTML = buildErrorShell(
+                "<strong>Nessun report sul cloud.</strong>" +
+                  '<p style="margin:12px 0 0;color:#fecaca;">Da ServiceHub: Digital Report → <strong>AGGIORNA</strong> o <strong>LINK REMOTO</strong> (LED verde).</p>' +
+                  '<button type="button" id="svc-remote-retry-fetch" style="cursor:pointer;margin-top:14px;padding:10px 16px;border-radius:10px;border:none;background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;font-weight:800;font-size:13px;">Riprova</button>'
+              );
+              wireButtons();
+              wireRetryFetchButton();
             }
             return { ok: false, reason: "missing" };
           }
-          const d = snap.data();
-          if (!userInitiated && !isRemotePayloadNewer(d)) {
+
+          const incomingSig = digitalRemoteSig(hit.data);
+          const unchangedOnScreen = !!(__lastDigitalRemoteSig && incomingSig === __lastDigitalRemoteSig);
+
+          if (hit.shareKey !== activeKey) {
+            activeKey = hit.shareKey;
+            prefRef = doc(db, "artifacts", appIdParam, "publicDigital", activeKey);
+            try {
+              localStorage.setItem(REMOTE_SHARE_K_KEY, activeKey);
+              sessionStorage.setItem(REMOTE_SHARE_K_KEY, activeKey);
+            } catch (_) {}
+          }
+
+          if (!userInitiated && !isRemotePayloadNewer(hit.data) && unchangedOnScreen) {
             return { ok: true, reason: "stale-skipped" };
           }
+
           __lastDigitalRemoteSig = "";
-          renderFromData(d, { fullRefresh: forceFull });
-          markRemotePayloadRendered(d);
-          return { ok: true, reason: "rendered" };
+          renderFromData(hit.data, { fullRefresh: forceFull || userInitiated });
+          markRemotePayloadRendered(hit.data);
+          __lastDigitalRemoteSig = digitalRemoteSig(hit.data);
+          wireButtons();
+          bindCardZoomOnce();
+          applyDigitalPhoneLayoutIfNeeded(document.getElementById("digital-preview-container"));
+
+          if (userInitiated && unchangedOnScreen) {
+            return { ok: true, reason: "unchanged", updatedAt: hit.data.updatedAt };
+          }
+          return { ok: true, reason: "rendered", updatedAt: hit.data.updatedAt };
+        }
+
+        async function fetchAndRenderPublicDigital(opts) {
+          return pullLatestFromCloud(opts || {});
         }
 
         refreshHandler = async function () {
@@ -1246,23 +1279,24 @@
           }
           __remoteRefreshInFlight = true;
           try {
-            const result = await fetchAndRenderPublicDigital({
+            const result = await pullLatestFromCloud({
               fullRefresh: true,
               userInitiated: true
             });
-            if (result && result.ok && result.reason === "rendered" && btn) {
-              const prev = btn.textContent;
-              btn.textContent = "OK";
+            if (btn && result && result.ok) {
+              btn.textContent = result.reason === "unchanged" ? "OK ✓" : "OK";
               setTimeout(function () {
-                if (btn) btn.textContent = prev === "OK" ? "AGGIORNA" : prev;
-              }, 900);
+                if (btn) btn.textContent = "AGGIORNA";
+              }, 1100);
             }
           } catch (err) {
             __lastDigitalRemoteSig = "";
-            rootEl.innerHTML =
-              '<div class="remote-error-banner">Aggiornamento non riuscito: ' +
-              esc(err && err.message) +
-              ". Controlla la connessione e riprova.</div>";
+            rootEl.innerHTML = buildErrorShell(
+              "Aggiornamento non riuscito: " +
+                esc(err && err.message) +
+                ". Controlla la connessione e riprova."
+            );
+            wireButtons();
           } finally {
             __remoteRefreshInFlight = false;
             const b = document.getElementById("btn-remote-refresh");
@@ -1339,16 +1373,33 @@
           }
         );
 
+        const latestPtrRef = doc(db, "artifacts", appIdParam, "publicDigital", "__latest");
+        onSnapshot(
+          latestPtrRef,
+          function () {
+            if (__remoteRefreshInFlight) return;
+            pullFromServer("latest-ptr");
+          },
+          function (err) {
+            console.warn("[SvcRemote] __latest listener:", err && err.message);
+          }
+        );
+
         /** Lettura forzata da server (pulsante AGGIORNA, tab visibile, ecc.). */
         async function pullFromServer(reason) {
           if (__remoteRefreshInFlight) return;
           const now = Date.now();
-          if (reason !== "btn" && now - __lastPublicDigitalPullMs < 450) return;
+          const userPull =
+            reason === "btn" ||
+            reason === "visibility" ||
+            reason === "focus" ||
+            reason === "latest-ptr";
+          if (!userPull && now - __lastPublicDigitalPullMs < 450) return;
           __lastPublicDigitalPullMs = now;
           try {
-            await fetchAndRenderPublicDigital({
+            await pullLatestFromCloud({
               fullRefresh: reason === "btn",
-              userInitiated: reason === "btn" || reason === "visibility" || reason === "focus"
+              userInitiated: userPull
             });
           } catch (err) {
             console.warn("[Digital remoto] pull server:", reason, err && err.message);

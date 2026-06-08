@@ -1228,6 +1228,27 @@ window.colorPreviewNumber = function(tankName, value) {
             return false;
         };
 
+        /** Abilita auto-sync se esiste già una chiave remota (sessione o meta cloud). */
+        window.__ensurePublicDigitalPushAllowed = async function () {
+            if (typeof window.__shouldPushPublicDigital === 'function' && window.__shouldPushPublicDigital()) {
+                return true;
+            }
+            if (!db || !user || !user.uid) return false;
+            try {
+                const metaSnap = await getDoc(doc(db, "artifacts", appId, "sharedDial", "meta"));
+                if (metaSnap.exists() && metaSnap.data().digitalShareKey) {
+                    try {
+                        sessionStorage.setItem("servicehub_digital_share_key", metaSnap.data().digitalShareKey);
+                    } catch (_) {}
+                    if (typeof window.__enablePublicDigitalAutoSync === 'function') {
+                        window.__enablePublicDigitalAutoSync();
+                    }
+                    return true;
+                }
+            } catch (_) {}
+            return false;
+        };
+
         /** Chiave Digital remota condivisa tra tutti i dispositivi (salvata in sharedDial/meta). */
         window.__hydrateDigitalShareKeyFromCloud = async function () {
             if (!db || !user || !user.uid) return;
@@ -2773,14 +2794,16 @@ window.colorPreviewNumber = function(tankName, value) {
 
             /** Non bloccare il tasto Salva: publicDigital è secondario rispetto allo snapshot backup. */
             const schedulePublicDigitalAfterArchive = function (logTag) {
-                if (typeof window.__shouldPushPublicDigital === 'function') {
-                    if (!window.__shouldPushPublicDigital()) return;
-                } else if (!window.__publicDigitalAutoSyncEnabled) {
-                    return;
-                }
                 try {
                     const tag = logTag || "archiveCurrentData publicDigital";
-                    const pushPromise = Promise.resolve(window.pushPublicDigitalSnapshotQuiet());
+                    const pushPromise = Promise.resolve(
+                        typeof window.__ensurePublicDigitalPushAllowed === 'function'
+                            ? window.__ensurePublicDigitalPushAllowed().then(function (allowed) {
+                                  if (!allowed) return false;
+                                  return window.pushPublicDigitalSnapshotQuiet();
+                              })
+                            : window.pushPublicDigitalSnapshotQuiet()
+                    );
                     const wrapped =
                         typeof window.__serviceHubWithTimeout === "function"
                             ? window.__serviceHubWithTimeout(pushPromise, 22000, tag)
@@ -9369,6 +9392,9 @@ window.updateStoricoButton = async function() {
             });
             
             window.saveData();
+            if (typeof window.flushPublicDigitalSnapshotNow === 'function') {
+                window.flushPublicDigitalSnapshotNow();
+            }
         };
         window.closeShiftPopup = () => { document.getElementById('shift-modal').classList.remove('active'); };
         window.selectShift = (shiftName) => { manualShift = shiftName; updateDeviceInfo(); window.saveData(); window.closeShiftPopup(); };
@@ -12574,23 +12600,26 @@ window.closeDigitalPreview = () => {
 /** Esegue subito (dopo 2 frame) la pubblicazione su publicDigital — usato dopo saveData così il client remoto non aspetta il debounce. */
 window.flushPublicDigitalSnapshotNow = function () {
     if (!db || !user || !user.uid) return;
-    if (typeof window.__shouldPushPublicDigital === 'function' ? !window.__shouldPushPublicDigital() : !window.__publicDigitalAutoSyncEnabled) return;
     if (window.__publicDigitalSyncTimer) {
         clearTimeout(window.__publicDigitalSyncTimer);
         window.__publicDigitalSyncTimer = null;
     }
-    var run = function () {
-        return Promise.resolve(window.pushPublicDigitalSnapshotQuiet())
-            .then(function (ok) {
-                if (!ok) {
-                    console.warn(
-                        "[ServiceHub] flushPublicDigitalSnapshotNow: publicDigital non aggiornato (controlla console per permission-denied)."
-                    );
-                }
-            })
-            .catch(function (e) {
-                console.error("[ServiceHub] flushPublicDigitalSnapshotNow:", e && e.message);
-            });
+    var run = async function () {
+        try {
+            const allowed =
+                typeof window.__ensurePublicDigitalPushAllowed === 'function'
+                    ? await window.__ensurePublicDigitalPushAllowed()
+                    : window.__publicDigitalAutoSyncEnabled;
+            if (!allowed) return;
+            const ok = await Promise.resolve(window.pushPublicDigitalSnapshotQuiet());
+            if (!ok) {
+                console.warn(
+                    "[ServiceHub] flushPublicDigitalSnapshotNow: publicDigital non aggiornato (controlla console per permission-denied)."
+                );
+            }
+        } catch (e) {
+            console.error("[ServiceHub] flushPublicDigitalSnapshotNow:", e && e.message);
+        }
     };
     requestAnimationFrame(function () {
         requestAnimationFrame(function () {
@@ -12601,19 +12630,24 @@ window.flushPublicDigitalSnapshotNow = function () {
 /** Dopo ricezione plant da altro tablet (onSnapshot), debounce leggero per non spammare Firestore. */
 window.schedulePublicDigitalSnapshotSync = function () {
     if (!db || !user || !user.uid) return;
-    if (typeof window.__shouldPushPublicDigital === 'function' ? !window.__shouldPushPublicDigital() : !window.__publicDigitalAutoSyncEnabled) return;
     if (window.__publicDigitalSyncTimer) clearTimeout(window.__publicDigitalSyncTimer);
     window.__publicDigitalSyncTimer = setTimeout(function () {
         window.__publicDigitalSyncTimer = null;
-        Promise.resolve(window.pushPublicDigitalSnapshotQuiet())
-            .then(function (ok) {
+        void (async function () {
+            try {
+                const allowed =
+                    typeof window.__ensurePublicDigitalPushAllowed === 'function'
+                        ? await window.__ensurePublicDigitalPushAllowed()
+                        : window.__publicDigitalAutoSyncEnabled;
+                if (!allowed) return;
+                const ok = await Promise.resolve(window.pushPublicDigitalSnapshotQuiet());
                 if (!ok) {
                     console.warn("[ServiceHub] schedulePublicDigitalSnapshotSync: push non riuscito.");
                 }
-            })
-            .catch(function (e) {
+            } catch (e) {
                 console.error("[ServiceHub] schedulePublicDigitalSnapshotSync:", e && e.message);
-            });
+            }
+        })();
     }, 80);
 };
 
@@ -12651,6 +12685,9 @@ window.pushPublicDigitalSnapshotQuiet = async function () {
         } catch (_) {}
     }
     if (!shareKey) {
+        if (!window.__publicDigitalAutoSyncEnabled) {
+            return false;
+        }
         shareKey =
             typeof crypto !== "undefined" && crypto.randomUUID
                 ? crypto.randomUUID()

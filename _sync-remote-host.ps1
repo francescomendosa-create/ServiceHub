@@ -20,7 +20,7 @@ $src = $src -replace '\.\./', ''
 $src = $src -replace "manifest\.firebase\.json(\?v=[^`"]+)?", "manifest.json?v=fb5"
 $src = $src -replace "sw-remote\.js(\?v=[^`"]+)?", "sw.js?v=fb5"
 $src = $src -replace "install-help\.js(\?v=[^`"]+)?", "install-help.js?v=v23"
-$src = $src -replace "sw\.js(\?v=[^`"]+)?", "sw.js?v=fb10"
+$src = $src -replace "sw\.js(\?v=[^`"]+)?", "sw.js?v=fb11"
 $src = $src -replace "digital-remote\.css(\?v=[^`"]+)?", "digital-remote.css?v=dig24"
 $src = $src -replace "digital-remote\.css(\?v=[^`"]+)?", "digital-remote.css?v=dig23"
 

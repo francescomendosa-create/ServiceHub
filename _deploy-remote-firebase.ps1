@@ -1,87 +1,26 @@
-# Deploy Service Remote sul sito Hosting predefinito (servicehub-18309.web.app)
-
+# Deploy Service Remote su servicehub-18309.web.app
 # Esegui: powershell -ExecutionPolicy Bypass -File .\_deploy-remote-firebase.ps1
 
-
-
 $env:NODE_OPTIONS = "--use-system-ca"
-
 $ErrorActionPreference = "Stop"
-
 $root = $PSScriptRoot
-
-$rh = Join-Path $root "remote-host"
-
-
 
 Write-Host "=== Service Remote -> servicehub-18309.web.app ===" -ForegroundColor Cyan
 
-
-
 if (-not (Get-Command firebase -ErrorAction SilentlyContinue)) {
-
     Write-Host "Firebase CLI non trovato. Installa con: npm install -g firebase-tools" -ForegroundColor Red
-
     exit 1
-
 }
 
+& (Join-Path $root "_sync-remote-host.ps1")
 
-
-New-Item -ItemType Directory -Force -Path $rh | Out-Null
-
-Copy-Item (Join-Path $root "digital-remote.css") $rh -Force
-
-Copy-Item (Join-Path $root "sh-remote-*.png") $rh -Force
-
-Copy-Item (Join-Path $root "splash-remote-*.png") $rh -Force
-
-Copy-Item (Join-Path $root "remote\sw-remote.js") (Join-Path $rh "sw.js") -Force
-
-Copy-Item (Join-Path $root "remote\manifest.firebase.json") (Join-Path $rh "manifest.json") -Force
-Copy-Item (Join-Path $root "remote\install.html") (Join-Path $rh "install.html") -Force
-Copy-Item (Join-Path $root "remote\install-help.js") (Join-Path $rh "install-help.js") -Force
-
-
-
-$src = Get-Content (Join-Path $root "remote\index.html") -Raw -Encoding UTF8
-
-$src = $src -replace '\.\./', ''
-
-$src = $src -replace 'manifest\.firebase\.json\?v=fb4', 'manifest.json?v=fb4'
-$src = $src -replace 'manifest\.json\?v=fb3', 'manifest.json?v=fb4'
-$src = $src -replace 'remote/manifest\.firebase\.json\?v=fb4', 'manifest.json?v=fb4'
-
-$src = $src -replace 'sw-remote\.js\?v=fb4', 'sw.js?v=fb4'
-$src = $src -replace 'sw\.js\?v=fb3', 'sw.js?v=fb4'
-$src = $src -replace 'install-help\.js\?v=v14', 'install-help.js?v=v14'
-
-$src = $src -replace 'v=web5', 'v=fb2'
-
-$src = $src -replace 'v=rm5', 'v=fb2'
-
-[System.IO.File]::WriteAllText((Join-Path $rh "index.html"), $src, [System.Text.UTF8Encoding]::new($false))
-
-
-
-Write-Host "Cartella remote-host aggiornata." -ForegroundColor Green
-
-Write-Host "Deploy sul sito predefinito servicehub-18309.web.app ..." -ForegroundColor Yellow
-
+Write-Host "Deploy hosting Firebase ..." -ForegroundColor Yellow
 Push-Location $root
-
 try {
-
     firebase deploy --only hosting --project servicehub-18309
-
 } finally {
-
     Pop-Location
-
 }
 
 Write-Host ""
-
-Write-Host "Fatto. Installa Service Remote da https://servicehub-18309.web.app/install.html (menu -> Installa app)." -ForegroundColor Green
-
-
+Write-Host "Fatto. Service Remote: https://servicehub-18309.web.app/install.html" -ForegroundColor Green

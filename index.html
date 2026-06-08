@@ -1206,24 +1206,51 @@ window.colorPreviewNumber = function(tankName, value) {
 
         /** Auto-sync publicDigital: attivo dopo LINK REMOTO o se esiste già una chiave condivisa in meta. */
         window.__publicDigitalAutoSyncEnabled = false;
+        window.__cachedDigitalShareKey = null;
         try {
-            if (sessionStorage.getItem('servicehub_public_digital_auto_sync') === '1') {
+            if (
+                localStorage.getItem('servicehub_public_digital_auto_sync') === '1' ||
+                sessionStorage.getItem('servicehub_public_digital_auto_sync') === '1'
+            ) {
                 window.__publicDigitalAutoSyncEnabled = true;
             }
-            if (sessionStorage.getItem('servicehub_digital_share_key')) {
+            var bootKey =
+                sessionStorage.getItem('servicehub_digital_share_key') ||
+                localStorage.getItem('servicehub_digital_share_key') ||
+                '';
+            if (bootKey) {
+                window.__cachedDigitalShareKey = bootKey;
                 window.__publicDigitalAutoSyncEnabled = true;
+                try { sessionStorage.setItem('servicehub_digital_share_key', bootKey); } catch (_) {}
             }
         } catch (_) {}
         window.__enablePublicDigitalAutoSync = function () {
             window.__publicDigitalAutoSyncEnabled = true;
-            try { sessionStorage.setItem('servicehub_public_digital_auto_sync', '1'); } catch (_) {}
+            try {
+                sessionStorage.setItem('servicehub_public_digital_auto_sync', '1');
+                localStorage.setItem('servicehub_public_digital_auto_sync', '1');
+            } catch (_) {}
+        };
+        window.__rememberDigitalShareKey = function (key) {
+            if (!key) return;
+            window.__cachedDigitalShareKey = key;
+            try {
+                sessionStorage.setItem('servicehub_digital_share_key', key);
+                localStorage.setItem('servicehub_digital_share_key', key);
+            } catch (_) {}
+            if (typeof window.__enablePublicDigitalAutoSync === 'function') {
+                window.__enablePublicDigitalAutoSync();
+            }
         };
         /** Pubblica su publicDigital se auto-sync attivo o se il link remoto è già stato creato. */
         window.__shouldPushPublicDigital = function () {
             if (window.__publicDigitalAutoSyncEnabled) return true;
+            if (window.__cachedDigitalShareKey) return true;
             try {
                 if (sessionStorage.getItem('servicehub_digital_share_key')) return true;
+                if (localStorage.getItem('servicehub_digital_share_key')) return true;
                 if (sessionStorage.getItem('servicehub_public_digital_auto_sync') === '1') return true;
+                if (localStorage.getItem('servicehub_public_digital_auto_sync') === '1') return true;
             } catch (_) {}
             return false;
         };
@@ -1237,11 +1264,8 @@ window.colorPreviewNumber = function(tankName, value) {
             try {
                 const metaSnap = await getDoc(doc(db, "artifacts", appId, "sharedDial", "meta"));
                 if (metaSnap.exists() && metaSnap.data().digitalShareKey) {
-                    try {
-                        sessionStorage.setItem("servicehub_digital_share_key", metaSnap.data().digitalShareKey);
-                    } catch (_) {}
-                    if (typeof window.__enablePublicDigitalAutoSync === 'function') {
-                        window.__enablePublicDigitalAutoSync();
+                    if (typeof window.__rememberDigitalShareKey === 'function') {
+                        window.__rememberDigitalShareKey(metaSnap.data().digitalShareKey);
                     }
                     return true;
                 }
@@ -1256,11 +1280,8 @@ window.colorPreviewNumber = function(tankName, value) {
                 const metaRef = doc(db, "artifacts", appId, "sharedDial", "meta");
                 const s = await getDoc(metaRef);
                 if (s.exists() && s.data().digitalShareKey) {
-                    try {
-                        sessionStorage.setItem("servicehub_digital_share_key", s.data().digitalShareKey);
-                    } catch (_) {}
-                    if (typeof window.__enablePublicDigitalAutoSync === 'function') {
-                        window.__enablePublicDigitalAutoSync();
+                    if (typeof window.__rememberDigitalShareKey === 'function') {
+                        window.__rememberDigitalShareKey(s.data().digitalShareKey);
                     }
                 }
             } catch (_) {}
@@ -2257,6 +2278,10 @@ window.colorPreviewNumber = function(tankName, value) {
             const doSave = async function () {
 
             if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
+
+            if (user && user.uid && db && typeof window.schedulePublicDigitalSnapshotSync === 'function') {
+                window.schedulePublicDigitalSnapshotSync();
+            }
 
             if (!user || !user.uid || !db) {
                 if (!(window.isEditingArchive && window.editingArchiveId)) {
@@ -12672,17 +12697,24 @@ window.pushPublicDigitalSnapshotQuiet = async function () {
         return false;
     }
     const metaRef = doc(db, "artifacts", appId, "sharedDial", "meta");
-    let shareKey = null;
-    try {
-        const metaSnap = await getDoc(metaRef);
-        if (metaSnap.exists() && metaSnap.data().digitalShareKey) {
-            shareKey = metaSnap.data().digitalShareKey;
-        }
-    } catch (_) {}
+    let shareKey = window.__cachedDigitalShareKey || null;
     if (!shareKey) {
         try {
-            shareKey = sessionStorage.getItem("servicehub_digital_share_key");
+            shareKey =
+                sessionStorage.getItem("servicehub_digital_share_key") ||
+                localStorage.getItem("servicehub_digital_share_key");
         } catch (_) {}
+    }
+    if (!shareKey) {
+        try {
+            const metaSnap = await getDoc(metaRef);
+            if (metaSnap.exists() && metaSnap.data().digitalShareKey) {
+                shareKey = metaSnap.data().digitalShareKey;
+            }
+        } catch (_) {}
+    }
+    if (shareKey && typeof window.__rememberDigitalShareKey === 'function') {
+        window.__rememberDigitalShareKey(shareKey);
     }
     if (!shareKey) {
         if (!window.__publicDigitalAutoSyncEnabled) {
@@ -12705,6 +12737,9 @@ window.pushPublicDigitalSnapshotQuiet = async function () {
         try {
             sessionStorage.setItem("servicehub_digital_share_key", shareKey);
         } catch (_) {}
+        if (typeof window.__rememberDigitalShareKey === 'function') {
+            window.__rememberDigitalShareKey(shareKey);
+        }
     }
     const shiftLabel = document.getElementById("current-shift-label")?.innerText?.trim() || "";
     const publicRef = doc(db, "artifacts", appId, "publicDigital", shareKey);

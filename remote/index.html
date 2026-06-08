@@ -7,7 +7,7 @@
     var SK = "servicehub_remote_share_k";
     var SA = "servicehub_remote_app_id";
     var FB_ORIGIN = "https://servicehub-18309.web.app";
-    window.SVCREMOTE_BUILD = "2026.06.08-v25";
+    window.SVCREMOTE_BUILD = "2026.06.08-v26";
 
     /** Vecchi link su GitHub → stesso remoto su Firebase. */
     (function redirectGithubToFirebase() {
@@ -384,7 +384,7 @@
   </style>
 </head>
 <body>
-    <div id="svc-remote-ver" style="position:fixed;bottom:4px;right:8px;z-index:9999;font:700 10px monospace;color:rgba(255,255,255,0.35);pointer-events:none;">v25</div>
+    <div id="svc-remote-ver" style="position:fixed;bottom:4px;right:8px;z-index:9999;font:700 10px monospace;color:rgba(255,255,255,0.35);pointer-events:none;">v26</div>
     <div id="svc-remote-update-bar" role="status">
       Nuova versione disponibile.
       <button type="button" id="svc-remote-update-go">Aggiorna ora</button>
@@ -1184,33 +1184,48 @@
 
       rootEl.innerHTML = buildLoadingShell("Caricamento Digital Report…");
 
-      if (!activeKey) {
-        const latest = await fetchLatestPublicDigital(appIdParam);
-        if (latest && latest.shareKey && latest.data) {
-          activeKey = latest.shareKey;
-          preloaded = latest.data;
-          try {
-            localStorage.setItem(REMOTE_SHARE_K_KEY, activeKey);
-            sessionStorage.setItem(REMOTE_SHARE_K_KEY, activeKey);
-            localStorage.setItem(REMOTE_APP_ID_KEY, appIdParam);
-          } catch (_) {}
-          try {
+      /** Sempre __latest dal cloud: tablet PWA non deve restare su chiave locale vecchia. */
+      const latest = await fetchLatestPublicDigital(appIdParam);
+      if (latest && latest.shareKey && latest.data && String(latest.data.cardsHTML || "").trim().length >= 40) {
+        activeKey = latest.shareKey;
+        preloaded = latest.data;
+        try {
+          localStorage.setItem(REMOTE_SHARE_K_KEY, activeKey);
+          sessionStorage.setItem(REMOTE_SHARE_K_KEY, activeKey);
+          localStorage.setItem(REMOTE_APP_ID_KEY, appIdParam);
+        } catch (_) {}
+        try {
+          if (!shareKey || shareKey !== activeKey) {
             history.replaceState(null, "", buildCanonicalRemoteUrl(activeKey, appIdParam).href);
-          } catch (_) {}
-        } else if (!latest) {
+          }
+        } catch (_) {}
+      } else if (activeKey) {
+        try {
+          const db = initRemoteDb("digital-remote-bootstrap-key");
+          const snap = await getDocFromServer(
+            doc(db, "artifacts", appIdParam, "publicDigital", activeKey)
+          );
+          if (snap.exists()) {
+            const d = snap.data() || {};
+            if (String(d.cardsHTML || "").trim().length >= 40) preloaded = d;
+          }
+        } catch (err) {
+          console.warn("[SvcRemote] bootstrap fallback key:", err && err.message);
+        }
+      }
+
+      if (!activeKey || !preloaded) {
+        if (!latest && !activeKey) {
           rootEl.innerHTML = buildErrorShell(
             "<strong>Report non ancora pubblicato.</strong><p style=\"margin:12px 0 0;color:#fecaca;\">Da ServiceHub: apri Digital Report HD (con le card), poi LINK REMOTO.</p>" +
             "<p style=\"margin:10px 0 0;color:#fde047;font-size:12px;\">Su tablet/WhatsApp: tocca <strong>Apri link</strong> (non restare nell'anteprima).</p>"
           );
-          return;
+        } else {
+          rootEl.innerHTML = buildErrorShell(
+            "<strong>Report non trovato.</strong><p style=\"margin:12px 0 0;color:#fecaca;\">Ripeti LINK REMOTO da ServiceHub con il Digital Report aperto.</p>" +
+            "<p style=\"margin:10px 0 0;color:#fde047;font-size:12px;\">Verifica che il link contenga <code>/r/</code> e un codice lungo.</p>"
+          );
         }
-      }
-
-      if (!activeKey) {
-        rootEl.innerHTML = buildErrorShell(
-          "<strong>Report non trovato.</strong><p style=\"margin:12px 0 0;color:#fecaca;\">Ripeti LINK REMOTO da ServiceHub con il Digital Report aperto.</p>" +
-          "<p style=\"margin:10px 0 0;color:#fde047;font-size:12px;\">Verifica che il link contenga <code>/r/</code> e un codice lungo.</p>"
-        );
         return;
       }
 
@@ -1238,6 +1253,26 @@
           }
         })();
         prefRef = doc(db, "artifacts", appIdParam, "publicDigital", activeKey);
+        let unsubPrefSnapshot = null;
+
+        function bindPrefSnapshotListener() {
+          if (typeof unsubPrefSnapshot === "function") {
+            try {
+              unsubPrefSnapshot();
+            } catch (_) {}
+          }
+          prefRef = doc(db, "artifacts", appIdParam, "publicDigital", activeKey);
+          unsubPrefSnapshot = onSnapshot(
+            prefRef,
+            function (snap) {
+              applySnapshot(snap);
+            },
+            function (err) {
+              __lastDigitalRemoteSig = "";
+              rootEl.innerHTML = buildErrorShell("Errore cloud: " + esc(err && err.message));
+            }
+          );
+        }
 
         function wireRetryFetchButton() {
           const retryBtn = document.getElementById("svc-remote-retry-fetch");
@@ -1263,27 +1298,6 @@
           clearRemoteSnapshotDebounce();
 
           let hit = await fetchLatestPublicDigital(appIdParam);
-
-          if (userInitiated && activeKey) {
-            try {
-              const db = initRemoteDb("digital-remote-pull-" + Date.now());
-              const directSnap = await getDocFromServer(
-                doc(db, "artifacts", appIdParam, "publicDigital", activeKey)
-              );
-              if (directSnap.exists()) {
-                const d = directSnap.data() || {};
-                if (String(d.cardsHTML || "").trim().length >= 40) {
-                  const directAt = String(d.updatedAt || "");
-                  const hitAt = hit && hit.data ? String(hit.data.updatedAt || "") : "";
-                  if (!hit || !hit.data || directAt >= hitAt) {
-                    hit = { shareKey: activeKey, data: d };
-                  }
-                }
-              }
-            } catch (err) {
-              console.warn("[SvcRemote] pullLatest direct key:", err && err.message);
-            }
-          }
 
           if ((!hit || !hit.data) && prefRef) {
             try {
@@ -1330,11 +1344,11 @@
 
           if (hit.shareKey !== activeKey) {
             activeKey = hit.shareKey;
-            prefRef = doc(db, "artifacts", appIdParam, "publicDigital", activeKey);
             try {
               localStorage.setItem(REMOTE_SHARE_K_KEY, activeKey);
               sessionStorage.setItem(REMOTE_SHARE_K_KEY, activeKey);
             } catch (_) {}
+            bindPrefSnapshotListener();
           }
 
           if (!userInitiated && !isRemotePayloadNewer(hit.data) && unchangedOnScreen) {
@@ -1448,25 +1462,9 @@
           __remoteSnapshotDebounce = setTimeout(flush, 120);
         }
 
-        if (preloaded) {
-          renderFromData(preloaded, { fullRefresh: true });
-          markRemotePayloadRendered(preloaded);
-          wireButtons();
-          bindCardZoomOnce();
-        }
+        await pullLatestFromCloud({ fullRefresh: true, userInitiated: false }).catch(function () {});
 
-        onSnapshot(
-          prefRef,
-          function (snap) {
-            applySnapshot(snap);
-          },
-          (err) => {
-            __lastDigitalRemoteSig = "";
-            rootEl.innerHTML = buildErrorShell(
-              "Errore cloud: " + esc(err && err.message)
-            );
-          }
-        );
+        bindPrefSnapshotListener();
 
         const latestPtrRef = doc(db, "artifacts", appIdParam, "publicDigital", "__latest");
         onSnapshot(
@@ -1488,13 +1486,15 @@
             reason === "btn" ||
             reason === "visibility" ||
             reason === "focus" ||
-            reason === "latest-ptr";
+            reason === "latest-ptr" ||
+            reason === "init" ||
+            reason === "bfcache";
           if (!userPull && now - __lastPublicDigitalPullMs < 450) return;
           __lastPublicDigitalPullMs = now;
           try {
             await pullLatestFromCloud({
-              fullRefresh: reason === "btn",
-              userInitiated: userPull
+              fullRefresh: reason === "btn" || reason === "init" || reason === "bfcache",
+              userInitiated: reason === "btn"
             });
           } catch (err) {
             console.warn("[Digital remoto] pull server:", reason, err && err.message);
@@ -1503,7 +1503,7 @@
 
         setTimeout(function () {
           pullFromServer("init");
-        }, preloaded ? 1500 : 400);
+        }, 600);
 
         document.addEventListener("visibilitychange", function () {
           if (document.visibilityState === "visible") {

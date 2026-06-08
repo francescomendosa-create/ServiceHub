@@ -7,7 +7,7 @@
     var SK = "servicehub_remote_share_k";
     var SA = "servicehub_remote_app_id";
     var FB_ORIGIN = "https://servicehub-18309.web.app";
-    window.SVCREMOTE_BUILD = "2026.06.08-v29";
+    window.SVCREMOTE_BUILD = "2026.06.08-v30";
 
     /** Vecchi link su GitHub → stesso remoto su Firebase. */
     (function redirectGithubToFirebase() {
@@ -225,7 +225,7 @@
   <link rel="manifest" href="manifest.json?v=fb5" />
   <link rel="apple-touch-icon" href="../sh-remote-touch.png?v=fb3" />
   <link rel="icon" type="image/png" sizes="32x32" href="../sh-remote-favicon.png?v=fb3" />
-  <link rel="stylesheet" href="../digital-remote.css?v=dig29" />
+  <link rel="stylesheet" href="../digital-remote.css?v=dig30" />
   <style>
     html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; overflow: hidden; overflow-x: hidden !important; touch-action: pan-y; overscroll-behavior-x: none; }
     #digital-preview-container {
@@ -388,7 +388,7 @@
   </style>
 </head>
 <body>
-    <div id="svc-remote-ver" style="position:fixed;bottom:4px;right:8px;z-index:9999;font:700 10px monospace;color:rgba(255,255,255,0.35);pointer-events:none;">v29</div>
+    <div id="svc-remote-ver" style="position:fixed;bottom:4px;right:8px;z-index:9999;font:700 10px monospace;color:rgba(255,255,255,0.35);pointer-events:none;">v30</div>
     <div id="svc-remote-update-bar" role="status">
       Nuova versione disponibile.
       <button type="button" id="svc-remote-update-go">Aggiorna ora</button>
@@ -406,6 +406,7 @@
       memoryLocalCache,
       doc,
       collection,
+      onSnapshot,
       getDoc,
       getDocFromServer,
       getDocsFromServer
@@ -623,8 +624,26 @@
       });
     }
 
+    function stripAdaptiveInlineFromCard(cardEl) {
+      if (!cardEl) return;
+      var props = [
+        "font-size", "padding", "padding-top", "padding-bottom", "padding-left", "padding-right",
+        "width", "max-width", "overflow", "overflow-x", "overflow-y", "flex", "text-align",
+        "white-space", "text-overflow"
+      ];
+      cardEl.querySelectorAll(".digital-card-surface, .digital-card-title, .digital-row-label, .digital-row-value, .digital-stocc-sigla, .digital-stocc-value, .digital-stocc-mid, .digital-stocc-row, .status-cell-btn").forEach(function (el) {
+        props.forEach(function (p) {
+          el.style.removeProperty(p);
+        });
+      });
+      props.forEach(function (p) {
+        cardEl.style.removeProperty(p);
+      });
+    }
+
     function applyDigitalResponsiveLayout(root) {
       if (!root) return;
+      if (root.classList.contains("digital-focus-active")) return;
       var m = computeDigitalLayoutMetrics();
       root.style.setProperty("--dr-col-min", m.colMin + "px");
       root.style.setProperty("--dr-grid-gap", m.gap + "px");
@@ -875,12 +894,12 @@
       if (titleSpan && titleNode) {
         titleSpan.textContent = titleNode.textContent.replace(/\s+/g, " ").trim();
       }
+      stripAdaptiveInlineFromCard(cardEl);
       root.classList.add("digital-focus-active");
       root.querySelectorAll(".digital-card").forEach(function (c) {
         if (c === cardEl) c.classList.add("digital-card--expanded");
         else c.classList.remove("digital-card--expanded");
       });
-      clearRowInlineFonts(cardEl);
       fixStoccaggioCardLayout(root);
       var scroll = root.querySelector("#digital-preview-scroll");
       if (scroll) {
@@ -1467,6 +1486,15 @@
               localStorage.setItem(REMOTE_SHARE_K_KEY, activeKey);
               sessionStorage.setItem(REMOTE_SHARE_K_KEY, activeKey);
             } catch (_) {}
+            if (typeof bindCloudPushListener === "function") bindCloudPushListener();
+          }
+
+          var curGridBefore = rootEl.querySelector("#digital-cards-grid");
+          var curCardCount = curGridBefore ? curGridBefore.querySelectorAll(".digital-card[data-module-id]").length : 0;
+          var newCardCount = countDigitalCards(hit.data.cardsHTML);
+          if (userInitiated && curCardCount > 0 && newCardCount > 0 && newCardCount < curCardCount - 1) {
+            console.warn("[SvcRemote] AGGIORNA: cloud incompleto (" + newCardCount + " moduli vs " + curCardCount + " a schermo)");
+            return { ok: false, reason: "incomplete-cloud", updatedAt: hit.data.updatedAt };
           }
 
           if (!userInitiated && !isRemotePayloadNewer(hit.data) && unchangedOnScreen) {
@@ -1514,6 +1542,11 @@
               setTimeout(function () {
                 if (btn) btn.textContent = "AGGIORNA";
               }, 1100);
+            } else if (btn && result && result.reason === "incomplete-cloud") {
+              btn.textContent = "!";
+              setTimeout(function () {
+                if (btn) btn.textContent = "AGGIORNA";
+              }, 1800);
             }
           } catch (err) {
             __lastDigitalRemoteSig = "";
@@ -1534,8 +1567,77 @@
           }
         };
 
-        /** Solo caricamento iniziale + pulsante AGGIORNA (niente sync live da ServiceHub). */
+        function countDigitalCards(html) {
+          return (String(html || "").match(/data-module-id="/g) || []).length;
+        }
+
+        function bindCloudPushListener() {
+          if (typeof unsubPrefSnapshot === "function") {
+            try {
+              unsubPrefSnapshot();
+            } catch (_) {}
+          }
+          unsubPrefSnapshot = onSnapshot(
+            prefRef,
+            function (snap) {
+              if (__remoteRefreshInFlight) return;
+              if (!snap.exists()) return;
+              var root = document.getElementById("digital-preview-container");
+              if (root && root.classList.contains("digital-focus-active")) return;
+              var d = snap.data() || {};
+              if (!isRemotePayloadNewer(d)) return;
+              var sig = digitalRemoteSig(d);
+              if (sig === __lastDigitalRemoteSig) return;
+              var curGrid = rootEl.querySelector("#digital-cards-grid");
+              var curCount = curGrid ? curGrid.querySelectorAll(".digital-card[data-module-id]").length : 0;
+              var newCount = countDigitalCards(d.cardsHTML);
+              if (curCount > 0 && newCount > 0 && newCount < curCount - 1) {
+                console.warn("[SvcRemote] cloud push ignorato: meno moduli del previsto (" + newCount + "<" + curCount + ")");
+                return;
+              }
+              renderFromData(d, { fullRefresh: false });
+              markRemotePayloadRendered(d);
+              __lastDigitalRemoteSig = sig;
+              wireButtons();
+              bindCardZoomOnce();
+              applyDigitalPhoneLayoutIfNeeded(root);
+            },
+            function (err) {
+              console.warn("[SvcRemote] cloud listener:", err && err.message);
+            }
+          );
+        }
+
+        let unsubPrefSnapshot = null;
+
+        /** Caricamento iniziale + AGGIORNA manuale + sync quando ServiceHub pubblica sul cloud. */
         await pullLatestFromCloud({ fullRefresh: true, userInitiated: false }).catch(function () {});
+
+        bindCloudPushListener();
+
+        var latestPtrRef = doc(db, "artifacts", appIdParam, "publicDigital", "__latest");
+        onSnapshot(
+          latestPtrRef,
+          function (snap) {
+            if (__remoteRefreshInFlight || !snap.exists()) return;
+            var root = document.getElementById("digital-preview-container");
+            if (root && root.classList.contains("digital-focus-active")) return;
+            var sk = String((snap.data() || {}).shareKey || "").trim();
+            if (sk && sk !== activeKey) {
+              activeKey = sk;
+              prefRef = doc(db, "artifacts", appIdParam, "publicDigital", activeKey);
+              try {
+                localStorage.setItem(REMOTE_SHARE_K_KEY, activeKey);
+                sessionStorage.setItem(REMOTE_SHARE_K_KEY, activeKey);
+              } catch (_) {}
+              bindCloudPushListener();
+            }
+            pullLatestFromCloud({ fullRefresh: false, userInitiated: false }).catch(function () {});
+          },
+          function (err) {
+            console.warn("[SvcRemote] __latest listener:", err && err.message);
+          }
+        );
       })();
     }
 

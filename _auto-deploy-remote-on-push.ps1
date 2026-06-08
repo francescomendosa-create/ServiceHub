@@ -53,7 +53,7 @@ if (-not (Test-RemoteFilesChanged -Files $changed)) {
 Write-Host "[remote-auto] Modifiche remote rilevate — deploy Firebase in corso..." -ForegroundColor Cyan
 
 if (-not (Get-Command firebase -ErrorAction SilentlyContinue)) {
-    Write-Host "[remote-auto] Firebase CLI assente — il push continua; la CI GitHub fara' il deploy." -ForegroundColor Yellow
+    Write-Host "[remote-auto] Firebase CLI assente — il push continua; la CI GitHub fara il deploy." -ForegroundColor Yellow
     exit 0
 }
 
@@ -63,7 +63,7 @@ try {
     Write-Host "[remote-auto] Deploy locale OK." -ForegroundColor Green
 } catch {
     Write-Host "[remote-auto] Deploy locale fallito: $_" -ForegroundColor Yellow
-    Write-Host "[remote-auto] Il push continua — GitHub Actions pubblichera' Service Remote." -ForegroundColor Yellow
+    Write-Host "[remote-auto] Il push continua — GitHub Actions pubblichera Service Remote." -ForegroundColor Yellow
 }
 
 exit 0

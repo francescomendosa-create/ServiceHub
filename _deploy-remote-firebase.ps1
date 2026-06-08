@@ -38,10 +38,8 @@ Copy-Item (Join-Path $root "splash-remote-*.png") $rh -Force
 
 Copy-Item (Join-Path $root "remote\sw-remote.js") (Join-Path $rh "sw.js") -Force
 
-# Nessun manifest PWA: su PC evita «Apri nell'app» e UI standalone fuorviante.
-if (Test-Path (Join-Path $rh "manifest.json")) {
-    Remove-Item (Join-Path $rh "manifest.json") -Force
-}
+Copy-Item (Join-Path $root "remote\manifest.firebase.json") (Join-Path $rh "manifest.json") -Force
+Copy-Item (Join-Path $root "remote\install.html") (Join-Path $rh "install.html") -Force
 
 
 
@@ -49,9 +47,10 @@ $src = Get-Content (Join-Path $root "remote\index.html") -Raw -Encoding UTF8
 
 $src = $src -replace '\.\./', ''
 
-$src = $src -replace 'manifest\.firebase\.json\?v=fb2', 'manifest.json?v=fb2'
+$src = $src -replace 'manifest\.firebase\.json\?v=fb3', 'manifest.json?v=fb3'
+$src = $src -replace 'remote/manifest\.firebase\.json\?v=fb3', 'manifest.json?v=fb3'
 
-$src = $src -replace 'sw-remote\.js\?v=fb2', 'sw.js?v=fb2'
+$src = $src -replace 'sw-remote\.js\?v=fb3', 'sw.js?v=fb3'
 
 $src = $src -replace 'v=web5', 'v=fb2'
 
@@ -79,6 +78,6 @@ try {
 
 Write-Host ""
 
-Write-Host "Fatto. Apri il link /r/... da LINK REMOTO oppure installa da Chrome (menu -> Installa)." -ForegroundColor Green
+Write-Host "Fatto. Installa Service Remote da https://servicehub-18309.web.app/install.html (menu -> Installa app)." -ForegroundColor Green
 
 

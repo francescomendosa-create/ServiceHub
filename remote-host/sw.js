@@ -1,5 +1,5 @@
-/** PWA minima: consente Installa app; HTML sempre dalla rete. */
-const CACHE = 'svc-remote-pwa-v2';
+/** PWA Service Remote: consente installazione + aggiornamenti; HTML sempre dalla rete. */
+const CACHE = 'svc-remote-pwa-v3';
 self.addEventListener('install', (e) => {
   e.waitUntil(self.skipWaiting());
 });

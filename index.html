@@ -579,7 +579,6 @@ window.colorPreviewNumber = function(tankName, value) {
             var u = new URL(base + '/r/' + encodeURIComponent(shareKey));
             if (appId) u.searchParams.set('app', appId);
             u.searchParams.set('dv', '12');
-            u.searchParams.set('pc', '1');
             return u.href;
         };
     </script>
@@ -12668,6 +12667,19 @@ window.pushPublicDigitalSnapshotQuiet = async function () {
     }
     try {
         await setDoc(publicRef, payload, { merge: true });
+        try {
+            await setDoc(
+                doc(db, "artifacts", appId, "publicDigital", "__latest"),
+                {
+                    shareKey: shareKey,
+                    teamAppId: appId,
+                    updatedAt: new Date().toISOString()
+                },
+                { merge: true }
+            );
+        } catch (latestErr) {
+            console.warn("[ServiceHub] pushPublicDigitalSnapshotQuiet __latest:", latestErr);
+        }
         return true;
     } catch (e) {
         console.warn("[ServiceHub] pushPublicDigitalSnapshotQuiet:", e);
@@ -12693,15 +12705,20 @@ window.__serviceHubWithTimeout = function (promise, ms, tag) {
     ]);
 };
 
-/** Abilita «Apri su questo PC» dopo la pubblicazione cloud. */
+/** Aggiorna modale dopo pubblicazione cloud (istruzioni app Service Remote). */
 window.__serviceHubDigitalRemoteModalSetReady = function (pushed) {
     try {
-        var btn = document.getElementById("sh-digital-remote-open-pc");
-        if (!btn) return;
-        btn.disabled = false;
-        btn.style.opacity = "1";
-        btn.style.cursor = "pointer";
-        btn.textContent = pushed ? "Apri su questo PC" : "Prova ad aprire comunque";
+        var el = document.getElementById("sh-digital-remote-cloud-line");
+        if (!el) return;
+        if (pushed) {
+            el.textContent =
+                "Pubblicazione completata. Apri l'app Service Remote (icona sul desktop o barra Windows): si aggiorna da sola.";
+            el.style.color = "#86efac";
+        } else {
+            el.textContent =
+                "Cloud non aggiornato (LED rosso o rete). Riprova LINK REMOTO, poi apri l'app Service Remote.";
+            el.style.color = "#fecaca";
+        }
     } catch (_) {}
 };
 
@@ -12924,8 +12941,9 @@ window.__serviceHubShowDigitalRemoteLinkModal = function (href, options) {
             "Connessione a Firebase in corso per pubblicare il Digital sul cloud…";
     }
     intro.innerHTML =
-        "Su <strong>questo PC</strong>: premi <strong>Apri su questo PC</strong> per vedere il Digital remoto nel browser. " +
-        "Il link sotto serve solo se lo vuoi inviare ad altri.";
+        "Su <strong>questo PC</strong> hai <strong>due app separate</strong>: ServiceHub (operatore) e <strong>Service Remote</strong> (lettura). " +
+        "Dopo LINK REMOTO apri l'<strong>icona Service Remote</strong> — non serve un'altra scheda browser. " +
+        "Il link sotto serve solo per condividerlo fuori (WhatsApp, ecc.).";
     const ta = document.createElement("textarea");
     ta.readOnly = true;
     ta.value = hrefSafe;
@@ -12935,13 +12953,6 @@ window.__serviceHubShowDigitalRemoteLinkModal = function (href, options) {
     status.style.cssText = "margin:0 0 14px;font-size:13px;font-weight:700;min-height:1.4em;";
     const row = document.createElement("div");
     row.style.cssText = "display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end;";
-    const btnOpenPc = document.createElement("button");
-    btnOpenPc.type = "button";
-    btnOpenPc.id = "sh-digital-remote-open-pc";
-    btnOpenPc.textContent = options.cloudPending ? "Attendi cloud…" : "Apri su questo PC";
-    btnOpenPc.disabled = !!options.cloudPending;
-    btnOpenPc.style.cssText =
-        "cursor:" + (options.cloudPending ? "not-allowed" : "pointer") + ";padding:10px 16px;border-radius:11px;border:none;background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;font-weight:800;font-size:12px;opacity:" + (options.cloudPending ? "0.55" : "1") + ";";
     const btnCopy = document.createElement("button");
     btnCopy.type = "button";
     btnCopy.textContent = "Copia di nuovo";
@@ -12983,13 +12994,6 @@ window.__serviceHubShowDigitalRemoteLinkModal = function (href, options) {
             }
         } catch (_) {}
     }
-    btnOpenPc.onclick = function () {
-        try {
-            window.open(hrefSafe, "_blank", "noopener,noreferrer");
-        } catch (_) {
-            location.href = hrefSafe;
-        }
-    };
     btnCopy.onclick = function () {
         doCopy(true);
     };
@@ -13003,7 +13007,6 @@ window.__serviceHubShowDigitalRemoteLinkModal = function (href, options) {
             backdrop.remove();
         }
     };
-    row.appendChild(btnOpenPc);
     row.appendChild(btnCopy);
     row.appendChild(btnClose);
     card.appendChild(h);
@@ -13164,27 +13167,21 @@ window.publishDigitalRemoteReport = async () => {
         if (typeof window.__serviceHubUpdateDigitalRemoteCloudLine === "function") {
             if (pushed) {
                 window.__serviceHubUpdateDigitalRemoteCloudLine(
-                    "Pubblicazione cloud completata. Apro il Digital remoto in una nuova scheda…",
+                    "Pubblicazione cloud completata.",
                     "ok"
                 );
             } else {
                 window.__serviceHubUpdateDigitalRemoteCloudLine(
-                    "ATTENZIONE: il cloud non si è aggiornato (LED rosso, rete o timeout). Riprova LINK REMOTO, poi «Apri su questo PC».",
+                    "ATTENZIONE: il cloud non si è aggiornato (LED rosso, rete o timeout). Riprova LINK REMOTO.",
                     "err"
                 );
             }
         }
-        if (pushed) {
-            try {
-                var remoteTab = window.open(href, "_blank", "noopener,noreferrer");
-                if (!remoteTab && typeof window.__serviceHubFlashToast === "function") {
-                    window.__serviceHubFlashToast(
-                        "Scheda bloccata dal browser: clicca «Apri su questo PC» nella modale.",
-                        false,
-                        "warn"
-                    );
-                }
-            } catch (_) {}
+        if (pushed && typeof window.__serviceHubFlashToast === "function") {
+            window.__serviceHubFlashToast(
+                "Digital pubblicato. Apri l'app Service Remote (icona sul desktop).",
+                false
+            );
         }
     } catch (e) {
         console.error("[ServiceHub] publishDigitalRemoteReport:", e);

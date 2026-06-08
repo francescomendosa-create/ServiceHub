@@ -30,9 +30,16 @@
 
   function alreadyInstalledHtml() {
     return (
-      "<strong>App già installata.</strong> Se in alto vedi <strong>«Apri nell'app»</strong>, cliccalo " +
-      "oppure apri l'icona <strong>SvcRemote</strong> dal menu Start. " +
-      "Per reinstallare: <code>edge://apps</code> o <code>chrome://apps</code> → rimuovi SvcRemote → poi installa di nuovo."
+      "<strong>App già installata.</strong> Apri l'icona <strong>SvcRemote</strong> dal menu Start. " +
+      "Per reinstallare: nella barra indirizzi di Edge scrivi <code>edge://apps</code> → Invio → rimuovi SvcRemote."
+    );
+  }
+
+  function reinstallHintHtml() {
+    return (
+      "<br><br><strong>Reinstallazione corretta:</strong> apri solo " +
+      "<code>servicehub-18309.web.app/install.html</code> → menu Edge → <strong>Installa questo sito come app</strong>. " +
+      "<strong>Non</strong> installare dal link lungo con <code>stabile-2026</code> nell'indirizzo."
     );
   }
 
@@ -91,7 +98,7 @@
       setTimeout(function () {
         if (global.__svcRemoteInstallHelp.deferredPrompt) return;
         if (btn) btn.style.display = "none";
-        setMsg(alreadyInstalledHtml() + "<br><br>" + manualInstallHtml());
+        setMsg(alreadyInstalledHtml() + reinstallHintHtml() + "<br><br>" + manualInstallHtml());
       }, opts.timeoutMs || 2200);
 
       if (global.navigator.getInstalledRelatedApps) {

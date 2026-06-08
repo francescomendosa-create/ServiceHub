@@ -19,9 +19,9 @@ $src = Get-Content (Join-Path $root "remote\index.html") -Raw -Encoding UTF8
 $src = $src -replace '\.\./', ''
 $src = $src -replace "manifest\.firebase\.json(\?v=[^`"]+)?", "manifest.json?v=fb5"
 $src = $src -replace "sw-remote\.js(\?v=[^`"]+)?", "sw.js?v=fb5"
-$src = $src -replace "install-help\.js(\?v=[^`"]+)?", "install-help.js?v=v20"
-$src = $src -replace "sw\.js(\?v=[^`"]+)?", "sw.js?v=fb7"
-$src = $src -replace "digital-remote\.css(\?v=[^`"]+)?", "digital-remote.css?v=dig22"
+$src = $src -replace "install-help\.js(\?v=[^`"]+)?", "install-help.js?v=v21"
+$src = $src -replace "sw\.js(\?v=[^`"]+)?", "sw.js?v=fb8"
+$src = $src -replace "digital-remote\.css(\?v=[^`"]+)?", "digital-remote.css?v=dig23"
 
 [System.IO.File]::WriteAllText((Join-Path $rh "index.html"), $src, [System.Text.UTF8Encoding]::new($false))
 

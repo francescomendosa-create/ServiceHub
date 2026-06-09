@@ -1,5 +1,5 @@
 /** PWA Service Remote: consente installazione + aggiornamenti; HTML sempre dalla rete. */
-const CACHE = 'svc-remote-pwa-v20';
+const CACHE = 'svc-remote-pwa-v21';
 self.addEventListener('install', (e) => {
   e.waitUntil(self.skipWaiting());
 });

@@ -8,6 +8,8 @@ $rh = Join-Path $root "remote-host"
 New-Item -ItemType Directory -Force -Path $rh | Out-Null
 
 Copy-Item (Join-Path $root "digital-remote.css") $rh -Force
+Copy-Item (Join-Path $root "tank-empty.png") $rh -Force
+Copy-Item (Join-Path $root "tank-full.png") $rh -Force
 Copy-Item (Join-Path $root "sh-remote-*.png") $rh -Force
 Copy-Item (Join-Path $root "splash-remote-*.png") $rh -Force
 Copy-Item (Join-Path $root "remote\sw-remote.js") (Join-Path $rh "sw.js") -Force
@@ -21,7 +23,7 @@ $src = $src -replace "manifest\.firebase\.json(\?v=[^`"]+)?", "manifest.json?v=f
 $src = $src -replace "sw-remote\.js(\?v=[^`"]+)?", "sw.js?v=fb5"
 $src = $src -replace "install-help\.js(\?v=[^`"]+)?", "install-help.js?v=v23"
 $src = $src -replace "sw\.js(\?v=[^`"]+)?", "sw.js?v=fb19"
-$src = $src -replace "digital-remote\.css(\?v=[^`"]+)?", "digital-remote.css?v=dig51"
+$src = $src -replace "digital-remote\.css(\?v=[^`"]+)?", "digital-remote.css?v=dig52"
 
 [System.IO.File]::WriteAllText((Join-Path $rh "index.html"), $src, [System.Text.UTF8Encoding]::new($false))
 

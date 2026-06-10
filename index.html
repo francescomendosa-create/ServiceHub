@@ -54,6 +54,12 @@
         * {
             touch-action: manipulation;
         }
+        /* Tablet Android: S Pen — niente manipulation sui campi (primo numero) */
+        html.sh-android-tablet-boot .main-container,
+        html.sh-android-tablet-boot .main-container input:not([type="hidden"]),
+        html.sh-android-tablet-boot .main-container textarea {
+            touch-action: auto !important;
+        }
 
         /* Smartphone: nascondi UI principale finché lo splash è attivo (evita flash GESTIONE MODULI su iOS) */
         @media (max-width: 599px) {
@@ -66,6 +72,15 @@
             }
         }
     </style>
+    <script>
+(function () {
+    var ua = navigator.userAgent || '';
+    if (/Android/i.test(ua) && Math.min(window.screen.width, window.screen.height) >= 600) {
+        document.documentElement.classList.add('sh-android-tablet-boot');
+        document.documentElement.setAttribute('writingsuggestions', 'false');
+    }
+})();
+</script>
     <script>
 // ===============================
 // SISTEMA ANTI-PERDITA DATI GLOBALE PER TUTTE LE SCHEDE
@@ -318,6 +333,11 @@ window.__shIsAndroidTablet = function () {
     }, { passive: true });
     document.addEventListener('touchmove', function (e) {
         if (!e.touches || e.touches.length !== 1) return;
+        if (e.target && e.target.closest && e.target.closest('.main-container')) return;
+        var ae = document.activeElement;
+        if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) return;
+        var tt = e.touches[0].touchType;
+        if (tt === 'stylus' || tt === 'pen') return;
         var touchY = e.touches[0].clientY;
         var deltaY = touchY - lastTouchY;
         lastTouchY = touchY;
@@ -583,7 +603,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.10-sync-verify';
+        window.SERVICEHUB_BUILD = '2026.06.10-android-spen-only';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
         window.SERVICEHUB_REMOTE_ORIGIN = 'https://servicehub-18309.web.app';
@@ -757,6 +777,81 @@ window.colorPreviewNumber = function(tankName, value) {
                 return Math.min(window.screen.width, window.screen.height) >= 600;
             }
             return false;
+        };
+
+        /** Solo UI input / S Pen — non tocca cloud né saveData. */
+        window.__isStylusPointerEvent = function (e) {
+            if (!e) return false;
+            if (e.pointerType === 'pen') return true;
+            var t = e.touches && e.touches[0];
+            if (t && (t.touchType === 'stylus' || t.touchType === 'pen')) return true;
+            return false;
+        };
+
+        window.__primeAndroidSpenInput = function (el) {
+            if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
+            if (!el || el.getAttribute('data-sh-spen-input') === '1') return;
+            if (el.type === 'hidden' || el.type === 'file' || el.type === 'checkbox' || el.type === 'radio') return;
+            el.setAttribute('data-sh-spen-input', '1');
+            el.setAttribute('writingsuggestions', 'false');
+            el.setAttribute('autocomplete', 'off');
+            el.setAttribute('autocorrect', 'off');
+            el.setAttribute('spellcheck', 'false');
+            el.setAttribute('autocapitalize', 'off');
+            if (!el.hasAttribute('inputmode')) el.setAttribute('inputmode', 'decimal');
+            if (el.type === 'tel' && !el.readOnly) el.type = 'text';
+        };
+
+        window.__initAndroidSpenSupport = function () {
+            if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
+            document.documentElement.setAttribute('writingsuggestions', 'false');
+            if (document.body) {
+                document.body.setAttribute('writingsuggestions', 'false');
+                document.body.classList.add('sh-device-android-tablet');
+            }
+            var mc = document.querySelector('.main-container');
+            if (mc) mc.setAttribute('writingsuggestions', 'false');
+            document.querySelectorAll('.main-container input, .main-container textarea').forEach(window.__primeAndroidSpenInput);
+            if (window.__androidSpenObserver) return;
+            window.__androidSpenObserver = new MutationObserver(function (mutations) {
+                mutations.forEach(function (m) {
+                    m.addedNodes.forEach(function (node) {
+                        if (!node || node.nodeType !== 1) return;
+                        if (node.matches && (node.matches('input') || node.matches('textarea'))) {
+                            window.__primeAndroidSpenInput(node);
+                        } else if (node.querySelectorAll) {
+                            node.querySelectorAll('input, textarea').forEach(window.__primeAndroidSpenInput);
+                        }
+                    });
+                });
+            });
+            window.__androidSpenObserver.observe(document.body, { childList: true, subtree: true });
+            if (window.__androidSpenListenersReady) return;
+            window.__androidSpenListenersReady = true;
+            document.addEventListener('pointerdown', function (e) {
+                if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
+                var t = e.target;
+                if (!t || !t.closest || !t.closest('.main-container')) return;
+                if (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA') return;
+                if (typeof window.__releaseSpenStuckLocks === 'function') window.__releaseSpenStuckLocks();
+                if (window.__isStylusPointerEvent(e)) {
+                    document.body.classList.add('sh-stylus-pen-active');
+                    clearTimeout(window.__spenPenLiftTimer);
+                }
+            }, true);
+            document.addEventListener('pointerup', function (e) {
+                if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
+                if (!window.__isStylusPointerEvent(e)) return;
+                clearTimeout(window.__spenPenLiftTimer);
+                window.__spenPenLiftTimer = setTimeout(function () {
+                    document.body.classList.remove('sh-stylus-pen-active');
+                }, 350);
+            }, true);
+            setInterval(function () {
+                if (!document.body.classList.contains('sh-long-press-lock')) return;
+                if (window.__isUserPressingLabel && window.__isUserPressingLabel()) return;
+                if (typeof window.__releaseSpenStuckLocks === 'function') window.__releaseSpenStuckLocks();
+            }, 4000);
         };
 
         /** PC desktop + tablet: tutte le schede sempre aperte. Smartphone: navigazione a una scheda. */
@@ -1131,8 +1226,23 @@ window.colorPreviewNumber = function(tankName, value) {
             });
         };
         window.__setLongPressInputLock = function (on) {
+            if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) return;
             if (on) document.body.classList.add('sh-long-press-lock');
             else document.body.classList.remove('sh-long-press-lock');
+        };
+
+        window.__releaseSpenStuckLocks = function () {
+            if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+            if (visualFeedbackTimer) { clearTimeout(visualFeedbackTimer); visualFeedbackTimer = null; }
+            isLongPress = false;
+            globalInteractionLock = false;
+            document.body.classList.remove('sh-long-press-lock');
+            window.__postLongPressShieldActive = false;
+            var shield = document.getElementById('sh-post-long-press-shield');
+            if (shield) shield.style.display = 'none';
+            document.querySelectorAll('.v-label-container.pressing').forEach(function (l) {
+                l.classList.remove('pressing');
+            });
         };
 
         window.__postLongPressShieldActive = false;
@@ -4493,6 +4603,7 @@ window.updateStoricoButton = async function() {
         };
 
         document.addEventListener('DOMContentLoaded', () => {
+            if (typeof window.__initAndroidSpenSupport === 'function') window.__initAndroidSpenSupport();
             const buildTagEl = document.getElementById('app-build-tag');
             if (buildTagEl && window.SERVICEHUB_BUILD) {
                 buildTagEl.textContent = 'Build ' + window.SERVICEHUB_BUILD;
@@ -4724,7 +4835,9 @@ window.updateStoricoButton = async function() {
             
             // Applica colorazione input serbatoi
             setTimeout(() => {
-                window.colorAllTankInputs();
+                if (!(window.__shIsAndroidTablet && window.__shIsAndroidTablet())) {
+                    window.colorAllTankInputs();
+                }
                 
                 // Aggiungi event listener per input change
                 const tankInputIds = [
@@ -4740,6 +4853,8 @@ window.updateStoricoButton = async function() {
                     'val-az-n2', 'val-az-pon', 'val-az-102a', 'val-az-102b'
                 ];
                 
+                if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) return;
+
                 tankInputIds.forEach(inputId => {
                     const input = document.getElementById(inputId);
                     if (input) {
@@ -4826,6 +4941,7 @@ window.updateStoricoButton = async function() {
             
             // ✅ CONTROLLO AUTOMATICO ISTANTANEO OGNI VOLTA CHE INSERISCI DATI
             document.addEventListener('input', function(e) {
+                if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) return;
                 if (e.target && e.target.id && window.TANK_LEVEL_ARROW_INPUT_IDS && window.TANK_LEVEL_ARROW_INPUT_IDS.indexOf(e.target.id) !== -1) {
                     window.updateTankLevelArrowForInput(e.target);
                 }
@@ -9704,6 +9820,9 @@ window.updateStoricoButton = async function() {
                 if (e.stopPropagation) e.stopPropagation();
                 return;
             }
+            const isTabletLayout = window.shouldKeepAllSectionsExpanded && window.shouldKeepAllSectionsExpanded();
+            const isAndroidTab = window.__shIsAndroidTablet && window.__shIsAndroidTablet();
+            if (isAndroidTab && window.__isStylusPointerEvent && window.__isStylusPointerEvent(e)) return;
             // ✅ BLOCCO MOUSE EVENTS SU IOS E ANDROID PER EVITARE CONFLITTI
             if (e.type === 'mousedown' && (/iPhone|iPad|Android/i.test(navigator.userAgent))) {
                 e.preventDefault();
@@ -9714,9 +9833,9 @@ window.updateStoricoButton = async function() {
             const touch = e.touches ? e.touches[0] : e;
             startX = touch.clientX;
             startY = touch.clientY;
-            forceBlur();
+            if (!isTabletLayout && !isAndroidTab) forceBlur();
             isLongPress = false;
-            window.__setLongPressInputLock(true);
+            if (!isTabletLayout && !isAndroidTab) window.__setLongPressInputLock(true);
             const label = e.currentTarget;
             if (pressTimer) clearTimeout(pressTimer);
             if (visualFeedbackTimer) clearTimeout(visualFeedbackTimer);
@@ -10540,6 +10659,8 @@ window.updateStoricoButton = async function() {
             if (tag) tag.innerText = deviceType;
             document.body.classList.toggle('sh-device-phone', !!(window.isServiceHubPhone && window.isServiceHubPhone()));
             document.body.classList.toggle('sh-device-tablet', !!isTablet);
+            document.body.classList.toggle('sh-device-android-tablet', !!(window.__shIsAndroidTablet && window.__shIsAndroidTablet()));
+            if (typeof window.__initAndroidSpenSupport === 'function') window.__initAndroidSpenSupport();
             if (typeof window.syncRobotMagnetPlacement === 'function') window.syncRobotMagnetPlacement();
 
             if (window.shouldKeepAllSectionsExpanded && window.shouldKeepAllSectionsExpanded()) {
@@ -15458,6 +15579,18 @@ window.convertToHtml = async () => {
         .v-label-container.pressing { transform: scale(0.96) translateX(2px); filter: brightness(1.3); }
         body.sh-long-press-lock .main-container input,
         body.sh-long-press-lock .main-container textarea { pointer-events: none !important; }
+        body.sh-device-android-tablet.sh-long-press-lock .main-container input,
+        body.sh-device-android-tablet.sh-long-press-lock .main-container textarea,
+        body.sh-device-tablet.sh-long-press-lock .main-container input,
+        body.sh-device-tablet.sh-long-press-lock .main-container textarea {
+            pointer-events: auto !important;
+        }
+        body.sh-device-android-tablet .main-container input:not([readonly]),
+        body.sh-device-android-tablet .main-container textarea:not([readonly]) {
+            touch-action: auto !important;
+            -webkit-user-select: text !important;
+            user-select: text !important;
+        }
         body.sh-instant-layout .col-section { transition: none !important; }
         .v-label-text { transform: rotate(-90deg); white-space: nowrap; font-weight: 800; font-size: 11px; color: white; text-transform: uppercase; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
         .row-block { display: flex; width: 100%; border-bottom: 2px solid var(--border-main); align-items: stretch; overflow: hidden; }
@@ -16632,7 +16765,14 @@ window.convertToHtml = async () => {
         }
     </style>
 </head>
-<body class="splash-active">
+<body class="splash-active" writingsuggestions="false">
+<script>
+(function () {
+    if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) {
+        document.body.classList.add('sh-device-android-tablet');
+    }
+})();
+</script>
 
     <!-- ============================================================ -->
     <!-- SPLASH SCREEN: appare all'avvio, click sull'icona per entrare -->

@@ -25,7 +25,7 @@ $src = $src -replace "manifest\.firebase\.json(\?v=[^`"]+)?", "manifest.json?v=f
 $src = $src -replace "sw-remote\.js(\?v=[^`"]+)?", "sw.js?v=fb5"
 $src = $src -replace "install-help\.js(\?v=[^`"]+)?", "install-help.js?v=v23"
 $src = $src -replace "sw\.js(\?v=[^`"]+)?", "sw.js?v=fb19"
-$src = $src -replace "digital-remote\.css(\?v=[^`"]+)?", "digital-remote.css?v=dig87"
+$src = $src -replace "digital-remote\.css(\?v=[^`"]+)?", "digital-remote.css?v=dig88"
 
 [System.IO.File]::WriteAllText((Join-Path $rh "index.html"), $src, [System.Text.UTF8Encoding]::new($false))
 

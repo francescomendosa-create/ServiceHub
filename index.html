@@ -583,7 +583,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.10-robot-magnet3x';
+        window.SERVICEHUB_BUILD = '2026.06.10-remote-push-tanks';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
         window.SERVICEHUB_REMOTE_ORIGIN = 'https://servicehub-18309.web.app';
@@ -10306,7 +10306,7 @@ window.updateStoricoButton = async function() {
             }
 
             Object.entries(window.tankStatuses).forEach(([tankId, savedStatus]) => {
-                if (!savedStatus) return; // Salta solo se non c'è stato salvato
+                if (!savedStatus || tankId.endsWith('_name')) return;
 
                 const fullStatuses = savedStatus
                     .split('+')
@@ -13668,16 +13668,22 @@ window.__enablePublicDigitalAutoSyncIfShareKeyExists = function () {
 };
 
 /** Legge i valori live dall'interfaccia e pubblica su publicDigital (push manuale). */
-window.pushDigitalSnapshotFromLiveUI = function () {
-    if (!db || !user || !user.uid) return Promise.resolve(false);
+window.pushDigitalSnapshotFromLiveUI = async function () {
+    if (!db || !user || !user.uid) return false;
+    if (typeof window.__flushLiveStateBeforeDigitalPush === 'function') {
+        window.__flushLiveStateBeforeDigitalPush();
+    }
+    if (typeof window.saveData === 'function') {
+        try { await window.saveData(true); } catch (_) {}
+    }
     if (typeof window.saveActiveRapportinoFromUI === 'function') {
         window.saveActiveRapportinoFromUI();
     }
     if (typeof window.persistNotturnoStoccaggioToRapportino === 'function') {
         window.persistNotturnoStoccaggioToRapportino();
     }
-    if (typeof window.pushPublicDigitalSnapshotQuiet !== 'function') return Promise.resolve(false);
-    return Promise.resolve(window.pushPublicDigitalSnapshotQuiet({ force: true }));
+    if (typeof window.pushPublicDigitalSnapshotQuiet !== 'function') return false;
+    return !!(await window.pushPublicDigitalSnapshotQuiet({ force: true }));
 };
 
 /** Pubblica Digital Report sul cloud solo quando premi Aggiorna remoto (nessun auto-sync). */
@@ -13748,11 +13754,9 @@ window.sendDigitalToRemote = async function () {
     }
 
     try {
-        const ok = await Promise.resolve(
-            typeof window.pushDigitalSnapshotFromLiveUI === 'function'
-                ? window.pushDigitalSnapshotFromLiveUI()
-                : false
-        );
+        const ok = typeof window.pushDigitalSnapshotFromLiveUI === 'function'
+            ? await window.pushDigitalSnapshotFromLiveUI()
+            : false;
         if (ok && typeof window.__serviceHubFlashToast === 'function') {
             window.__serviceHubFlashToast('Remoto aggiornato sul cloud.', false, 'ok');
         } else if (!ok && typeof window.__serviceHubFlashToast === 'function') {
@@ -13834,11 +13838,9 @@ window.refreshDigitalPreview = async function () {
     }
 
     try {
-        const ok = await Promise.resolve(
-            typeof window.pushDigitalSnapshotFromLiveUI === 'function'
-                ? window.pushDigitalSnapshotFromLiveUI()
-                : false
-        );
+        const ok = typeof window.pushDigitalSnapshotFromLiveUI === 'function'
+            ? await window.pushDigitalSnapshotFromLiveUI()
+            : false;
         if (ok && typeof window.__serviceHubFlashToast === 'function') {
             window.__serviceHubFlashToast('Digital pubblicato sul cloud.', false, 'ok');
         } else if (!ok && typeof window.__serviceHubFlashToast === 'function') {
@@ -15049,18 +15051,57 @@ window.convertToHtml = async () => {
             container.appendChild(fragment);
         };
 
-        window.applyTankConfiguration = function() {
-            // Prima raccogli tutte le configurazioni per ogni serbatoio
-            const tankStates = {}; // { tankId: ['Accumulo', 'Drenaggi', ...] }
-            
-            ['accumulo', 'drenaggi', 'parallelo'].forEach(mode => {
-                Object.keys(window.tankConfig[mode]).forEach(tankId => {
-                    if (window.tankConfig[mode][tankId]) {
-                        if (!tankStates[tankId]) tankStates[tankId] = [];
-                        tankStates[tankId].push(mode.charAt(0).toUpperCase() + mode.slice(1));
-                    }
+        window.__tankModeLabelFromConfigKey = function (mode) {
+            if (mode === 'drenaggi') return 'Drenaggio';
+            if (mode === 'accumulo') return 'Accumulo';
+            if (mode === 'parallelo') return 'Parallelo';
+            return mode.charAt(0).toUpperCase() + mode.slice(1);
+        };
+
+        window.__collectTankStatesFromConfig = function () {
+            const tankStates = {};
+            const cfg = window.tankConfig || { accumulo: {}, drenaggi: {}, parallelo: {} };
+            ['accumulo', 'drenaggi', 'parallelo'].forEach(function (mode) {
+                const bucket = cfg[mode] || {};
+                Object.keys(bucket).forEach(function (tankId) {
+                    if (!bucket[tankId]) return;
+                    if (!tankStates[tankId]) tankStates[tankId] = [];
+                    const label = window.__tankModeLabelFromConfigKey(mode);
+                    if (tankStates[tankId].indexOf(label) < 0) tankStates[tankId].push(label);
                 });
             });
+            return tankStates;
+        };
+
+        window.__writeTankStatesToMemory = function (tankStates) {
+            window.__ensureTankStatusesObject();
+            Object.keys(tankStates || {}).forEach(function (tankId) {
+                window.tankStatuses[tankId] = tankStates[tankId].join('+');
+            });
+        };
+
+        window.__flushPendingTankPopupToStatuses = function () {
+            if (window.currentTank && window.selectedTankStatuses && window.selectedTankStatuses.length) {
+                window.__ensureTankStatusesObject();
+                window.tankStatuses[window.currentTank] = window.selectedTankStatuses.join('+');
+            }
+        };
+
+        window.__syncTankConfigToStatuses = function () {
+            if (!window.tankConfig) return;
+            const tankStates = window.__collectTankStatesFromConfig();
+            if (!Object.keys(tankStates).length) return;
+            window.__writeTankStatesToMemory(tankStates);
+        };
+
+        window.__flushLiveStateBeforeDigitalPush = function () {
+            window.__flushPendingTankPopupToStatuses();
+            window.__syncTankConfigToStatuses();
+            window.__ensureTankStatusesObject();
+        };
+
+        window.applyTankConfiguration = function() {
+            const tankStates = window.__collectTankStatesFromConfig();
             
             // Ora applica le configurazioni a ogni serbatoio
             Object.keys(tankStates).forEach(tankId => {
@@ -15079,6 +15120,7 @@ window.convertToHtml = async () => {
                     let sigla = '';
                     switch(status) {
                         case 'Accumulo': sigla = 'A'; tankElement.classList.add('accumulo'); break;
+                        case 'Drenaggio':
                         case 'Drenaggi': sigla = 'D'; tankElement.classList.add('drenaggio'); break;
                         case 'Parallelo': sigla = 'P'; tankElement.classList.add('parallelo'); break;
                     }
@@ -15086,7 +15128,7 @@ window.convertToHtml = async () => {
                 } else if (states.length === 2) {
                     // Due stati - logica precisa per ogni combinazione
                     const hasAccumulo = states.includes('Accumulo');
-                    const hasDrenaggi = states.includes('Drenaggi');
+                    const hasDrenaggi = states.includes('Drenaggio') || states.includes('Drenaggi');
                     const hasParallelo = states.includes('Parallelo');
                     
                     let color1, color2, letter1, letter2;
@@ -15141,12 +15183,9 @@ window.convertToHtml = async () => {
                 }
             });
             
-            // Salva i dati nel formato corretto per window.tankStatuses
-            window.__ensureTankStatusesObject();
+            window.__writeTankStatesToMemory(tankStates);
             Object.keys(tankStates).forEach(tankId => {
                 const states = tankStates[tankId];
-                // Salva nel formato "Accumulo+Drenaggi" ecc.
-                window.tankStatuses[tankId] = states.join('+');
                 
                 // Trova il nome corretto da tankLists
                 const tankName = tankLists.accumulo.includes(tankId) ? tankId :

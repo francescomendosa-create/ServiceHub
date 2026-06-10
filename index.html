@@ -312,12 +312,29 @@ window.__shIsAndroidTablet = function () {
         history.scrollRestoration = 'manual';
     }
     if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
+    function __shTouchIsStylus(touch) {
+        if (!touch) return false;
+        var tt = touch.touchType || touch.pointerType;
+        return tt === 'stylus' || tt === 'pen';
+    }
+    function __shTouchInEditableField(node) {
+        while (node && node !== document.documentElement) {
+            var tag = node.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+            if (node.isContentEditable) return true;
+            if (node.getAttribute && node.getAttribute('role') === 'textbox') return true;
+            node = node.parentElement;
+        }
+        return false;
+    }
     var lastTouchY = 0;
     document.addEventListener('touchstart', function (e) {
         if (e.touches && e.touches.length === 1) lastTouchY = e.touches[0].clientY;
     }, { passive: true });
     document.addEventListener('touchmove', function (e) {
         if (!e.touches || e.touches.length !== 1) return;
+        if (__shTouchIsStylus(e.touches[0])) return;
+        if (__shTouchInEditableField(e.target)) return;
         var touchY = e.touches[0].clientY;
         var deltaY = touchY - lastTouchY;
         lastTouchY = touchY;
@@ -583,7 +600,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.10-robot-magnet-layout';
+        window.SERVICEHUB_BUILD = '2026.06.10-tablet-spen-fix';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
         window.SERVICEHUB_REMOTE_ORIGIN = 'https://servicehub-18309.web.app';
@@ -1142,7 +1159,26 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__isPostLongPressShieldActive = function () {
             return !!window.__postLongPressShieldActive;
         };
+        window.__releaseStylusInteractionLocks = function () {
+            if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+            if (visualFeedbackTimer) { clearTimeout(visualFeedbackTimer); visualFeedbackTimer = null; }
+            isLongPress = false;
+            globalInteractionLock = false;
+            window.__setLongPressInputLock(false);
+            const shield = document.getElementById('sh-post-long-press-shield');
+            if (shield) shield.style.display = 'none';
+            window.__postLongPressShieldActive = false;
+            clearTimeout(window.__postLongPressShieldTimer);
+            document.querySelectorAll('.v-label-container.pressing').forEach(function (el) {
+                el.classList.remove('pressing');
+            });
+        };
+
         window.__activatePostLongPressShield = function () {
+            if (window.isServiceHubTablet && window.isServiceHubTablet()) {
+                window.__releaseStylusInteractionLocks();
+                return;
+            }
             const ms = window.__postLongPressShieldMs();
             let el = document.getElementById('sh-post-long-press-shield');
             if (!el) {
@@ -4459,6 +4495,20 @@ window.updateStoricoButton = async function() {
 
             updateDeviceInfo(); 
             setInterval(updateDeviceInfo, 60000);
+
+            document.addEventListener('focusin', function (e) {
+                if (!window.isServiceHubTablet || !window.isServiceHubTablet()) return;
+                const t = e.target;
+                if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) return;
+                if (typeof window.__releaseStylusInteractionLocks === 'function') {
+                    window.__releaseStylusInteractionLocks();
+                }
+            }, true);
+            document.addEventListener('touchcancel', function () {
+                if (typeof window.__releaseStylusInteractionLocks === 'function') {
+                    window.__releaseStylusInteractionLocks();
+                }
+            }, { passive: true });
 
             // Rapportini: init solo da Firestore (syncWithCloud), non da timeout locale.
 
@@ -9472,13 +9522,15 @@ window.updateStoricoButton = async function() {
                 e.stopPropagation();
                 return;
             }
-            
             const touch = e.touches ? e.touches[0] : e;
+            if (touch && (touch.touchType === 'stylus' || touch.pointerType === 'pen')) return;
+            const isTabletLayout = window.shouldKeepAllSectionsExpanded && window.shouldKeepAllSectionsExpanded();
+            
             startX = touch.clientX;
             startY = touch.clientY;
-            forceBlur();
+            if (!isTabletLayout) forceBlur();
             isLongPress = false;
-            window.__setLongPressInputLock(true);
+            if (!isTabletLayout) window.__setLongPressInputLock(true);
             const label = e.currentTarget;
             if (pressTimer) clearTimeout(pressTimer);
             if (visualFeedbackTimer) clearTimeout(visualFeedbackTimer);
@@ -9499,6 +9551,8 @@ window.updateStoricoButton = async function() {
                 e.currentTarget.classList.remove('pressing');
                 if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
                 if (visualFeedbackTimer) { clearTimeout(visualFeedbackTimer); visualFeedbackTimer = null; }
+                isLongPress = false;
+                window.__setLongPressInputLock(false);
             }
         };
 
@@ -15220,6 +15274,13 @@ window.convertToHtml = async () => {
         .v-label-container.pressing { transform: scale(0.96) translateX(2px); filter: brightness(1.3); }
         body.sh-long-press-lock .main-container input,
         body.sh-long-press-lock .main-container textarea { pointer-events: none !important; }
+        body.sh-device-tablet.sh-long-press-lock .main-container input,
+        body.sh-device-tablet.sh-long-press-lock .main-container textarea { pointer-events: auto !important; }
+        body.sh-device-tablet .main-container input,
+        body.sh-device-tablet .main-container textarea {
+            -webkit-user-select: text !important;
+            user-select: text !important;
+        }
         body.sh-instant-layout .col-section { transition: none !important; }
         .v-label-text { transform: rotate(-90deg); white-space: nowrap; font-weight: 800; font-size: 11px; color: white; text-transform: uppercase; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
         .row-block { display: flex; width: 100%; border-bottom: 2px solid var(--border-main); align-items: stretch; overflow: hidden; }

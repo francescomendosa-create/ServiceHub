@@ -570,7 +570,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.10-manual-remote';
+        window.SERVICEHUB_BUILD = '2026.06.10-trend-table';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
         window.SERVICEHUB_REMOTE_ORIGIN = 'https://servicehub-18309.web.app';
@@ -11888,6 +11888,80 @@ window.expandDigitalModule = function (cardEl) {
     } catch (e) { /* ignore */ }
 };
 
+window.__buildDigitalTrendTableHTML = function (trends) {
+    if (!trends || !trends.length) return '';
+    const startTime = trends[0].startTime || '--:--';
+    const endTime = trends[trends.length - 1].endTime || '--:--';
+    const calculateHours = function (start, end) {
+        const startHour = parseInt(start.split(':')[0], 10);
+        const startMin = parseInt(start.split(':')[1], 10);
+        const endHour = parseInt(end.split(':')[0], 10);
+        const endMin = parseInt(end.split(':')[1], 10);
+        let totalHours = endHour - startHour;
+        let totalMinutes = endMin - startMin;
+        if (totalMinutes < 0) {
+            totalHours--;
+            totalMinutes += 60;
+        }
+        totalHours = Math.abs(totalHours);
+        if (totalMinutes >= 30) return totalHours + 1 + 'h';
+        if (totalMinutes > 0) return totalHours + 'h½';
+        return totalHours + 'h';
+    };
+    const formatTrendName = function (tankName) {
+        if (tankName === 'TK 8092') return tankName;
+        if (tankName === 'TK 8093') return 'BACINO TK 8093';
+        if (tankName.startsWith('TK') && tankName !== 'TK 8092' && tankName !== 'TK 8093') {
+            return 'BACINO ' + tankName;
+        }
+        if (tankName === 'COD') return 'COD ING';
+        if (tankName === 'COD NUOVO') return 'COD USC NUOVO';
+        if (tankName === 'COD VECCHIO') return 'COD VECCHIO';
+        return String(tankName || '')
+            .replace(/^ANALISI\s*/i, '')
+            .replace(/\s*ANALISI$/i, '');
+    };
+    const analisiKeys = ['COD', 'COND', 'O2 MBR1', 'O2 MBR2', 'CONO', 'COD NUOVO', 'COD VECCHIO'];
+    let html = '<div class="digital-trend-wrap">';
+    html += '<div class="digital-trend-grid digital-trend-head">';
+    html += '<span class="digital-trend-head__name"></span>';
+    html += '<span class="digital-trend-head__time">' + startTime + '</span>';
+    html += '<span class="digital-trend-head__time">' + endTime + '</span>';
+    html += '<span class="digital-trend-head__dur">(' + calculateHours(startTime, endTime) + ')</span>';
+    html += '</div>';
+    let analisiTitleShown = false;
+    trends.forEach(function (trend) {
+        const tankName = window.getTankName(trend.tank);
+        const isAnalisi = analisiKeys.indexOf(tankName) >= 0;
+        if (isAnalisi && !analisiTitleShown) {
+            html += '<div class="digital-trend-section">ANALISI</div>';
+            analisiTitleShown = true;
+        }
+        const rising = !!trend.rising;
+        const deltaClass = isAnalisi
+            ? (rising ? 'digital-trend-row__delta--up-an' : 'digital-trend-row__delta--down-an')
+            : (rising ? 'digital-trend-row__delta--up-tank' : 'digital-trend-row__delta--down-tank');
+        const diff = Math.abs(trend.end - trend.start);
+        const diffText = (rising ? '+' : '-') + diff;
+        const isPct = window.tankConfig && window.tankConfig[tankName] && window.tankConfig[tankName].unit === '%';
+        const deltaMain = (isPct || isAnalisi) ? diffText : diffText + ' mm';
+        const tons = !isAnalisi && typeof window.calculateTons === 'function'
+            ? window.calculateTons(tankName, trend.end)
+            : '';
+        html += '<div class="digital-trend-grid digital-trend-row">';
+        html += '<span class="digital-trend-row__name">' + formatTrendName(tankName) + '</span>';
+        html += '<span class="digital-trend-row__val">' + trend.start + '</span>';
+        html += '<span class="digital-trend-row__val">' + trend.end + '</span>';
+        html += '<span class="digital-trend-row__delta ' + deltaClass + '">' + deltaMain;
+        if (tons) {
+            html += '<span class="digital-trend-row__tons">' + tons + ' t</span>';
+        }
+        html += '</span></div>';
+    });
+    html += '</div>';
+    return html;
+};
+
 window.buildDigitalCardsHTML = function() {
         if (window.isNotturnoFiltraLayoutActive && window.isNotturnoFiltraLayoutActive()) {
             if (typeof window.renderStoccaggioInternoPanel === 'function') {
@@ -12050,56 +12124,9 @@ window.buildDigitalCardsHTML = function() {
                     });
                     contentHTML += '</div>';
                 } else if (moduleId === 'TREND_SPECIAL') {
-                    const startTime = tankTrends.length > 0 ? tankTrends[0].startTime : '--:--';
-                    const endTime = tankTrends.length > 0 ? tankTrends[tankTrends.length - 1].endTime : '--:--';
-                    
-                    contentHTML = `<div style="font-size: 13px; font-weight: 650; text-transform: uppercase; color: #fff; border-bottom: 0.5px solid rgba(255,255,255,0.5); padding-bottom: 6px; margin-bottom: 8px; letter-spacing: 0.3px;">
-                        TREND ${startTime} -> ${endTime}
-                    </div>
-                    <div style="display: flex; flex-direction: column;">`;
-                    
-                    let analisiTitleShown = false;
-                    
-                    tankTrends.forEach(trend => {
-                        const color = trend.rising ? '#059669' : '#dc2626'; // Verde se sale, rosso se scende
-                        const arrow = trend.rising ? 'up' : 'down';
-                        // Usa la funzione di mappatura per ottenere il nome reale del serbatoio
-                        const tankName = window.getTankName(trend.tank);
-                        let displayName = (tankName === 'TK 8092') ? tankName : (tankName === 'TK 8093') ? 'BACINO<br>TK 8093' : (tankName.startsWith('TK') && tankName !== 'TK 8092' && tankName !== 'TK 8093') ? 'BACINO<br>' + tankName : tankName;
-                        // Rimuovi la parola "analisi" se presente come prefisso
-                        displayName = displayName.replace(/^ANALISI\s*/i, '').replace(/\s*ANALISI$/i, '');
-                        // Calcola la differenza
-                        const difference = Math.abs(trend.end - trend.start);
-                        const diffText = trend.rising ? `+${difference}` : `-${difference}`;
-                        
-                        // Controlla se è un'analisi e mostra il titolo una sola volta
-                        const isAnalisi = ['COD', 'COND', 'O2 MBR1', 'O2 MBR2', 'CONO', 'COD NUOVO', 'COD VECCHIO'].includes(tankName);
-                        if (isAnalisi && !analisiTitleShown) {
-                            contentHTML += `<div style="font-size: 11px; font-weight: 600; text-transform: uppercase; color: #fff; border-bottom: 0.3px dashed rgba(255,255,255,0.3); padding-bottom: 3px; margin: 8px 0 5px 0; letter-spacing: 0.2px;">ANALISI</div>`;
-                            analisiTitleShown = true;
-                        }
-                        
-                        contentHTML += `<div style="display: flex; align-items: center; padding: 4px 0; border-bottom: 0.1px solid rgba(255,255,255,0.2); font-size: 12px;">
-                            <!-- Nome serbatoio -->
-                            <span style="font-weight: 600; text-transform: uppercase; color: #fff; width: 50px; flex-shrink: 0;">${displayName}</span>
-                            
-                            <!-- Livello iniziale -->
-                            <span style="font-weight: 600; color: #fff; width: 25px; text-align: center; margin-left: 2px;">${trend.start}</span>
-                            
-                            <!-- Separatore -->
-                            <span style="margin: 0 3px; color: #fff; font-weight: 700;">-></span>
-                            
-                            <!-- Livello finale -->
-                            <span style="font-weight: 600; color: #fff; width: 25px; text-align: center;">${trend.end}</span>
-                            
-                            <!-- Separatore più grande -->
-                            <span style="margin: 0 8px; color: #fff; font-weight: 700;">|</span>
-                            
-                            <!-- Differenza più grande e visibile -->
-                            <span style="font-weight: 800; color: ${color}; font-size: 14px; margin-left: 5px; flex-shrink: 0;">${arrow} ${diffText}</span>
-                        </div>`;
-                    });
-                    contentHTML += '</div>';
+                    contentHTML = typeof window.__buildDigitalTrendTableHTML === 'function'
+                        ? window.__buildDigitalTrendTableHTML(tankTrends)
+                        : '';
                 } else {
                     // USA LA STESSA LOGICA DEL REPORT PREVIEW PER ESTRARRE I DATI
                     const sec = document.getElementById(moduleId); 
@@ -13159,6 +13186,87 @@ window.openDigitalPreview = () => {
                     font-size: 14px !important;
                     white-space: normal !important;
                 }
+            }
+            .digital-trend-wrap { width: 100%; min-width: 0; }
+            .digital-trend-grid {
+                display: grid;
+                grid-template-columns: minmax(112px, 1.55fr) minmax(76px, 1fr) minmax(76px, 1fr) minmax(100px, 1.2fr);
+                column-gap: 20px;
+                align-items: center;
+                white-space: nowrap;
+            }
+            .digital-trend-head {
+                margin-bottom: 12px;
+                padding-bottom: 10px;
+                border-bottom: 1px solid rgba(96, 165, 250, 0.45);
+            }
+            .digital-trend-head__time {
+                font-size: 16px;
+                font-weight: 800;
+                color: #93c5fd;
+                text-align: center;
+                font-variant-numeric: tabular-nums;
+            }
+            .digital-trend-head__dur {
+                font-size: 14px;
+                font-weight: 700;
+                color: #94a3b8;
+            }
+            .digital-trend-row {
+                padding: 10px 0;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            }
+            .digital-trend-row__name {
+                font-size: 15px;
+                font-weight: 800;
+                color: #e2e8f0;
+                text-transform: uppercase;
+            }
+            .digital-trend-row__val {
+                font-size: 24px;
+                font-weight: 900;
+                color: #f8fafc;
+                text-align: center;
+                font-variant-numeric: tabular-nums;
+            }
+            .digital-trend-row__delta {
+                font-size: 20px;
+                font-weight: 900;
+                white-space: nowrap;
+            }
+            .digital-trend-row__delta--up-tank { color: #f87171; }
+            .digital-trend-row__delta--down-tank { color: #60a5fa; }
+            .digital-trend-row__delta--up-an { color: #4ade80; }
+            .digital-trend-row__delta--down-an { color: #f87171; }
+            .digital-trend-row__tons {
+                display: block;
+                font-size: 14px;
+                font-weight: 700;
+                color: #38bdf8;
+                margin-top: 4px;
+            }
+            .digital-trend-section {
+                margin: 14px 0 8px;
+                padding-top: 10px;
+                border-top: 1px dashed rgba(255, 255, 255, 0.22);
+                font-size: 14px;
+                font-weight: 800;
+                color: #93c5fd;
+                letter-spacing: 0.14em;
+                text-transform: uppercase;
+            }
+            #digital-preview-container.digital-focus-active .digital-trend-grid {
+                grid-template-columns: minmax(168px, 1.65fr) minmax(108px, 1fr) minmax(108px, 1fr) minmax(140px, 1.25fr);
+                column-gap: 32px;
+            }
+            #digital-preview-container.digital-focus-active .digital-trend-head__time {
+                font-size: clamp(22px, 2.4vw, 32px);
+            }
+            #digital-preview-container.digital-focus-active .digital-trend-row__val {
+                font-size: clamp(32px, 3.6vw, 52px);
+            }
+            #digital-preview-container.digital-focus-active .digital-trend-row__delta {
+                font-size: clamp(24px, 2.6vw, 38px);
             }
         </style>
         

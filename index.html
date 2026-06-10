@@ -570,7 +570,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.10-moduli-remote';
+        window.SERVICEHUB_BUILD = '2026.06.10-preview-zoom';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
         window.SERVICEHUB_REMOTE_ORIGIN = 'https://servicehub-18309.web.app';
@@ -9747,6 +9747,8 @@ window.updateStoricoButton = async function() {
         window.closeManagement = () => document.getElementById('management-modal').classList.remove('active');
         window.openPreview = () => { 
             buildPreview(); 
+            if (typeof window.resetPreviewSheetZoom === 'function') window.resetPreviewSheetZoom();
+            if (typeof window.initPreviewSheetZoom === 'function') window.initPreviewSheetZoom();
             document.getElementById('preview-screen').classList.add('active'); 
             
             // AVVISO LAMPEGGIANTE CON TASTO SALVA PER MODIFICHE NON SALVATE
@@ -9894,6 +9896,7 @@ window.updateStoricoButton = async function() {
             }
         };
         window.closePreview = () => { 
+            if (typeof window.resetPreviewSheetZoom === 'function') window.resetPreviewSheetZoom();
             document.getElementById('preview-screen').classList.remove('active');
             
             // RIMUOVI L'AVVISO DI MODIFICA QUANDO CHIUDI
@@ -9902,6 +9905,256 @@ window.updateStoricoButton = async function() {
                 warningDiv.remove();
             }
         };
+
+        (function initPreviewSheetZoomModule() {
+            var state = {
+                wired: false,
+                zoomActive: false,
+                scale: 1,
+                tx: 0,
+                ty: 0,
+                baseTx: 0,
+                baseTy: 0,
+                minScale: 1,
+                maxScale: 5,
+                panning: false,
+                panStartX: 0,
+                panStartY: 0,
+                panOriginTx: 0,
+                panOriginTy: 0,
+                lastTapMs: 0,
+                lastTapX: 0,
+                lastTapY: 0,
+                pinchStartDist: 0,
+                pinchStartScale: 1,
+                pinchMidX: 0,
+                pinchMidY: 0,
+                pinchOriginTx: 0,
+                pinchOriginTy: 0
+            };
+
+            function els() {
+                return {
+                    scroll: document.getElementById('preview-scroll-area'),
+                    stage: document.getElementById('preview-sheet-stage'),
+                    sheet: document.getElementById('preview-sheet')
+                };
+            }
+
+            function totalTx() { return state.baseTx + state.tx; }
+            function totalTy() { return state.baseTy + state.ty; }
+
+            function applyTransform(animate) {
+                var e = els();
+                if (!e.stage) return;
+                if (animate) e.stage.classList.add('preview-zoom-anim');
+                else e.stage.classList.remove('preview-zoom-anim');
+                if (!state.zoomActive) {
+                    e.stage.style.transform = '';
+                    return;
+                }
+                e.stage.style.transform = 'translate(' + totalTx() + 'px,' + totalTy() + 'px) scale(' + state.scale + ')';
+            }
+
+            function captureBaseOffset() {
+                var e = els();
+                if (!e.scroll || !e.stage) return;
+                e.stage.style.transform = '';
+                var sRect = e.scroll.getBoundingClientRect();
+                var stRect = e.stage.getBoundingClientRect();
+                state.baseTx = stRect.left - sRect.left;
+                state.baseTy = stRect.top - sRect.top;
+                state.tx = 0;
+                state.ty = 0;
+                state.scale = 1;
+            }
+
+            function clampScale(s) {
+                return Math.max(state.minScale, Math.min(state.maxScale, s));
+            }
+
+            function zoomAt(clientX, clientY, newScale) {
+                var e = els();
+                if (!e.scroll) return;
+                newScale = clampScale(newScale);
+                var rect = e.scroll.getBoundingClientRect();
+                var mx = clientX - rect.left;
+                var my = clientY - rect.top;
+                var wx = (mx - totalTx()) / state.scale;
+                var wy = (my - totalTy()) / state.scale;
+                state.scale = newScale;
+                state.tx = mx - state.baseTx - wx * state.scale;
+                state.ty = my - state.baseTy - wy * state.scale;
+                applyTransform(false);
+            }
+
+            function setZoomMode(on, animate) {
+                var e = els();
+                if (on && !state.zoomActive) captureBaseOffset();
+                state.zoomActive = !!on;
+                if (e.scroll) {
+                    e.scroll.classList.toggle('preview-zoom-active', state.zoomActive);
+                    e.scroll.classList.remove('preview-panning');
+                }
+                if (!state.zoomActive) {
+                    state.scale = 1;
+                    state.tx = 0;
+                    state.ty = 0;
+                    state.baseTx = 0;
+                    state.baseTy = 0;
+                    applyTransform(!!animate);
+                    if (animate && e.stage) {
+                        setTimeout(function () {
+                            if (e.stage) e.stage.classList.remove('preview-zoom-anim');
+                        }, 350);
+                    }
+                } else {
+                    applyTransform(false);
+                }
+            }
+
+            window.resetPreviewSheetZoom = function () {
+                state.panning = false;
+                state.lastTapMs = 0;
+                setZoomMode(false, false);
+            };
+
+            window.togglePreviewSheetZoom = function () {
+                if (state.zoomActive) setZoomMode(false, true);
+                else setZoomMode(true, false);
+            };
+
+            function onWheel(ev) {
+                if (!state.zoomActive) return;
+                ev.preventDefault();
+                var factor = ev.deltaY < 0 ? 1.1 : 0.9;
+                zoomAt(ev.clientX, ev.clientY, state.scale * factor);
+            }
+
+            function onPointerDown(ev) {
+                if (!state.zoomActive) return;
+                if (ev.pointerType === 'touch') return;
+                if (ev.button !== 0) return;
+                state.panning = true;
+                state.panStartX = ev.clientX;
+                state.panStartY = ev.clientY;
+                state.panOriginTx = state.tx;
+                state.panOriginTy = state.ty;
+                var e = els();
+                if (e.scroll) e.scroll.classList.add('preview-panning');
+                if (ev.target.setPointerCapture) {
+                    try { ev.target.setPointerCapture(ev.pointerId); } catch (_) {}
+                }
+            }
+
+            function onPointerMove(ev) {
+                if (!state.zoomActive || !state.panning) return;
+                state.tx = state.panOriginTx + (ev.clientX - state.panStartX);
+                state.ty = state.panOriginTy + (ev.clientY - state.panStartY);
+                applyTransform(false);
+            }
+
+            function endPan() {
+                state.panning = false;
+                var e = els();
+                if (e.scroll) e.scroll.classList.remove('preview-panning');
+            }
+
+            function touchDist(t0, t1) {
+                var dx = t1.clientX - t0.clientX;
+                var dy = t1.clientY - t0.clientY;
+                return Math.sqrt(dx * dx + dy * dy);
+            }
+
+            function onTouchStart(ev) {
+                if (!state.zoomActive) return;
+                if (ev.touches.length === 2) {
+                    state.pinchStartDist = touchDist(ev.touches[0], ev.touches[1]);
+                    state.pinchStartScale = state.scale;
+                    state.pinchMidX = (ev.touches[0].clientX + ev.touches[1].clientX) / 2;
+                    state.pinchMidY = (ev.touches[0].clientY + ev.touches[1].clientY) / 2;
+                    state.pinchOriginTx = state.tx;
+                    state.pinchOriginTy = state.ty;
+                    state.panning = false;
+                } else if (ev.touches.length === 1) {
+                    state.panning = true;
+                    state.panStartX = ev.touches[0].clientX;
+                    state.panStartY = ev.touches[0].clientY;
+                    state.panOriginTx = state.tx;
+                    state.panOriginTy = state.ty;
+                    var e = els();
+                    if (e.scroll) e.scroll.classList.add('preview-panning');
+                }
+            }
+
+            function onTouchMove(ev) {
+                if (!state.zoomActive) return;
+                if (ev.touches.length === 2 && state.pinchStartDist > 0) {
+                    ev.preventDefault();
+                    var dist = touchDist(ev.touches[0], ev.touches[1]);
+                    var midX = (ev.touches[0].clientX + ev.touches[1].clientX) / 2;
+                    var midY = (ev.touches[0].clientY + ev.touches[1].clientY) / 2;
+                    var newScale = clampScale(state.pinchStartScale * (dist / state.pinchStartDist));
+                    zoomAt(midX, midY, newScale);
+                } else if (ev.touches.length === 1 && state.panning) {
+                    ev.preventDefault();
+                    state.tx = state.panOriginTx + (ev.touches[0].clientX - state.panStartX);
+                    state.ty = state.panOriginTy + (ev.touches[0].clientY - state.panStartY);
+                    applyTransform(false);
+                }
+            }
+
+            function onTouchEnd(ev) {
+                if (ev.touches.length < 2) state.pinchStartDist = 0;
+                if (ev.touches.length === 0) endPan();
+            }
+
+            function handleDoubleActivate() {
+                window.togglePreviewSheetZoom();
+            }
+
+            function onSheetDblClick(ev) {
+                ev.preventDefault();
+                handleDoubleActivate();
+            }
+
+            function onSheetTouchEnd(ev) {
+                if (ev.touches.length > 0) return;
+                var t = ev.changedTouches[0];
+                if (!t) return;
+                var now = Date.now();
+                var dt = now - state.lastTapMs;
+                var dx = Math.abs(t.clientX - state.lastTapX);
+                var dy = Math.abs(t.clientY - state.lastTapY);
+                if (dt > 0 && dt < 320 && dx < 36 && dy < 36) {
+                    ev.preventDefault();
+                    handleDoubleActivate();
+                    state.lastTapMs = 0;
+                } else {
+                    state.lastTapMs = now;
+                    state.lastTapX = t.clientX;
+                    state.lastTapY = t.clientY;
+                }
+            }
+
+            window.initPreviewSheetZoom = function () {
+                if (state.wired) return;
+                var e = els();
+                if (!e.scroll || !e.stage || !e.sheet) return;
+                state.wired = true;
+                e.sheet.addEventListener('dblclick', onSheetDblClick);
+                e.sheet.addEventListener('touchend', onSheetTouchEnd, { passive: false });
+                e.scroll.addEventListener('wheel', onWheel, { passive: false });
+                e.scroll.addEventListener('pointerdown', onPointerDown);
+                e.scroll.addEventListener('pointermove', onPointerMove);
+                e.scroll.addEventListener('pointerup', endPan);
+                e.scroll.addEventListener('pointercancel', endPan);
+                e.scroll.addEventListener('touchstart', onTouchStart, { passive: false });
+                e.scroll.addEventListener('touchmove', onTouchMove, { passive: false });
+                e.scroll.addEventListener('touchend', onTouchEnd);
+                e.scroll.addEventListener('touchcancel', onTouchEnd);
+            };
+        })();
 
         window.updateBoilerInputs = function() {
             // Funzione helper per trovare elementi anche nei moduli nascosti
@@ -15035,6 +15288,47 @@ window.convertToHtml = async () => {
         
         .preview-screen { position: fixed; inset: 0; background: #cbd5e1; z-index: 20000; visibility: hidden; opacity: 0; transition: all 0.4s ease-in-out; display: flex; flex-direction: column; }
         .preview-screen.active { visibility: visible; opacity: 1; }
+        .preview-scroll-area {
+            overflow-y: auto;
+            overflow-x: hidden;
+            flex: 1 1 auto;
+            min-height: 0;
+            -webkit-overflow-scrolling: touch;
+        }
+        .preview-scroll-area.preview-zoom-active {
+            overflow: hidden;
+            touch-action: none;
+            cursor: grab;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        .preview-scroll-area.preview-zoom-active.preview-panning {
+            cursor: grabbing;
+        }
+        .preview-sheet-viewport {
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: 100%;
+            padding: 1rem;
+            box-sizing: border-box;
+        }
+        .preview-sheet-stage {
+            transform-origin: 0 0;
+            will-change: transform;
+        }
+        .preview-sheet-stage.preview-zoom-anim {
+            transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        #preview-sheet.preview-sheet-zoom-hint {
+            cursor: zoom-in;
+        }
+        .preview-scroll-area.preview-zoom-active #preview-sheet {
+            cursor: grab;
+        }
+        .preview-scroll-area.preview-zoom-active.preview-panning #preview-sheet {
+            cursor: grabbing;
+        }
         
         .a4-sheet { width: 105mm; background: white; min-height: 148.5mm; height: fit-content; margin: 0 auto; box-sizing: border-box; }
         
@@ -16748,8 +17042,12 @@ window.convertToHtml = async () => {
                 <button onclick="window.openDigitalPreview()" class="bg-gradient-to-r from-blue-500 to-blue-600 px-4 py-2 rounded-lg font-black text-[10px] uppercase shadow-lg outline-none" style="background:linear-gradient(135deg,#0ea5e9,#2563eb);">DIGITAL</button>
             </div>
         </div>
-        <div class="overflow-y-auto grow p-4 bg-slate-400 flex justify-center">
-            <div id="preview-sheet" class="a4-sheet p-4 shadow-2xl" style="background: white;"></div>
+        <div id="preview-scroll-area" class="preview-scroll-area grow p-4 bg-slate-400">
+            <div id="preview-sheet-viewport" class="preview-sheet-viewport">
+                <div id="preview-sheet-stage" class="preview-sheet-stage">
+                    <div id="preview-sheet" class="a4-sheet p-4 shadow-2xl preview-sheet-zoom-hint" style="background: white;" title="Doppio clic o doppio tap per zoom"></div>
+                </div>
+            </div>
         </div>
     </div>
     

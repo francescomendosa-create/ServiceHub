@@ -7,7 +7,7 @@
     var SK = "servicehub_remote_share_k";
     var SA = "servicehub_remote_app_id";
     var FB_ORIGIN = "https://servicehub-18309.web.app";
-    window.SVCREMOTE_BUILD = "2026.06.10-v93";
+    window.SVCREMOTE_BUILD = "2026.06.10-v94";
 
     /** Vecchi link su GitHub → stesso remoto su Firebase. */
     (function redirectGithubToFirebase() {
@@ -225,7 +225,7 @@
   <link rel="manifest" href="manifest.json?v=fb5" />
   <link rel="apple-touch-icon" href="sh-remote-touch.png?v=fb3" />
   <link rel="icon" type="image/png" sizes="32x32" href="sh-remote-favicon.png?v=fb3" />
-  <link rel="stylesheet" href="digital-remote.css?v=dig80" />
+  <link rel="stylesheet" href="digital-remote.css?v=dig81" />
   <style>
     html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; overflow: hidden; overflow-x: hidden !important; touch-action: pan-y; overscroll-behavior-x: none; }
     #digital-preview-container {
@@ -2429,6 +2429,43 @@
       }
     }
 
+    function captureRemoteFocusState(root) {
+      const inFocus = !!(root && root.classList.contains("digital-focus-active"));
+      const state = { inFocus: inFocus, moduleId: "", scrollTop: 0, title: "" };
+      if (!inFocus) return state;
+      const exp = root.querySelector(".digital-card--expanded");
+      if (exp) state.moduleId = String(exp.getAttribute("data-module-id") || "");
+      const scroll = root.querySelector("#digital-preview-scroll");
+      if (scroll) state.scrollTop = scroll.scrollTop;
+      const tt = root.querySelector("#digital-focus-title");
+      if (tt) state.title = String(tt.textContent || "").replace(/\s+/g, " ").trim();
+      return state;
+    }
+
+    function restoreRemoteFocusState(root, grid, focusState) {
+      if (!root || !grid || !focusState || !focusState.inFocus) return;
+      root.classList.add("digital-remote--silent-patch");
+      let matched = null;
+      if (focusState.moduleId) {
+        matched = grid.querySelector('.digital-card[data-module-id="' + focusState.moduleId + '"]');
+      }
+      if (!matched && focusState.title) {
+        grid.querySelectorAll(".digital-card").forEach(function (c) {
+          const titleNode = c.querySelector(".digital-card-title");
+          const t = titleNode ? String(titleNode.textContent || "").replace(/\s+/g, " ").trim() : "";
+          if (t === focusState.title) matched = c;
+        });
+      }
+      if (matched) window.expandDigitalModule(matched);
+      const scroll = root.querySelector("#digital-preview-scroll");
+      if (scroll) scroll.scrollTop = focusState.scrollTop;
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          root.classList.remove("digital-remote--silent-patch");
+        });
+      });
+    }
+
     /**
      * @param {object} d dati publicDigital
      * @param {{ fullRefresh?: boolean }} opts fullRefresh=true solo da pulsante AGGIORNA (animazione / DOM completo)
@@ -2450,34 +2487,14 @@
         if (sig === __lastDigitalRemoteSig) return;
         __lastDigitalRemoteSig = sig;
 
-        const inFocus = root.classList.contains("digital-focus-active");
-        let expandedTitle = "";
-        if (inFocus) {
-          const tt = root.querySelector("#digital-focus-title");
-          if (tt) expandedTitle = String(tt.textContent || "").replace(/\s+/g, " ").trim();
-        }
+        const focusState = captureRemoteFocusState(root);
 
         updateRemoteMetaStrip(d);
         applyDigitalGridContent(existingGrid, d);
         applyDigitalPhoneLayoutIfNeeded(root);
         applyRemoteLayoutPrefs(root);
-
-        if (inFocus && expandedTitle) {
-          root.classList.add("digital-remote--silent-patch");
-          const cards = existingGrid.querySelectorAll(".digital-card");
-          let matched = null;
-          cards.forEach(function (c) {
-            const titleNode = c.querySelector(".digital-card-title");
-            const t = titleNode ? String(titleNode.textContent || "").replace(/\s+/g, " ").trim() : "";
-            if (t === expandedTitle) matched = c;
-          });
-          if (matched) window.expandDigitalModule(matched);
-          requestAnimationFrame(function () {
-            requestAnimationFrame(function () {
-              root.classList.remove("digital-remote--silent-patch");
-            });
-          });
-        }
+        restoreRemoteFocusState(root, existingGrid, focusState);
+        markRemotePayloadRendered(d);
         return;
       }
 
@@ -2725,7 +2742,7 @@
           }
 
           __lastDigitalRemoteSig = "";
-          renderFromData(hit.data, { fullRefresh: forceFull || userInitiated });
+          renderFromData(hit.data, { fullRefresh: forceFull });
           markRemotePayloadRendered(hit.data);
           __lastDigitalRemoteSig = digitalRemoteSig(hit.data);
           wireButtons();
@@ -2756,8 +2773,10 @@
           }
           __remoteRefreshInFlight = true;
           try {
+            const root = document.getElementById("digital-preview-container");
+            const inFocus = !!(root && root.classList.contains("digital-focus-active"));
             const result = await pullLatestFromCloud({
-              fullRefresh: true,
+              fullRefresh: !inFocus,
               userInitiated: true
             });
             if (btn && result && result.ok) {
@@ -2801,11 +2820,9 @@
           if (__remoteRefreshInFlight) return;
           if (!d || String(d.cardsHTML || "").trim().length < 40) return;
           var root = document.getElementById("digital-preview-container");
-          if (root && root.classList.contains("digital-focus-active")) return;
           var sig = digitalRemoteSig(d);
           if (sig === __lastDigitalRemoteSig) return;
           renderFromData(d, { fullRefresh: false });
-          markRemotePayloadRendered(d);
           __lastDigitalRemoteSig = sig;
           wireButtons();
           bindCardZoomOnce();
@@ -2840,7 +2857,7 @@
                       })
                       .catch(function () {});
                   });
-              }, 60);
+              }, 20);
             },
             function (err) {
               console.warn("[SvcRemote] cloud listener:", err && err.message);
@@ -2858,8 +2875,6 @@
           latestPtrRef,
           function (snap) {
             if (__remoteRefreshInFlight || !snap.exists()) return;
-            var root = document.getElementById("digital-preview-container");
-            if (root && root.classList.contains("digital-focus-active")) return;
             var sk = String((snap.data() || {}).shareKey || "").trim();
             if (sk && sk !== activeKey) {
               activeKey = sk;

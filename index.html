@@ -333,6 +333,8 @@ window.__shIsAndroidTablet = function () {
     }, { passive: true });
     document.addEventListener('touchmove', function (e) {
         if (!e.touches || e.touches.length !== 1) return;
+        var ae = document.activeElement;
+        if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) return;
         if (__shTouchIsStylus(e.touches[0])) return;
         if (__shTouchInEditableField(e.target)) return;
         var touchY = e.touches[0].clientY;
@@ -600,7 +602,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.10-tablet-spen-palm2';
+        window.SERVICEHUB_BUILD = '2026.06.10-tablet-spen-writefix';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
         window.SERVICEHUB_REMOTE_ORIGIN = 'https://servicehub-18309.web.app';
@@ -788,17 +790,33 @@ window.colorPreviewNumber = function(tankName, value) {
             var t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
             return !!(t && t.touchType === 'stylus');
         };
-        /** Palmo/dito su etichetta scheda mentre un campo è in focus → ignora (solo long-press etichette). */
-        window.__blockPalmOnModuleLabel = function (e) {
+        /** Tablet: dito/palmo sulle etichette moduli non avvia long-press (solo S Pen se riconosciuta). */
+        window.__blockFingerOnModuleLabelPress = function (e) {
             if (!window.isServiceHubTablet || !window.isServiceHubTablet()) return false;
-            if (!(window.shouldKeepAllSectionsExpanded && window.shouldKeepAllSectionsExpanded())) return false;
-            var focused = document.activeElement;
-            if (!focused || (focused.tagName !== 'INPUT' && focused.tagName !== 'TEXTAREA')) return false;
             if (window.__isStylusEvent(e)) return false;
-            var t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
-            if (!t) return false;
-            if (t.touchType === 'stylus') return false;
             return true;
+        };
+        window.__initTabletStylusWritingSupport = function () {
+            if (!window.isServiceHubTablet || !window.isServiceHubTablet()) return;
+            if (window.__tabletStylusWritingReady) return;
+            window.__tabletStylusWritingReady = true;
+            document.addEventListener('pointerdown', function (e) {
+                var inp = e.target && e.target.closest && e.target.closest('.main-container input, .main-container textarea');
+                if (!inp || inp.readOnly) return;
+                if (document.activeElement !== inp) {
+                    try { inp.focus({ preventScroll: true }); } catch (_) { inp.focus(); }
+                }
+                if (typeof window.__releaseStylusInteractionLocks === 'function') {
+                    window.__releaseStylusInteractionLocks();
+                }
+            }, true);
+            document.addEventListener('touchstart', function (e) {
+                var inp = e.target && e.target.closest && e.target.closest('.main-container input, .main-container textarea');
+                if (!inp || inp.readOnly) return;
+                if (typeof window.__releaseStylusInteractionLocks === 'function') {
+                    window.__releaseStylusInteractionLocks();
+                }
+            }, { capture: true, passive: true });
         };
 
         window.ALL_EXPAND_SECTION_IDS = [
@@ -4406,6 +4424,7 @@ window.updateStoricoButton = async function() {
                     __plantPersistTimer = setTimeout(function () {
                         __plantPersistTimer = null;
                         if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
+                        if (window.isServiceHubTablet && window.isServiceHubTablet()) return;
                         if (typeof window.saveData === 'function') void window.saveData(true);
                     }, 400);
                 },
@@ -4529,6 +4548,9 @@ window.updateStoricoButton = async function() {
                     window.__releaseStylusInteractionLocks();
                 }
             }, { passive: true });
+            if (typeof window.__initTabletStylusWritingSupport === 'function') {
+                window.__initTabletStylusWritingSupport();
+            }
 
             // Rapportini: init solo da Firestore (syncWithCloud), non da timeout locale.
 
@@ -4683,6 +4705,7 @@ window.updateStoricoButton = async function() {
             
             document.body.addEventListener('click', (e) => {
                 if (globalInteractionLock) return;
+                if (window.isServiceHubTablet && window.isServiceHubTablet()) return;
                 const target = e.target;
                 if (target.classList.contains('cell-label-main') || target.classList.contains('bd-label') || (target.classList.contains('amb-label') && !target.innerText.includes("WWT") && !target.innerText.includes("OSMOSI") && !target.querySelector('.vwt-label-dynamic') && !target.querySelector('.osmosi-label-dynamic'))) { window.openNumpad(target); }
             });
@@ -9542,7 +9565,7 @@ window.updateStoricoButton = async function() {
                 e.stopPropagation();
                 return;
             }
-            if (window.__blockPalmOnModuleLabel(e)) {
+            if (window.__blockFingerOnModuleLabelPress(e)) {
                 if (e.preventDefault) e.preventDefault();
                 if (e.stopPropagation) e.stopPropagation();
                 return;
@@ -9591,6 +9614,11 @@ window.updateStoricoButton = async function() {
                 if (!isLongPress) window.handleLabelClick(id);
             }
             if (isLongPress || window.__isPostLongPressShieldActive()) {
+                if (window.isServiceHubTablet && window.isServiceHubTablet()) {
+                    globalInteractionLock = false;
+                    isLongPress = false;
+                    window.__setLongPressInputLock(false);
+                }
                 return;
             }
             window.__setLongPressInputLock(false);
@@ -10381,6 +10409,9 @@ window.updateStoricoButton = async function() {
             document.body.classList.toggle('sh-device-phone', !!(window.isServiceHubPhone && window.isServiceHubPhone()));
             document.body.classList.toggle('sh-device-tablet', !!isTablet);
             if (typeof window.syncRobotMagnetPlacement === 'function') window.syncRobotMagnetPlacement();
+            if (isTablet && typeof window.__initTabletStylusWritingSupport === 'function') {
+                window.__initTabletStylusWritingSupport();
+            }
 
             if (window.shouldKeepAllSectionsExpanded && window.shouldKeepAllSectionsExpanded()) {
                 if (typeof window.expandAllSectionsLayout === 'function') window.expandAllSectionsLayout();

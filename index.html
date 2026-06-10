@@ -570,7 +570,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.10-preview-restore';
+        window.SERVICEHUB_BUILD = '2026.06.10-trend-cloud-only';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
         window.SERVICEHUB_REMOTE_ORIGIN = 'https://servicehub-18309.web.app';
@@ -2332,31 +2332,8 @@ window.colorPreviewNumber = function(tankName, value) {
 
                 // ✅ RICARICA I BACKUP PER IL TREND DOPO AVER SALVATO LA MODIFICA
                 setTimeout(() => {
-                    if (user && user.uid) {
-                        const archiveRef = collection(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots');
-                        getDocs(archiveRef).then(querySnapshot => {
-                            // Svuota e ricarica lo storico
-                            window.savedHistory = [];
-                            
-                            // Aggiungi archivi locali
-                            let localArchives = JSON.parse(localStorage.getItem('stabileArchives') || '[]');
-                            localArchives.forEach(archive => {
-                                if (archive && archive.data) {
-                                    window.addToHistory(archive.data);
-                                }
-                            });
-                            
-                            // Aggiungi archivi cloud
-                            querySnapshot.forEach(docSnap => {
-                                const snapData = docSnap.data();
-                                if (snapData) {
-                                    window.addToHistory(snapData);
-                                }
-                            });
-                            
-                            // ✅ AGGIUNGI ANCHE IL BACKUP MODIFICATO APPENA SALVATO
-                            window.addToHistory(data);
-                            
+                    if (user && user.uid && typeof window.syncBackupHistory === 'function') {
+                        window.syncBackupHistory().then(function () {
                             // ✅ AGGIORNA IL TASTO STORICO DOPO SALVATAGGIO MODIFICA
                             setTimeout(() => {
                                 window.updateStoricoButton();
@@ -2475,7 +2452,7 @@ window.colorPreviewNumber = function(tankName, value) {
         window.syncBackupHistory = async function() {
             if (!user || !user.uid || !db) return 0;
 
-            console.log('syncBackupHistory: merge archivi locali + cloud...');
+            console.log('syncBackupHistory: carico archivi cloud (unica fonte trend)...');
 
             try {
                 const archiveRef = collection(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots');
@@ -2502,6 +2479,15 @@ window.colorPreviewNumber = function(tankName, value) {
                     if (snapData) pushEntry(snapData);
                 });
 
+                if (merged.length > 0) {
+                    window.savedHistory = merged.slice(-50);
+                    window.__trendArchivesSource = 'cloud';
+                    console.log('syncBackupHistory: ' + window.savedHistory.length + ' archivi cloud');
+                    if (window.refreshTankLevelBaselineFromSavedHistory) window.refreshTankLevelBaselineFromSavedHistory();
+                    if (window.refreshAllTankLevelArrows) window.refreshAllTankLevelArrows();
+                    return window.savedHistory.length;
+                }
+
                 try {
                     const localArchives = JSON.parse(localStorage.getItem('stabileArchives') || '[]');
                     localArchives.forEach(function (arch) {
@@ -2510,7 +2496,8 @@ window.colorPreviewNumber = function(tankName, value) {
                 } catch (_) {}
 
                 window.savedHistory = merged.slice(-50);
-                console.log('syncBackupHistory: ' + window.savedHistory.length + ' archivi (locale+cloud)');
+                window.__trendArchivesSource = merged.length ? 'local-offline' : 'none';
+                console.log('syncBackupHistory: ' + window.savedHistory.length + ' archivi (solo locale, cloud vuoto)');
                 if (window.refreshTankLevelBaselineFromSavedHistory) window.refreshTankLevelBaselineFromSavedHistory();
                 if (window.refreshAllTankLevelArrows) window.refreshAllTankLevelArrows();
                 return window.savedHistory.length;
@@ -2520,13 +2507,9 @@ window.colorPreviewNumber = function(tankName, value) {
             }
         };
 
-        /** Carica archivi cloud se manca baseline trend per il turno corrente (tutti i dispositivi). */
+        /** Sincronizza archivi cloud prima di trend/report (tutti i dispositivi uguali). */
         window.ensureBackupHistory = async function() {
-            if (typeof window.hasRealArchiveBaselineForTrend === 'function' && window.hasRealArchiveBaselineForTrend()) {
-                return;
-            }
             if (!user || !user.uid || !db) return;
-            console.log('ensureBackupHistory: baseline turno assente, sincronizzo archivi cloud...');
             await window.syncBackupHistory();
         };
 
@@ -2917,38 +2900,14 @@ window.colorPreviewNumber = function(tankName, value) {
                         // PULISCI DEBUG DATI
                         window.trendDebugData = [];
                         
-                        // FORZA RICALCOLO TREND DOPO MODIFICA
+                        // FORZA RICALCOLO TREND DOPO MODIFICA (solo cloud)
                         setTimeout(() => {
-                            if (user && user.uid) {
-                                const archiveRef2 = collection(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots');
-                                getDocs(archiveRef2).then(querySnapshot => {
-                                    // Svuota e ricarica lo storico
-                                    window.savedHistory = [];
-                                    
-                                    // Aggiungi archivi locali
-                                    let localArchives = JSON.parse(localStorage.getItem('stabileArchives') || '[]');
-                                    localArchives.forEach(archive => {
-                                        if (archive && archive.data) {
-                                            window.addToHistory(archive.data);
-                                        }
-                                    });
-                                    
-                                    // Aggiungi archivi cloud
-                                    querySnapshot.forEach(docSnap => {
-                                        const snapData = docSnap.data();
-                                        if (snapData) {
-                                            window.addToHistory(snapData);
-                                        }
-                                    });
-                                    
-                                    // Aggiungi i dati correnti modificati
-                                    window.addToHistory(data);
-                                    
-                                    // ✅ FORZA IL RICALCOLO DEL TREND SUBITO DOPO AVER CARICATO TUTTO
-                                    setTimeout(() => {
+                            if (user && user.uid && typeof window.syncBackupHistory === 'function') {
+                                window.syncBackupHistory().then(function () {
+                                    setTimeout(function () {
                                         window.checkInstantTrend();
                                     }, 200);
-                                }).catch(err => {
+                                }).catch(function (err) {
                                     console.log('Errore ricaricamento trend dopo modifica:', err);
                                 });
                             }
@@ -10528,8 +10487,12 @@ window.updateStoricoButton = async function() {
                     ? window.normalizeArchiveSnapshot(entry)
                     : entry);
             };
-            if (window.savedHistory && Array.isArray(window.savedHistory)) {
+            if (window.savedHistory && Array.isArray(window.savedHistory) && window.savedHistory.length) {
                 window.savedHistory.forEach(push);
+                return list;
+            }
+            if (user && user.uid && db) {
+                return list;
             }
             try {
                 var localArchives = JSON.parse(localStorage.getItem('stabileArchives') || '[]');

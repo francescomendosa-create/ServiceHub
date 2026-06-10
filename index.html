@@ -570,7 +570,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.10-trend-table';
+        window.SERVICEHUB_BUILD = '2026.06.10-trend-cloud';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
         window.SERVICEHUB_REMOTE_ORIGIN = 'https://servicehub-18309.web.app';
@@ -1192,6 +1192,9 @@ window.colorPreviewNumber = function(tankName, value) {
                     syncWithCloud();
                     window.__hydrateDigitalShareKeyFromCloud();
                     window.initAlarmConfigListener();
+                    if (typeof window.ensureBackupHistory === 'function') {
+                        void window.ensureBackupHistory();
+                    }
                     setTimeout(function () {
                         if (user && user.uid && db && __plantRetrySaveAfterAuth && typeof window.saveData === 'function') {
                             __plantRetrySaveAfterAuth = false;
@@ -2470,54 +2473,58 @@ window.colorPreviewNumber = function(tankName, value) {
 
         // NUOVO SISTEMA DI SYNC AUTOMATICO BACKUP
         window.syncBackupHistory = async function() {
-            if (!user || !user.uid || !db) return;
-            
-            console.log('syncBackupHistory: inizio sincronizzazione backup...');
-            
+            if (!user || !user.uid || !db) return 0;
+
+            console.log('syncBackupHistory: merge archivi locali + cloud...');
+
             try {
                 const archiveRef = collection(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots');
                 const querySnapshot = await getDocs(archiveRef);
-                
-                let backupCount = 0;
-                querySnapshot.forEach(docSnap => {
+                const merged = [];
+                const seen = {};
+                const pushEntry = function (entry) {
+                    if (!entry || !entry.archiveTime) return;
+                    const key = String(entry.createdAt || entry.archiveTime);
+                    if (seen[key]) return;
+                    seen[key] = true;
+                    const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
+                    merged.push({
+                        ...entry,
+                        shift: (entry.shift || currentShift).trim()
+                    });
+                };
+
+                try {
+                    const localArchives = JSON.parse(localStorage.getItem('stabileArchives') || '[]');
+                    localArchives.forEach(function (arch) {
+                        if (arch && arch.data) pushEntry(arch.data);
+                    });
+                } catch (_) {}
+
+                querySnapshot.forEach(function (docSnap) {
                     const snapData = docSnap.data();
-                    if (snapData) {
-                        window.addToHistory(snapData);
-                        backupCount++;
-                    }
+                    if (snapData) pushEntry(snapData);
                 });
-                
-                console.log(`syncBackupHistory: sincronizzati ${backupCount} backup`);
+
+                window.savedHistory = merged.slice(-50);
+                console.log('syncBackupHistory: ' + window.savedHistory.length + ' archivi (locale+cloud)');
                 if (window.refreshTankLevelBaselineFromSavedHistory) window.refreshTankLevelBaselineFromSavedHistory();
                 if (window.refreshAllTankLevelArrows) window.refreshAllTankLevelArrows();
-                return backupCount;
+                return window.savedHistory.length;
             } catch (err) {
                 console.log('syncBackupHistory: errore sincronizzazione:', err);
                 return 0;
             }
         };
 
-        // ✅ NUOVO CONTROLLO DI PRESENZA BACKUP
+        /** Carica archivi cloud se manca baseline trend per il turno corrente (tutti i dispositivi). */
         window.ensureBackupHistory = async function() {
-            // Se lo storico è vuoto o ha solo dati istantanei, carica i backup
-            if (!window.savedHistory || window.savedHistory.length === 0) {
-                console.log('ensureBackupHistory: storico vuoto, carico backup...');
-                await window.syncBackupHistory();
+            if (typeof window.hasRealArchiveBaselineForTrend === 'function' && window.hasRealArchiveBaselineForTrend()) {
                 return;
             }
-            
-            // Controlla se ci sono backup veri (con createdAt)
-            const hasRealBackups = window.savedHistory.some(entry =>
-                entry && entry.archiveTime
-            );
-            
-            if (!hasRealBackups) {
-                console.log('ensureBackupHistory: nessun backup reale trovato, carico...');
-                await window.syncBackupHistory();
-                return;
-            }
-            
-            console.log('ensureBackupHistory: backup già presenti, ok');
+            if (!user || !user.uid || !db) return;
+            console.log('ensureBackupHistory: baseline turno assente, sincronizzo archivi cloud...');
+            await window.syncBackupHistory();
         };
 
         // Funzione per gestire lo storico dei salvataggi
@@ -9730,8 +9737,18 @@ window.updateStoricoButton = async function() {
 };
         window.openManagement = () => { forceBlur(); document.getElementById('settings-modal').classList.remove('active'); document.getElementById('management-modal').classList.add('active'); updateModulesVisibility(); };
         window.closeManagement = () => document.getElementById('management-modal').classList.remove('active');
-        window.openPreview = () => { 
-            buildPreview(); 
+        window.refreshReportPreview = async function () {
+            if (typeof window.ensureBackupHistory === 'function') {
+                try { await window.ensureBackupHistory(); } catch (_) {}
+            }
+            buildPreview();
+        };
+
+        window.openPreview = async function () {
+            if (typeof window.ensureBackupHistory === 'function') {
+                try { await window.ensureBackupHistory(); } catch (_) {}
+            }
+            buildPreview();
             if (typeof window.resetPreviewSheetZoom === 'function') window.resetPreviewSheetZoom();
             if (typeof window.initPreviewSheetZoom === 'function') window.initPreviewSheetZoom();
             document.getElementById('preview-screen').classList.add('active'); 
@@ -9821,9 +9838,15 @@ window.updateStoricoButton = async function() {
                             // Mostra indicatore di caricamento
                             container.innerHTML = '<div style="text-align: center; padding: 50px; color: #666; font-weight: 600;">AGGIORNAMENTO IN CORSO...</div>';
                             
-                            // Ricostruisci il preview con nuovi dati
-                            setTimeout(() => {
-                                buildPreview(); 
+                            // Ricostruisci il preview con nuovi dati (archivi cloud per trend)
+                            setTimeout(function () {
+                                void (async function () {
+                                    if (typeof window.refreshReportPreview === 'function') {
+                                        await window.refreshReportPreview();
+                                    } else {
+                                        buildPreview();
+                                    }
+                                })();
                             }, 500);
                         }
                     }, 500);
@@ -12453,8 +12476,11 @@ window.applyDigitalPhoneLayoutIfNeeded = function (root) {
     });
 };
 
-window.openDigitalPreview = () => {
+window.openDigitalPreview = async function () {
     try {
+        if (typeof window.ensureBackupHistory === 'function') {
+            try { await window.ensureBackupHistory(); } catch (_) {}
+        }
         // CREA elemento SEPARATO per Digital Preview
         let digitalContainer = document.getElementById('digital-preview-container');
         

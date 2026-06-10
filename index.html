@@ -583,7 +583,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.10-remote-push-tanks';
+        window.SERVICEHUB_BUILD = '2026.06.10-tank-popup-sync';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
         window.SERVICEHUB_REMOTE_ORIGIN = 'https://servicehub-18309.web.app';
@@ -14612,89 +14612,133 @@ window.convertToHtml = async () => {
             window.currentTank = null;
         }
 
-        // Funzione per aprire il pop-up dello stato serbatoio
-        window.openTankStatusPopup = function(tankId) {
-            // SALVA AUTOMATICAMENTE IL SERBATOIO PRECEDENTE PRIMA DI CAMBIARE
-            if (window.currentTank && window.currentTank !== tankId && window.selectedTankStatuses.length > 0) {
-                // Salva le selezioni del serbatoio precedente
-                window.__ensureTankStatusesObject();
-                window.tankStatuses[window.currentTank] = window.selectedTankStatuses.join('+');
-                window.saveData();
-                console.log('Salvato automaticamente serbatoio precedente:', window.currentTank, window.selectedTankStatuses);
-            }
-            
-            window.currentTank = tankId;
-            
-            // CARICA PRIMA gli stati salvati, POI resetta le selezioni globali
-            const savedStatuses = [];
-            if (window.tankStatuses && window.tankStatuses[tankId]) {
-                savedStatuses.push(...window.tankStatuses[tankId]
-                    .split('+')
-                    .map(s => s.trim())
-                    .filter(Boolean));
-            }
-            
-            // Resetta solo per il nuovo serbatoio - NON toccare le selezioni globali
-            window.selectedTankStatuses = [];
-            
-            // Resetta i pulsanti nel pop-up allo stato normale
-            const buttons = ['accumulo', 'drenaggio', 'parallelo'];
-            buttons.forEach(status => {
+        window.__normalizeTankStatusLabel = function (raw) {
+            const t = String(raw || '').trim();
+            if (!t) return null;
+            const low = t.toLowerCase();
+            if (low === 'accumulo') return 'Accumulo';
+            if (low.indexOf('drenagg') >= 0) return 'Drenaggio';
+            if (low === 'parallelo') return 'Parallelo';
+            return t;
+        };
+        window.__parseTankStatusString = function (raw) {
+            if (!raw) return [];
+            return String(raw).split('+').map(window.__normalizeTankStatusLabel).filter(Boolean);
+        };
+        window.__serializeTankStatuses = function (arr) {
+            return (arr || []).join('+');
+        };
+        window.__tankStatusArraysEqual = function (a, b) {
+            return (a || []).slice().sort().join('|') === (b || []).slice().sort().join('|');
+        };
+        window.__applyTankStatusToMemoryAndUI = function (tankId, statusArr) {
+            if (!tankId) return;
+            window.__ensureTankStatusesObject();
+            if (!statusArr || !statusArr.length) delete window.tankStatuses[tankId];
+            else window.tankStatuses[tankId] = window.__serializeTankStatuses(statusArr);
+            if (typeof window.repaintTankStatusSquares === 'function') window.repaintTankStatusSquares();
+        };
+        window.__resetTankPopupButtons = function () {
+            ['accumulo', 'drenaggio', 'parallelo'].forEach(function (status) {
                 const btn = document.getElementById('status-' + status);
-                if (btn) {
-                    btn.style.transform = 'scale(1)';
-                    btn.style.boxShadow = 'none';
-                    switch(status) {
-                        case 'accumulo':
-                            btn.className = 'tank-status-option bg-red-600 text-white font-black py-3 rounded-xl uppercase border-2 border-red-700 transition-all';
-                            break;
-                        case 'drenaggio':
-                            btn.className = 'tank-status-option bg-green-600 text-white font-black py-3 rounded-xl uppercase border-2 border-green-700 transition-all';
-                            break;
-                        case 'parallelo':
-                            btn.className = 'tank-status-option bg-blue-600 text-white font-black py-3 rounded-xl uppercase border-2 border-blue-700 transition-all';
-                            break;
-                    }
+                if (!btn) return;
+                btn.style.transform = 'scale(1)';
+                btn.style.boxShadow = 'none';
+                if (status === 'accumulo') btn.className = 'tank-status-option bg-red-600 text-white font-black py-3 rounded-xl uppercase border-2 border-red-700 transition-all';
+                else if (status === 'drenaggio') btn.className = 'tank-status-option bg-green-600 text-white font-black py-3 rounded-xl uppercase border-2 border-green-700 transition-all';
+                else btn.className = 'tank-status-option bg-blue-600 text-white font-black py-3 rounded-xl uppercase border-2 border-blue-700 transition-all';
+            });
+            const confirmBtn = document.querySelector('button[onclick="window.confirmTankStatus()"]');
+            if (confirmBtn) {
+                confirmBtn.style.animation = '';
+                confirmBtn.style.backgroundColor = '';
+                confirmBtn.style.borderColor = '';
+                confirmBtn.style.boxShadow = '';
+            }
+        };
+        window.__highlightTankPopupButtons = function (statuses) {
+            (statuses || []).forEach(function (status) {
+                const btn = document.getElementById('status-' + String(status).toLowerCase());
+                if (!btn) return;
+                if (status === 'Accumulo') {
+                    btn.className = 'tank-status-option bg-red-600 text-white font-black py-3 rounded-xl uppercase border-6 border-red-900 transition-all';
+                    btn.style.transform = 'scale(1.08)';
+                    btn.style.boxShadow = '0 0 20px rgba(220, 38, 38, 0.6), 0 0 40px rgba(220, 38, 38, 0.3), inset 0 0 20px rgba(255, 255, 255, 0.2)';
+                } else if (status === 'Drenaggio') {
+                    btn.className = 'tank-status-option bg-green-600 text-white font-black py-3 rounded-xl uppercase border-6 border-green-900 transition-all';
+                    btn.style.transform = 'scale(1.08)';
+                    btn.style.boxShadow = '0 0 20px rgba(22, 163, 74, 0.6), 0 0 40px rgba(22, 163, 74, 0.3), inset 0 0 20px rgba(255, 255, 255, 0.2)';
+                } else if (status === 'Parallelo') {
+                    btn.className = 'tank-status-option bg-blue-600 text-white font-black py-3 rounded-xl uppercase border-6 border-blue-900 transition-all';
+                    btn.style.transform = 'scale(1.08)';
+                    btn.style.boxShadow = '0 0 20px rgba(37, 99, 235, 0.6), 0 0 40px rgba(37, 99, 235, 0.3), inset 0 0 20px rgba(255, 255, 255, 0.2)';
                 }
             });
-            
-            // Riapplica le selezioni salvate
-            savedStatuses.forEach(status => {
-                if (status === 'Accumulo' || status === 'Drenaggio' || status === 'Parallelo') {
-                    window.selectedTankStatuses.push(status);
-                    
-                    const btn = document.getElementById('status-' + status.toLowerCase());
-                    if (btn) {
-                        // Applica effetto selezione
-                        switch(status) {
-                            case 'Accumulo':
-                                btn.className = 'tank-status-option bg-red-600 text-white font-black py-3 rounded-xl uppercase border-6 border-red-900 transition-all';
-                                btn.style.transform = 'scale(1.08)';
-                                btn.style.boxShadow = '0 0 20px rgba(220, 38, 38, 0.6), 0 0 40px rgba(220, 38, 38, 0.3), inset 0 0 20px rgba(255, 255, 255, 0.2)';
-                                break;
-                            case 'Drenaggio':
-                                btn.className = 'tank-status-option bg-green-600 text-white font-black py-3 rounded-xl uppercase border-6 border-green-900 transition-all';
-                                btn.style.transform = 'scale(1.08)';
-                                btn.style.boxShadow = '0 0 20px rgba(22, 163, 74, 0.6), 0 0 40px rgba(22, 163, 74, 0.3), inset 0 0 20px rgba(255, 255, 255, 0.2)';
-                                break;
-                            case 'Parallelo':
-                                btn.className = 'tank-status-option bg-blue-600 text-white font-black py-3 rounded-xl uppercase border-6 border-blue-900 transition-all';
-                                btn.style.transform = 'scale(1.08)';
-                                btn.style.boxShadow = '0 0 20px rgba(37, 99, 235, 0.6), 0 0 40px rgba(37, 99, 235, 0.3), inset 0 0 20px rgba(255, 255, 255, 0.2)';
-                                break;
-                        }
+        };
+        window.__closeTankStatusModalAnimated = function () {
+            const modal = document.getElementById('tank-status-modal');
+            if (!modal) return;
+            modal.classList.add('exit-right');
+            setTimeout(function () {
+                modal.classList.remove('active', 'exit-right');
+                if (comingFromNumpad && savedInput && savedLabel) {
+                    comingFromNumpad = false;
+                    const savedLabelElement = savedLabel.querySelector('.cell-label-main, .amb-label, .bd-label');
+                    if (savedLabelElement) {
+                        setTimeout(function () {
+                            window.openNumpad(savedLabelElement);
+                            setTimeout(function () { window.updateTankButton(); }, 50);
+                        }, 100);
                     }
                 }
-            });
-            
-            // Mostra il nome del serbatoio nel pop-up
+            }, 400);
+        };
+        window.__commitTankPopupDraft = function () {
+            if (!window.currentTank) return;
+            const next = (window.selectedTankStatuses || []).slice();
+            window.__applyTankStatusToMemoryAndUI(window.currentTank, next);
+            window.__tankPopupBaseline = next.length ? window.__serializeTankStatuses(next) : null;
+            window.saveData();
+        };
+        window.__cancelTankPopupDraft = function (closeModal) {
+            if (!window.currentTank) {
+                if (closeModal !== false) window.__closeTankStatusModalAnimated();
+                return;
+            }
+            const baselineArr = window.__parseTankStatusString(window.__tankPopupBaseline);
+            window.__applyTankStatusToMemoryAndUI(window.currentTank, baselineArr);
+            window.selectedTankStatuses = baselineArr.slice();
+            window.__resetTankPopupButtons();
+            window.__highlightTankPopupButtons(baselineArr);
+            if (closeModal !== false) {
+                window.currentTank = null;
+                window.__tankPopupBaseline = null;
+                window.selectedTankStatuses = [];
+                window.__closeTankStatusModalAnimated();
+            }
+        };
+        window.__commitTankPopupDraftIfChanged = function () {
+            const base = window.__parseTankStatusString(window.__tankPopupBaseline);
+            const cur = window.selectedTankStatuses || [];
+            if (window.__tankStatusArraysEqual(base, cur)) return;
+            window.__commitTankPopupDraft();
+        };
+
+        window.openTankStatusPopup = function(tankId) {
+            if (window.currentTank && window.currentTank !== tankId) {
+                window.__commitTankPopupDraftIfChanged();
+            }
+            window.currentTank = tankId;
+            window.__tankPopupBaseline = (window.tankStatuses && window.tankStatuses[tankId]) ? String(window.tankStatuses[tankId]) : null;
+            const savedStatuses = window.__parseTankStatusString(window.__tankPopupBaseline);
+            window.selectedTankStatuses = savedStatuses.slice();
+            window.__resetTankPopupButtons();
+            window.__highlightTankPopupButtons(savedStatuses);
             const tankElement = document.querySelector(`[data-tank="${tankId}"]`);
             if (tankElement) {
                 const tankLabel = tankElement.closest('.amb-row').querySelector('.amb-label').innerText;
                 document.getElementById('tank-name-display').innerText = tankLabel;
             }
-            
-            // Apre il pop-up
             document.getElementById('tank-status-modal').classList.add('active');
         };
 
@@ -14704,280 +14748,101 @@ window.convertToHtml = async () => {
         // Flag per prevenire click rapidi
         window.toggleTankStatusLocked = false;
 
-        // Funzione per toggle stato nel pop-up
+        // Funzione per toggle stato nel pop-up (solo bozza: niente salvataggio fino a Conferma)
         window.toggleTankStatus = function(status) {
-            // PREVENI CLICK RAPIDI - Debouncing
-            if (window.toggleTankStatusLocked) {
-                console.log('Click rapido bloccato - attesa...');
-                return;
-            }
+            if (window.toggleTankStatusLocked) return;
             window.toggleTankStatusLocked = true;
-            setTimeout(() => {
-                window.toggleTankStatusLocked = false;
-            }, 200); // 200ms di blocco per prevenire race conditions
-            
-            const btn = document.getElementById('status-' + status.toLowerCase());
-            const index = window.selectedTankStatuses.indexOf(status);
-            
-            // Controlla se è la prima selezione (da array vuoto a una selezione)
+            setTimeout(function () { window.toggleTankStatusLocked = false; }, 200);
+
+            const normalized = window.__normalizeTankStatusLabel(status);
+            if (!normalized) return;
+            if (!window.selectedTankStatuses) window.selectedTankStatuses = [];
+
+            const btn = document.getElementById('status-' + normalized.toLowerCase());
+            const index = window.selectedTankStatuses.indexOf(normalized);
             const wasEmpty = window.selectedTankStatuses.length === 0;
-            
+
             if (index > -1) {
-                // Rimuovi stato - colore normale senza effetti
-                switch(status) {
-                    case 'Accumulo':
-                        btn.className = 'tank-status-option bg-red-600 text-white font-black py-3 rounded-xl uppercase border-2 border-red-700 transition-all';
-                        btn.style.transform = 'scale(1)';
-                        btn.style.boxShadow = 'none';
-                        break;
-                    case 'Drenaggio':
-                        btn.className = 'tank-status-option bg-green-600 text-white font-black py-3 rounded-xl uppercase border-2 border-green-700 transition-all';
-                        btn.style.transform = 'scale(1)';
-                        btn.style.boxShadow = 'none';
-                        break;
-                    case 'Parallelo':
-                        btn.className = 'tank-status-option bg-blue-600 text-white font-black py-3 rounded-xl uppercase border-2 border-blue-700 transition-all';
-                        btn.style.transform = 'scale(1)';
-                        btn.style.boxShadow = 'none';
-                        break;
+                if (btn) {
+                    if (normalized === 'Accumulo') btn.className = 'tank-status-option bg-red-600 text-white font-black py-3 rounded-xl uppercase border-2 border-red-700 transition-all';
+                    else if (normalized === 'Drenaggio') btn.className = 'tank-status-option bg-green-600 text-white font-black py-3 rounded-xl uppercase border-2 border-green-700 transition-all';
+                    else btn.className = 'tank-status-option bg-blue-600 text-white font-black py-3 rounded-xl uppercase border-2 border-blue-700 transition-all';
+                    btn.style.transform = 'scale(1)';
+                    btn.style.boxShadow = 'none';
                 }
                 window.selectedTankStatuses.splice(index, 1);
-                
-                // SALVA IMMEDIATAMENTE le modifiche in window.tankStatuses
-                if (window.currentTank) {
-                    window.__ensureTankStatusesObject();
-                    if (window.selectedTankStatuses.length === 0) {
-                        delete window.tankStatuses[window.currentTank];
-                    } else {
-                        window.tankStatuses[window.currentTank] = window.selectedTankStatuses.join('+');
-                    }
-                    window.saveData();
-                }
             } else {
-                // Aggiungi stato - EFFETTO SELEZIONE MOLTO VISIBILE
-                switch(status) {
-                    case 'Accumulo':
+                if (btn) {
+                    if (normalized === 'Accumulo') {
                         btn.className = 'tank-status-option bg-red-600 text-white font-black py-3 rounded-xl uppercase border-6 border-red-900 transition-all';
                         btn.style.transform = 'scale(1.08)';
                         btn.style.boxShadow = '0 0 20px rgba(220, 38, 38, 0.6), 0 0 40px rgba(220, 38, 38, 0.3), inset 0 0 20px rgba(255, 255, 255, 0.2)';
-                        break;
-                    case 'Drenaggio':
+                    } else if (normalized === 'Drenaggio') {
                         btn.className = 'tank-status-option bg-green-600 text-white font-black py-3 rounded-xl uppercase border-6 border-green-900 transition-all';
                         btn.style.transform = 'scale(1.08)';
                         btn.style.boxShadow = '0 0 20px rgba(22, 163, 74, 0.6), 0 0 40px rgba(22, 163, 74, 0.3), inset 0 0 20px rgba(255, 255, 255, 0.2)';
-                        break;
-                    case 'Parallelo':
+                    } else {
                         btn.className = 'tank-status-option bg-blue-600 text-white font-black py-3 rounded-xl uppercase border-6 border-blue-900 transition-all';
                         btn.style.transform = 'scale(1.08)';
                         btn.style.boxShadow = '0 0 20px rgba(37, 99, 235, 0.6), 0 0 40px rgba(37, 99, 235, 0.3), inset 0 0 20px rgba(255, 255, 255, 0.2)';
-                        break;
-                }
-                window.selectedTankStatuses.push(status);
-                
-                // SALVA IMMEDIATAMENTE le modifiche in window.tankStatuses
-                if (window.currentTank) {
-                    window.__ensureTankStatusesObject();
-                    window.tankStatuses[window.currentTank] = window.selectedTankStatuses.join('+');
-                    window.saveData();
-                }
-                
-                // SE È LA PRIMA SELEZIONE, ATTIVA EFFETTO PULSANTE CONFERMA
-                if (wasEmpty) {
-                    const confirmBtn = document.querySelector('button[onclick="window.confirmTankStatus()"]');
-                    if (confirmBtn) {
-                        // Rimuovi eventuali animazioni precedenti
-                        confirmBtn.style.animation = '';
-                        // Forza reflow per riavviare l'animazione
-                        void confirmBtn.offsetWidth;
-                        // Applica animazione personalizzata evidente accendi/spegni
-                        confirmBtn.style.animation = 'tankPulse 1.5s infinite';
-                        confirmBtn.style.backgroundColor = '#fbbf24'; // Giallo come salva
-                        confirmBtn.style.borderColor = '#f59e0b';
-                        confirmBtn.style.boxShadow = '0 0 20px rgba(251, 191, 36, 0.8), 0 0 40px rgba(251, 191, 36, 0.4)';
                     }
                 }
+                window.selectedTankStatuses.push(normalized);
             }
-            
-            // SE NON CI SONO PIÙ SELEZIONI, RIMUOVI EFFETTO PULSANTE
-            if (window.selectedTankStatuses.length === 0) {
-                const confirmBtn = document.querySelector('button[onclick="window.confirmTankStatus()"]');
-                if (confirmBtn) {
+
+            const base = window.__parseTankStatusString(window.__tankPopupBaseline);
+            const changed = !window.__tankStatusArraysEqual(base, window.selectedTankStatuses);
+            const confirmBtn = document.querySelector('button[onclick="window.confirmTankStatus()"]');
+            if (confirmBtn) {
+                if (changed) {
                     confirmBtn.style.animation = '';
-                    confirmBtn.style.backgroundColor = ''; // Ripristina colore originale
+                    void confirmBtn.offsetWidth;
+                    confirmBtn.style.animation = 'tankPulse 1.5s infinite';
+                    confirmBtn.style.backgroundColor = '#fbbf24';
+                    confirmBtn.style.borderColor = '#f59e0b';
+                    confirmBtn.style.boxShadow = '0 0 20px rgba(251, 191, 36, 0.8), 0 0 40px rgba(251, 191, 36, 0.4)';
+                } else {
+                    confirmBtn.style.animation = '';
+                    confirmBtn.style.backgroundColor = '';
                     confirmBtn.style.borderColor = '';
+                    confirmBtn.style.boxShadow = '';
                 }
+            } else if (wasEmpty && window.selectedTankStatuses.length === 0) {
+                // no-op
             }
         };
 
-        // Funzione per confermare stati multipli
+        // Conferma: applica bozza a memoria + interfaccia, poi chiude
         window.confirmTankStatus = function() {
             if (!window.currentTank) return;
-            
-            // Se non ci sono selezioni, chiudi semplicemente il pop-up
-            if (window.selectedTankStatuses.length === 0) {
-                const modal = document.getElementById('tank-status-modal');
-                modal.classList.add('exit-right');
-                setTimeout(() => {
-                    modal.classList.remove('active', 'exit-right');
-                }, 400);
-                return;
-            }
-            
-            const tankElement = document.querySelector(`[data-tank="${window.currentTank}"]`);
-            if (tankElement) {
-                // Rimuovi tutte le classi esistenti
-                tankElement.classList.remove('accumulo', 'drenaggio', 'parallelo');
-                
-                // Gestione stati multipli
-                if (window.selectedTankStatuses.length === 1) {
-                    // Stato singolo - mostra sigla normale
-                    const status = window.selectedTankStatuses[0];
-                    let sigla = '';
-                    switch(status) {
-                        case 'Accumulo': sigla = 'A'; tankElement.classList.add('accumulo'); break;
-                        case 'Drenaggio': sigla = 'D'; tankElement.classList.add('drenaggio'); break;
-                        case 'Parallelo': sigla = 'P'; tankElement.classList.add('parallelo'); break;
-                    }
-                    tankElement.innerHTML = sigla;
-                } else if (window.selectedTankStatuses.length === 2) {
-                    // Due stati - logica precisa per ogni combinazione
-                    const hasAccumulo = window.selectedTankStatuses.includes('Accumulo');
-                    const hasDrenaggio = window.selectedTankStatuses.includes('Drenaggio');
-                    const hasParallelo = window.selectedTankStatuses.includes('Parallelo');
-                    
-                    let color1, color2, letter1, letter2;
-                    
-                    if (hasAccumulo && hasDrenaggio) {
-                        // A + D
-                        color1 = '#dc2626'; color2 = '#16a34a'; letter1 = 'A'; letter2 = 'D';
-                    } else if (hasAccumulo && hasParallelo) {
-                        // A + P
-                        color1 = '#dc2626'; color2 = '#2563eb'; letter1 = 'A'; letter2 = 'P';
-                    } else if (hasDrenaggio && hasParallelo) {
-                        // D + P
-                        color1 = '#16a34a'; color2 = '#2563eb'; letter1 = 'D'; letter2 = 'P';
-                    }
-                    
-                    tankElement.innerHTML = `
-                        <div style="width: 100%; height: 100%; position: relative; background: linear-gradient(135deg, ${color1} 50%, ${color2} 50%); display: flex;">
-                            <div style="position: absolute; left: 25%; top: 25%; color: white; font-weight: 800; font-size: 10px; text-shadow: 1px 1px 2px rgba(0,0,0,0.8);">
-                                ${letter1}
-                            </div>
-                            <div style="position: absolute; right: 25%; bottom: 25%; color: white; font-weight: 800; font-size: 10px; text-shadow: 1px 1px 2px rgba(0,0,0,0.8);">
-                                ${letter2}
-                            </div>
-                        </div>
-                    `;
-                    
-                    // Aggiungi classi corrette
-                    if (hasAccumulo) tankElement.classList.add('accumulo');
-                    if (hasDrenaggio) tankElement.classList.add('drenaggio');
-                    if (hasParallelo) tankElement.classList.add('parallelo');
-                } else if (window.selectedTankStatuses.length === 3) {
-                    // Tre stati - Y capovolta con sigle perfettamente posizionate
-                    tankElement.innerHTML = `
-                        <div style="width: 100%; height: 100%; position: relative; background: conic-gradient(from 0deg, #dc2626 0deg 120deg, #16a34a 120deg 240deg, #2563eb 240deg 360deg); display: flex;">
-                            <!-- Drenaggio (verde) - un millimetro più a destra -->
-                            <div style="position: absolute; top: 15%; left: 18%; transform: translateX(-50%); color: white; font-weight: 800; font-size: 8px; text-shadow: 1px 1px 2px rgba(0,0,0,0.8);">
-                                D
-                            </div>
-                            <!-- Accumulo (rosso) - un millimetro più a sinistra -->
-                            <div style="position: absolute; top: 15%; right: 18%; transform: translateX(50%); color: white; font-weight: 800; font-size: 8px; text-shadow: 1px 1px 2px rgba(0,0,0,0.8);">
-                                A
-                            </div>
-                            <!-- Parallelo (blu) - un millimetro più in basso -->
-                            <div style="position: absolute; bottom: 12%; left: 50%; transform: translateX(-50%); color: white; font-weight: 800; font-size: 8px; text-shadow: 1px 1px 2px rgba(0,0,0,0.8);">
-                                P
-                            </div>
-                        </div>
-                    `;
-                    
-                    // Aggiungi tutte le classi
-                    tankElement.classList.add('accumulo', 'drenaggio', 'parallelo');
-                }
-            }
-            
-            // Salva gli stati
-            window.__ensureTankStatusesObject();
-            window.tankStatuses[window.currentTank] = window.selectedTankStatuses.join('+');
-            window.saveData();
-            
-            // Resetta selezione
+            window.__commitTankPopupDraft();
+            window.currentTank = null;
+            window.__tankPopupBaseline = null;
             window.selectedTankStatuses = [];
-            
-            // Chiudi il pop-up
-            const modal = document.getElementById('tank-status-modal');
-            modal.classList.add('exit-right');
-            setTimeout(() => {
-                modal.classList.remove('active', 'exit-right');
-                
-                // Se proveniamo dal numpad, torna allo STESSO numpad di partenza
-                if (comingFromNumpad && savedInput && savedLabel) {
-                    comingFromNumpad = false; // Resetta il flag
-                    const savedLabelElement = savedLabel.querySelector('.cell-label-main, .amb-label, .bd-label');
-                    if (savedLabelElement) {
-                        setTimeout(() => {
-                            window.openNumpad(savedLabelElement);
-                            setTimeout(() => {
-                                window.updateTankButton();
-                            }, 50);
-                        }, 100);
-                    }
-                }
-            }, 400);
+            window.__resetTankPopupButtons();
+            window.__closeTankStatusModalAnimated();
         };
 
-        // Funzione per chiudere il pop-up dello stato serbatoio
+        // X / annulla: ripristina stato salvato, interfaccia sempre allineata
         window.closeTankStatusPopup = function() {
-            const modal = document.getElementById('tank-status-modal');
-            if (modal) {
-                modal.classList.remove('active');
-            }
+            window.__cancelTankPopupDraft(true);
         };
 
-        // Funzione per resettare lo stato del serbatoio
+        // R: azzera subito (commit vuoto) ma lascia il popup aperto
         window.resetTankStatus = function() {
             if (!window.currentTank) return;
-            
-            // Resetta il quadratino
-            const tankElement = document.querySelector(`[data-tank="${window.currentTank}"]`);
-            if (tankElement) {
-                // Rimuovi tutte le classi di colore
-                tankElement.classList.remove('accumulo', 'drenaggio', 'parallelo');
-                // Imposta il valore di default
-                tankElement.innerText = '---';
-            }
-            
-            // Rimuovi lo stato salvato
-            window.__ensureTankStatusesObject();
-            delete window.tankStatuses[window.currentTank];
-            window.saveData();
-            
-            // RESETTA LE SELEZIONI NEL POP-UP
             window.selectedTankStatuses = [];
-            
-            // Resetta i pulsanti nel pop-up allo stato normale
-            const buttons = ['accumulo', 'drenaggio', 'parallelo'];
-            buttons.forEach(status => {
-                const btn = document.getElementById('status-' + status);
-                if (btn) {
-                    btn.style.transform = 'scale(1)';
-                    btn.style.boxShadow = 'none';
-                    switch(status) {
-                        case 'accumulo':
-                            btn.className = 'tank-status-option bg-red-600 text-white font-black py-3 rounded-xl uppercase border-2 border-red-700 transition-all';
-                            break;
-                        case 'drenaggio':
-                            btn.className = 'tank-status-option bg-green-600 text-white font-black py-3 rounded-xl uppercase border-2 border-green-700 transition-all';
-                            break;
-                        case 'parallelo':
-                            btn.className = 'tank-status-option bg-blue-600 text-white font-black py-3 rounded-xl uppercase border-2 border-blue-700 transition-all';
-                            break;
-                    }
-                }
-            });
-            
-            // CHIUSURA POP-UP COMPLETAMENTE DISABILITATA
+            window.__resetTankPopupButtons();
+            window.__applyTankStatusToMemoryAndUI(window.currentTank, []);
+            window.__tankPopupBaseline = null;
+            window.saveData();
+            const confirmBtn = document.querySelector('button[onclick="window.confirmTankStatus()"]');
+            if (confirmBtn) {
+                confirmBtn.style.animation = '';
+                confirmBtn.style.backgroundColor = '';
+                confirmBtn.style.borderColor = '';
+                confirmBtn.style.boxShadow = '';
+            }
         };
 
         // Funzioni Gestione Serbatoi
@@ -15081,10 +14946,7 @@ window.convertToHtml = async () => {
         };
 
         window.__flushPendingTankPopupToStatuses = function () {
-            if (window.currentTank && window.selectedTankStatuses && window.selectedTankStatuses.length) {
-                window.__ensureTankStatusesObject();
-                window.tankStatuses[window.currentTank] = window.selectedTankStatuses.join('+');
-            }
+            window.__commitTankPopupDraftIfChanged();
         };
 
         window.__syncTankConfigToStatuses = function () {
@@ -17104,42 +16966,11 @@ window.convertToHtml = async () => {
                 });
             }
             
-            // NUOVO STRATAGEMA: intercetto click fuori e gestisco tutto qui
             const modal = document.getElementById('tank-status-modal');
             if (modal) {
                 modal.addEventListener('click', function(e) {
-                    // Chiudi solo se si clicca direttamente sull'overlay (non sui contenuti)
                     if (e.target === modal) {
-                        // CONTROLLO DI SICUREZZA: verifica che currentTank sia valido
-                        if (!window.currentTank) {
-                            console.error('Nessun currentTank impostato!');
-                            modal.classList.add('exit-right');
-                            setTimeout(() => {
-                                modal.classList.remove('active', 'exit-right');
-                            }, 400);
-                            return;
-                        }
-                        
-                        // GESTIONE COMPLETA QUI - sia selezioni che deselezioni
-                        if (window.selectedTankStatuses.length === 0) {
-                            // STATO VUOTO - gestisco tutto qui
-                            const tankElement = document.querySelector(`[data-tank="${window.currentTank}"]`);
-                            if (tankElement) {
-                                tankElement.classList.remove('accumulo', 'drenaggio', 'parallelo');
-                                tankElement.innerText = '---';
-                            }
-                            window.__ensureTankStatusesObject();
-                            delete window.tankStatuses[window.currentTank];
-                            window.saveData();
-                            window.selectedTankStatuses = [];
-                            modal.classList.add('exit-right');
-                            setTimeout(() => {
-                                modal.classList.remove('active', 'exit-right');
-                            }, 400);
-                        } else {
-                            // SELEZIONI - chiamo la funzione normale
-                            window.confirmTankStatus();
-                        }
+                        window.__cancelTankPopupDraft(true);
                     }
                 });
             }

@@ -583,7 +583,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.10-sync-debounce';
+        window.SERVICEHUB_BUILD = '2026.06.10-sync-verify';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
         window.SERVICEHUB_REMOTE_ORIGIN = 'https://servicehub-18309.web.app';
@@ -1465,6 +1465,9 @@ window.colorPreviewNumber = function(tankName, value) {
                 __writePlantLocalBackup(d);
             }
             cacheCloudPlantPayload(d);
+            if (typeof window.__verifyRemotePlantFieldsApplied === 'function') {
+                window.__verifyRemotePlantFieldsApplied(d);
+            }
             if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
             if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
             if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
@@ -2262,9 +2265,12 @@ window.colorPreviewNumber = function(tankName, value) {
 
         /** Attesa dopo ultima cifra prima di inviare il valore completo al cloud (evita sync parziali). */
         window.__PLANT_CLOUD_SAVE_DEBOUNCE_MS = 1000;
-        window.__PLANT_REMOTE_GUARD_MS = 1200;
+        window.__PLANT_REMOTE_GUARD_MS = 1800;
+        window.__PLANT_SYNC_VERIFY_DELAY_MS = 1500;
         window.__plantFieldEditMs = {};
+        window.__plantPendingVerifyFields = {};
         window.__plantCloudSaveTimer = null;
+        window.__plantSyncVerifyTimer = null;
 
         window.__isUserTypingInPlantField = function () {
             var ae = document.activeElement;
@@ -2277,6 +2283,155 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__touchPlantFieldEdit = function (input) {
             if (!input || !input.id) return;
             window.__plantFieldEditMs[input.id] = Date.now();
+            window.__markPlantFieldForVerify(input);
+        };
+
+        window.__markPlantFieldForVerify = function (input) {
+            if (!input || !input.id) return;
+            if (!window.__plantPendingVerifyFields) window.__plantPendingVerifyFields = {};
+            window.__plantPendingVerifyFields[input.id] = {
+                value: String(input.value == null ? '' : input.value),
+                at: Date.now()
+            };
+        };
+
+        window.__schedulePlantSyncVerify = function () {
+            clearTimeout(window.__plantSyncVerifyTimer);
+            window.__plantSyncVerifyTimer = setTimeout(function () {
+                window.__plantSyncVerifyTimer = null;
+                if (typeof window.__runPlantSyncVerify === 'function') {
+                    void window.__runPlantSyncVerify();
+                }
+            }, window.__PLANT_SYNC_VERIFY_DELAY_MS);
+        };
+
+        /** Controllo ~1.5s dopo: DOM vs baseline/cloud; se manca un numero, risalva o riallinea da server. */
+        window.__runPlantSyncVerify = async function () {
+            if (window.__isUserTypingInPlantField()) {
+                window.__schedulePlantSyncVerify();
+                return;
+            }
+            var pending = window.__plantPendingVerifyFields || {};
+            var ids = Object.keys(pending);
+            if (!ids.length) return;
+
+            var baseline = window.__plantSyncBaseline || {};
+            var cache = window.__cloudPlantCache || {};
+            var needsResave = false;
+            var serverFixIds = [];
+
+            ids.forEach(function (id) {
+                var el = document.getElementById(id);
+                if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA')) {
+                    delete pending[id];
+                    return;
+                }
+                var domVal = String(el.value == null ? '' : el.value);
+                var snap = pending[id];
+                if (!snap) return;
+                if (domVal !== snap.value) {
+                    pending[id] = { value: domVal, at: Date.now() };
+                    needsResave = true;
+                    return;
+                }
+                var baseVal = baseline[id];
+                if (baseVal != null && typeof baseVal === 'object') {
+                    delete pending[id];
+                    return;
+                }
+                var bStr = baseVal == null ? '' : String(baseVal);
+                if (!window.__plantValueEquals(domVal, bStr)) {
+                    needsResave = true;
+                    return;
+                }
+                if (cache[id] !== undefined) {
+                    var cStr = cache[id] == null ? '' : String(cache[id]);
+                    if (!window.__plantValueEquals(domVal, cStr)) {
+                        needsResave = true;
+                        return;
+                    }
+                }
+                serverFixIds.push(id);
+            });
+
+            if (needsResave) {
+                try {
+                    await window.__flushPlantCloudSaveNow(true);
+                } catch (_) {}
+                window.__schedulePlantSyncVerify();
+                return;
+            }
+
+            if (!user || !user.uid || !db || !serverFixIds.length) {
+                serverFixIds.forEach(function (id) { delete pending[id]; });
+                return;
+            }
+
+            try {
+                var plantRef = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
+                var serverSnap = await getDocFromServer(plantRef);
+                if (!serverSnap.exists()) return;
+                var server = serverSnap.data();
+                var pushedAgain = false;
+                serverFixIds.forEach(function (id) {
+                    var el = document.getElementById(id);
+                    if (!el) {
+                        delete pending[id];
+                        return;
+                    }
+                    var domVal = String(el.value == null ? '' : el.value);
+                    if (server[id] === undefined) {
+                        delete pending[id];
+                        return;
+                    }
+                    var sStr = server[id] == null ? '' : String(server[id]);
+                    if (window.__plantValueEquals(domVal, sStr)) {
+                        delete pending[id];
+                        return;
+                    }
+                    var editedAgo = window.__plantFieldEditMs[id] ? Date.now() - window.__plantFieldEditMs[id] : 99999;
+                    if (editedAgo < 4000 && !window.__isUserTypingInPlantField()) {
+                        pushedAgain = true;
+                    } else if (window.__shouldApplyRemoteValueToInput(el)) {
+                        el.value = sStr;
+                        delete pending[id];
+                    }
+                });
+                if (pushedAgain) {
+                    await window.__flushPlantCloudSaveNow(true);
+                    window.__schedulePlantSyncVerify();
+                } else if (typeof window.__refreshPlantBaselineFromDOM === 'function') {
+                    window.__refreshPlantBaselineFromDOM();
+                }
+            } catch (e) {
+                console.warn('[ServiceHub] sync verify:', e && e.message);
+                window.__schedulePlantSyncVerify();
+            }
+        };
+
+        /** Dopo ricezione cloud: riallinea campi che non coincidono col payload remoto. */
+        window.__verifyRemotePlantFieldsApplied = function (payload) {
+            if (!payload || typeof payload !== 'object') return;
+            setTimeout(function () {
+                if (window.__isUserTypingInPlantField()) return;
+                var fixed = 0;
+                Object.keys(payload).forEach(function (k) {
+                    if (['hiddenModules', 'isDarkMode', 'lastUpdate', 'manualShift', 'archiveTime', 'createdAt', 'shift', 'syncRevision', 'tankStatuses'].indexOf(k) >= 0) return;
+                    if (window.isRapportinoOnlyDataKey && window.isRapportinoOnlyDataKey(k)) return;
+                    var el = document.getElementById(k);
+                    if (!el || el.tagName !== 'INPUT') return;
+                    if (!window.__shouldApplyRemoteValueToInput(el)) return;
+                    var expected = payload[k] == null ? '' : String(payload[k]);
+                    var domVal = String(el.value == null ? '' : el.value);
+                    if (!window.__plantValueEquals(domVal, expected)) {
+                        el.value = expected;
+                        fixed++;
+                    }
+                });
+                if (fixed > 0 && typeof window.__refreshPlantBaselineFromDOM === 'function') {
+                    window.__refreshPlantBaselineFromDOM();
+                }
+            }, window.__PLANT_SYNC_VERIFY_DELAY_MS);
         };
 
         /** Non sovrascrivere da cloud un campo che l'utente sta ancora modificando. */
@@ -2468,6 +2623,14 @@ window.colorPreviewNumber = function(tankName, value) {
                     window.__writePlantLocalBackupFromDOM(patch);
                 }
                 console.info('[ServiceHub] cloud OK rev=' + rev + ' campi=' + (changedN != null ? changedN : '?'));
+                Object.keys(patch).forEach(function (k) {
+                    if (['shift', 'lastUpdate', 'syncRevision', 'tankStatuses'].indexOf(k) >= 0) return;
+                    var el = document.getElementById(k);
+                    if (el && typeof window.__markPlantFieldForVerify === 'function') {
+                        window.__markPlantFieldForVerify(el);
+                    }
+                });
+                if (typeof window.__schedulePlantSyncVerify === 'function') window.__schedulePlantSyncVerify();
                 if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
                 if (typeof window.flushPublicDigitalSnapshotNow === "function") {
                     window.flushPublicDigitalSnapshotNow();

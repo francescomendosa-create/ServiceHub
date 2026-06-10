@@ -570,7 +570,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.10-preview-zoom';
+        window.SERVICEHUB_BUILD = '2026.06.10-print-sent-only';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
         window.SERVICEHUB_REMOTE_ORIGIN = 'https://servicehub-18309.web.app';
@@ -6704,6 +6704,17 @@ window.updateStoricoButton = async function() {
             });
         };
 
+        /** Moduli ammessi nel report stampabile (preview): solo ciò che è stato inviato con gestione moduli. */
+        window.getPrintableReportModuleIds = function() {
+            const sent = (window.hiddenModules || hiddenModules || []).slice();
+            return sent.filter(function (id) {
+                if (id === 'sec-stoccaggio-interno' || id === 'sec-chemicals' || id === 'sec-filtra') {
+                    return !!(window.isNotturnoFiltraLayoutActive && window.isNotturnoFiltraLayoutActive());
+                }
+                return true;
+            });
+        };
+
         window.refreshStoccaggioInternoTons = function(fieldId) {
             const panel = document.getElementById('stoccaggio-panel-notturno');
             if (!panel) return;
@@ -10884,32 +10895,34 @@ html += window.getAnalisiPreviewModule(previewFont);
 if (hiddenModules.length === 0) { 
     html += '<div style="grid-column: span 2; padding: 20px; text-align: center; color: #999; font-style: italic; font-weight: 650; font-size: 8px;">Nessun modulo selezionato per l\'invio</div>'; 
 } else {
-    // LOGICA ORDINE FLESSIBILE CON BLOCCO AMBIENTE 1
-    const ambiente1Inviato = document.getElementById('sec-amb') !== null;
-    const ambiente2Inviato = document.getElementById('sec-ambiente2') !== null;
+    const printableModules = window.getPrintableReportModuleIds
+        ? window.getPrintableReportModuleIds()
+        : (window.hiddenModules || hiddenModules || []).slice();
+    const printableSet = new Set(printableModules);
+
+    // LOGICA ORDINE FLESSIBILE CON BLOCCO AMBIENTE 1 — solo moduli inviati (gestione moduli)
+    const ambiente1Inviato = printableSet.has('sec-amb');
+    const ambiente2Inviato = printableSet.has('sec-ambiente2');
     const tankStatuses = window.getTankStatusesForPreview();
     const hasTankData = tankStatuses && tankStatuses.length > 0;
     
     // LOGICA ORDINE DINAMICO
     let orderedModules = [];
     
-    // Aggiungi WVT per primo
-    if (document.getElementById('sec-wvt') !== null) {
+    if (printableSet.has('sec-wvt')) {
         orderedModules.push('sec-wvt');
     }
     
-    // Aggiungi Ambiente 1 se presente
     if (ambiente1Inviato) {
         orderedModules.push('sec-amb');
     }
     
-    // Aggiungi Ambiente 2 se presente
     if (ambiente2Inviato) {
         orderedModules.push('sec-ambiente2');
     }
     
-    // LOGICA POSIZIONE GESTIONE SERBATOI
-    if (hasTankData) {
+    // LOGICA POSIZIONE GESTIONE SERBATOI (solo se almeno un ambiente è stato inviato)
+    if (hasTankData && (ambiente1Inviato || ambiente2Inviato)) {
         // Solo Ambiente 1: secondo
         // Solo Ambiente 2: secondo  
         // Entrambi: terzo
@@ -10954,23 +10967,24 @@ if (hiddenModules.length === 0) {
     }
     // ✅ NON AGGIUNGERE NESSUN MODULO TREND SE C'È SOLO UN SALVATAGGIO O NESSUN TREND
     
-    // Aggiungi tutti gli altri moduli
-    const otherModules = hiddenModules.filter(id => !['sec-amb', 'sec-ambiente2', 'sec-chemicals'].includes(id));
-    
-    // Aggiungi GESTIONE_SERBATOI_SPECIAL se ha dati ma non è già in orderedModules
-    if (hasTankData && !orderedModules.includes('GESTIONE_SERBATOI_SPECIAL')) {
-        orderedModules.push('GESTIONE_SERBATOI_SPECIAL');
-    }
+    // Altri moduli inviati (esclusi ambiente e chemicals gestiti a parte)
+    const otherModules = printableModules.filter(function (id) {
+        return !['sec-amb', 'sec-ambiente2', 'sec-chemicals', 'sec-wvt'].includes(id);
+    });
     
     orderedModules.push(...otherModules);
-    if (hiddenModules.includes('sec-stoccaggio-interno') && orderedModules.indexOf('sec-stoccaggio-interno') < 0) {
-        orderedModules.push('sec-stoccaggio-interno');
+    if (printableSet.has('sec-chemicals') && orderedModules.indexOf('sec-chemicals') < 0) {
+        orderedModules.push('sec-chemicals');
     }
-    const stoccSnapPreview = window.getNotturnoStoccaggioSnapshot && window.getNotturnoStoccaggioSnapshot();
-    if (stoccSnapPreview && Object.keys(stoccSnapPreview).length &&
-        orderedModules.indexOf('sec-stoccaggio-interno') < 0) {
-        orderedModules.push('sec-stoccaggio-interno');
-    }
+
+    // Solo moduli effettivamente inviati (+ virtuali già inseriti sopra)
+    orderedModules = orderedModules.filter(function (id, idx, arr) {
+        if (arr.indexOf(id) !== idx) return false;
+        if (id === 'GESTIONE_SERBATOI_SPECIAL' || id === 'TREND_SERBATOI' || id === 'TREND_ANALISI') {
+            return true;
+        }
+        return printableSet.has(id);
+    });
 
     orderedModules.forEach(id => {
         // GESTIONE_SERBATOI_SPECIAL è un modulo virtuale, non ha un elemento DOM
@@ -11237,6 +11251,7 @@ if (hiddenModules.length === 0) {
         }
 
         if (id === 'sec-stoccaggio-interno') {
+            if (!printableSet.has('sec-stoccaggio-interno')) return;
             const stoccData = window.getNotturnoStoccaggioReportData();
             if (!stoccData.rows.length) return;
             html += '<div style="margin-bottom: 6px; width: 100%; break-inside: avoid; display: inline-block;"><div style="font-size: ' + (parseInt(previewFont, 10) - 1) + 'px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 5px; letter-spacing: 0.3px;">' + stoccData.title + '</div><div class="stocc-report-preview-rows" style="display: flex; flex-direction: column;">';

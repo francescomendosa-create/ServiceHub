@@ -570,7 +570,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.10-bubble-scatter';
+        window.SERVICEHUB_BUILD = '2026.06.10-trend-archivi';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
         window.SERVICEHUB_REMOTE_ORIGIN = 'https://servicehub-18309.web.app';
@@ -1871,9 +1871,6 @@ window.colorPreviewNumber = function(tankName, value) {
                 ? window.buildPlantPayloadFromDOM({ bumpRevision: true })
                 : patch;
             
-            // AGGIUNGI STORICO DEI SALVATAGGI PER TREND
-            window.addToHistory(historyData);
-            
             try {
                 const plantRef = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
                 const changedN = patch.__changedCount;
@@ -2440,10 +2437,6 @@ window.colorPreviewNumber = function(tankName, value) {
                 ? window.buildPlantPayloadFromDOM({ bumpRevision: true })
                 : patch;
 
-            if (!skipHist) {
-                window.addToHistory(historyData);
-            }
-
             try {
                 const plantRef = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
                 const changedN = patch.__changedCount;
@@ -2540,8 +2533,8 @@ window.colorPreviewNumber = function(tankName, value) {
             }
             
             // Controlla se ci sono backup veri (con createdAt)
-            const hasRealBackups = window.savedHistory.some(entry => 
-                entry.createdAt && entry.time && !entry.date
+            const hasRealBackups = window.savedHistory.some(entry =>
+                entry && entry.archiveTime
             );
             
             if (!hasRealBackups) {
@@ -3558,7 +3551,7 @@ window.updateStoricoButton = async function() {
             }
             
             // Controlla anche lo storico dei trend
-            const hasTrendHistory = window.savedHistory && Array.isArray(window.savedHistory) && window.savedHistory.length > 0;
+            const hasTrendHistory = typeof window.collectRealArchives === 'function' && window.collectRealArchives().length > 0;
             
             // Rimuovi tutte le classi di colore
             storicoBtn.classList.remove('bg-slate-900', 'border-slate-700', 'bg-emerald-600', 'border-emerald-800', 'bg-yellow-500', 'border-yellow-700');
@@ -3891,6 +3884,7 @@ window.updateStoricoButton = async function() {
                 // PULISCI MEMORIA TEMPORANEA
                 window.savedHistory = [];
                 window.trendDebugData = [];
+                window.tankLevelCompareBaseline = {};
 
                 // AGGIORNA UI CON ANIMAZIONE TV CATODICO IMMEDIATA
                 const listContainer = document.getElementById('archive-list-content');
@@ -3913,6 +3907,12 @@ window.updateStoricoButton = async function() {
 
                 // AGGIORNA TASTO STORICO DOPO ELIMINAZIONE TOTALE
                 window.updateStoricoButton();
+
+                if (typeof window.flushPublicDigitalSnapshotNow === 'function') {
+                    await window.flushPublicDigitalSnapshotNow();
+                } else if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
+                    window.schedulePublicDigitalSnapshotSync();
+                }
 
                 alert('TUTTI GLI ARCHIVI ELIMINATI DEFINITIVAMENTE!');
             } catch (e) {
@@ -10183,154 +10183,143 @@ window.updateStoricoButton = async function() {
             return tankMap[fieldId] || fieldId;
         };
 
+        // === TREND: solo archivi veri (storico) + istantaneo live ===
+        window.collectRealArchives = function() {
+            var list = [];
+            var seen = {};
+            var push = function(entry) {
+                if (!entry || !entry.archiveTime) return;
+                var key = String(entry.createdAt || entry.archiveTime);
+                if (seen[key]) return;
+                seen[key] = true;
+                list.push(entry);
+            };
+            if (window.savedHistory && Array.isArray(window.savedHistory)) {
+                window.savedHistory.forEach(push);
+            }
+            try {
+                var localArchives = JSON.parse(localStorage.getItem('stabileArchives') || '[]');
+                localArchives.forEach(function(arch) {
+                    if (arch && arch.data) push(arch.data);
+                });
+            } catch (_) {}
+            return list;
+        };
+
+        window.getArchiveTimestampMs = function(entry) {
+            if (!entry) return 0;
+            if (entry.createdAt && Number.isFinite(Number(entry.createdAt))) {
+                return Number(entry.createdAt);
+            }
+            var raw = String(entry.archiveTime || entry.time || '').trim();
+            if (!raw) return 0;
+            var now = new Date();
+            var parsed = Date.parse(raw);
+            if (Number.isFinite(parsed)) return parsed;
+            var m = raw.match(/(\d{1,2}):(\d{2})/);
+            if (m) {
+                return new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(m[1], 10), parseInt(m[2], 10), 0, 0).getTime();
+            }
+            return 0;
+        };
+
+        window.getCurrentShiftStartMs = function() {
+            var shiftLabel = (document.getElementById('current-shift-label')?.innerText || '').trim();
+            var now = new Date();
+            var y = now.getFullYear(), mo = now.getMonth(), d = now.getDate(), h = now.getHours();
+            var hour = 6;
+            if (shiftLabel.indexOf('2') !== -1) hour = 14;
+            else if (shiftLabel.indexOf('3') !== -1) hour = 22;
+            else if (shiftLabel.indexOf('4') !== -1) hour = 6;
+            else if (shiftLabel.indexOf('5') !== -1) hour = 18;
+            if (shiftLabel.indexOf('3') !== -1 && h < 6) {
+                return new Date(y, mo, d - 1, 22, 0, 0, 0).getTime();
+            }
+            if (shiftLabel.indexOf('5') !== -1) {
+                if (h < 6) return new Date(y, mo, d - 1, 18, 0, 0, 0).getTime();
+                if (h >= 18) return new Date(y, mo, d, 18, 0, 0, 0).getTime();
+                return new Date(y, mo, d - 1, 18, 0, 0, 0).getTime();
+            }
+            return new Date(y, mo, d, hour, 0, 0, 0).getTime();
+        };
+
+        window.getShiftBaselineArchiveForTrend = function() {
+            var currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
+            if (!currentShift) return null;
+            var archives = window.collectRealArchives().filter(function(entry) {
+                return (entry.shift || '').trim() === currentShift;
+            });
+            if (!archives.length) return null;
+            var shiftStart = window.getCurrentShiftStartMs();
+            var best = null, bestDist = Infinity;
+            archives.forEach(function(arch) {
+                var ts = window.getArchiveTimestampMs(arch);
+                if (!ts) return;
+                var dist = Math.abs(ts - shiftStart);
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    best = arch;
+                }
+            });
+            return best;
+        };
+
+        window.hasRealArchiveBaselineForTrend = function() {
+            return !!window.getShiftBaselineArchiveForTrend();
+        };
+
+        window.buildInstantTrendSnapshotFromDOM = function() {
+            var now = new Date();
+            var currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
+            var snap = {
+                time: now.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }),
+                shift: currentShift,
+                createdAt: now.getTime()
+            };
+            document.querySelectorAll('input').forEach(function(input) {
+                if (input.id && String(input.value || '').trim() !== '') {
+                    snap[input.id] = input.value;
+                }
+            });
+            return snap;
+        };
+
         // Funzione per calcolare i trend dei livelli dei serbatoi
         window.getTankLevelTrend = function() {
             try {
-                // Controlla se esiste lo storico
-                if (!window.savedHistory || !Array.isArray(window.savedHistory)) {
-                    return [];
-                }
-
-                // Ottieni il turno corrente
-                const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
-                if (!currentShift) return [];
-
-                // Filtra lo storico per il turno corrente E ORDINA PER CREATEDAT
-                const turnoHistory = window.savedHistory
-                    .filter(entry => 
-                        entry && 
-                        typeof entry === 'object' && 
-                        (entry.shift || '').trim() === currentShift
-                    )
-                    .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-
-                // Servono almeno 2 salvataggi per confrontare
-                if (turnoHistory.length < 2) {
-                    // SE C'È SOLO UN ISTANTANEO, NON CARICARE IL TREND
-                    // Il trend richiede almeno 2 punti dati: backup + istantaneo
-                    // Se c'è solo l'istantaneo, non mostrare nulla
-                    return [];
-                }
-
-                // PRENDI SEMPRE IL BACKUP DI INIZIO TURNO (entry con createdAt più vecchio)
-                const firstEntry = turnoHistory.find(entry => entry.createdAt) || 
-                                   turnoHistory[0];
-                const lastEntry = turnoHistory[turnoHistory.length - 1];
-
-                // AGGIUNGI CONTROLLO VISIVO NEI DATI
-                // Crea un array con tutti i campi numerici trovati
-                const allNumericFields = [];
-                const allFields = []; // AGGIUNTO: Mostra TUTTI i campi
-                const firstKeys = Object.keys(firstEntry);
-                const lastKeys = Object.keys(lastEntry);
-                
-                // Trova tutti i campi nel primo salvataggio
-                firstKeys.forEach(key => {
-                    if (!['time', 'shift', 'date'].includes(key)) {
-
-                        // ESCLUDI LE ANALISI DAI TREND SERBATOI
-                        if (key.startsWith('inp-analisi-')) return;
-
-                        const value = firstEntry[key];
-                        const numValue = Number(value);
-                        
-                        // Pulisci il nome del campo per le analisi
-                        let cleanKey = key;
-                        if (key.startsWith('inp-analisi-')) {
-                            cleanKey = key.replace('inp-analisi-', '');
-                        }
-                        // Rimuovi anche la parola 'input' se presente
-                        cleanKey = cleanKey.replace(/input/gi, '');
-                        
-                        // Salva TUTTI i campi per debug
-                        allFields.push({
-                            field: key,
-                            firstValue: value,
-                            lastValue: lastEntry[key] || 'N/A',
-                            type: typeof value,
-                            isNumeric: Number.isFinite(numValue) && numValue > 0
-                        });
-                        
-                        // Salva solo i campi numerici per i trend
-                        if (Number.isFinite(numValue) && numValue > 0) {
-                            allNumericFields.push({
-                                field: key,
-                                firstValue: numValue,
-                                lastValue: Number(lastEntry[key]) || 0,
-                                hasChange: Number(lastEntry[key]) !== numValue && Number(lastEntry[key]) > 0
-                            });
-                        }
-                    }
-                });
-
-                // ✅ RIMOSSO DEBUG - Non più necessario
-                // if (!window.trendDebugData) {
-                //     window.trendDebugData = allFields;
-                // }
+                var firstEntry = window.getShiftBaselineArchiveForTrend();
+                if (!firstEntry) return [];
+                var lastEntry = window.buildInstantTrendSnapshotFromDOM();
 
                 // Lista dei serbatoi da controllare (esclusi WVT, OSMOSI, SF3, UNITÀ DAF)
                 const tankFields = [
-                    'inp-a10605', 'inp-s864', 'inp-s817', 'inp-s818', 'inp-s813', 'inp-s854', 'inp-s846', 
+                    'inp-a10605', 'inp-s864', 'inp-s817', 'inp-s818', 'inp-s813', 'inp-s854', 'inp-s846',
                     'inp-s819', 'inp-tk8066', 'inp-s852', 'inp-lurgi', 'inp-s829',
                     'inp-bacino-tk8092', 'inp-bacino-tk8093', 'inp-tk8092',
                     'inp-tk9000', 'inp-tk9201'
                 ];
+                (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function(t) {
+                    if (t.fieldId && tankFields.indexOf(t.fieldId) === -1) tankFields.push(t.fieldId);
+                });
 
                 const trends = [];
+                const startTime = firstEntry.time || firstEntry.archiveTime || '--:--';
+                const endTime = lastEntry.time || '--:--';
 
                 tankFields.forEach(tankId => {
-                    let validValues = [];
-                    
-                    // Prima controlla primo e ultimo
                     const firstValue = Number(firstEntry[tankId]);
                     const lastValue = Number(lastEntry[tankId]);
-                    
-                    if (Number.isFinite(firstValue) && firstValue > 0) {
-                        validValues.push({value: firstValue, index: 0, time: firstEntry.time});
-                    }
-                    
-                    if (Number.isFinite(lastValue) && lastValue > 0) {
-                        validValues.push({value: lastValue, index: turnoHistory.length - 1, time: lastEntry.time});
-                    }
-                    
-                    // Se non ha almeno 2 valori, cerca negli intermedi
-                    if (validValues.length < 2) {
-                        for (let i = 1; i < turnoHistory.length - 1; i++) {
-                            if (validValues.length >= 2) break;
-                            
-                            const midValue = Number(turnoHistory[i][tankId]);
-                            if (Number.isFinite(midValue) && midValue > 0) {
-                                // Controlla se non è già presente
-                                if (!validValues.some(v => v.value === midValue)) {
-                                    validValues.push({value: midValue, index: i, time: turnoHistory[i].time});
-                                }
-                            }
-                        }
-                    }
-                    
-                    // ✅ RIMOSSO DEBUG - Non più necessario
-                    if (validValues.length < 2) {
-                        return;
-                    }
-                    
-                    // Ordina per indice e prendi primo e ultimo
-                    validValues.sort((a, b) => a.index - b.index);
-                    const startData = validValues[0];
-                    const endData = validValues[validValues.length - 1];
-                    
-                    // Verifica che i valori siano diversi
-                    if (startData.value !== endData.value) {
-                        const isRising = endData.value > startData.value;
-                        
-                        trends.push({
-                            tank: tankId,
-                            start: startData.value,
-                            end: endData.value,
-                            startTime: startData.time || '--:--',
-                            endTime: endData.time || '--:--',
-                            rising: isRising
-                        });
-                    }
+                    if (!Number.isFinite(firstValue) || firstValue <= 0) return;
+                    if (!Number.isFinite(lastValue) || lastValue <= 0) return;
+                    if (firstValue === lastValue) return;
+                    trends.push({
+                        tank: tankId,
+                        start: firstValue,
+                        end: lastValue,
+                        startTime: startTime,
+                        endTime: endTime,
+                        rising: lastValue > firstValue
+                    });
                 });
 
                 // 🔥 ALERT LIVELLI >90%
@@ -10349,25 +10338,8 @@ window.updateStoricoButton = async function() {
 
         window.getAnalisiTrend = function() {
             try {
-                if (!window.savedHistory || !Array.isArray(window.savedHistory)) {
-                    return [];
-                }
-
-                const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
-                if (!currentShift) return [];
-
-                const turnoHistory = window.savedHistory
-                    .filter(entry =>
-                        entry &&
-                        typeof entry === 'object' &&
-                        (entry.shift || '').trim() === currentShift
-                    )
-                    .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-
-                if (turnoHistory.length < 2) return [];
-
-                const firstEntry = turnoHistory.find(entry => entry.createdAt) || turnoHistory[0];
-                const lastEntry = turnoHistory[turnoHistory.length - 1];
+                const firstEntry = window.getShiftBaselineArchiveForTrend();
+                if (!firstEntry) return [];
 
                 const analisiFields = [
                     'inp-analisi-cod',
@@ -10380,53 +10352,24 @@ window.updateStoricoButton = async function() {
                 ].filter(id => document.getElementById(id));
 
                 const trends = [];
+                const startTime = firstEntry.time || firstEntry.archiveTime || '--:--';
+                const endTime = new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
 
                 analisiFields.forEach(field => {
-                    const validValues = [];
-
-                    turnoHistory.forEach((entry, index) => {
-                        const value = Number(entry[field]);
-                        if (Number.isFinite(value) && value > 0) {
-                            validValues.push({
-                                value,
-                                time: entry.time,
-                                index
-                            });
-                        }
-                    });
-
-                    // aggiungi anche l'istantaneo UI
+                    const startValue = Number(firstEntry[field]);
                     const inputEl = document.getElementById(field);
-                    const currentValue = Number(inputEl?.value);
-
-                    if (Number.isFinite(currentValue) && currentValue > 0) {
-                        validValues.push({
-                            value: currentValue,
-                            time: new Date().toLocaleTimeString('it-IT', {
-                                hour: '2-digit',
-                                minute: '2-digit'
-                            }),
-                            index: 999999
-                        });
-                    }
-
-                    if (validValues.length < 2) return;
-
-                    validValues.sort((a, b) => a.index - b.index);
-
-                    const startData = validValues[0];
-                    const endData = validValues[validValues.length - 1];
-
-                    if (startData.value !== endData.value) {
-                        trends.push({
-                            tank: field,
-                            start: startData.value,
-                            end: endData.value,
-                            startTime: startData.time || '--:--',
-                            endTime: endData.time,
-                            rising: endData.value > startData.value
-                        });
-                    }
+                    const endValue = Number(inputEl?.value);
+                    if (!Number.isFinite(startValue) || startValue <= 0) return;
+                    if (!Number.isFinite(endValue) || endValue <= 0) return;
+                    if (startValue === endValue) return;
+                    trends.push({
+                        tank: field,
+                        start: startValue,
+                        end: endValue,
+                        startTime: startTime,
+                        endTime: endTime,
+                        rising: endValue > startValue
+                    });
                 });
 
                 return trends;
@@ -10436,69 +10379,12 @@ window.updateStoricoButton = async function() {
             }
         };
 
-        // FUNZIONE SEMPLICE E DIRETTA PER ISTANTANEI
+        // Istantaneo trend: solo lettura DOM (non scrive più in savedHistory)
         window.addInstantData = function() {
-            try {
-                if (!window.savedHistory || !Array.isArray(window.savedHistory)) {
-                    window.savedHistory = [];
-                }
-                
-                // Se non c'è storico, non fare nulla
-                if (window.savedHistory.length === 0) {
-                    return;
-                }
-                
-                const now = new Date();
-                const currentData = {};
-                
-                // Copia TUTTI gli input correnti
-                document.querySelectorAll('input').forEach(input => {
-                    if (input.id && input.value) {
-                        currentData[input.id] = input.value;
-                    }
-                });
-                
-                // Imposta informazioni temporali
-                currentData.time = now.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
-                currentData.shift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
-                currentData.date = now.toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit', year: '2-digit' });
-                currentData.createdAt = now.getTime();
-                currentData.savedShift = currentData.shift;
-                
-                // DEBUG VISIVO: Mostra informazioni nell'interfaccia
-                const inputDebug = {};
-                document.querySelectorAll('input').forEach(input => {
-                    if (input.id && input.value) {
-                        inputDebug[input.id] = input.value;
-                    }
-                });
-                
-                // Crea un elemento visivo per mostrare il debug
-                const debugDiv = document.getElementById('instant-debug-info');
-                if (debugDiv) {
-                    debugDiv.innerHTML = `
-                        <div style="background: #ffeb3b; padding: 5px; margin: 5px 0; font-size: 10px; border: 1px solid #fbc02d;">
-                            <strong>DEBUG ISTANTANEO:</strong><br>
-                            Input letti: ${Object.keys(inputDebug).length}<br>
-                            Input analisi: ${Object.keys(inputDebug).filter(k => k.includes('inp-analisi-')).length}<br>
-                            Valore COD: ${inputDebug['inp-analisi-cod'] || 'N/A'}<br>
-                            Dati salvati: ${Object.keys(currentData).length}<br>
-                            Storico totale: ${window.savedHistory.length}
-                        </div>
-                    `;
-                }
-                
-                // FORZA SEMPRE AGGIUNTA per testare se il problema è nel controllo isDifferent
-                window.savedHistory.push(currentData);
-                
-            } catch (err) {
-                // Silenzioso per non bloccare
-            }
+            if (window.refreshAllTankLevelArrows) window.refreshAllTankLevelArrows();
         };
 
-        // CONTROLLO AUTOMATICO ISTANTANEO - OGNI VOLTA CHE INSERISCI DATI
         window.checkInstantTrend = async function() {
-            // Usa la funzione semplice
             window.addInstantData();
         };
 
@@ -10531,13 +10417,8 @@ window.updateStoricoButton = async function() {
         };
 
         window.refreshTankLevelBaselineFromSavedHistory = function() {
-            if (!window.savedHistory || !Array.isArray(window.savedHistory)) return;
-            var candidates = window.savedHistory.filter(function(e) {
-                return e && e.archiveTime;
-            });
-            if (!candidates.length) return;
-            candidates.sort(function(a, b) { return (b.createdAt || 0) - (a.createdAt || 0); });
-            window.setTankLevelBaselineFromSnapshotData(candidates[0]);
+            var baseline = window.getShiftBaselineArchiveForTrend && window.getShiftBaselineArchiveForTrend();
+            if (baseline) window.setTankLevelBaselineFromSnapshotData(baseline);
         };
 
         window.getTankLabelMountForArrow = function(input) {
@@ -10791,12 +10672,10 @@ if (hiddenModules.length === 0) {
     const analisiTrends = window.getAnalisiTrend();
     const hasAnalisiTrendData = analisiTrends && analisiTrends.length > 0;
     
-    // ✅ CONTROLLA CHE CI SIANO ALMENO 2 SALVATAGGI PER MOSTRARE TREND
-    const hasEnoughHistory = window.savedHistory && Array.isArray(window.savedHistory) && window.savedHistory.length >= 2;
+    const hasArchiveBaseline = typeof window.hasRealArchiveBaselineForTrend === 'function' && window.hasRealArchiveBaselineForTrend();
     
-    // AGGIUNGI MODULI TREND SEPARATI PER SERBATOI E ANALISI
-    // Mostra trend serbatoi anche senza storico completo se ci sono dati di trend
-    if (hasTrendData) {
+    // AGGIUNGI MODULI TREND SEPARATI PER SERBATOI E ANALISI (solo con archivio turno + istantaneo)
+    if (hasTrendData && hasArchiveBaseline) {
         // Aggiungi TREND_SERBATOI
         const tankIndex = orderedModules.indexOf('GESTIONE_SERBATOI_SPECIAL');
         if (tankIndex !== -1) {
@@ -10807,7 +10686,7 @@ if (hiddenModules.length === 0) {
     }
     
     // Aggiungi TREND_ANALISI se ci sono dati di analisi
-    if (hasAnalisiTrendData && hasEnoughHistory) {
+    if (hasAnalisiTrendData && hasArchiveBaseline) {
         // Trova la posizione dopo TREND_SERBATOI o GESTIONE_SERBATOI_SPECIAL
         const trendTankIndex = orderedModules.indexOf('TREND_SERBATOI');
         const tankIndex = orderedModules.indexOf('GESTIONE_SERBATOI_SPECIAL');
@@ -11801,10 +11680,10 @@ window.buildDigitalCardsHTML = function() {
         // Calcola i trend dei livelli
         const tankTrends = window.getTankLevelTrend();
         const hasTrendData = tankTrends && tankTrends.length > 0;
-        const hasEnoughHistory = window.savedHistory && Array.isArray(window.savedHistory) && window.savedHistory.length >= 2;
+        const hasArchiveBaseline = typeof window.hasRealArchiveBaselineForTrend === 'function' && window.hasRealArchiveBaselineForTrend();
         
-        // AGGIUNGI IL MODULO TREND SOLO SE CI SONO DATI VALIDI
-        if (hasTrendData && hasEnoughHistory) {
+        // AGGIUNGI IL MODULO TREND SOLO SE C'È UN ARCHIVIO TURNO + DATI ISTANTANEI
+        if (hasTrendData && hasArchiveBaseline) {
             const tankIndex = orderedModules.includes('GESTIONE_SERBATOI_SPECIAL') ? orderedModules.indexOf('GESTIONE_SERBATOI_SPECIAL') + 1 : 0;
             orderedModules.splice(tankIndex, 0, 'TREND_SPECIAL');
         }

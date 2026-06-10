@@ -602,7 +602,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.10-android-spen-fastinput';
+        window.SERVICEHUB_BUILD = '2026.06.10-tablet-spen-labels';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
         window.SERVICEHUB_REMOTE_ORIGIN = 'https://servicehub-18309.web.app';
@@ -790,11 +790,54 @@ window.colorPreviewNumber = function(tankName, value) {
             var t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
             return !!(t && t.touchType === 'stylus');
         };
-        /** Tablet: dito/palmo sulle etichette moduli non avvia long-press (solo S Pen se riconosciuta). */
+        window.__stylusPenLiftTimer = null;
+        /** Penna vicina/attiva: blocca solo ora i tocchi dito/palmo sulle etichette. */
+        window.__touchStylusPenActivity = function () {
+            document.body.classList.add('sh-stylus-pen-active');
+            clearTimeout(window.__stylusPenLiftTimer);
+        };
+        window.__scheduleStylusPenLift = function (delayMs) {
+            clearTimeout(window.__stylusPenLiftTimer);
+            window.__stylusPenLiftTimer = setTimeout(function () {
+                document.body.classList.remove('sh-stylus-pen-active');
+                window.__stylusPenLiftTimer = null;
+            }, delayMs || 800);
+        };
+        window.__moduleIdFromPressLabel = function (labelEl) {
+            if (!labelEl || !labelEl.querySelector) return null;
+            var lbl = labelEl.querySelector('[id^="lbl-"]');
+            if (lbl && lbl.id && lbl.id.indexOf('lbl-') === 0) return lbl.id.replace('lbl-', '');
+            return null;
+        };
+        window.__skipTabletLabelTouchDup = function (e) {
+            if (!e || !e.type || e.type.indexOf('touch') !== 0 || !window.PointerEvent) return false;
+            if (!window.shouldKeepAllSectionsExpanded || !window.shouldKeepAllSectionsExpanded()) return false;
+            var label = window.__resolveModulePressLabel(e);
+            return !!(label && label.classList.contains('v-label-container'));
+        };
+        window.__resolveModulePressLabel = function (e) {
+            if (!e) return null;
+            if (e.__shPressLabel) return e.__shPressLabel;
+            if (e.currentTarget && e.currentTarget.classList &&
+                (e.currentTarget.classList.contains('v-label-container') ||
+                 e.currentTarget.classList.contains('nott-filtra-tendina-bar') ||
+                 e.currentTarget.classList.contains('nott-stocc-tendina-bar') ||
+                 e.currentTarget.classList.contains('nott-chem-tendina-bar'))) {
+                return e.currentTarget;
+            }
+            if (e.target && e.target.closest) {
+                return e.target.closest('.v-label-container, .nott-filtra-tendina-bar, .nott-stocc-tendina-bar, .nott-chem-tendina-bar');
+            }
+            return null;
+        };
+        /** Tablet: blocca dito/palmo sulle etichette solo mentre la S Pen è attiva. */
         window.__blockFingerOnModuleLabelPress = function (e) {
             if (!window.isServiceHubTablet || !window.isServiceHubTablet()) return false;
-            if (window.__isStylusEvent(e)) return false;
-            return true;
+            if (window.__isStylusEvent(e)) {
+                window.__touchStylusPenActivity();
+                return false;
+            }
+            return document.body.classList.contains('sh-stylus-pen-active');
         };
         /** Android tablet: attributi input (suggerimenti off) — una sola volta per elemento. */
         window.__primeAndroidTabletInput = function (el) {
@@ -838,10 +881,85 @@ window.colorPreviewNumber = function(tankName, value) {
             window.__androidSuggestObserver.observe(document.body, { childList: true, subtree: true });
         };
 
+        window.__initTabletLabelPointerPress = function () {
+            if (!window.isServiceHubTablet || !window.isServiceHubTablet()) return;
+            if (window.__tabletLabelPointerReady) return;
+            window.__tabletLabelPointerReady = true;
+            var activeLabel = null;
+            var activeId = null;
+            var activePointerId = null;
+            document.addEventListener('pointerdown', function (e) {
+                if (e.pointerType === 'pen') window.__touchStylusPenActivity();
+                var label = window.__resolveModulePressLabel(e);
+                if (!label || !label.classList.contains('v-label-container')) return;
+                var id = window.__moduleIdFromPressLabel(label);
+                if (!id) return;
+                if (window.__blockFingerOnModuleLabelPress(e)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return;
+                }
+                var ae = document.activeElement;
+                if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) ae.blur();
+                activeLabel = label;
+                activeId = id;
+                activePointerId = e.pointerId;
+                e.__shPressLabel = label;
+                if (e.preventDefault) e.preventDefault();
+                window.startPress(e, id);
+            }, true);
+            document.addEventListener('pointermove', function (e) {
+                if (activePointerId == null || e.pointerId !== activePointerId || !activeLabel) return;
+                e.__shPressLabel = activeLabel;
+                window.movePress(e);
+            }, true);
+            function finishPointerPress(e) {
+                if (activePointerId == null || e.pointerId !== activePointerId) return;
+                if (e.pointerType === 'pen') window.__scheduleStylusPenLift();
+                if (activeLabel && activeId) {
+                    e.__shPressLabel = activeLabel;
+                    window.endPress(e, activeId);
+                }
+                activeLabel = null;
+                activeId = null;
+                activePointerId = null;
+            }
+            document.addEventListener('pointerup', finishPointerPress, true);
+            document.addEventListener('pointercancel', finishPointerPress, true);
+            document.addEventListener('pointerdown', function (e) {
+                if (e.pointerType === 'pen' && e.target && e.target.closest &&
+                    e.target.closest('.main-container input, .main-container textarea')) {
+                    window.__touchStylusPenActivity();
+                }
+            }, true);
+            document.addEventListener('pointerup', function (e) {
+                if (e.pointerType === 'pen') window.__scheduleStylusPenLift();
+            }, true);
+            document.addEventListener('touchstart', function (e) {
+                if (!window.isServiceHubTablet || !window.isServiceHubTablet()) return;
+                var t = e.touches && e.touches[0];
+                if (t && t.touchType === 'stylus') window.__touchStylusPenActivity();
+            }, true);
+            document.addEventListener('touchend', function (e) {
+                if (!window.isServiceHubTablet || !window.isServiceHubTablet()) return;
+                var t = e.changedTouches && e.changedTouches[0];
+                if (t && t.touchType === 'stylus') window.__scheduleStylusPenLift();
+            }, true);
+            document.addEventListener('focusout', function (e) {
+                if (!window.isServiceHubTablet || !window.isServiceHubTablet()) return;
+                var t = e.target;
+                if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) return;
+                window.__scheduleStylusPenLift(500);
+            }, true);
+        };
+
         window.__initTabletStylusWritingSupport = function () {
             if (!window.isServiceHubTablet || !window.isServiceHubTablet()) return;
             if (typeof window.__initAndroidTabletNoSuggestions === 'function') {
                 window.__initAndroidTabletNoSuggestions();
+            }
+            if (typeof window.__initTabletLabelPointerPress === 'function') {
+                window.__initTabletLabelPointerPress();
             }
         };
 
@@ -9597,6 +9715,9 @@ window.updateStoricoButton = async function() {
                 if (e.stopPropagation) e.stopPropagation();
                 return;
             }
+            const isTabletLayout = window.shouldKeepAllSectionsExpanded && window.shouldKeepAllSectionsExpanded();
+            if (window.__skipTabletLabelTouchDup(e)) return;
+            const label = window.__resolveModulePressLabel(e);
             // ✅ BLOCCO MOUSE EVENTS SU IOS E ANDROID PER EVITARE CONFLITTI
             if (e.type === 'mousedown' && (/iPhone|iPad|Android/i.test(navigator.userAgent))) {
                 e.preventDefault();
@@ -9609,14 +9730,18 @@ window.updateStoricoButton = async function() {
                 return;
             }
             const touch = e.touches ? e.touches[0] : e;
-            const isTabletLayout = window.shouldKeepAllSectionsExpanded && window.shouldKeepAllSectionsExpanded();
+            if (!label) return;
             
             startX = touch.clientX;
             startY = touch.clientY;
-            if (!isTabletLayout) forceBlur();
+            if (!isTabletLayout) {
+                forceBlur();
+            } else {
+                var ae = document.activeElement;
+                if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) ae.blur();
+            }
             isLongPress = false;
             if (!isTabletLayout) window.__setLongPressInputLock(true);
-            const label = e.currentTarget;
             if (pressTimer) clearTimeout(pressTimer);
             if (visualFeedbackTimer) clearTimeout(visualFeedbackTimer);
             visualFeedbackTimer = setTimeout(function () {
@@ -9631,9 +9756,12 @@ window.updateStoricoButton = async function() {
         };
 
         window.movePress = (e) => {
+            if (window.__skipTabletLabelTouchDup(e)) return;
             const touch = e.touches ? e.touches[0] : e;
+            const label = window.__resolveModulePressLabel(e);
+            if (!label) return;
             if (Math.abs(touch.clientX - startX) > MOVE_THRESHOLD || Math.abs(touch.clientY - startY) > MOVE_THRESHOLD) {
-                e.currentTarget.classList.remove('pressing');
+                label.classList.remove('pressing');
                 if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
                 if (visualFeedbackTimer) { clearTimeout(visualFeedbackTimer); visualFeedbackTimer = null; }
                 isLongPress = false;
@@ -9642,9 +9770,13 @@ window.updateStoricoButton = async function() {
         };
 
         window.endPress = (e, id) => {
-            if (e && e.preventDefault) e.preventDefault();
-            if (e && e.stopPropagation) e.stopPropagation();
-            e.currentTarget.classList.remove('pressing');
+            if (window.__skipTabletLabelTouchDup(e)) return;
+            const isTabletLayout = window.shouldKeepAllSectionsExpanded && window.shouldKeepAllSectionsExpanded();
+            const label = window.__resolveModulePressLabel(e);
+            if (!label) return;
+            if (!isTabletLayout && e && e.preventDefault) e.preventDefault();
+            if (!isTabletLayout && e && e.stopPropagation) e.stopPropagation();
+            label.classList.remove('pressing');
             if (visualFeedbackTimer) { clearTimeout(visualFeedbackTimer); visualFeedbackTimer = null; }
             if (pressTimer) {
                 clearTimeout(pressTimer);

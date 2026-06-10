@@ -570,7 +570,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.10-trend-cloud-only';
+        window.SERVICEHUB_BUILD = '2026.06.10-trend-bacini-fix';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
         window.SERVICEHUB_REMOTE_ORIGIN = 'https://servicehub-18309.web.app';
@@ -10474,6 +10474,38 @@ window.updateStoricoButton = async function() {
             return id || fieldId;
         };
 
+        /** Solo i veri bacini ambiente (8092 / 8093), mai i TK stoccaggio interno. */
+        window.isAmbienteBacinoFieldId = function (fieldId) {
+            var id = window.normalizeTrendFieldId(fieldId);
+            return id === 'inp-bacino-tk8092' || id === 'inp-bacino-tk8093' || id === 'inp-tk8092';
+        };
+
+        window.formatTrendDisplayLabel = function (fieldId, forHtml) {
+            var id = window.normalizeTrendFieldId(fieldId);
+            var name = window.getTankName(id);
+            if (id === 'inp-tk8092') return forHtml ? 'TK 8092' : 'TK 8092';
+            if (id === 'inp-bacino-tk8092') return forHtml ? 'BACINO<br>TK 8092' : 'BACINO TK 8092';
+            if (id === 'inp-bacino-tk8093') return forHtml ? 'BACINO<br>TK 8093' : 'BACINO TK 8093';
+            return name;
+        };
+
+        /** Serbatoi ammessi nel trend: ambiente + bacini; stoccaggio solo se modulo inviato. */
+        window.getTrendTankFieldIds = function () {
+            var fields = [
+                'inp-a10605', 'inp-s864', 'inp-s817', 'inp-s818', 'inp-s813', 'inp-s854', 'inp-s846',
+                'inp-s819', 'inp-tk8066', 'inp-s852', 'inp-lurgi', 'inp-s829',
+                'inp-bacino-tk8092', 'inp-bacino-tk8093', 'inp-tk8092',
+                'inp-tk9000', 'inp-tk9201'
+            ];
+            var hm = window.hiddenModules || (typeof hiddenModules !== 'undefined' ? hiddenModules : []) || [];
+            if (hm.indexOf('sec-stoccaggio-interno') >= 0) {
+                (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
+                    if (t.fieldId && fields.indexOf(t.fieldId) < 0) fields.push(t.fieldId);
+                });
+            }
+            return fields;
+        };
+
         // === TREND: solo archivi veri (storico) + istantaneo live ===
         window.collectRealArchives = function() {
             var list = [];
@@ -10568,15 +10600,20 @@ window.updateStoricoButton = async function() {
         window.buildInstantTrendSnapshotFromDOM = function() {
             var now = new Date();
             var currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
+            var allowed = {};
+            (window.getTrendTankFieldIds ? window.getTrendTankFieldIds() : []).forEach(function (fid) {
+                allowed[window.normalizeTrendFieldId(fid)] = true;
+            });
             var snap = {
                 time: now.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }),
                 shift: currentShift,
                 createdAt: now.getTime()
             };
             document.querySelectorAll('input').forEach(function(input) {
-                if (input.id && String(input.value || '').trim() !== '') {
-                    snap[input.id] = input.value;
-                }
+                if (!input.id || String(input.value || '').trim() === '') return;
+                var nid = window.normalizeTrendFieldId(input.id);
+                if (Object.keys(allowed).length && !allowed[nid]) return;
+                snap[nid] = input.value;
             });
             return snap;
         };
@@ -10588,16 +10625,7 @@ window.updateStoricoButton = async function() {
                 if (!firstEntry) return [];
                 var lastEntry = window.normalizeArchiveSnapshot(window.buildInstantTrendSnapshotFromDOM());
 
-                // Lista dei serbatoi da controllare (esclusi WVT, OSMOSI, SF3, UNITÀ DAF)
-                const tankFields = [
-                    'inp-a10605', 'inp-s864', 'inp-s817', 'inp-s818', 'inp-s813', 'inp-s854', 'inp-s846',
-                    'inp-s819', 'inp-tk8066', 'inp-s852', 'inp-lurgi', 'inp-s829',
-                    'inp-bacino-tk8092', 'inp-bacino-tk8093', 'inp-tk8092',
-                    'inp-tk9000', 'inp-tk9201'
-                ];
-                (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function(t) {
-                    if (t.fieldId && tankFields.indexOf(t.fieldId) === -1) tankFields.push(t.fieldId);
-                });
+                const tankFields = window.getTrendTankFieldIds ? window.getTrendTankFieldIds() : [];
 
                 const trends = [];
                 const startTime = firstEntry.time || firstEntry.archiveTime || '--:--';
@@ -11095,12 +11123,9 @@ if (hiddenModules.length === 0) {
             tankOnlyTrends.forEach(trend => {
                 const color = trend.rising ? '#dc2626' : '#2563eb';
                 const tankName = window.getTankName(trend.tank);
-                let displayName =
-                    (tankName === 'TK 8092') ? tankName :
-                    (tankName === 'TK 8093') ? 'BACINO<br>TK 8093' :
-                    (tankName.startsWith('TK') && tankName !== 'TK 8092' && tankName !== 'TK 8093')
-                        ? 'BACINO<br>' + tankName
-                        : tankName;
+                const displayName = typeof window.formatTrendDisplayLabel === 'function'
+                    ? window.formatTrendDisplayLabel(trend.tank, true)
+                    : tankName;
                 const difference = Math.abs(trend.end - trend.start);
                 const diffText = trend.rising ? `+${difference}` : `-${difference}`;
                 const tons = window.calculateTons(tankName, trend.end);
@@ -11938,7 +11963,10 @@ window.__buildDigitalTrendTableHTML = function (trends, opts) {
         if (totalMinutes > 0) return totalHours + 'h½';
         return totalHours + 'h';
     };
-    const formatTrendName = function (tankName) {
+    const formatTrendName = function (tankName, fieldId) {
+        if (fieldId && typeof window.formatTrendDisplayLabel === 'function') {
+            return window.formatTrendDisplayLabel(fieldId, false);
+        }
         return String(tankName || '').trim();
     };
     const analisiKeys = ['COD', 'COND', 'O2 MBR1', 'O2 MBR2', 'CONO', 'COD NUOVO', 'COD VECCHIO'];
@@ -11970,7 +11998,7 @@ window.__buildDigitalTrendTableHTML = function (trends, opts) {
             ? window.calculateTons(tankName, trend.end)
             : '';
         html += '<div class="digital-trend-grid digital-trend-row">';
-        html += '<span class="digital-trend-row__name">' + formatTrendName(tankName) + '</span>';
+        html += '<span class="digital-trend-row__name">' + formatTrendName(tankName, trend.tank) + '</span>';
         html += '<span class="digital-trend-row__val">' + trend.start + '</span>';
         html += '<span class="digital-trend-row__val">' + trend.end + '</span>';
         html += '<span class="digital-trend-row__delta ' + deltaClass + '">' + deltaMain;

@@ -54,6 +54,12 @@
         * {
             touch-action: manipulation;
         }
+        /* Android tablet: niente manipulation sui campi — S Pen deve passare libera */
+        html.sh-android-tablet-boot .main-container,
+        html.sh-android-tablet-boot .main-container input:not([type="hidden"]),
+        html.sh-android-tablet-boot .main-container textarea {
+            touch-action: auto !important;
+        }
 
         /* Smartphone: nascondi UI principale finché lo splash è attivo (evita flash GESTIONE MODULI su iOS) */
         @media (max-width: 599px) {
@@ -66,6 +72,14 @@
             }
         }
     </style>
+    <script>
+(function () {
+    var ua = navigator.userAgent || '';
+    if (/Android/i.test(ua) && Math.min(window.screen.width, window.screen.height) >= 600) {
+        document.documentElement.classList.add('sh-android-tablet-boot');
+    }
+})();
+</script>
     <script>
 // ===============================
 // SISTEMA ANTI-PERDITA DATI GLOBALE PER TUTTE LE SCHEDE
@@ -288,7 +302,9 @@ window.gestioneResize = function(e) {
     window.bloccaSalvataggio = true;
     console.log('Resize/orientamento rilevato - salvataggio dati...');
     
-    if (typeof window.saveData === 'function') void window.saveData(true);
+    if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) {
+        if (typeof window.__scheduleAndroidSaveData === 'function') window.__scheduleAndroidSaveData(true);
+    } else if (typeof window.saveData === 'function') void window.saveData(true);
     else window.salvaDatiGlobale();
     setTimeout(function() {
         window.bloccaSalvataggio = false;
@@ -333,6 +349,7 @@ window.__shIsAndroidTablet = function () {
     }, { passive: true });
     document.addEventListener('touchmove', function (e) {
         if (!e.touches || e.touches.length !== 1) return;
+        if (e.target && e.target.closest && e.target.closest('.main-container')) return;
         var ae = document.activeElement;
         if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) return;
         if (__shTouchIsStylus(e.touches[0])) return;
@@ -602,7 +619,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.10-android-spen-penpath';
+        window.SERVICEHUB_BUILD = '2026.06.10-android-spen-zeroload';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
         window.SERVICEHUB_REMOTE_ORIGIN = 'https://servicehub-18309.web.app';
@@ -895,7 +912,7 @@ window.colorPreviewNumber = function(tankName, value) {
             el.setAttribute('autocorrect', 'off');
             el.setAttribute('spellcheck', 'false');
             el.setAttribute('autocapitalize', 'off');
-            if (el.type === 'tel' && !el.hasAttribute('inputmode')) el.setAttribute('inputmode', 'decimal');
+            if (typeof window.__patchOneAndroidPenInput === 'function') window.__patchOneAndroidPenInput(el);
         };
         window.__applyAndroidTabletNoSuggestions = function (root) {
             if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
@@ -943,9 +960,87 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__isPlantSyncPaused = function () {
             if (typeof window.__isUserTypingInPlantField === 'function' && window.__isUserTypingInPlantField()) return true;
             var now = Date.now();
-            if (window.__plantLastAnyEditMs && now - window.__plantLastAnyEditMs < 12000) return true;
-            if (window.__lastLocalPlantSaveMs && now - window.__lastLocalPlantSaveMs < 5000) return true;
+            if (window.__plantLastAnyEditMs && now - window.__plantLastAnyEditMs < 90000) return true;
+            if (window.__lastLocalPlantSaveMs && now - window.__lastLocalPlantSaveMs < 20000) return true;
             return false;
+        };
+        window.__scheduleAndroidSaveData = function (skipHistory) {
+            window.__pendingAndroidSaveSkipHist = skipHistory === true;
+            clearTimeout(window.__androidSaveDataTimer);
+            window.__androidSaveDataTimer = setTimeout(function __tryAndroidSave() {
+                if (window.__isUserTypingInPlantField && window.__isUserTypingInPlantField()) {
+                    window.__androidSaveDataTimer = setTimeout(__tryAndroidSave, 8000);
+                    return;
+                }
+                if (window.__plantLastAnyEditMs && Date.now() - window.__plantLastAnyEditMs < 30000) {
+                    window.__androidSaveDataTimer = setTimeout(__tryAndroidSave, 8000);
+                    return;
+                }
+                window.__androidSaveForce = true;
+                var p = window.__saveDataImpl(window.__pendingAndroidSaveSkipHist);
+                window.__androidSaveForce = false;
+                if (p && typeof p.then === 'function') p.catch(function () {});
+            }, 30000);
+        };
+        window.__patchOneAndroidPenInput = function (inp) {
+            if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
+            if (!inp || inp.getAttribute('data-sh-pen-pure') === '1') return;
+            if (!inp.closest || !inp.closest('.main-container')) return;
+            if (inp.type === 'hidden' || inp.type === 'file' || inp.type === 'checkbox' || inp.type === 'radio') return;
+            inp.setAttribute('data-sh-pen-pure', '1');
+            if (inp.type === 'tel' && !inp.readOnly) {
+                inp.type = 'text';
+            }
+            if (!inp.hasAttribute('inputmode')) inp.setAttribute('inputmode', 'decimal');
+            var oc = inp.getAttribute('onchange');
+            if (oc && /saveData|colorScamInputs|colorTankInput/i.test(oc)) {
+                inp.removeAttribute('onchange');
+                inp.setAttribute('data-sh-had-save-onchange', '1');
+            }
+            var oi = inp.getAttribute('oninput');
+            if (oi && /saveData/i.test(oi)) {
+                inp.removeAttribute('oninput');
+                inp.setAttribute('data-sh-had-save-oninput', '1');
+            }
+        };
+        window.__patchAndroidTabletPenInputs = function () {
+            if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
+            document.querySelectorAll('.main-container input, .main-container textarea').forEach(window.__patchOneAndroidPenInput);
+            if (window.__androidPenListenersReady) return;
+            window.__androidPenListenersReady = true;
+            document.addEventListener('input', function (e) {
+                if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
+                var t = e.target;
+                if (!t || !t.closest || !t.closest('.main-container')) return;
+                if (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA') return;
+                window.__touchPlantInputEdit(t);
+            }, false);
+            document.addEventListener('change', function (e) {
+                if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
+                var t = e.target;
+                if (!t || !t.closest || !t.closest('.main-container')) return;
+                if (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA') return;
+                if (t.getAttribute('data-sh-had-save-onchange') === '1') {
+                    window.__touchPlantInputEdit(t);
+                    window.__scheduleAndroidSaveData(true);
+                }
+            }, false);
+            var mc = document.querySelector('.main-container');
+            if (mc && !window.__androidPenInputObserver) {
+                window.__androidPenInputObserver = new MutationObserver(function (mutations) {
+                    mutations.forEach(function (m) {
+                        m.addedNodes.forEach(function (node) {
+                            if (!node || node.nodeType !== 1) return;
+                            if (node.matches && (node.matches('input') || node.matches('textarea'))) {
+                                window.__patchOneAndroidPenInput(node);
+                            } else if (node.querySelectorAll) {
+                                node.querySelectorAll('input, textarea').forEach(window.__patchOneAndroidPenInput);
+                            }
+                        });
+                    });
+                });
+                window.__androidPenInputObserver.observe(mc, { childList: true, subtree: true });
+            }
         };
         window.__deferAndroidFieldChrome = function (input, fn) {
             if (!input || typeof fn !== 'function') return;
@@ -960,12 +1055,13 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!input || !input.id) return false;
             if (document.activeElement === input) return false;
             if (window.__plantInputLastEditMs[input.id] &&
-                Date.now() - window.__plantInputLastEditMs[input.id] < 12000) return false;
+                Date.now() - window.__plantInputLastEditMs[input.id] < 90000) return false;
             if (window.__shouldSkipInputForPlantPayload && window.__shouldSkipInputForPlantPayload(input)) return false;
             return true;
         };
 
         window.__initTabletLabelPointerPress = function () {
+            if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) return;
             if (!window.isServiceHubTablet || !window.isServiceHubTablet()) return;
             if (window.__tabletLabelPointerReady) return;
             window.__tabletLabelPointerReady = true;
@@ -1002,40 +1098,20 @@ window.colorPreviewNumber = function(tankName, value) {
 
         window.__initTabletStylusWritingSupport = function () {
             if (!window.isServiceHubTablet || !window.isServiceHubTablet()) return;
+            if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) {
+                if (typeof window.__patchAndroidTabletPenInputs === 'function') {
+                    window.__patchAndroidTabletPenInputs();
+                }
+                if (typeof window.__initAndroidTabletNoSuggestions === 'function') {
+                    window.__applyAndroidTabletNoSuggestions(document);
+                }
+                return;
+            }
             if (typeof window.__initAndroidTabletNoSuggestions === 'function') {
                 window.__initAndroidTabletNoSuggestions();
             }
             if (typeof window.__initTabletLabelPointerPress === 'function') {
                 window.__initTabletLabelPointerPress();
-            }
-            if (window.__tabletPenFocusReady) return;
-            window.__tabletPenFocusReady = true;
-            document.addEventListener('input', function (e) {
-                var t = e.target;
-                if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) return;
-                if (!t.closest || !t.closest('.main-container')) return;
-                if (t.closest('#settings-modal') || t.closest('#management-modal') || t.closest('#shift-modal')) return;
-                window.__touchStylusPenActivity();
-                window.__touchPlantInputEdit(t);
-            });
-            document.addEventListener('focusout', function (e) {
-                var t = e.target;
-                if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) return;
-                if (!t.closest || !t.closest('.main-container')) return;
-                window.__scheduleStylusPenLift(400);
-            });
-            if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) {
-                requestAnimationFrame(function () {
-                    window.__applyAndroidTabletNoSuggestions(document);
-                });
-                setInterval(function () {
-                    var ae = document.activeElement;
-                    if (!ae || (ae.tagName !== 'INPUT' && ae.tagName !== 'TEXTAREA')) return;
-                    if (!ae.closest || !ae.closest('.main-container')) return;
-                    if (typeof window.__releaseStylusInteractionLocks === 'function') {
-                        window.__releaseStylusInteractionLocks();
-                    }
-                }, 2500);
             }
         };
 
@@ -1754,13 +1830,14 @@ window.colorPreviewNumber = function(tankName, value) {
             if (typeof window.__isPlantSyncPaused === 'function' && window.__isPlantSyncPaused()) {
                 window.__queuedRemotePlantPayload = d;
                 clearTimeout(window.__queuedRemotePlantTimer);
+                var queueMs = (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) ? 45000 : 1500;
                 window.__queuedRemotePlantTimer = setTimeout(function () {
                     if (window.__queuedRemotePlantPayload && !(window.__isPlantSyncPaused && window.__isPlantSyncPaused())) {
                         var pending = window.__queuedRemotePlantPayload;
                         window.__queuedRemotePlantPayload = null;
                         __applyRemotePlantPayload(pending, { force: true });
                     }
-                }, 1500);
+                }, queueMs);
                 return;
             }
             if (!opts.force && typeof window.__deferHeavyUiWork === 'function' &&
@@ -2592,14 +2669,20 @@ window.colorPreviewNumber = function(tankName, value) {
             if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
         };
 
-        window.saveData = async function (skipHistory) {
+        window.__saveDataImpl = async function (skipHistory) {
             const skipHist = skipHistory === true;
             const doSave = async function () {
 
-            if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
+            if (typeof window.flushPlantBackupNow === 'function') {
+                if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet() || window.__androidSaveForce) {
+                    window.flushPlantBackupNow();
+                }
+            }
 
             if (user && user.uid && db && typeof window.schedulePublicDigitalSnapshotSync === 'function') {
-                window.schedulePublicDigitalSnapshotSync();
+                if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet() || window.__androidSaveForce) {
+                    window.schedulePublicDigitalSnapshotSync();
+                }
             }
 
             if (!user || !user.uid || !db) {
@@ -2789,8 +2872,21 @@ window.colorPreviewNumber = function(tankName, value) {
             __plantSaveInFlight = p;
             return p.finally(function () {
                 __plantSaveInFlight = null;
-                if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
+                if ((!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) && typeof window.flushPlantBackupNow === 'function') {
+                    window.flushPlantBackupNow();
+                }
             });
+        };
+
+        window.saveData = async function (skipHistory) {
+            if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) {
+                if (window.__androidSaveForce) {
+                    return window.__saveDataImpl(skipHistory);
+                }
+                window.__scheduleAndroidSaveData(skipHistory);
+                return Promise.resolve();
+            }
+            return window.__saveDataImpl(skipHistory);
         };
 
         // NUOVO SISTEMA DI SYNC AUTOMATICO BACKUP
@@ -4604,6 +4700,10 @@ window.updateStoricoButton = async function() {
         };
 
         document.addEventListener('DOMContentLoaded', () => {
+            if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) {
+                document.body.classList.add('sh-device-android-tablet');
+                if (typeof window.__patchAndroidTabletPenInputs === 'function') window.__patchAndroidTabletPenInputs();
+            }
             const buildTagEl = document.getElementById('app-build-tag');
             if (buildTagEl && window.SERVICEHUB_BUILD) {
                 buildTagEl.textContent = 'Build ' + window.SERVICEHUB_BUILD;
@@ -4704,7 +4804,12 @@ window.updateStoricoButton = async function() {
                 if (typeof window.flushRapportiniPushToCloudNow === 'function') {
                     void window.flushRapportiniPushToCloudNow();
                 }
-                if (typeof window.saveData === 'function') void window.saveData(true);
+                if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) {
+                    clearTimeout(window.__androidSaveDataTimer);
+                    window.__androidSaveForce = true;
+                    if (typeof window.__saveDataImpl === 'function') void window.__saveDataImpl(true);
+                    window.__androidSaveForce = false;
+                } else if (typeof window.saveData === 'function') void window.saveData(true);
             });
             document.addEventListener('visibilitychange', function () {
                 if (document.visibilityState === 'hidden') {
@@ -4712,6 +4817,12 @@ window.updateStoricoButton = async function() {
                     if (__plantPersistTimer) {
                         clearTimeout(__plantPersistTimer);
                         __plantPersistTimer = null;
+                    }
+                    if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) {
+                        clearTimeout(window.__androidSaveDataTimer);
+                        window.__androidSaveForce = true;
+                        if (typeof window.__saveDataImpl === 'function') void window.__saveDataImpl(true);
+                        window.__androidSaveForce = false;
                     }
                     if (typeof window.__snapshotStabilePlantLocalOnly === 'function') {
                         window.__snapshotStabilePlantLocalOnly();
@@ -4723,7 +4834,7 @@ window.updateStoricoButton = async function() {
                     if (typeof window.flushRapportiniPushToCloudNow === 'function') {
                         void window.flushRapportiniPushToCloudNow();
                     }
-                    if (typeof window.saveData === 'function') {
+                    if (!(window.__shIsAndroidTablet && window.__shIsAndroidTablet()) && typeof window.saveData === 'function') {
                         void window.saveData(true);
                     }
                 } else if (document.visibilityState === 'visible') {
@@ -4762,15 +4873,7 @@ window.updateStoricoButton = async function() {
                     if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) return;
                     if (!t.closest || !t.closest('.main-container')) return;
                     if (t.closest('#settings-modal') || t.closest('#management-modal') || t.closest('#shift-modal')) return;
-                    if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) {
-                        setTimeout(function () {
-                            var ae = document.activeElement;
-                            if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA') &&
-                                ae.closest && ae.closest('.main-container')) return;
-                            if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
-                        }, 120);
-                        return;
-                    }
+                    if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) return;
                     if (!__plantPersistTimer) return;
                     clearTimeout(__plantPersistTimer);
                     __plantPersistTimer = null;
@@ -4787,33 +4890,7 @@ window.updateStoricoButton = async function() {
                     if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') return;
                     if (!el.closest || !el.closest('.main-container')) return;
                     if (el.closest('#settings-modal') || el.closest('#management-modal') || el.closest('#shift-modal')) return;
-                    if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) {
-                        var field = el;
-                        setTimeout(function () {
-                            if (document.activeElement === field) return;
-                            if (typeof window.applyAlarmLevelFillToField === 'function') {
-                                window.applyAlarmLevelFillToField(field, true);
-                            }
-                            if (typeof window.colorTankInput === 'function') {
-                                window.colorTankInput(field);
-                            }
-                            if (['ph', 'cloro', 'reintegro'].includes(field.id) && typeof window.colorScamInputs === 'function') {
-                                window.colorScamInputs(true);
-                            }
-                            if (window.TANK_LEVEL_ARROW_INPUT_IDS && window.TANK_LEVEL_ARROW_INPUT_IDS.indexOf(field.id) !== -1 &&
-                                typeof window.updateTankLevelArrowForInput === 'function') {
-                                window.updateTankLevelArrowForInput(field);
-                            }
-                            if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
-                            if (field.id && field.value) {
-                                clearTimeout(window.__androidTrendTimer);
-                                window.__androidTrendTimer = setTimeout(function () {
-                                    if (typeof window.checkInstantTrend === 'function') window.checkInstantTrend();
-                                }, 2500);
-                            }
-                        }, 80);
-                        return;
-                    }
+                    if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) return;
                     if (typeof window.applyAlarmLevelFillToField === 'function') {
                         window.applyAlarmLevelFillToField(el, true);
                     }
@@ -4868,7 +4945,9 @@ window.updateStoricoButton = async function() {
             
             // Applica colorazione input serbatoi
             setTimeout(() => {
-                window.colorAllTankInputs();
+                if (!(window.__shIsAndroidTablet && window.__shIsAndroidTablet())) {
+                    window.colorAllTankInputs();
+                }
                 
                 // Aggiungi event listener per input change
                 const tankInputIds = [
@@ -6347,7 +6426,7 @@ window.updateStoricoButton = async function() {
                 const el = document.getElementById(id);
                 if (!el) continue;
                 if (el.tagName === 'INPUT') {
-                    if (!window.__shouldApplyPlantValueToInput(el)) return;
+                    if (!window.__shouldApplyPlantValueToInput(el)) continue;
                     el.value = strVal;
                     if (id === 'osmosi' && typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(el);
                 }
@@ -6357,18 +6436,30 @@ window.updateStoricoButton = async function() {
                     if (val.style) el.setAttribute('style', val.style);
                 }
             }
+            var androidDeferHeavy = window.__shIsAndroidTablet && window.__shIsAndroidTablet() &&
+                typeof window.__isPlantSyncPaused === 'function' && window.__isPlantSyncPaused();
+            if (androidDeferHeavy) return;
+            if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) {
+                setTimeout(function () {
+                    if (window.__isPlantSyncPaused && window.__isPlantSyncPaused()) return;
+                    updateBoilerInputs();
+                    if (window.colorScamInputs) window.colorScamInputs();
+                    if (window.colorAllTankInputs) window.colorAllTankInputs();
+                    var isArchivePayload = data && (data.archiveTime || (typeof data.createdAt === 'number' && data.time));
+                    if (isArchivePayload && window.setTankLevelBaselineFromSnapshotData) {
+                        window.setTankLevelBaselineFromSnapshotData(data);
+                    }
+                    if (window.refreshAllTankLevelArrows) window.refreshAllTankLevelArrows();
+                }, 2000);
+                return;
+            }
             updateBoilerInputs(); 
-            
-            // Applica i colori agli input SCAM dopo aver caricato i dati
             if (window.colorScamInputs) {
                 window.colorScamInputs();
             }
-            
-            // Applica i colori agli input serbatoi dopo aver caricato i dati
             if (window.colorAllTankInputs) {
                 window.colorAllTankInputs();
             }
-
             var isArchivePayload = data && (data.archiveTime || (typeof data.createdAt === 'number' && data.time));
             if (isArchivePayload && window.setTankLevelBaselineFromSnapshotData) {
                 window.setTankLevelBaselineFromSnapshotData(data);
@@ -10590,6 +10681,10 @@ window.updateStoricoButton = async function() {
         })();
 
         window.updateBoilerInputs = function() {
+            if (window.__shIsAndroidTablet && window.__shIsAndroidTablet() &&
+                typeof window.__isPlantSyncPaused === 'function' && window.__isPlantSyncPaused()) {
+                return;
+            }
             // Funzione helper per trovare elementi anche nei moduli nascosti
             const findElement = (elementId) => {
                 let element = document.getElementById(elementId);
@@ -10690,8 +10785,8 @@ window.updateStoricoButton = async function() {
             document.body.classList.toggle('sh-device-tablet', !!isTablet);
             document.body.classList.toggle('sh-device-android-tablet', !!(window.__shIsAndroidTablet && window.__shIsAndroidTablet()));
             if (typeof window.syncRobotMagnetPlacement === 'function') window.syncRobotMagnetPlacement();
-            if (window.__shIsAndroidTablet && window.__shIsAndroidTablet() && typeof window.__initAndroidTabletNoSuggestions === 'function') {
-                window.__initAndroidTabletNoSuggestions();
+            if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) {
+                if (typeof window.__patchAndroidTabletPenInputs === 'function') window.__patchAndroidTabletPenInputs();
             }
             if (isTablet && typeof window.__initTabletStylusWritingSupport === 'function') {
                 window.__initTabletStylusWritingSupport();
@@ -16803,6 +16898,13 @@ window.convertToHtml = async () => {
     </style>
 </head>
 <body class="splash-active">
+<script>
+(function () {
+    if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) {
+        document.body.classList.add('sh-device-android-tablet');
+    }
+})();
+</script>
 
     <!-- ============================================================ -->
     <!-- SPLASH SCREEN: appare all'avvio, click sull'icona per entrare -->

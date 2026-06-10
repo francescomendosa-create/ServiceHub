@@ -600,7 +600,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.10-tablet-spen-fix';
+        window.SERVICEHUB_BUILD = '2026.06.10-tablet-spen-palm';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
         window.SERVICEHUB_REMOTE_ORIGIN = 'https://servicehub-18309.web.app';
@@ -779,6 +779,80 @@ window.colorPreviewNumber = function(tankName, value) {
         /** PC desktop + tablet: tutte le schede sempre aperte. Smartphone: navigazione a una scheda. */
         window.shouldKeepAllSectionsExpanded = function () {
             return !window.isServiceHubPhone();
+        };
+
+        /** Tablet: S Pen vs dito/palmo — evita invio schede e tocchi accidentali mentre si scrive. */
+        window.__lastPointerWasPen = false;
+        window.__stylusSessionTimer = null;
+        window.__isStylusEvent = function (e) {
+            if (!e) return false;
+            if (e.pointerType === 'pen') return true;
+            var t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
+            return !!(t && t.touchType === 'stylus');
+        };
+        window.__isFingerTouchEvent = function (e) {
+            if (!e) return false;
+            if (e.pointerType === 'pen' || e.pointerType === 'mouse') return false;
+            if (e.pointerType === 'touch') return true;
+            var t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
+            if (!t) return false;
+            return t.touchType !== 'stylus';
+        };
+        window.__armTabletStylusSession = function () {
+            if (!window.isServiceHubTablet || !window.isServiceHubTablet()) return;
+            document.body.classList.add('sh-stylus-session');
+            clearTimeout(window.__stylusSessionTimer);
+            window.__stylusSessionTimer = setTimeout(function () {
+                window.__disarmTabletStylusSession();
+            }, 120000);
+        };
+        window.__disarmTabletStylusSession = function () {
+            document.body.classList.remove('sh-stylus-session');
+            clearTimeout(window.__stylusSessionTimer);
+            window.__stylusSessionTimer = null;
+        };
+        window.__touchTabletStylusSession = function () {
+            window.__armTabletStylusSession();
+        };
+        window.__tabletPalmAllowedTarget = function (el) {
+            if (!el || !el.closest) return false;
+            if (el.closest('.fixed-management-container, .main-header, #management-modal.active, #settings-modal.active, #numpad-modal.active, #shift-modal.active, #tank-status-modal.active')) {
+                return true;
+            }
+            var focused = document.activeElement;
+            if (focused && (focused.tagName === 'INPUT' || focused.tagName === 'TEXTAREA')) {
+                if (el === focused || (focused.contains && focused.contains(el))) return true;
+                var row = focused.closest('.amb-row, tr, .bd-input-row');
+                if (row && row.contains(el)) return true;
+            }
+            return false;
+        };
+        window.__blockTabletFingerDuringStylus = function (e) {
+            if (!window.isServiceHubTablet || !window.isServiceHubTablet()) return false;
+            if (!document.body.classList.contains('sh-stylus-session')) return false;
+            if (window.__isStylusEvent(e)) {
+                window.__touchTabletStylusSession();
+                return false;
+            }
+            if (e.touches && e.touches.length > 1) return true;
+            if (!window.__isFingerTouchEvent(e)) return false;
+            return !window.__tabletPalmAllowedTarget(e.target);
+        };
+        window.__initTabletStylusPalmGuard = function () {
+            if (!window.isServiceHubTablet || !window.isServiceHubTablet()) return;
+            if (window.__tabletStylusPalmGuardReady) return;
+            window.__tabletStylusPalmGuardReady = true;
+            document.addEventListener('pointerdown', function (e) {
+                window.__lastPointerWasPen = e.pointerType === 'pen';
+                if (e.pointerType === 'pen') window.__touchTabletStylusSession();
+            }, true);
+            ['touchstart', 'pointerdown'].forEach(function (evName) {
+                document.addEventListener(evName, function (e) {
+                    if (!window.__blockTabletFingerDuringStylus(e)) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                }, { capture: true, passive: false });
+            });
         };
 
         window.ALL_EXPAND_SECTION_IDS = [
@@ -4503,12 +4577,29 @@ window.updateStoricoButton = async function() {
                 if (typeof window.__releaseStylusInteractionLocks === 'function') {
                     window.__releaseStylusInteractionLocks();
                 }
+                if (typeof window.__armTabletStylusSession === 'function') {
+                    window.__armTabletStylusSession();
+                }
+            }, true);
+            document.addEventListener('focusout', function () {
+                if (!window.isServiceHubTablet || !window.isServiceHubTablet()) return;
+                setTimeout(function () {
+                    const a = document.activeElement;
+                    if (!a || (a.tagName !== 'INPUT' && a.tagName !== 'TEXTAREA')) {
+                        if (typeof window.__disarmTabletStylusSession === 'function') {
+                            window.__disarmTabletStylusSession();
+                        }
+                    }
+                }, 250);
             }, true);
             document.addEventListener('touchcancel', function () {
                 if (typeof window.__releaseStylusInteractionLocks === 'function') {
                     window.__releaseStylusInteractionLocks();
                 }
             }, { passive: true });
+            if (typeof window.__initTabletStylusPalmGuard === 'function') {
+                window.__initTabletStylusPalmGuard();
+            }
 
             // Rapportini: init solo da Firestore (syncWithCloud), non da timeout locale.
 
@@ -4663,6 +4754,9 @@ window.updateStoricoButton = async function() {
             
             document.body.addEventListener('click', (e) => {
                 if (globalInteractionLock) return;
+                if (window.isServiceHubTablet && window.isServiceHubTablet() && document.body.classList.contains('sh-stylus-session') && !window.__lastPointerWasPen) {
+                    return;
+                }
                 const target = e.target;
                 if (target.classList.contains('cell-label-main') || target.classList.contains('bd-label') || (target.classList.contains('amb-label') && !target.innerText.includes("WWT") && !target.innerText.includes("OSMOSI") && !target.querySelector('.vwt-label-dynamic') && !target.querySelector('.osmosi-label-dynamic'))) { window.openNumpad(target); }
             });
@@ -9522,9 +9616,16 @@ window.updateStoricoButton = async function() {
                 e.stopPropagation();
                 return;
             }
-            const touch = e.touches ? e.touches[0] : e;
-            if (touch && (touch.touchType === 'stylus' || touch.pointerType === 'pen')) return;
             const isTabletLayout = window.shouldKeepAllSectionsExpanded && window.shouldKeepAllSectionsExpanded();
+            if (isTabletLayout) {
+                if (!window.__isStylusEvent(e)) {
+                    if (e.preventDefault) e.preventDefault();
+                    if (e.stopPropagation) e.stopPropagation();
+                    return;
+                }
+                window.__touchTabletStylusSession();
+            }
+            const touch = e.touches ? e.touches[0] : e;
             
             startX = touch.clientX;
             startY = touch.clientY;
@@ -10356,6 +10457,9 @@ window.updateStoricoButton = async function() {
             if (tag) tag.innerText = deviceType;
             document.body.classList.toggle('sh-device-phone', !!(window.isServiceHubPhone && window.isServiceHubPhone()));
             document.body.classList.toggle('sh-device-tablet', !!isTablet);
+            if (isTablet && typeof window.__initTabletStylusPalmGuard === 'function') {
+                window.__initTabletStylusPalmGuard();
+            }
             if (typeof window.syncRobotMagnetPlacement === 'function') window.syncRobotMagnetPlacement();
 
             if (window.shouldKeepAllSectionsExpanded && window.shouldKeepAllSectionsExpanded()) {
@@ -15280,6 +15384,22 @@ window.convertToHtml = async () => {
         body.sh-device-tablet .main-container textarea {
             -webkit-user-select: text !important;
             user-select: text !important;
+        }
+        /* Sessione S Pen: palmo/dito non attivano etichette, stati, numpad */
+        body.sh-device-tablet.sh-stylus-session .main-container .v-label-container,
+        body.sh-device-tablet.sh-stylus-session .main-container .tank-status-single,
+        body.sh-device-tablet.sh-stylus-session .main-container .amb-label,
+        body.sh-device-tablet.sh-stylus-session .main-container .cell-label-main,
+        body.sh-device-tablet.sh-stylus-session .main-container .bd-label,
+        body.sh-device-tablet.sh-stylus-session .main-container .status-cell-btn,
+        body.sh-device-tablet.sh-stylus-session .main-container .nott-filtra-tendina-bar,
+        body.sh-device-tablet.sh-stylus-session .main-container .nott-stocc-tendina-bar,
+        body.sh-device-tablet.sh-stylus-session .main-container .nott-chem-tendina-bar {
+            pointer-events: none !important;
+        }
+        body.sh-device-tablet.sh-stylus-session .main-container input:focus,
+        body.sh-device-tablet.sh-stylus-session .main-container textarea:focus {
+            pointer-events: auto !important;
         }
         body.sh-instant-layout .col-section { transition: none !important; }
         .v-label-text { transform: rotate(-90deg); white-space: nowrap; font-weight: 800; font-size: 11px; color: white; text-transform: uppercase; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }

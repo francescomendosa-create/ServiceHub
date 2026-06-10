@@ -602,7 +602,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.10-android-spen-writefix';
+        window.SERVICEHUB_BUILD = '2026.06.10-android-spen-penpath';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
         window.SERVICEHUB_REMOTE_ORIGIN = 'https://servicehub-18309.web.app';
@@ -938,12 +938,29 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__touchPlantInputEdit = function (input) {
             if (!input || !input.id) return;
             window.__plantInputLastEditMs[input.id] = Date.now();
+            window.__plantLastAnyEditMs = Date.now();
+        };
+        window.__isPlantSyncPaused = function () {
+            if (typeof window.__isUserTypingInPlantField === 'function' && window.__isUserTypingInPlantField()) return true;
+            var now = Date.now();
+            if (window.__plantLastAnyEditMs && now - window.__plantLastAnyEditMs < 12000) return true;
+            if (window.__lastLocalPlantSaveMs && now - window.__lastLocalPlantSaveMs < 5000) return true;
+            return false;
+        };
+        window.__deferAndroidFieldChrome = function (input, fn) {
+            if (!input || typeof fn !== 'function') return;
+            if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) {
+                fn();
+                return;
+            }
+            clearTimeout(input.__shDeferChromeTimer);
+            input.__shDeferChromeTimer = setTimeout(fn, 700);
         };
         window.__shouldApplyPlantValueToInput = function (input) {
             if (!input || !input.id) return false;
             if (document.activeElement === input) return false;
             if (window.__plantInputLastEditMs[input.id] &&
-                Date.now() - window.__plantInputLastEditMs[input.id] < 3500) return false;
+                Date.now() - window.__plantInputLastEditMs[input.id] < 12000) return false;
             if (window.__shouldSkipInputForPlantPayload && window.__shouldSkipInputForPlantPayload(input)) return false;
             return true;
         };
@@ -993,23 +1010,32 @@ window.colorPreviewNumber = function(tankName, value) {
             }
             if (window.__tabletPenFocusReady) return;
             window.__tabletPenFocusReady = true;
-            document.addEventListener('focusin', function (e) {
+            document.addEventListener('input', function (e) {
                 var t = e.target;
                 if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) return;
                 if (!t.closest || !t.closest('.main-container')) return;
                 if (t.closest('#settings-modal') || t.closest('#management-modal') || t.closest('#shift-modal')) return;
                 window.__touchStylusPenActivity();
+                window.__touchPlantInputEdit(t);
             });
             document.addEventListener('focusout', function (e) {
                 var t = e.target;
                 if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) return;
                 if (!t.closest || !t.closest('.main-container')) return;
-                window.__scheduleStylusPenLift(300);
+                window.__scheduleStylusPenLift(400);
             });
             if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) {
                 requestAnimationFrame(function () {
                     window.__applyAndroidTabletNoSuggestions(document);
                 });
+                setInterval(function () {
+                    var ae = document.activeElement;
+                    if (!ae || (ae.tagName !== 'INPUT' && ae.tagName !== 'TEXTAREA')) return;
+                    if (!ae.closest || !ae.closest('.main-container')) return;
+                    if (typeof window.__releaseStylusInteractionLocks === 'function') {
+                        window.__releaseStylusInteractionLocks();
+                    }
+                }, 2500);
             }
         };
 
@@ -1725,6 +1751,18 @@ window.colorPreviewNumber = function(tankName, value) {
         const __applyRemotePlantPayload = function (d, opts) {
             opts = opts || {};
             if (!d || typeof d !== 'object') return;
+            if (typeof window.__isPlantSyncPaused === 'function' && window.__isPlantSyncPaused()) {
+                window.__queuedRemotePlantPayload = d;
+                clearTimeout(window.__queuedRemotePlantTimer);
+                window.__queuedRemotePlantTimer = setTimeout(function () {
+                    if (window.__queuedRemotePlantPayload && !(window.__isPlantSyncPaused && window.__isPlantSyncPaused())) {
+                        var pending = window.__queuedRemotePlantPayload;
+                        window.__queuedRemotePlantPayload = null;
+                        __applyRemotePlantPayload(pending, { force: true });
+                    }
+                }, 1500);
+                return;
+            }
             if (!opts.force && typeof window.__deferHeavyUiWork === 'function' &&
                 window.__deferHeavyUiWork(function () { __applyRemotePlantPayload(d, Object.assign({}, opts, { force: true })); })) {
                 return;
@@ -1742,12 +1780,20 @@ window.colorPreviewNumber = function(tankName, value) {
                 __writePlantLocalBackup(d);
             }
             cacheCloudPlantPayload(d);
-            if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
-            if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
-            if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
-            if (typeof window.syncFiltraPanelForActiveRapportino === 'function') window.syncFiltraPanelForActiveRapportino();
-            if (typeof window.syncNotturnoStoccaggioPanel === 'function') window.syncNotturnoStoccaggioPanel();
-            if (typeof window.refreshNotturnoFiltraTotals === 'function') window.refreshNotturnoFiltraTotals();
+            var runHeavyPlantUi = function () {
+                if (typeof window.__isPlantSyncPaused === 'function' && window.__isPlantSyncPaused()) return;
+                if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
+                if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
+                if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
+                if (typeof window.syncFiltraPanelForActiveRapportino === 'function') window.syncFiltraPanelForActiveRapportino();
+                if (typeof window.syncNotturnoStoccaggioPanel === 'function') window.syncNotturnoStoccaggioPanel();
+                if (typeof window.refreshNotturnoFiltraTotals === 'function') window.refreshNotturnoFiltraTotals();
+            };
+            if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) {
+                setTimeout(runHeavyPlantUi, 800);
+            } else {
+                runHeavyPlantUi();
+            }
             if (window.__pendingActiveRapportinoItem) {
                 const pendingItem = window.__pendingActiveRapportinoItem;
                 window.__pendingActiveRapportinoItem = null;
@@ -1758,12 +1804,20 @@ window.colorPreviewNumber = function(tankName, value) {
         };
 
         window.flushPlantBackupNow = function () {
+            if (typeof window.__isPlantSyncPaused === 'function' && window.__isPlantSyncPaused()) return null;
             if (typeof window.buildPlantPayloadFromDOM !== 'function') return null;
-            const data = window.buildPlantPayloadFromDOM({ bumpRevision: false });
-            data.lastUpdate = new Date().toISOString();
-            __writePlantLocalBackup(data);
-            window.__lastLocalPlantSaveMs = Date.now();
-            return data;
+            var run = function () {
+                const data = window.buildPlantPayloadFromDOM({ bumpRevision: false });
+                data.lastUpdate = new Date().toISOString();
+                __writePlantLocalBackup(data);
+                window.__lastLocalPlantSaveMs = Date.now();
+            };
+            if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) {
+                setTimeout(run, 0);
+                return null;
+            }
+            run();
+            return window.__readPlantBackupLocal ? window.__readPlantBackupLocal() : null;
         };
 
         let __plantSaveInFlight = null;
@@ -1958,8 +2012,7 @@ window.colorPreviewNumber = function(tankName, value) {
                     (snapshot) => {
                         if (window.__firestoreQuotaBlocked) return;
                         if (!snapshot.exists()) return;
-                        if (typeof window.__isUserTypingInPlantField === 'function' && window.__isUserTypingInPlantField()) return;
-                        if (window.__lastLocalPlantSaveMs && Date.now() - window.__lastLocalPlantSaveMs < 2000) return;
+                        if (typeof window.__isPlantSyncPaused === 'function' && window.__isPlantSyncPaused()) return;
                         const d = snapshot.data();
                         const md = snapshot.metadata;
                         if (md && md.hasPendingWrites) return;
@@ -4625,15 +4678,14 @@ window.updateStoricoButton = async function() {
                     if (!t || !t.closest || !t.closest('.main-container')) return;
                     if (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA') return;
                     if (t.closest('#settings-modal') || t.closest('#management-modal') || t.closest('#shift-modal')) return;
-                    if (typeof window.__touchPlantInputEdit === 'function') window.__touchPlantInputEdit(t);
+                    if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) return;
                     if (__plantPersistTimer) clearTimeout(__plantPersistTimer);
-                    var persistDelay = (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) ? 1500 : 400;
                     __plantPersistTimer = setTimeout(function () {
                         __plantPersistTimer = null;
                         if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
                         if (window.isServiceHubTablet && window.isServiceHubTablet()) return;
                         if (typeof window.saveData === 'function') void window.saveData(true);
-                    }, persistDelay);
+                    }, 400);
                 },
                 false
             );
@@ -4710,12 +4762,21 @@ window.updateStoricoButton = async function() {
                     if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) return;
                     if (!t.closest || !t.closest('.main-container')) return;
                     if (t.closest('#settings-modal') || t.closest('#management-modal') || t.closest('#shift-modal')) return;
+                    if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) {
+                        setTimeout(function () {
+                            var ae = document.activeElement;
+                            if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA') &&
+                                ae.closest && ae.closest('.main-container')) return;
+                            if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
+                        }, 120);
+                        return;
+                    }
                     if (!__plantPersistTimer) return;
                     clearTimeout(__plantPersistTimer);
                     __plantPersistTimer = null;
                     if (typeof window.saveData === 'function') void window.saveData(true);
                 },
-                true
+                false
             );
 
             document.addEventListener(
@@ -4726,6 +4787,33 @@ window.updateStoricoButton = async function() {
                     if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') return;
                     if (!el.closest || !el.closest('.main-container')) return;
                     if (el.closest('#settings-modal') || el.closest('#management-modal') || el.closest('#shift-modal')) return;
+                    if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) {
+                        var field = el;
+                        setTimeout(function () {
+                            if (document.activeElement === field) return;
+                            if (typeof window.applyAlarmLevelFillToField === 'function') {
+                                window.applyAlarmLevelFillToField(field, true);
+                            }
+                            if (typeof window.colorTankInput === 'function') {
+                                window.colorTankInput(field);
+                            }
+                            if (['ph', 'cloro', 'reintegro'].includes(field.id) && typeof window.colorScamInputs === 'function') {
+                                window.colorScamInputs(true);
+                            }
+                            if (window.TANK_LEVEL_ARROW_INPUT_IDS && window.TANK_LEVEL_ARROW_INPUT_IDS.indexOf(field.id) !== -1 &&
+                                typeof window.updateTankLevelArrowForInput === 'function') {
+                                window.updateTankLevelArrowForInput(field);
+                            }
+                            if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
+                            if (field.id && field.value) {
+                                clearTimeout(window.__androidTrendTimer);
+                                window.__androidTrendTimer = setTimeout(function () {
+                                    if (typeof window.checkInstantTrend === 'function') window.checkInstantTrend();
+                                }, 2500);
+                            }
+                        }, 80);
+                        return;
+                    }
                     if (typeof window.applyAlarmLevelFillToField === 'function') {
                         window.applyAlarmLevelFillToField(el, true);
                     }
@@ -4735,14 +4823,8 @@ window.updateStoricoButton = async function() {
                     if (['ph', 'cloro', 'reintegro'].includes(el.id) && typeof window.colorScamInputs === 'function') {
                         window.colorScamInputs(true);
                     }
-                    if (window.__shIsAndroidTablet && window.__shIsAndroidTablet() && el.id && el.value) {
-                        clearTimeout(window.__androidTrendTimer);
-                        window.__androidTrendTimer = setTimeout(function () {
-                            if (typeof window.checkInstantTrend === 'function') window.checkInstantTrend();
-                        }, 1200);
-                    }
                 },
-                true
+                false
             );
 
             updateDeviceInfo(); 
@@ -4802,78 +4884,67 @@ window.updateStoricoButton = async function() {
                     'val-az-n2', 'val-az-pon', 'val-az-102a', 'val-az-102b'
                 ];
                 
-                tankInputIds.forEach(inputId => {
-                    const input = document.getElementById(inputId);
-                    if (input) {
-                        // Aggiungi event listener per input e change
-                        input.addEventListener('input', function() {
-                            if (!String(this.value == null ? '' : this.value).trim()) {
-                                this.style.backgroundColor = '';
-                                this.style.color = '';
-                                this.style.fontWeight = '';
-                                this.classList.remove('tank-warning', 'tank-critical', 'tank-normal');
-                            } else {
+                if (!(window.__shIsAndroidTablet && window.__shIsAndroidTablet())) {
+                    tankInputIds.forEach(inputId => {
+                        const input = document.getElementById(inputId);
+                        if (input) {
+                            input.addEventListener('input', function() {
+                                if (!String(this.value == null ? '' : this.value).trim()) {
+                                    this.style.backgroundColor = '';
+                                    this.style.color = '';
+                                    this.style.fontWeight = '';
+                                    this.classList.remove('tank-warning', 'tank-critical', 'tank-normal');
+                                } else {
+                                    window.colorTankInput(this);
+                                }
+                            });
+                            input.addEventListener('change', function() {
                                 window.colorTankInput(this);
-                            }
-                        });
-                        
-                        input.addEventListener('change', function() {
+                            });
+                        }
+                    });
+
+                    const allTankInputs = document.querySelectorAll('input[type="tel"]');
+                    allTankInputs.forEach(input => {
+                        if (input && input.id && !tankInputIds.includes(input.id) && !['ph', 'cloro', 'reintegro'].includes(input.id)) {
+                            input.removeEventListener('input', handleTankInput);
+                            input.removeEventListener('change', handleTankInput);
+                            input.addEventListener('input', handleTankInput);
+                            input.addEventListener('change', handleTankInput);
+                        }
+                    });
+
+                    function handleTankInput() {
+                        if (!String(this.value == null ? '' : this.value).trim()) {
+                            this.style.backgroundColor = '';
+                            this.style.color = '';
+                            this.style.fontWeight = '';
+                            this.classList.remove('tank-warning', 'tank-critical', 'tank-normal');
+                        } else {
                             window.colorTankInput(this);
-                        });
+                        }
                     }
-                });
 
-                // ✅ AGGIUNGI EVENT LISTENER PER TUTTI GLI INPUT TK (colorazione istantanea)
-                const allTankInputs = document.querySelectorAll('input[type="tel"]');
-                allTankInputs.forEach(input => {
-                    if (input && input.id && !tankInputIds.includes(input.id) && !['ph', 'cloro', 'reintegro'].includes(input.id)) {
-                        // Rimuovi event listener esistenti per evitare duplicazioni
-                        input.removeEventListener('input', handleTankInput);
-                        input.removeEventListener('change', handleTankInput);
-                        
-                        // Aggiungi event listener per input istantaneo
-                        input.addEventListener('input', handleTankInput);
-                        
-                        // Aggiungi event listener per change
-                        input.addEventListener('change', handleTankInput);
-                    }
-                });
-
-                // Funzione handler per evitare duplicazioni
-                function handleTankInput() {
-                    if (!String(this.value == null ? '' : this.value).trim()) {
-                        this.style.backgroundColor = '';
-                        this.style.color = '';
-                        this.style.fontWeight = '';
-                        this.classList.remove('tank-warning', 'tank-critical', 'tank-normal');
-                    } else {
-                        window.colorTankInput(this);
-                    }
-                }
-
-                // ✅ AGGIUNGI EVENT LISTENER PER INPUT SCAM (ph, cloro, reintegro)
-                const scamInputIds = ['ph', 'cloro', 'reintegro'];
-                scamInputIds.forEach(inputId => {
-                    const input = document.getElementById(inputId);
-                    if (input) {
-                        // Aggiungi event listener per input istantaneo
-                        input.addEventListener('input', function() {
-                            if (!this.value) {
-                                this.style.backgroundColor = '';
-                                this.style.color = '';
-                                this.style.fontWeight = '';
-                                this.classList.remove('tank-warning', 'tank-critical');
-                            } else {
+                    const scamInputIds = ['ph', 'cloro', 'reintegro'];
+                    scamInputIds.forEach(inputId => {
+                        const input = document.getElementById(inputId);
+                        if (input) {
+                            input.addEventListener('input', function() {
+                                if (!this.value) {
+                                    this.style.backgroundColor = '';
+                                    this.style.color = '';
+                                    this.style.fontWeight = '';
+                                    this.classList.remove('tank-warning', 'tank-critical');
+                                } else {
+                                    window.colorScamInputs();
+                                }
+                            });
+                            input.addEventListener('change', function() {
                                 window.colorScamInputs();
-                            }
-                        });
-                        
-                        // Aggiungi event listener per change
-                        input.addEventListener('change', function() {
-                            window.colorScamInputs();
-                        });
-                    }
-                });
+                            });
+                        }
+                    });
+                }
             }, 100);
             
             // ✅ AGGIORNA TASTO STORICO ALL'AVVIO - SU TUTTI I DISPOSITIVI
@@ -4888,11 +4959,11 @@ window.updateStoricoButton = async function() {
             
             // ✅ CONTROLLO AUTOMATICO ISTANTANEO OGNI VOLTA CHE INSERISCI DATI
             document.addEventListener('input', function(e) {
+                if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) return;
                 if (e.target && e.target.id && window.TANK_LEVEL_ARROW_INPUT_IDS && window.TANK_LEVEL_ARROW_INPUT_IDS.indexOf(e.target.id) !== -1) {
                     window.updateTankLevelArrowForInput(e.target);
                 }
                 if (e.target && e.target.id && e.target.value) {
-                    if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) return;
                     setTimeout(() => {
                         window.checkInstantTrend();
                     }, 500);
@@ -15549,10 +15620,13 @@ window.convertToHtml = async () => {
             -webkit-user-select: text !important;
             user-select: text !important;
         }
-        /* Android tablet: touch-action ottimale per handwriting S Pen (più reattivo del manipulation globale) */
+        /* Android tablet: touch-action auto — massima reattività S Pen (niente blocco primo carattere) */
+        body.sh-device-android-tablet .main-container {
+            touch-action: auto !important;
+        }
         body.sh-device-android-tablet .main-container input:not([readonly]),
         body.sh-device-android-tablet .main-container textarea:not([readonly]) {
-            touch-action: pan-x pan-y !important;
+            touch-action: auto !important;
         }
         body.sh-instant-layout .col-section { transition: none !important; }
         .v-label-text { transform: rotate(-90deg); white-space: nowrap; font-weight: 800; font-size: 11px; color: white; text-transform: uppercase; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }

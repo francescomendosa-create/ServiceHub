@@ -602,7 +602,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.10-tablet-spen-labels';
+        window.SERVICEHUB_BUILD = '2026.06.10-tablet-spen-label-send';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
         window.SERVICEHUB_REMOTE_ORIGIN = 'https://servicehub-18309.web.app';
@@ -783,12 +783,44 @@ window.colorPreviewNumber = function(tankName, value) {
             return !window.isServiceHubPhone();
         };
 
-        /** Tablet: rileva S Pen (se il browser espone touchType/pointerType). */
+        /** Tablet: contatto ampio = dito/palmo (non S Pen). */
+        window.__isFingerOrPalmTouch = function (e) {
+            if (!e) return false;
+            var t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]) || e;
+            var tt = t.touchType || t.pointerType || e.pointerType;
+            if (tt === 'stylus' || tt === 'pen') return false;
+            if (tt === 'direct') return true;
+            var w = (typeof e.width === 'number' && e.width > 0) ? e.width :
+                (t.radiusX != null ? t.radiusX * 2 : null);
+            var h = (typeof e.height === 'number' && e.height > 0) ? e.height :
+                (t.radiusY != null ? t.radiusY * 2 : null);
+            if (w != null && h != null && (w >= 14 || h >= 14)) return true;
+            return false;
+        };
+        /** Tablet: rileva S Pen (touchType/pointerType + contatto sottile su etichetta). */
         window.__isStylusEvent = function (e) {
             if (!e) return false;
             if (e.pointerType === 'pen') return true;
             var t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
-            return !!(t && t.touchType === 'stylus');
+            if (t) {
+                var tt = t.touchType || t.pointerType;
+                if (tt === 'stylus' || tt === 'pen') return true;
+                var rx = t.radiusX, ry = t.radiusY;
+                if (rx != null && ry != null && rx <= 5 && ry <= 5 && (rx > 0 || ry > 0)) return true;
+            }
+            if (e.pointerType === 'touch') {
+                if (typeof e.width === 'number' && typeof e.height === 'number' &&
+                    e.width > 0 && e.height > 0 && e.width <= 9 && e.height <= 9) return true;
+                if (typeof e.pressure === 'number' && e.pressure > 0.2 && e.pressure <= 1 &&
+                    e.width <= 9 && e.height <= 9) return true;
+            }
+            if (document.body.classList.contains('sh-stylus-pen-active')) {
+                var label = window.__resolveModulePressLabel && window.__resolveModulePressLabel(e);
+                if (label && label.classList.contains('v-label-container')) {
+                    return !window.__isFingerOrPalmTouch(e);
+                }
+            }
+            return false;
         };
         window.__stylusPenLiftTimer = null;
         /** Penna vicina/attiva: blocca solo ora i tocchi dito/palmo sulle etichette. */
@@ -812,6 +844,8 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__skipTabletLabelTouchDup = function (e) {
             if (!e || !e.type || e.type.indexOf('touch') !== 0 || !window.PointerEvent) return false;
             if (!window.shouldKeepAllSectionsExpanded || !window.shouldKeepAllSectionsExpanded()) return false;
+            if (window.__tabletLabelPointerActive) return true;
+            if (window.__isStylusEvent(e)) return false;
             var label = window.__resolveModulePressLabel(e);
             return !!(label && label.classList.contains('v-label-container'));
         };
@@ -837,7 +871,12 @@ window.colorPreviewNumber = function(tankName, value) {
                 window.__touchStylusPenActivity();
                 return false;
             }
-            return document.body.classList.contains('sh-stylus-pen-active');
+            if (!document.body.classList.contains('sh-stylus-pen-active')) return false;
+            var label = window.__resolveModulePressLabel(e);
+            if (label && label.classList.contains('v-label-container')) {
+                return window.__isFingerOrPalmTouch(e);
+            }
+            return true;
         };
         /** Android tablet: attributi input (suggerimenti off) — una sola volta per elemento. */
         window.__primeAndroidTabletInput = function (el) {
@@ -904,7 +943,11 @@ window.colorPreviewNumber = function(tankName, value) {
                 activeLabel = label;
                 activeId = id;
                 activePointerId = e.pointerId;
+                window.__tabletLabelPointerActive = true;
                 e.__shPressLabel = label;
+                if (label.setPointerCapture && e.pointerId != null) {
+                    try { label.setPointerCapture(e.pointerId); } catch (_) {}
+                }
                 if (e.preventDefault) e.preventDefault();
                 window.startPress(e, id);
             }, true);
@@ -915,7 +958,7 @@ window.colorPreviewNumber = function(tankName, value) {
             }, true);
             function finishPointerPress(e) {
                 if (activePointerId == null || e.pointerId !== activePointerId) return;
-                if (e.pointerType === 'pen') window.__scheduleStylusPenLift();
+                if (window.__isStylusEvent(e)) window.__scheduleStylusPenLift();
                 if (activeLabel && activeId) {
                     e.__shPressLabel = activeLabel;
                     window.endPress(e, activeId);
@@ -923,9 +966,59 @@ window.colorPreviewNumber = function(tankName, value) {
                 activeLabel = null;
                 activeId = null;
                 activePointerId = null;
+                window.__tabletLabelPointerActive = false;
             }
             document.addEventListener('pointerup', finishPointerPress, true);
             document.addEventListener('pointercancel', finishPointerPress, true);
+            var activeTouchId = null;
+            var activeTouchLabel = null;
+            var activeTouchModuleId = null;
+            document.addEventListener('touchstart', function (e) {
+                if (!window.isServiceHubTablet || !window.isServiceHubTablet()) return;
+                if (window.__tabletLabelPointerActive) return;
+                var t = e.touches && e.touches[0];
+                if (!t) return;
+                var label = window.__resolveModulePressLabel(e);
+                if (!label || !label.classList.contains('v-label-container')) return;
+                if (!window.__isStylusEvent(e)) return;
+                var id = window.__moduleIdFromPressLabel(label);
+                if (!id) return;
+                if (window.__blockFingerOnModuleLabelPress(e)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return;
+                }
+                var ae = document.activeElement;
+                if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) ae.blur();
+                activeTouchId = t.identifier;
+                activeTouchLabel = label;
+                activeTouchModuleId = id;
+                e.__shPressLabel = label;
+                if (e.preventDefault) e.preventDefault();
+                window.startPress(e, id);
+            }, true);
+            document.addEventListener('touchmove', function (e) {
+                if (activeTouchId == null || !activeTouchLabel) return;
+                var t = e.touches && e.touches[0];
+                if (!t || t.identifier !== activeTouchId) return;
+                e.__shPressLabel = activeTouchLabel;
+                window.movePress(e);
+            }, true);
+            function finishTouchPress(e) {
+                if (activeTouchId == null) return;
+                var t = e.changedTouches && e.changedTouches[0];
+                if (!t || t.identifier !== activeTouchId) return;
+                if (window.__isStylusEvent(e)) window.__scheduleStylusPenLift();
+                if (activeTouchLabel && activeTouchModuleId) {
+                    e.__shPressLabel = activeTouchLabel;
+                    window.endPress(e, activeTouchModuleId);
+                }
+                activeTouchId = null;
+                activeTouchLabel = null;
+                activeTouchModuleId = null;
+            }
+            document.addEventListener('touchend', finishTouchPress, true);
+            document.addEventListener('touchcancel', finishTouchPress, true);
             document.addEventListener('pointerdown', function (e) {
                 if (e.pointerType === 'pen' && e.target && e.target.closest &&
                     e.target.closest('.main-container input, .main-container textarea')) {

@@ -570,7 +570,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.10-trend-cloud';
+        window.SERVICEHUB_BUILD = '2026.06.10-trend-fix';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
         window.SERVICEHUB_REMOTE_ORIGIN = 'https://servicehub-18309.web.app';
@@ -2488,11 +2488,19 @@ window.colorPreviewNumber = function(tankName, value) {
                     if (seen[key]) return;
                     seen[key] = true;
                     const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
+                    const normalized = typeof window.normalizeArchiveSnapshot === 'function'
+                        ? window.normalizeArchiveSnapshot(entry)
+                        : entry;
                     merged.push({
-                        ...entry,
-                        shift: (entry.shift || currentShift).trim()
+                        ...normalized,
+                        shift: (normalized.shift || currentShift).trim()
                     });
                 };
+
+                querySnapshot.forEach(function (docSnap) {
+                    const snapData = docSnap.data();
+                    if (snapData) pushEntry(snapData);
+                });
 
                 try {
                     const localArchives = JSON.parse(localStorage.getItem('stabileArchives') || '[]');
@@ -2500,11 +2508,6 @@ window.colorPreviewNumber = function(tankName, value) {
                         if (arch && arch.data) pushEntry(arch.data);
                     });
                 } catch (_) {}
-
-                querySnapshot.forEach(function (docSnap) {
-                    const snapData = docSnap.data();
-                    if (snapData) pushEntry(snapData);
-                });
 
                 window.savedHistory = merged.slice(-50);
                 console.log('syncBackupHistory: ' + window.savedHistory.length + ' archivi (locale+cloud)');
@@ -2543,9 +2546,8 @@ window.colorPreviewNumber = function(tankName, value) {
                     return; // Salta completamente i campi del popup
                 }
                 
-                if (key.includes('inp-analisi-')) {
-                    // MANTieni il nome completo per consistenza con checkInstantTrend
-                    cleanKey = key.replace(/input/gi, '').replace(/\s+/g, ' ').trim();
+                if (key.startsWith('inp-analisi-') || key.startsWith('inp-')) {
+                    cleanKey = key;
                 } else if (key.includes('input')) {
                     cleanKey = key.replace(/input/gi, '').replace(/\s+/g, ' ').trim();
                 }
@@ -10395,14 +10397,58 @@ window.updateStoricoButton = async function() {
             return tankStatuses;
         };
 
+        /** Corregge chiavi archivio corrotte (imptk…, inptk… senza trattino). */
+        window.normalizeTrendFieldId = function (raw) {
+            if (!raw || typeof raw !== 'string') return raw;
+            var k = String(raw).trim().toLowerCase().replace(/\s+/g, '');
+            if (k.indexOf('analisi') >= 0) {
+                k = k.replace(/^imp[-_]?analisi[-_]?/, 'inp-analisi-');
+                if (!k.startsWith('inp-analisi-')) {
+                    k = k.replace(/^inp[-_]?analisi[-_]?/, 'inp-analisi-');
+                }
+                return k;
+            }
+            k = k.replace(/^imp[-_]?/, 'inp-');
+            k = k.replace(/^inptk/, 'inp-tk');
+            k = k.replace(/^inp[-_]?tk/, 'inp-tk');
+            k = k.replace(/^inp[-_]?s(\d)/, 'inp-s$1');
+            k = k.replace(/^inp[-_]?a(\d)/, 'inp-a$1');
+            if (k.startsWith('inp') && k.charAt(3) !== '-' && k.length > 3) {
+                k = 'inp-' + k.slice(3);
+            }
+            return k;
+        };
+
+        window.normalizeArchiveSnapshot = function (entry) {
+            if (!entry || typeof entry !== 'object') return entry;
+            var meta = ['time', 'date', 'shift', 'archiveTime', 'createdAt', 'manualShift', 'tankStatuses'];
+            var out = {};
+            Object.keys(entry).forEach(function (key) {
+                if (meta.indexOf(key) >= 0) {
+                    out[key] = entry[key];
+                    return;
+                }
+                var nk = window.normalizeTrendFieldId(key);
+                if (out[nk] === undefined) out[nk] = entry[key];
+            });
+            return out;
+        };
+
+        window.archiveSnapshotValue = function (entry, fieldId) {
+            if (!entry) return NaN;
+            var norm = window.normalizeArchiveSnapshot(entry);
+            var id = window.normalizeTrendFieldId(fieldId);
+            var raw = norm[id];
+            if (raw === undefined && fieldId !== id) raw = norm[fieldId];
+            return Number(raw);
+        };
+
         // Funzione per mappare gli ID dei campi ai nomi dei serbatoi
         window.getTankName = function(fieldId) {
-            // PULISCI DINAMICAMENTE QUALSIASI ID CHE CONTENGA 'inp-analisi-'
-            if (fieldId && fieldId.includes('inp-analisi-')) {
-                const cleanName = fieldId.replace('inp-analisi-', '');
-                
-                // Mappature specifiche per i nomi puliti delle analisi
-                const analisiMap = {
+            var id = window.normalizeTrendFieldId(fieldId);
+            if (id && id.indexOf('inp-analisi-') === 0) {
+                var cleanName = id.replace('inp-analisi-', '');
+                var analisiMap = {
                     'cod': 'COD',
                     'cond': 'COND',
                     'o2-mbr1': 'O2 MBR1',
@@ -10411,37 +10457,62 @@ window.updateStoricoButton = async function() {
                     'cod-nuovo': 'COD NUOVO',
                     'cod-vecchio': 'COD VECCHIO'
                 };
-                
-                if (analisiMap[cleanName]) {
-                    return analisiMap[cleanName];
-                }
-                
-                // Se non trova la mappatura, restituisci il nome pulito in maiuscolo
-                return cleanName.toUpperCase();
+                if (analisiMap[cleanName]) return analisiMap[cleanName];
+                return cleanName.toUpperCase().replace(/-/g, ' ');
             }
-            
-            const tankMap = {
-                'inp-a10605': 'A10605',
-                'inp-s864': 'S864',
-                'inp-s817': 'S817',
-                'inp-s818': 'S818',
-                'inp-s813': 'S813',
-                'inp-s854': 'S854',
-                'inp-s846': 'S846',
-                'inp-s819': 'S819',
-                'inp-tk8066': 'TK8066',
-                'inp-s852': 'S852',
+
+            var stocc = (window.STOCCAGGIO_INTERNO_TANKS || []).find(function (t) {
+                return window.normalizeTrendFieldId(t.fieldId) === id;
+            });
+            if (stocc && stocc.label) return stocc.label;
+
+            var tankMap = {
+                'inp-a10605': 'A 10605',
+                'inp-s864': 'S 864',
+                'inp-s817': 'S 817',
+                'inp-s818': 'S 818',
+                'inp-s813': 'S 813',
+                'inp-s148-ab': 'S 148',
+                'inp-s854': 'S 854',
+                'inp-s846': 'S 846',
+                'inp-s819': 'S 819',
+                'inp-tk8066': 'TK 8066',
+                'inp-s852': 'S 852',
                 'inp-lurgi': 'LURGI',
-                'inp-s829': 'S829',
+                'inp-s829': 'S 829',
+                'inp-sf3': 'SF3',
+                'inp-daf': 'UNITÀ DAF',
                 'inp-bacino-tk8092': 'BACINO TK 8092',
                 'inp-bacino-tk8093': 'BACINO TK 8093',
                 'inp-tk8092': 'TK 8092',
-                'inp-tk9000': 'TK9000',
-                'inp-tk9201': 'TK9201',
-                'inp-a-cond': 'SG9400A',
-                'inp-d-cond': 'SG9400D'
+                'inp-tk9000': 'TK 9000',
+                'inp-tk9201': 'TK 9201',
+                'inp-tk9204': 'TK 9204',
+                'inp-tk9205': 'TK 9205',
+                'inp-tk10000': 'TK 10000',
+                'inp-tk10601a': 'TK 10601 A',
+                'inp-tk10601b': 'TK 10601 B',
+                'inp-tk10602': 'TK 10602',
+                'inp-tk10602a': 'TK 10602 A',
+                'inp-tk10604': 'TK 10604',
+                'inp-tk10605': 'TK 10605',
+                'inp-tk10606a': 'TK 10606 A',
+                'inp-tk10606b': 'TK 10606 B',
+                'inp-tk10607': 'TK 10607',
+                'inp-tk10608': 'TK 10608',
+                'inp-a-cond': 'SG 9400 A',
+                'inp-d-cond': 'SG 9400 D',
+                'inp-s133': 'S 133',
+                'tk101': 'TK 101'
             };
-            return tankMap[fieldId] || fieldId;
+            if (tankMap[id]) return tankMap[id];
+            if (/^inp-tk\d/i.test(id)) {
+                return id.replace(/^inp-tk/i, 'TK ').replace(/([a-z])$/i, ' $1').toUpperCase();
+            }
+            if (/^inp-s\d/i.test(id)) {
+                return id.replace(/^inp-s/i, 'S ').toUpperCase();
+            }
+            return id || fieldId;
         };
 
         // === TREND: solo archivi veri (storico) + istantaneo live ===
@@ -10453,7 +10524,9 @@ window.updateStoricoButton = async function() {
                 var key = String(entry.createdAt || entry.archiveTime);
                 if (seen[key]) return;
                 seen[key] = true;
-                list.push(entry);
+                list.push(typeof window.normalizeArchiveSnapshot === 'function'
+                    ? window.normalizeArchiveSnapshot(entry)
+                    : entry);
             };
             if (window.savedHistory && Array.isArray(window.savedHistory)) {
                 window.savedHistory.forEach(push);
@@ -10548,9 +10621,9 @@ window.updateStoricoButton = async function() {
         // Funzione per calcolare i trend dei livelli dei serbatoi
         window.getTankLevelTrend = function() {
             try {
-                var firstEntry = window.getShiftBaselineArchiveForTrend();
+                var firstEntry = window.normalizeArchiveSnapshot(window.getShiftBaselineArchiveForTrend());
                 if (!firstEntry) return [];
-                var lastEntry = window.buildInstantTrendSnapshotFromDOM();
+                var lastEntry = window.normalizeArchiveSnapshot(window.buildInstantTrendSnapshotFromDOM());
 
                 // Lista dei serbatoi da controllare (esclusi WVT, OSMOSI, SF3, UNITÀ DAF)
                 const tankFields = [
@@ -10568,13 +10641,14 @@ window.updateStoricoButton = async function() {
                 const endTime = lastEntry.time || '--:--';
 
                 tankFields.forEach(tankId => {
-                    const firstValue = Number(firstEntry[tankId]);
-                    const lastValue = Number(lastEntry[tankId]);
+                    const normId = window.normalizeTrendFieldId(tankId);
+                    const firstValue = window.archiveSnapshotValue(firstEntry, normId);
+                    const lastValue = window.archiveSnapshotValue(lastEntry, normId);
                     if (!Number.isFinite(firstValue) || firstValue <= 0) return;
                     if (!Number.isFinite(lastValue) || lastValue <= 0) return;
                     if (firstValue === lastValue) return;
                     trends.push({
-                        tank: tankId,
+                        tank: normId,
                         start: firstValue,
                         end: lastValue,
                         startTime: startTime,
@@ -10599,7 +10673,7 @@ window.updateStoricoButton = async function() {
 
         window.getAnalisiTrend = function() {
             try {
-                const firstEntry = window.getShiftBaselineArchiveForTrend();
+                const firstEntry = window.normalizeArchiveSnapshot(window.getShiftBaselineArchiveForTrend());
                 if (!firstEntry) return [];
 
                 const analisiFields = [
@@ -10617,14 +10691,15 @@ window.updateStoricoButton = async function() {
                 const endTime = new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
 
                 analisiFields.forEach(field => {
-                    const startValue = Number(firstEntry[field]);
-                    const inputEl = document.getElementById(field);
+                    const normField = window.normalizeTrendFieldId(field);
+                    const startValue = window.archiveSnapshotValue(firstEntry, normField);
+                    const inputEl = document.getElementById(field) || document.getElementById(normField);
                     const endValue = Number(inputEl?.value);
                     if (!Number.isFinite(startValue) || startValue <= 0) return;
                     if (!Number.isFinite(endValue) || endValue <= 0) return;
                     if (startValue === endValue) return;
                     trends.push({
-                        tank: field,
+                        tank: normField,
                         start: startValue,
                         end: endValue,
                         startTime: startTime,
@@ -11019,107 +11094,15 @@ if (hiddenModules.length === 0) {
             window.globalTankAlerts = window.checkHighLevel(tankOnlyTrends);
             
             if (tankOnlyTrends.length === 0) return;
-            
-            const startTime = tankOnlyTrends[0].startTime;
-            const endTime = tankOnlyTrends[tankOnlyTrends.length - 1].endTime;
-            
-            // Calcola totale ore approssimato
-            const calculateHours = (start, end) => {
-                const startHour = parseInt(start.split(':')[0]);
-                const startMin = parseInt(start.split(':')[1]);
-                const endHour = parseInt(end.split(':')[0]);
-                const endMin = parseInt(end.split(':')[1]);
-                
-                let totalHours = endHour - startHour;
-                let totalMinutes = endMin - startMin;
-                
-                if (totalMinutes < 0) {
-                    totalHours--;
-                    totalMinutes += 60;
-                }
-                
-                if (totalMinutes >= 30) {
-                    return `${totalHours + 1}h`;
-                } else if (totalMinutes > 0) {
-                    return `${totalHours}h½`;
-                } else {
-                    return `${totalHours}h`;
-                }
-            };
-            
-            const totalHours = calculateHours(startTime, endTime);
-            
-            html += `<div style="margin-bottom: 6px; width: 100%; break-inside: avoid; display: inline-block; position: relative;">
-                <div style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 5px; letter-spacing: 0.3px;">
+
+            html += `<div style="margin-bottom: 6px; width: 100%; break-inside: avoid; display: inline-block;">
+                <div style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 8px; letter-spacing: 0.3px;">
                     TREND SERBATOI
-                </div>
-                <div style="font-size: ${parseInt(previewFont) - 2}px; font-weight: 400; text-transform: none; color: #666; margin-top: 2px; letter-spacing: 0.1px; display: flex; align-items: center;">
-                    <span style="display: inline-block; width: 31px;"></span>
-                    <span style="display: inline-block; width: 20px; text-align: center; margin-left: 4px;">${startTime}</span>
-                    <span style="display: inline-block; width: 20px; text-align: center; margin-left: 4px;">${endTime}</span>
-                    <span style="display: inline-block; width: auto; margin-left: 8px;">(${totalHours})</span>
-                </div>
-
-                <div style="position: absolute; left: 58px; top: 25px; bottom: 0; width: 1px; background-color: #ccc;"></div>
-                <div style="display: flex; flex-direction: column;">`;
-            
-            tankOnlyTrends.forEach(trend => {
-                const color = trend.rising ? '#dc2626' : '#2563eb';
-                const tankName = window.getTankName(trend.tank);
-
-                let displayName =
-                    (tankName === 'TK 8092') ? tankName :
-                    (tankName === 'TK 8093') ? 'BACINO<br>TK 8093' :
-                    (tankName.startsWith('TK') && tankName !== 'TK 8092' && tankName !== 'TK 8093')
-                        ? 'BACINO<br>' + tankName
-                        : tankName;
-
-                const difference = Math.abs(trend.end - trend.start);
-                const diffText = trend.rising ? `+${difference}` : `-${difference}`;
-
-                // TONNELLATE
-                const tons = window.calculateTons(tankName, trend.end);
-
-                const getPaddingRight = (num) => {
-                    const str = num.toString();
-                    if (str.length === 1) return '20px';
-                    if (str.length === 2) return '14px';
-                    if (str.length === 3) return '8px';
-                    return '2px';
-                };
-
-                const startPaddingRight = getPaddingRight(trend.start);
-                const endPaddingRight = getPaddingRight(trend.end);
-
-                const isPercentage = window.tankConfig && window.tankConfig[tankName] && window.tankConfig[tankName].unit === '%';
-                const trendText = isPercentage ? diffText : `${diffText} mm`;
-
-                html += `<div style="display: flex; align-items: flex-start; padding: 2px 0; border-bottom: 0.1px solid #e5e7eb; font-size: ${parseInt(previewFont) - 1}px;">
-                    <span style="font-weight: 600; text-transform: uppercase; color: #000; width: 37px; flex-shrink: 0;">${displayName}</span>
-                    <span style="font-weight: 600; color: #333; width: 40px; text-align: left; margin-left: -2px; font-family: monospace; padding-right: ${startPaddingRight}; box-sizing: border-box;">
-                        ${window.colorPreviewNumber(tankName, trend.start)}
-                    </span>
-                    <span style="margin: 0 1px; color: #999;">-></span>
-                    <span style="font-weight: 600; color: #333; width: 40px; text-align: left; margin-left: -2px; font-family: monospace; padding-right: ${endPaddingRight}; box-sizing: border-box;">
-                        ${window.colorPreviewNumber(tankName, trend.end)}
-                    </span>
-                    <span style="margin: 0 1px; color: #999;">|</span>
-
-                    <div style="display: flex; flex-direction: column; align-items: flex-start; flex-shrink: 0; margin-left: -2px;">
-                        <span style="font-weight: 700; color: ${color};">
-                            ${trendText}
-                        </span>
-
-                        ${tons ? `
-                        <span style="font-size: ${parseInt(previewFont) - 2}px; color: #0ea5e9; font-weight: 600; margin-top: 1px;">
-                            ${tons} t
-                        </span>
-                        ` : ''}
-                    </div>
                 </div>`;
-            });
-
-            html += `</div></div>`;
+            html += typeof window.__buildDigitalTrendTableHTML === 'function'
+                ? window.__buildDigitalTrendTableHTML(tankOnlyTrends, { theme: 'print' })
+                : '';
+            html += `</div>`;
             return;
         }
         
@@ -11132,109 +11115,15 @@ if (hiddenModules.length === 0) {
             });
             
             if (analisiOnlyTrends.length === 0) return;
-            
-            const startTime = analisiOnlyTrends[0].startTime;
-            const endTime = analisiOnlyTrends[analisiOnlyTrends.length - 1].endTime;
-            
-            // Calcola totale ore approssimato (solo valore assoluto)
-            const calculateHours = (start, end) => {
-                const startHour = parseInt(start.split(':')[0]);
-                const startMin = parseInt(start.split(':')[1]);
-                const endHour = parseInt(end.split(':')[0]);
-                const endMin = parseInt(end.split(':')[1]);
-                
-                let totalHours = endHour - startHour;
-                let totalMinutes = endMin - startMin;
-                
-                if (totalMinutes < 0) {
-                    totalHours--;
-                    totalMinutes += 60;
-                }
-                
-                // Valore assoluto per rimuovere segni
-                totalHours = Math.abs(totalHours);
-                
-                // Approssima al mezzo ora
-                if (totalMinutes >= 30) {
-                    return `${totalHours + 1}h`;
-                } else if (totalMinutes > 0) {
-                    return `${totalHours}h½`;
-                } else {
-                    return `${totalHours}h`;
-                }
-            };
-            
-            const totalHours = calculateHours(startTime, endTime);
-            
-            html += `<div style="margin-bottom: 6px; width: 100%; break-inside: avoid; display: inline-block; position: relative;">
-                <div style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 5px; letter-spacing: 0.3px;">
+
+            html += `<div style="margin-bottom: 6px; width: 100%; break-inside: avoid; display: inline-block;">
+                <div style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 8px; letter-spacing: 0.3px;">
                     TREND ANALISI
-                </div>
-                <div style="font-size: ${parseInt(previewFont) - 2}px; font-weight: 400; text-transform: none; color: #666; margin-top: 2px; letter-spacing: 0.1px; display: flex; align-items: center;">
-                    <span style="display: inline-block; width: 31px;"></span>
-                    <span style="display: inline-block; width: 20px; text-align: center; margin-left: 4px;">${startTime}</span>
-                    <span style="display: inline-block; width: 20px; text-align: center; margin-left: 4px;">${endTime}</span>
-                    <span style="display: inline-block; width: auto; margin-left: 8px;">(${totalHours})</span>
-                </div>
-                <!-- LINEA VERTICALE UNICA CHE COPIRE TUTTI I LIVELLI -->
-                <div style="position: absolute; left: 58px; top: 25px; bottom: 0; width: 1px; background-color: #ccc;"></div>
-                <div style="display: flex; flex-direction: column;">`;
-            
-            analisiOnlyTrends.forEach(trend => {
-                const color = trend.rising ? '#059669' : '#dc2626';
-                const arrow = trend.rising ? '' : '';
-                const tankName = window.getTankName(trend.tank);
-                const difference = Math.abs(trend.end - trend.start);
-                const diffText = trend.rising ? `+${difference}` : `-${difference}`;
-                
-                // Modifica le diciture per COD e COD nuovo
-                let displayName = tankName;
-                if (tankName === 'COD') {
-                    displayName = 'COD<br>ING';
-                } else if (tankName === 'COD NUOVO') {
-                    displayName = 'COD<br>USCITA<br>NUOVO';
-                }
-                
-                // Funzione per determinare il padding-right in base alla lunghezza del numero
-                const getPaddingRight = (num) => {
-                    const str = num.toString();
-                    if (str.length === 1) return '20px';
-                    if (str.length === 2) return '14px';
-                    if (str.length === 3) return '8px';
-                    return '2px';
-                };
-                
-                const startPaddingRight = getPaddingRight(trend.start);
-                const endPaddingRight = getPaddingRight(trend.end);
-                
-                html += `<div style="display: flex; align-items: flex-start; padding: 2px 0; border-bottom: 0.1px solid #e5e7eb; font-size: ${parseInt(previewFont) - 1}px;">
-                    <span style="font-weight: 600; text-transform: uppercase; color: #000; width: 37px; flex-shrink: 0; line-height: 1.2;">${displayName}</span>
-                    <span style="font-weight: 600; color: #333; width: 40px; text-align: left; margin-left: -2px; font-family: monospace; padding-right: ${startPaddingRight}; box-sizing: border-box;">${trend.start}</span>
-                    <span style="margin: 0 1px; color: #999;">-></span>
-                    <span style="font-weight: 600; color: #333; width: 40px; text-align: left; margin-left: -2px; font-family: monospace; padding-right: ${endPaddingRight}; box-sizing: border-box;">${trend.end}</span>
-                    <span style="margin: 0 1px; color: #999;">|</span>
-                    <div style="display: flex; flex-direction: column; align-items: flex-start; flex-shrink: 0; margin-left: -2px;">
-                        <span style="font-weight: 700; color: ${color};">
-                            ${arrow} ${diffText}
-                        </span>
-                    </div>
                 </div>`;
-            });
-            
-            // 🔥 ALERT LIVELLI >90%
-            const alerts = window.checkHighLevel(tankOnlyTrends);
-
-            if (alerts.length > 0) {
-                html += `<div style="margin-top:10px; border-top:1px solid #374151; padding-top:5px;">`;
-
-                alerts.forEach(a => {
-                    html += `<div style="color:#f59e0b; font-weight:700; font-size:11px;">${a}</div>`;
-                });
-
-                html += `</div>`;
-            }
-
-            html += `</div></div>`;
+            html += typeof window.__buildDigitalTrendTableHTML === 'function'
+                ? window.__buildDigitalTrendTableHTML(analisiOnlyTrends, { theme: 'print' })
+                : '';
+            html += `</div>`;
             return;
         }
 
@@ -11911,8 +11800,37 @@ window.expandDigitalModule = function (cardEl) {
     } catch (e) { /* ignore */ }
 };
 
-window.__buildDigitalTrendTableHTML = function (trends) {
+window.__digitalTrendEmbedCss = function (theme) {
+    var isPrint = theme === 'print';
+    var nameColor = isPrint ? '#111' : '#e2e8f0';
+    var valColor = isPrint ? '#111' : '#f8fafc';
+    var timeColor = isPrint ? '#1d4ed8' : '#93c5fd';
+    var durColor = isPrint ? '#475569' : '#94a3b8';
+    var border = isPrint ? '#cbd5e1' : 'rgba(96,165,250,0.45)';
+    var rowBorder = isPrint ? '#e2e8f0' : 'rgba(255,255,255,0.1)';
+    return '.digital-trend-wrap{width:100%;min-width:0}' +
+        '.digital-trend-grid{display:grid;grid-template-columns:minmax(112px,1.55fr) minmax(76px,1fr) minmax(76px,1fr) minmax(100px,1.2fr);column-gap:20px;align-items:center;white-space:nowrap}' +
+        '.digital-trend-head{margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid ' + border + '}' +
+        '.digital-trend-head__time{font-size:16px;font-weight:800;color:' + timeColor + ';text-align:center;font-variant-numeric:tabular-nums}' +
+        '.digital-trend-head__dur{font-size:14px;font-weight:700;color:' + durColor + '}' +
+        '.digital-trend-row{padding:10px 0;border-bottom:1px solid ' + rowBorder + '}' +
+        '.digital-trend-row__name{font-size:15px;font-weight:800;color:' + nameColor + ';text-transform:uppercase}' +
+        '.digital-trend-row__val{font-size:24px;font-weight:900;color:' + valColor + ';text-align:center;font-variant-numeric:tabular-nums;line-height:1}' +
+        '.digital-trend-row__delta{font-size:20px;font-weight:900;text-align:left;white-space:nowrap;line-height:1.1}' +
+        '.digital-trend-row__delta--up-tank{color:#f87171}.digital-trend-row__delta--down-tank{color:#60a5fa}' +
+        '.digital-trend-row__delta--up-an{color:#4ade80}.digital-trend-row__delta--down-an{color:#f87171}' +
+        '.digital-trend-row__tons{display:block;font-size:14px;font-weight:700;color:#38bdf8;margin-top:4px}' +
+        '.digital-trend-section{margin:14px 0 8px;padding-top:10px;border-top:1px dashed ' + rowBorder + ';font-size:14px;font-weight:800;color:' + timeColor + ';letter-spacing:.14em;text-transform:uppercase}' +
+        '#digital-preview-container.digital-focus-active .digital-trend-grid{grid-template-columns:minmax(168px,1.65fr) minmax(108px,1fr) minmax(108px,1fr) minmax(140px,1.25fr);column-gap:32px}' +
+        '#digital-preview-container.digital-focus-active .digital-trend-head__time{font-size:clamp(22px,2.4vw,32px)}' +
+        '#digital-preview-container.digital-focus-active .digital-trend-row__val{font-size:clamp(32px,3.6vw,52px)}' +
+        '#digital-preview-container.digital-focus-active .digital-trend-row__delta{font-size:clamp(24px,2.6vw,38px)}';
+};
+
+window.__buildDigitalTrendTableHTML = function (trends, opts) {
     if (!trends || !trends.length) return '';
+    const o = opts || {};
+    const theme = o.theme === 'print' ? 'print' : 'digital';
     const startTime = trends[0].startTime || '--:--';
     const endTime = trends[trends.length - 1].endTime || '--:--';
     const calculateHours = function (start, end) {
@@ -11932,20 +11850,11 @@ window.__buildDigitalTrendTableHTML = function (trends) {
         return totalHours + 'h';
     };
     const formatTrendName = function (tankName) {
-        if (tankName === 'TK 8092') return tankName;
-        if (tankName === 'TK 8093') return 'BACINO TK 8093';
-        if (tankName.startsWith('TK') && tankName !== 'TK 8092' && tankName !== 'TK 8093') {
-            return 'BACINO ' + tankName;
-        }
-        if (tankName === 'COD') return 'COD ING';
-        if (tankName === 'COD NUOVO') return 'COD USC NUOVO';
-        if (tankName === 'COD VECCHIO') return 'COD VECCHIO';
-        return String(tankName || '')
-            .replace(/^ANALISI\s*/i, '')
-            .replace(/\s*ANALISI$/i, '');
+        return String(tankName || '').trim();
     };
     const analisiKeys = ['COD', 'COND', 'O2 MBR1', 'O2 MBR2', 'CONO', 'COD NUOVO', 'COD VECCHIO'];
-    let html = '<div class="digital-trend-wrap">';
+    let html = '<div class="digital-trend-wrap digital-trend-wrap--' + theme + '">';
+    html += '<style>' + window.__digitalTrendEmbedCss(theme) + '</style>';
     html += '<div class="digital-trend-grid digital-trend-head">';
     html += '<span class="digital-trend-head__name"></span>';
     html += '<span class="digital-trend-head__time">' + startTime + '</span>';

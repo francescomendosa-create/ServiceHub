@@ -583,7 +583,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.10-sync-restore';
+        window.SERVICEHUB_BUILD = '2026.06.10-sync-debounce';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
         window.SERVICEHUB_REMOTE_ORIGIN = 'https://servicehub-18309.web.app';
@@ -2260,7 +2260,53 @@ window.colorPreviewNumber = function(tankName, value) {
             if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
         };
 
-        window.saveData = async function (skipHistory) {
+        /** Attesa dopo ultima cifra prima di inviare il valore completo al cloud (evita sync parziali). */
+        window.__PLANT_CLOUD_SAVE_DEBOUNCE_MS = 1000;
+        window.__PLANT_REMOTE_GUARD_MS = 1200;
+        window.__plantFieldEditMs = {};
+        window.__plantCloudSaveTimer = null;
+
+        window.__isUserTypingInPlantField = function () {
+            var ae = document.activeElement;
+            if (!ae || (ae.tagName !== 'INPUT' && ae.tagName !== 'TEXTAREA')) return false;
+            if (!ae.closest || !ae.closest('.main-container')) return false;
+            if (ae.closest('#settings-modal') || ae.closest('#management-modal') || ae.closest('#shift-modal')) return false;
+            return true;
+        };
+
+        window.__touchPlantFieldEdit = function (input) {
+            if (!input || !input.id) return;
+            window.__plantFieldEditMs[input.id] = Date.now();
+        };
+
+        /** Non sovrascrivere da cloud un campo che l'utente sta ancora modificando. */
+        window.__shouldApplyRemoteValueToInput = function (input) {
+            if (!input || !input.id) return false;
+            if (document.activeElement === input) return false;
+            var last = window.__plantFieldEditMs[input.id];
+            if (last && Date.now() - last < window.__PLANT_REMOTE_GUARD_MS) return false;
+            return true;
+        };
+
+        window.__schedulePlantCloudSave = function (skipHistory) {
+            clearTimeout(window.__plantCloudSaveTimer);
+            window.__plantCloudSaveTimer = setTimeout(function __tryPlantCloudSave() {
+                if (window.__isUserTypingInPlantField()) {
+                    window.__plantCloudSaveTimer = setTimeout(__tryPlantCloudSave, 400);
+                    return;
+                }
+                window.__plantCloudSaveTimer = null;
+                window.__saveDataImpl(skipHistory === true).catch(function () {});
+            }, window.__PLANT_CLOUD_SAVE_DEBOUNCE_MS);
+        };
+
+        window.__flushPlantCloudSaveNow = function (skipHistory) {
+            clearTimeout(window.__plantCloudSaveTimer);
+            window.__plantCloudSaveTimer = null;
+            return window.__saveDataImpl(skipHistory === true);
+        };
+
+        window.__saveDataImpl = async function (skipHistory) {
             const skipHist = skipHistory === true;
             const doSave = async function () {
 
@@ -2459,6 +2505,18 @@ window.colorPreviewNumber = function(tankName, value) {
                 __plantSaveInFlight = null;
                 if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
             });
+        };
+
+        window.saveData = async function (skipHistory) {
+            if (window.__isUserTypingInPlantField() && skipHistory === true) {
+                window.__schedulePlantCloudSave(true);
+                return Promise.resolve();
+            }
+            if (window.__plantCloudSaveTimer) {
+                clearTimeout(window.__plantCloudSaveTimer);
+                window.__plantCloudSaveTimer = null;
+            }
+            return window.__saveDataImpl(skipHistory);
         };
 
         // NUOVO SISTEMA DI SYNC AUTOMATICO BACKUP
@@ -4346,12 +4404,13 @@ window.updateStoricoButton = async function() {
                     if (!t || !t.closest || !t.closest('.main-container')) return;
                     if (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA') return;
                     if (t.closest('#settings-modal') || t.closest('#management-modal') || t.closest('#shift-modal')) return;
+                    if (typeof window.__touchPlantFieldEdit === 'function') window.__touchPlantFieldEdit(t);
                     if (__plantPersistTimer) clearTimeout(__plantPersistTimer);
                     __plantPersistTimer = setTimeout(function () {
                         __plantPersistTimer = null;
                         if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
-                        if (typeof window.saveData === 'function') void window.saveData(true);
-                    }, 400);
+                        if (typeof window.__schedulePlantCloudSave === 'function') window.__schedulePlantCloudSave(true);
+                    }, window.__PLANT_CLOUD_SAVE_DEBOUNCE_MS || 1000);
                 },
                 true
             );
@@ -4370,7 +4429,8 @@ window.updateStoricoButton = async function() {
                 if (typeof window.flushRapportiniPushToCloudNow === 'function') {
                     void window.flushRapportiniPushToCloudNow();
                 }
-                if (typeof window.saveData === 'function') void window.saveData(true);
+                if (typeof window.__flushPlantCloudSaveNow === 'function') void window.__flushPlantCloudSaveNow(true);
+                else if (typeof window.saveData === 'function') void window.saveData(true);
             });
             document.addEventListener('visibilitychange', function () {
                 if (document.visibilityState === 'hidden') {
@@ -4389,7 +4449,9 @@ window.updateStoricoButton = async function() {
                     if (typeof window.flushRapportiniPushToCloudNow === 'function') {
                         void window.flushRapportiniPushToCloudNow();
                     }
-                    if (typeof window.saveData === 'function') {
+                    if (typeof window.__flushPlantCloudSaveNow === 'function') {
+                        void window.__flushPlantCloudSaveNow(true);
+                    } else if (typeof window.saveData === 'function') {
                         void window.saveData(true);
                     }
                 } else if (document.visibilityState === 'visible') {
@@ -4428,10 +4490,15 @@ window.updateStoricoButton = async function() {
                     if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) return;
                     if (!t.closest || !t.closest('.main-container')) return;
                     if (t.closest('#settings-modal') || t.closest('#management-modal') || t.closest('#shift-modal')) return;
-                    if (!__plantPersistTimer) return;
-                    clearTimeout(__plantPersistTimer);
-                    __plantPersistTimer = null;
-                    if (typeof window.saveData === 'function') void window.saveData(true);
+                    if (__plantPersistTimer) {
+                        clearTimeout(__plantPersistTimer);
+                        __plantPersistTimer = null;
+                    }
+                    if (typeof window.__flushPlantCloudSaveNow === 'function') {
+                        void window.__flushPlantCloudSaveNow(true);
+                    } else if (typeof window.saveData === 'function') {
+                        void window.saveData(true);
+                    }
                 },
                 true
             );
@@ -5974,7 +6041,11 @@ window.updateStoricoButton = async function() {
                 if (inputs.length) {
                     inputs.forEach(function(el) {
                         if (forcePlant && window.__shouldSkipInputForPlantPayload && window.__shouldSkipInputForPlantPayload(el)) return;
-                        if (forcePlant || document.activeElement !== el) {
+                        if (forcePlant) {
+                            if (!window.__shouldApplyRemoteValueToInput(el)) return;
+                            el.value = strVal;
+                            if (id === 'osmosi' && typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(el);
+                        } else if (document.activeElement !== el) {
                             el.value = strVal;
                             if (id === 'osmosi' && typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(el);
                         }
@@ -5984,7 +6055,11 @@ window.updateStoricoButton = async function() {
                 const el = document.getElementById(id);
                 if (!el) continue;
                 if (el.tagName === 'INPUT') {
-                    if (forcePlant || document.activeElement !== el) {
+                    if (forcePlant) {
+                        if (!window.__shouldApplyRemoteValueToInput(el)) continue;
+                        el.value = strVal;
+                        if (id === 'osmosi' && typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(el);
+                    } else if (document.activeElement !== el) {
                         el.value = strVal;
                         if (id === 'osmosi' && typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(el);
                     }

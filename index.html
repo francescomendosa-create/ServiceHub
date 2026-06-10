@@ -570,7 +570,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.10-pages-live';
+        window.SERVICEHUB_BUILD = '2026.06.10-manual-remote';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
         window.SERVICEHUB_REMOTE_ORIGIN = 'https://servicehub-18309.web.app';
@@ -1204,31 +1204,29 @@ window.colorPreviewNumber = function(tankName, value) {
             });
         }
 
-        /** Auto-sync publicDigital: attivo dopo LINK REMOTO o se esiste già una chiave condivisa in meta. */
+        /** publicDigital: solo push manuale (Aggiorna remoto / AGGIORNA / LINK REMOTO), mai ad ogni tasto. */
         window.__publicDigitalAutoSyncEnabled = false;
         window.__cachedDigitalShareKey = null;
         try {
-            if (
-                localStorage.getItem('servicehub_public_digital_auto_sync') === '1' ||
-                sessionStorage.getItem('servicehub_public_digital_auto_sync') === '1'
-            ) {
-                window.__publicDigitalAutoSyncEnabled = true;
-            }
+            localStorage.removeItem('servicehub_public_digital_auto_sync');
+            sessionStorage.removeItem('servicehub_public_digital_auto_sync');
             var bootKey =
                 sessionStorage.getItem('servicehub_digital_share_key') ||
                 localStorage.getItem('servicehub_digital_share_key') ||
                 '';
             if (bootKey) {
                 window.__cachedDigitalShareKey = bootKey;
-                window.__publicDigitalAutoSyncEnabled = true;
                 try { sessionStorage.setItem('servicehub_digital_share_key', bootKey); } catch (_) {}
             }
         } catch (_) {}
         window.__enablePublicDigitalAutoSync = function () {
             window.__publicDigitalAutoSyncEnabled = true;
+        };
+        window.__disablePublicDigitalAutoSync = function () {
+            window.__publicDigitalAutoSyncEnabled = false;
             try {
-                sessionStorage.setItem('servicehub_public_digital_auto_sync', '1');
-                localStorage.setItem('servicehub_public_digital_auto_sync', '1');
+                localStorage.removeItem('servicehub_public_digital_auto_sync');
+                sessionStorage.removeItem('servicehub_public_digital_auto_sync');
             } catch (_) {}
         };
         window.__rememberDigitalShareKey = function (key) {
@@ -1238,39 +1236,15 @@ window.colorPreviewNumber = function(tankName, value) {
                 sessionStorage.setItem('servicehub_digital_share_key', key);
                 localStorage.setItem('servicehub_digital_share_key', key);
             } catch (_) {}
-            if (typeof window.__enablePublicDigitalAutoSync === 'function') {
-                window.__enablePublicDigitalAutoSync();
-            }
         };
-        /** Pubblica su publicDigital se auto-sync attivo o se il link remoto è già stato creato. */
+        /** Push automatico in background (disattivato: solo pulsanti manuali). */
         window.__shouldPushPublicDigital = function () {
-            if (window.__publicDigitalAutoSyncEnabled) return true;
-            if (window.__cachedDigitalShareKey) return true;
-            try {
-                if (sessionStorage.getItem('servicehub_digital_share_key')) return true;
-                if (localStorage.getItem('servicehub_digital_share_key')) return true;
-                if (sessionStorage.getItem('servicehub_public_digital_auto_sync') === '1') return true;
-                if (localStorage.getItem('servicehub_public_digital_auto_sync') === '1') return true;
-            } catch (_) {}
-            return false;
+            return !!window.__publicDigitalAutoSyncEnabled;
         };
 
-        /** Abilita auto-sync se esiste già una chiave remota (sessione o meta cloud). */
+        /** Consente push publicDigital solo se auto-sync esplicitamente attivo (di solito false). */
         window.__ensurePublicDigitalPushAllowed = async function () {
-            if (typeof window.__shouldPushPublicDigital === 'function' && window.__shouldPushPublicDigital()) {
-                return true;
-            }
-            if (!db || !user || !user.uid) return false;
-            try {
-                const metaSnap = await getDoc(doc(db, "artifacts", appId, "sharedDial", "meta"));
-                if (metaSnap.exists() && metaSnap.data().digitalShareKey) {
-                    if (typeof window.__rememberDigitalShareKey === 'function') {
-                        window.__rememberDigitalShareKey(metaSnap.data().digitalShareKey);
-                    }
-                    return true;
-                }
-            } catch (_) {}
-            return false;
+            return !!window.__publicDigitalAutoSyncEnabled;
         };
 
         /** Chiave Digital remota condivisa tra tutti i dispositivi (salvata in sharedDial/meta). */
@@ -13330,17 +13304,12 @@ window.openDigitalPreview = () => {
 window.__enablePublicDigitalAutoSyncIfShareKeyExists = function () {
     var hasKey = false;
     try {
-        hasKey =
-            !!sessionStorage.getItem('servicehub_digital_share_key') ||
-            sessionStorage.getItem('servicehub_public_digital_auto_sync') === '1';
+        hasKey = !!sessionStorage.getItem('servicehub_digital_share_key');
     } catch (_) {}
-    if (hasKey && typeof window.__enablePublicDigitalAutoSync === 'function') {
-        window.__enablePublicDigitalAutoSync();
-    }
     return hasKey;
 };
 
-/** Legge i valori live dall'interfaccia e pubblica su publicDigital se esiste un link remoto. */
+/** Legge i valori live dall'interfaccia e pubblica su publicDigital (push manuale). */
 window.pushDigitalSnapshotFromLiveUI = function () {
     if (!db || !user || !user.uid) return Promise.resolve(false);
     if (typeof window.saveActiveRapportinoFromUI === 'function') {
@@ -13350,10 +13319,10 @@ window.pushDigitalSnapshotFromLiveUI = function () {
         window.persistNotturnoStoccaggioToRapportino();
     }
     if (typeof window.pushPublicDigitalSnapshotQuiet !== 'function') return Promise.resolve(false);
-    return Promise.resolve(window.pushPublicDigitalSnapshotQuiet());
+    return Promise.resolve(window.pushPublicDigitalSnapshotQuiet({ force: true }));
 };
 
-/** Pubblica Digital Report sul cloud e aggiorna il remoto in tempo reale (senza aprire anteprima). */
+/** Pubblica Digital Report sul cloud solo quando premi Aggiorna remoto (nessun auto-sync). */
 window.sendDigitalToRemote = async function () {
     var btn = document.getElementById('btn-mgmt-send-remote');
     var prevLabel = btn ? btn.textContent : '';
@@ -13383,23 +13352,21 @@ window.sendDigitalToRemote = async function () {
         } catch (_) {}
     }
 
-    if (typeof window.__enablePublicDigitalAutoSync === 'function') {
-        window.__enablePublicDigitalAutoSync();
-    }
-
     var hasKey = false;
     try {
-        hasKey =
-            !!sessionStorage.getItem('servicehub_digital_share_key') ||
-            sessionStorage.getItem('servicehub_public_digital_auto_sync') === '1';
+        hasKey = !!sessionStorage.getItem('servicehub_digital_share_key');
     } catch (_) {}
     if (!hasKey) {
         try {
             const metaSnap = await getDoc(doc(db, 'artifacts', appId, 'sharedDial', 'meta'));
             if (metaSnap.exists() && metaSnap.data().digitalShareKey) {
-                try {
-                    sessionStorage.setItem('servicehub_digital_share_key', metaSnap.data().digitalShareKey);
-                } catch (_) {}
+                if (typeof window.__rememberDigitalShareKey === 'function') {
+                    window.__rememberDigitalShareKey(metaSnap.data().digitalShareKey);
+                } else {
+                    try {
+                        sessionStorage.setItem('servicehub_digital_share_key', metaSnap.data().digitalShareKey);
+                    } catch (_) {}
+                }
                 hasKey = true;
             }
         } catch (e) {
@@ -13476,17 +13443,19 @@ window.refreshDigitalPreview = async function () {
 
     var hasKey = false;
     try {
-        hasKey =
-            !!sessionStorage.getItem('servicehub_digital_share_key') ||
-            sessionStorage.getItem('servicehub_public_digital_auto_sync') === '1';
+        hasKey = !!sessionStorage.getItem('servicehub_digital_share_key');
     } catch (_) {}
     if (!hasKey) {
         try {
             const metaSnap = await getDoc(doc(db, "artifacts", appId, "sharedDial", "meta"));
             if (metaSnap.exists() && metaSnap.data().digitalShareKey) {
-                try {
-                    sessionStorage.setItem("servicehub_digital_share_key", metaSnap.data().digitalShareKey);
-                } catch (_) {}
+                if (typeof window.__rememberDigitalShareKey === 'function') {
+                    window.__rememberDigitalShareKey(metaSnap.data().digitalShareKey);
+                } else {
+                    try {
+                        sessionStorage.setItem("servicehub_digital_share_key", metaSnap.data().digitalShareKey);
+                    } catch (_) {}
+                }
                 hasKey = true;
             }
         } catch (e) {
@@ -13506,10 +13475,6 @@ window.refreshDigitalPreview = async function () {
         return;
     }
 
-    if (typeof window.__enablePublicDigitalAutoSync === 'function') {
-        window.__enablePublicDigitalAutoSync();
-    }
-
     try {
         const ok = await Promise.resolve(
             typeof window.pushDigitalSnapshotFromLiveUI === 'function'
@@ -13517,7 +13482,7 @@ window.refreshDigitalPreview = async function () {
                 : false
         );
         if (ok && typeof window.__serviceHubFlashToast === 'function') {
-            window.__serviceHubFlashToast('Digital pubblicato sul cloud. Service Remote: premi AGGIORNA.', false, 'ok');
+            window.__serviceHubFlashToast('Digital pubblicato sul cloud.', false, 'ok');
         } else if (!ok && typeof window.__serviceHubFlashToast === 'function') {
             window.__serviceHubFlashToast(
                 'Anteprima aggiornata; cloud non pubblicato (rete, timeout o regole Firestore). Riprova o controlla LED verde.',
@@ -13599,7 +13564,10 @@ window.schedulePublicDigitalSnapshotSync = function () {
     }, 80);
 };
 
-window.pushPublicDigitalSnapshotQuiet = async function () {
+window.pushPublicDigitalSnapshotQuiet = async function (opts) {
+    const o = opts || {};
+    const force = o.force === true;
+    if (!force && !window.__publicDigitalAutoSyncEnabled) return false;
     if (!db || !user || !user.uid) return false;
     if (typeof window.buildDigitalCardsHTML !== "function") return false;
     if (typeof window.saveActiveRapportinoFromUI === 'function') {
@@ -13640,7 +13608,7 @@ window.pushPublicDigitalSnapshotQuiet = async function () {
         window.__rememberDigitalShareKey(shareKey);
     }
     if (!shareKey) {
-        if (!window.__publicDigitalAutoSyncEnabled) {
+        if (!force && !window.__publicDigitalAutoSyncEnabled) {
             return false;
         }
         shareKey =
@@ -14081,9 +14049,6 @@ window.__serviceHubShowDigitalRemoteLinkModal = function (href, options) {
 
 window.publishDigitalRemoteReport = async () => {
     try {
-        if (typeof window.__enablePublicDigitalAutoSync === 'function') {
-            window.__enablePublicDigitalAutoSync();
-        }
         if (!db || !user || !user.uid) {
             var needAuth =
                 "Serve il cloud attivo (LED verde). Accedi e riprova.";
@@ -14195,12 +14160,12 @@ window.publishDigitalRemoteReport = async () => {
         try {
             if (typeof window.__serviceHubWithTimeout === "function") {
                 pushed = !!(await window.__serviceHubWithTimeout(
-                    window.pushPublicDigitalSnapshotQuiet(),
+                    window.pushPublicDigitalSnapshotQuiet({ force: true }),
                     22000,
                     "Pubblicazione Digital su publicDigital"
                 ));
             } else {
-                pushed = !!(await window.pushPublicDigitalSnapshotQuiet());
+                pushed = !!(await window.pushPublicDigitalSnapshotQuiet({ force: true }));
             }
         } catch (e) {
             console.warn("[ServiceHub] publishDigitalRemoteReport push:", e && e.message);
@@ -17302,7 +17267,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=116')
+                navigator.serviceWorker.register('./sw.js?v=117')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();

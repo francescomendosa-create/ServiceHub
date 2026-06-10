@@ -7,7 +7,7 @@
     var SK = "servicehub_remote_share_k";
     var SA = "servicehub_remote_app_id";
     var FB_ORIGIN = "https://servicehub-18309.web.app";
-    window.SVCREMOTE_BUILD = "2026.06.10-v97";
+    window.SVCREMOTE_BUILD = "2026.06.10-v98";
 
     /** Vecchi link su GitHub → stesso remoto su Firebase. */
     (function redirectGithubToFirebase() {
@@ -776,14 +776,18 @@
       } catch (_) {}
     }
 
-    window.addEventListener("resize", function () {
-      applyDigitalPhoneLayoutIfNeeded(document.getElementById("digital-preview-container"));
-    });
+    function reapplyRemoteDeviceLayout() {
+      var root = document.getElementById("digital-preview-container");
+      if (!root) return;
+      applyDigitalPhoneLayoutIfNeeded(root);
+      applyRemoteLayoutPrefs(root);
+    }
+
+    window.addEventListener("resize", reapplyRemoteDeviceLayout);
     window.addEventListener("orientationchange", function () {
-      setTimeout(function () {
-        applyDigitalPhoneLayoutIfNeeded(document.getElementById("digital-preview-container"));
-      }, 200);
+      setTimeout(reapplyRemoteDeviceLayout, 200);
     });
+    window.addEventListener("pagehide", flushRemoteLayoutPrefsToStorage);
 
     const rootEl = document.getElementById("digital-preview-container");
 
@@ -1128,6 +1132,7 @@
         card.style.setProperty("margin-left", "auto", "important");
         card.style.setProperty("margin-right", "auto", "important");
       });
+      applyRemoteLayoutPrefs(root);
       enforceStoccFocusFullWidth(root);
     }
 
@@ -1359,17 +1364,48 @@
       });
     }
 
+    function normalizeRemoteLayoutStore(store) {
+      if (!store) store = { global: getDefaultLayoutPrefs(), modules: {}, selectedTarget: SRL_LAYOUT_TARGET_ALL };
+      store.global = clampLayoutPrefs(store.global);
+      store.modules = store.modules && typeof store.modules === "object" ? store.modules : {};
+      Object.keys(store.modules).forEach(function (k) {
+        store.modules[k] = clampLayoutPrefs(store.modules[k]);
+      });
+      if (!store.selectedTarget) store.selectedTarget = SRL_LAYOUT_TARGET_ALL;
+      return store;
+    }
+
+    function serializeRemoteLayoutStore(store) {
+      store = normalizeRemoteLayoutStore(store);
+      store.selectedTarget = __srlLayoutTarget || store.selectedTarget || SRL_LAYOUT_TARGET_ALL;
+      return JSON.stringify({
+        v: 3,
+        global: store.global,
+        modules: store.modules,
+        selectedTarget: store.selectedTarget
+      });
+    }
+
     function loadRemoteLayoutStore() {
       var store = {
         global: getDefaultLayoutPrefs(),
         modules: {},
         selectedTarget: SRL_LAYOUT_TARGET_ALL
       };
+      var migratedFromLegacy = false;
       try {
         var raw = localStorage.getItem(SRL_LAYOUT_STORAGE_KEY);
         if (!raw) {
           raw = localStorage.getItem("svc_remote_layout_prefs_v2");
-          if (!raw) raw = localStorage.getItem("svc_remote_layout_prefs_v1");
+          if (raw) migratedFromLegacy = true;
+          if (!raw) {
+            raw = localStorage.getItem("svc_remote_layout_prefs_v1");
+            if (raw) migratedFromLegacy = true;
+          }
+        }
+        if (!raw) {
+          raw = sessionStorage.getItem(SRL_LAYOUT_STORAGE_KEY);
+          if (!raw) raw = sessionStorage.getItem(SRL_LAYOUT_STORAGE_KEY + "_bak");
         }
         if (raw) {
           var parsed = JSON.parse(raw);
@@ -1382,19 +1418,32 @@
           }
         }
       } catch (_) {}
-      store.global = clampLayoutPrefs(store.global);
-      Object.keys(store.modules).forEach(function (k) {
-        store.modules[k] = clampLayoutPrefs(store.modules[k]);
-      });
-      if (!store.selectedTarget) store.selectedTarget = SRL_LAYOUT_TARGET_ALL;
+      store = normalizeRemoteLayoutStore(store);
+      if (migratedFromLegacy) saveRemoteLayoutStore(store);
       return store;
     }
 
     function saveRemoteLayoutStore(store) {
-      store.selectedTarget = __srlLayoutTarget || store.selectedTarget || SRL_LAYOUT_TARGET_ALL;
+      var payload = serializeRemoteLayoutStore(store);
       try {
-        localStorage.setItem(SRL_LAYOUT_STORAGE_KEY, JSON.stringify(store));
+        localStorage.setItem(SRL_LAYOUT_STORAGE_KEY, payload);
+        if (localStorage.getItem(SRL_LAYOUT_STORAGE_KEY) === payload) {
+          try {
+            sessionStorage.setItem(SRL_LAYOUT_STORAGE_KEY + "_bak", payload);
+          } catch (_) {}
+          return true;
+        }
       } catch (_) {}
+      try {
+        sessionStorage.setItem(SRL_LAYOUT_STORAGE_KEY, payload);
+        return true;
+      } catch (_) {}
+      return false;
+    }
+
+    function flushRemoteLayoutPrefsToStorage() {
+      var store = loadRemoteLayoutStore();
+      saveRemoteLayoutStore(store);
     }
 
     function loadRemoteLayoutPrefs() {
@@ -1740,6 +1789,7 @@
     }
 
     function setRemoteSettingsOpen(open) {
+      if (!open && __srlSettingsPanelOpen) flushRemoteLayoutPrefsToStorage();
       __srlSettingsPanelOpen = !!open;
       if (!open) __srlLayoutEditorOpen = false;
       var panel = document.getElementById("srl-settings-panel");

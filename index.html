@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.11-numpad-float';
+        window.SERVICEHUB_BUILD = '2026.06.12-numpad-v5';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
@@ -5158,9 +5158,7 @@ window.updateStoricoButton = async function() {
         };
 
         window.isNumpadDraggable = function () {
-            if (typeof window.isServiceHubPhone === 'function' && window.isServiceHubPhone()) return false;
-            if (typeof window.isServiceHubTablet === 'function' && window.isServiceHubTablet()) return true;
-            return typeof window.isServiceHubDesktop === 'function' && window.isServiceHubDesktop();
+            return typeof window.isNumpadFloatingDevice === 'function' && window.isNumpadFloatingDevice();
         };
 
         window.onNumpadOverlayClick = function (e) {
@@ -5215,44 +5213,59 @@ window.updateStoricoButton = async function() {
             };
 
             const endDrag = function () {
-                dragArmed = false;
                 if (!dragging) return;
                 dragging = false;
                 handle.classList.remove('numpad-drag-handle--active');
                 panel.classList.remove('numpad-modal-panel--dragging');
+                document.removeEventListener('mousemove', onMouseMove);
+                document.removeEventListener('mouseup', endDrag);
+                document.removeEventListener('touchmove', onTouchMove);
+                document.removeEventListener('touchend', endDrag);
+                document.removeEventListener('touchcancel', endDrag);
             };
 
-            let dragArmed = false;
+            const onMouseMove = function (e) {
+                e.preventDefault();
+                onMove(e.clientX, e.clientY);
+            };
 
-            handle.addEventListener('pointerdown', function (e) {
-                if (!window.isNumpadDraggable()) return;
-                if (e.target && e.target.closest && e.target.closest('button')) return;
-                if (e.button !== 0 && e.pointerType === 'mouse') return;
-                dragArmed = true;
-                dragging = false;
-                startX = e.clientX;
-                startY = e.clientY;
+            const onTouchMove = function (e) {
+                if (!e.touches[0]) return;
+                e.preventDefault();
+                onMove(e.touches[0].clientX, e.touches[0].clientY);
+            };
+
+            const beginDrag = function (clientX, clientY, e) {
+                if (!window.isNumpadDraggable()) return false;
+                dragging = true;
+                startX = clientX;
+                startY = clientY;
                 origX = (window.__numpadDragPos || { x: 0 }).x;
                 origY = (window.__numpadDragPos || { y: 0 }).y;
-                if (handle.setPointerCapture) handle.setPointerCapture(e.pointerId);
-                if (e.stopPropagation) e.stopPropagation();
-                e.preventDefault();
+                handle.classList.add('numpad-drag-handle--active');
+                panel.classList.add('numpad-modal-panel--dragging');
+                document.addEventListener('mousemove', onMouseMove);
+                document.addEventListener('mouseup', endDrag);
+                if (e && e.stopPropagation) e.stopPropagation();
+                if (e && e.preventDefault) e.preventDefault();
+                return true;
+            };
+
+            handle.addEventListener('mousedown', function (e) {
+                if (e.target && e.target.closest && e.target.closest('button')) return;
+                if (e.button !== 0) return;
+                beginDrag(e.clientX, e.clientY, e);
             });
 
-            handle.addEventListener('pointermove', function (e) {
-                if (!dragArmed) return;
-                const dx = e.clientX - startX;
-                const dy = e.clientY - startY;
-                if (!dragging && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
-                    dragging = true;
-                    handle.classList.add('numpad-drag-handle--active');
-                    panel.classList.add('numpad-modal-panel--dragging');
-                }
-                onMove(e.clientX, e.clientY);
-            });
-
-            handle.addEventListener('pointerup', endDrag);
-            handle.addEventListener('pointercancel', endDrag);
+            handle.addEventListener('touchstart', function (e) {
+                if (e.target && e.target.closest && e.target.closest('button')) return;
+                const t = e.touches[0];
+                if (!t) return;
+                if (!beginDrag(t.clientX, t.clientY, e)) return;
+                document.addEventListener('touchmove', onTouchMove, { passive: false });
+                document.addEventListener('touchend', endDrag);
+                document.addEventListener('touchcancel', endDrag);
+            }, { passive: false });
         };
 
         window.syncNumpadLivePreview = function () {
@@ -17461,7 +17474,7 @@ window.convertToHtml = async () => {
         #analisi-choice-modal { z-index: 10003; }
         #analisi-choice-modal-page2 { z-index: 10003; }
         .modal-content-centered { border-radius: 28px; border: 4px solid var(--border-main); max-width: 400px; width: 92%; background: var(--bg-modal); overflow: hidden; transform: translateY(-120vh) scale(0.9); opacity: 0; transition: transform 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.1), opacity 0.5s ease; }
-        .modal-overlay.active .modal-content-centered { transform: translateY(0) scale(1); opacity: 1; }
+        .modal-overlay.active:not(#numpad-modal) .modal-content-centered { transform: translateY(0) scale(1); opacity: 1; }
         .modal-overlay.exit-left .modal-content-centered { transform: translateX(-160%) rotate(-8deg); opacity: 0; transition: all 0.5s cubic-bezier(0.4, 0, 1, 1); }
         .modal-overlay.exit-right .modal-content-centered { transform: translateX(160%) rotate(8deg); opacity: 0; transition: all 0.5s cubic-bezier(0.4, 0, 1, 1); }
 
@@ -17963,65 +17976,53 @@ window.convertToHtml = async () => {
             box-shadow: inset 0 1px 3px rgba(15, 23, 42, 0.08);
             box-sizing: border-box;
         }
-        /* Numpad: compare lentamente al centro (tablet + PC) */
-        #numpad-modal {
+        /* Numpad: sempre centrato, animazione fade al centro (non influenzato da .modal-content-centered generico) */
+        #numpad-modal.modal-overlay {
+            display: flex !important;
             align-items: center !important;
             justify-content: center !important;
             padding: max(18px, calc(env(safe-area-inset-top, 0px) + 12px)) 14px max(18px, env(safe-area-inset-bottom, 0px)) !important;
         }
-        #numpad-modal #numpad-modal-panel {
-            margin: 0 auto;
-            width: min(94vw, 400px);
-            max-width: 400px;
+        #numpad-modal #numpad-modal-panel.modal-content-centered {
+            margin: 0 auto !important;
+            width: min(94vw, 400px) !important;
+            max-width: 400px !important;
             flex-shrink: 0;
             pointer-events: auto;
-            transform: scale(0.9) translateY(18px) !important;
+            transform: scale(0.9) !important;
             opacity: 0;
-            transition: transform 0.72s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.58s ease;
+            transition: transform 0.72s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.58s ease !important;
         }
-        #numpad-modal.active #numpad-modal-panel:not(.numpad-modal-panel--user-pos) {
-            transform: scale(1) translateY(0) !important;
-            opacity: 1;
+        #numpad-modal.active #numpad-modal-panel.modal-content-centered:not(.numpad-modal-panel--user-pos) {
+            transform: scale(1) !important;
+            opacity: 1 !important;
         }
         #numpad-modal.active #numpad-modal-panel.numpad-modal-panel--user-pos {
-            opacity: 1;
+            opacity: 1 !important;
         }
         #numpad-modal.active #numpad-modal-panel.numpad-modal-panel--dragging {
             transition: none !important;
             user-select: none;
         }
-        /* Smartphone: centrato come prima, fade + scale */
-        body.sh-device-phone #numpad-modal #numpad-modal-panel {
-            transform: scale(0.92) !important;
-            opacity: 0;
-        }
-        body.sh-device-phone #numpad-modal.active #numpad-modal-panel:not(.numpad-modal-panel--user-pos) {
-            transform: scale(1) !important;
-            opacity: 1;
-        }
-        /* PC + tablet: sfondo nitido, click passa sotto tranne sul pannello */
+        /* PC + tablet: sfondo nitido */
         body:not(.sh-device-phone) #numpad-modal.active {
             background: transparent !important;
             backdrop-filter: none !important;
             -webkit-backdrop-filter: none !important;
             pointer-events: none;
-            display: flex !important;
         }
         body:not(.sh-device-phone) #numpad-modal.active #numpad-modal-panel {
             pointer-events: auto;
             box-shadow: 0 16px 48px rgba(0, 0, 0, 0.28), 0 4px 12px rgba(0, 0, 0, 0.18);
         }
-        /* Trascinamento: solo PC desktop */
         body:not(.sh-device-phone) .numpad-drag-handle {
             touch-action: none;
+            cursor: grab;
+            user-select: none;
+            -webkit-user-select: none;
         }
-        @media (hover: hover) and (pointer: fine) {
-            .numpad-drag-handle {
-                cursor: grab;
-            }
-            .numpad-drag-handle.numpad-drag-handle--active {
-                cursor: grabbing;
-            }
+        body:not(.sh-device-phone) .numpad-drag-handle.numpad-drag-handle--active {
+            cursor: grabbing;
         }
         #numpad-modal #numpad-display {
             display: block;
@@ -20453,7 +20454,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=117')
+                navigator.serviceWorker.register('./sw.js?v=118')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();

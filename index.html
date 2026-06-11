@@ -636,7 +636,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.11-popup-animations';
+        window.SERVICEHUB_BUILD = '2026.06.11-popup-stable';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
@@ -5361,12 +5361,12 @@ window.updateStoricoButton = async function() {
             forceBlur();
             const m = document.getElementById('vwt-modal');
             if (!m) return;
-            m.classList.remove('exit-left', 'exit-right', 'active');
+            m.classList.remove('exit-left', 'exit-right', 'active', 'amb-modal-stack', 'amb-modal-entering');
             document.querySelectorAll('#vwt-modal .vwt-btn.is-selected').forEach(function (b) {
                 b.classList.remove('is-selected');
             });
             const meter = document.getElementById('vwt-meter-modal');
-            if (meter) meter.classList.remove('active', 'exit-left', 'exit-right');
+            if (meter) meter.classList.remove('active', 'exit-left', 'exit-right', 'amb-modal-stack', 'amb-modal-entering');
             if (typeof window.__activateModalAnimated === 'function') window.__activateModalAnimated(m);
             else window.__openAmbModalNow(m);
         };
@@ -6239,16 +6239,17 @@ window.updateStoricoButton = async function() {
         
         window.animateVwtSelection = (btn, value) => {
             const modal = document.getElementById('vwt-modal');
-            if (!modal || !btn) return;
+            const meter = document.getElementById('vwt-meter-modal');
+            if (!modal || !btn || !meter) return;
             btn.classList.add('is-selected');
             setTimeout(() => {
-                modal.classList.add('exit-left');
-                setTimeout(() => {
-                    window.selectVwtOption(value);
-                    modal.classList.remove('active', 'exit-left');
-                    btn.classList.remove('is-selected');
-                    setTimeout(window.openVwtMeterPopup, 100);
-                }, 400);
+                window.selectVwtOption(value);
+                const vwtNotes = document.getElementById('vwt-notes') || document.getElementById('inp-vwt-notes');
+                const meterInput = document.getElementById('vwt-meter-input');
+                if (meterInput) meterInput.value = (vwtNotes ? vwtNotes.value.replace(' mc', '') : '') || '100';
+                window.__handoffAmbModal(modal, meter, 'exit-left', {
+                    onAfter: function () { btn.classList.remove('is-selected'); }
+                });
             }, 300);
         };
 
@@ -6321,11 +6322,9 @@ window.updateStoricoButton = async function() {
                 }
             }
             const m = document.getElementById('vwt-meter-modal');
-            m.classList.add('exit-right');
-            setTimeout(() => {
-                m.classList.remove('active', 'exit-right');
-                window.openOsmosiPopup();
-            }, 400);
+            const osmosi = document.getElementById('osmosi-modal');
+            if (typeof window.__restoreOsmosiPopupState === 'function') window.__restoreOsmosiPopupState();
+            window.__handoffAmbModal(m, osmosi, 'exit-right');
         };
 
         window.__clearPopupInteractionLocks = function () {
@@ -6337,14 +6336,51 @@ window.updateStoricoButton = async function() {
             if (shield) shield.style.display = 'none';
         };
 
-        window.__activateModalAnimated = function (modalEl) {
+        window.__AMB_MODAL_MS = 420;
+
+        window.__activateModalAnimated = function (modalEl, stacked) {
             if (!modalEl) return;
-            modalEl.classList.remove('exit-left', 'exit-right', 'active');
-            void modalEl.offsetHeight;
-            requestAnimationFrame(function () {
-                modalEl.classList.add('active');
+            modalEl.classList.remove('exit-left', 'exit-right');
+            if (stacked) modalEl.classList.add('amb-modal-stack');
+            else modalEl.classList.remove('amb-modal-stack');
+            const wasActive = modalEl.classList.contains('active');
+            if (!wasActive) {
+                modalEl.classList.add('active', 'amb-modal-entering');
+                void modalEl.offsetHeight;
+                requestAnimationFrame(function () {
+                    modalEl.classList.remove('amb-modal-entering');
+                    if (typeof window.__syncModalBodyLock === 'function') window.__syncModalBodyLock();
+                });
+            } else if (stacked) {
+                modalEl.classList.add('amb-modal-entering');
+                void modalEl.offsetHeight;
+                requestAnimationFrame(function () {
+                    modalEl.classList.remove('amb-modal-entering');
+                });
                 if (typeof window.__syncModalBodyLock === 'function') window.__syncModalBodyLock();
-            });
+            } else if (typeof window.__syncModalBodyLock === 'function') {
+                window.__syncModalBodyLock();
+            }
+        };
+
+        window.__handoffAmbModal = function (fromModal, toModal, exitClass, opts) {
+            opts = opts || {};
+            exitClass = exitClass || 'exit-left';
+            const ms = opts.duration || window.__AMB_MODAL_MS || 420;
+            if (toModal) window.__activateModalAnimated(toModal, true);
+            if (fromModal) {
+                fromModal.classList.remove('amb-modal-stack');
+                fromModal.classList.add(exitClass);
+                if (typeof window.__syncModalBodyLock === 'function') window.__syncModalBodyLock();
+                setTimeout(function () {
+                    fromModal.classList.remove('active', 'exit-left', 'exit-right');
+                    if (toModal) toModal.classList.remove('amb-modal-stack');
+                    if (typeof window.__syncModalBodyLock === 'function') window.__syncModalBodyLock();
+                    if (typeof opts.onAfter === 'function') opts.onAfter();
+                }, ms);
+            } else if (typeof opts.onAfter === 'function') {
+                opts.onAfter();
+            }
         };
 
         window.__applyAmbDisplayFieldStyles = function () {
@@ -6391,8 +6427,10 @@ window.updateStoricoButton = async function() {
 
         window.__syncModalBodyLock = function () {
             const ambOpen = document.querySelector('#vwt-modal.active,#vwt-meter-modal.active,#osmosi-modal.active,#osmosi-match-modal.active,#analisi-choice-modal.active,#analisi-choice-modal-page2.active');
-            const animOpen = document.querySelector('.modal-overlay.exit-left, .modal-overlay.exit-right');
+            const animOpen = document.querySelector('#vwt-modal.exit-left,#vwt-meter-modal.exit-left,#osmosi-modal.exit-left,#osmosi-match-modal.exit-left,#analisi-choice-modal.exit-left,#vwt-modal.exit-right,#vwt-meter-modal.exit-right,#osmosi-modal.exit-right,#osmosi-match-modal.exit-right,#analisi-choice-modal.exit-right');
             const locked = !!ambOpen || !!animOpen || !!window.__osmosiFlowLock;
+            const had = document.body.classList.contains('sh-modal-open');
+            if (had === locked) return;
             document.body.classList.toggle('sh-modal-open', locked);
             document.documentElement.classList.toggle('sh-modal-open', locked);
         };
@@ -6587,25 +6625,12 @@ window.updateStoricoButton = async function() {
             }
         };
 
-        window.openOsmosiPopup = () => {
-            const now = Date.now();
-            if (now - window.__lastOsmosiPopupOpenMs < 350) return;
-            if (window.__osmosiFlowLock) return;
-            const matchModalEarly = document.getElementById('osmosi-match-modal');
-            if (matchModalEarly && matchModalEarly.classList.contains('active')) return;
-            window.__lastOsmosiPopupOpenMs = now;
-            if (typeof window.__clearPopupInteractionLocks === 'function') window.__clearPopupInteractionLocks();
-            forceBlur();
-
-            const m = document.getElementById('osmosi-modal');
-            if (!m) return;
-            m.classList.remove('exit-left', 'exit-right', 'active');
+        window.__restoreOsmosiPopupState = function () {
             document.querySelectorAll('#osmosi-modal .osmosi-btn.is-selected').forEach(function (b) {
                 b.classList.remove('is-selected');
             });
             const matchModal = document.getElementById('osmosi-match-modal');
-            if (matchModal) matchModal.classList.remove('active', 'exit-left', 'exit-right');
-
+            if (matchModal) matchModal.classList.remove('active', 'exit-left', 'exit-right', 'amb-modal-stack', 'amb-modal-entering');
             let restoredUnits = [];
             const inpMeta = window.__resolveOsmosiInput && window.__resolveOsmosiInput();
             if (inpMeta) {
@@ -6619,6 +6644,22 @@ window.updateStoricoButton = async function() {
             }
             selectedOsmosiUnits = restoredUnits;
             currentMatches = {};
+        };
+
+        window.openOsmosiPopup = () => {
+            const now = Date.now();
+            if (now - window.__lastOsmosiPopupOpenMs < 350) return;
+            if (window.__osmosiFlowLock) return;
+            const matchModalEarly = document.getElementById('osmosi-match-modal');
+            if (matchModalEarly && matchModalEarly.classList.contains('active')) return;
+            window.__lastOsmosiPopupOpenMs = now;
+            if (typeof window.__clearPopupInteractionLocks === 'function') window.__clearPopupInteractionLocks();
+            forceBlur();
+
+            const m = document.getElementById('osmosi-modal');
+            if (!m) return;
+            m.classList.remove('exit-left', 'exit-right', 'active', 'amb-modal-stack', 'amb-modal-entering');
+            window.__restoreOsmosiPopupState();
 
             if (typeof window.__activateModalAnimated === 'function') window.__activateModalAnimated(m);
             else window.__openAmbModalNow(m);
@@ -6728,22 +6769,22 @@ window.updateStoricoButton = async function() {
         
         window.animateOsmosiSelection = (btn, value) => {
             const modal = document.getElementById('osmosi-modal');
-            if (!modal || !btn || window.__osmosiFlowLock) return;
+            const matchModal = document.getElementById('osmosi-match-modal');
+            if (!modal || !btn || !matchModal || window.__osmosiFlowLock) return;
             window.__osmosiFlowSnapshot = window.__captureOsmosiState();
             window.__osmosiFlowLock = true;
             btn.classList.add('is-selected');
             setTimeout(() => {
-                modal.classList.add('exit-left');
-                setTimeout(() => {
-                    const units = window.selectOsmosiOption(value, { deferLabel: true }) || [];
-                    modal.classList.remove('active', 'exit-left');
+                const units = window.selectOsmosiOption(value, { deferLabel: true }) || [];
+                if (value && units.length) {
+                    window.__fillOsmosiMatchList(units);
+                    window.__handoffAmbModal(modal, matchModal, 'exit-left', {
+                        onAfter: function () { btn.classList.remove('is-selected'); }
+                    });
+                } else {
                     btn.classList.remove('is-selected');
-                    if (value && units.length) {
-                        setTimeout(function () { window.openOsmosiMatchPopup(units, { stack: true }); }, 150);
-                    } else {
-                        window.__osmosiFlowLock = false;
-                    }
-                }, 400);
+                    window.__osmosiFlowLock = false;
+                }
             }, 300);
         };
 
@@ -6807,23 +6848,13 @@ window.updateStoricoButton = async function() {
             return units;
         };
 
-        window.openOsmosiMatchPopup = (units, opts) => {
-            opts = opts || {};
-            if (!opts.stack) {
-                if (typeof window.__clearPopupInteractionLocks === 'function') window.__clearPopupInteractionLocks();
-                forceBlur();
-            }
-
-            const m = document.getElementById('osmosi-match-modal');
+        window.__fillOsmosiMatchList = function (units) {
             const container = document.getElementById('osmosi-match-list');
-            if (!m || !container) return;
-
+            if (!container) return [];
             const unitList = (units && units.length) ? units.slice() : ((selectedOsmosiUnits && selectedOsmosiUnits.length) ? selectedOsmosiUnits.slice() : window.__parseOsmosiUnitsFromLabel());
-            if (!unitList.length) return;
-
+            if (!unitList.length) return [];
             selectedOsmosiUnits = unitList.slice();
             currentMatches = {};
-
             container.innerHTML = '';
             unitList.forEach(function (unit) {
                 const safeUnit = String(unit).replace(/'/g, "\\'");
@@ -6841,12 +6872,21 @@ window.updateStoricoButton = async function() {
                     </div>`;
                 container.appendChild(row);
             });
-
             if (window.__osmosiUnitsIncludeC(unitList)) {
                 window.__applyDefaultOsmosiCMatches();
                 window.__preselectOsmosiCInMatchPopup(container);
             }
+            return unitList;
+        };
 
+        window.openOsmosiMatchPopup = (units, opts) => {
+            opts = opts || {};
+            if (!opts.stack) {
+                if (typeof window.__clearPopupInteractionLocks === 'function') window.__clearPopupInteractionLocks();
+                forceBlur();
+            }
+            const m = document.getElementById('osmosi-match-modal');
+            if (!m || !window.__fillOsmosiMatchList(units).length) return;
             if (typeof window.__activateModalAnimated === 'function') window.__activateModalAnimated(m);
             else window.__openAmbModalNow(m);
         };
@@ -6957,13 +6997,14 @@ window.updateStoricoButton = async function() {
             window.__commitOsmosiInterfaceState(demiUnits, pozziUnits, finalStrWithArrows.toUpperCase());
             window.__osmosiFlowSnapshot = null;
             const m = document.getElementById('osmosi-match-modal');
-            m.classList.add('exit-right');
-            setTimeout(() => {
-                m.classList.remove('active', 'exit-right');
-                window.__osmosiFlowLock = false;
-                window.__flushPlantCloudSaveNow && window.__flushPlantCloudSaveNow(true);
-                window.openAnalisiPopup();
-            }, 400);
+            const analisi = document.getElementById('analisi-choice-modal');
+            window.__handoffAmbModal(m, analisi, 'exit-right', {
+                onAfter: function () {
+                    window.__osmosiFlowLock = false;
+                    window.__flushPlantCloudSaveNow && window.__flushPlantCloudSaveNow(true);
+                    if (typeof window.initRapportoConversione === 'function') setTimeout(window.initRapportoConversione, 50);
+                }
+            });
         };
 
         window.setOsmosiMatch = (unit, target, btn) => {
@@ -16833,14 +16874,49 @@ window.convertToHtml = async () => {
         
         .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0); backdrop-filter: blur(0px); visibility: hidden; display: flex; justify-content: center; align-items: center; z-index: 10001; transition: background-color 0.35s ease, visibility 0s linear 0.35s; pointer-events: none; -webkit-backface-visibility: hidden; backface-visibility: hidden; }
         .modal-overlay.active { background: rgba(0,0,0,0.72); backdrop-filter: blur(5px); visibility: visible; transition: background-color 0.35s ease, visibility 0s; pointer-events: auto; }
-        .modal-overlay.exit-left,
-        .modal-overlay.exit-right { background: rgba(0,0,0,0.72); visibility: visible; transition: background-color 0.2s ease, visibility 0s; pointer-events: none; }
+        #vwt-modal,
+        #vwt-meter-modal,
+        #osmosi-modal,
+        #osmosi-match-modal,
+        #analisi-choice-modal {
+            -webkit-transform: translateZ(0);
+            transform: translateZ(0);
+            transition: visibility 0s linear 0.35s;
+        }
+        #vwt-modal.active,
+        #vwt-meter-modal.active,
+        #osmosi-modal.active,
+        #osmosi-match-modal.active,
+        #analisi-choice-modal.active,
+        #vwt-modal.exit-left,
+        #vwt-meter-modal.exit-left,
+        #osmosi-modal.exit-left,
+        #osmosi-match-modal.exit-left,
+        #analisi-choice-modal.exit-left,
+        #vwt-modal.exit-right,
+        #vwt-meter-modal.exit-right,
+        #osmosi-modal.exit-right,
+        #osmosi-match-modal.exit-right,
+        #analisi-choice-modal.exit-right {
+            backdrop-filter: none;
+            -webkit-backdrop-filter: none;
+            background: rgba(0, 0, 0, 0.72);
+            transition: visibility 0s;
+        }
+        .modal-overlay.amb-modal-stack {
+            background: rgba(0, 0, 0, 0) !important;
+            backdrop-filter: none !important;
+            -webkit-backdrop-filter: none !important;
+            pointer-events: none;
+            transition: none !important;
+        }
+        .modal-overlay.amb-modal-stack .modal-content-centered { pointer-events: auto; }
         #osmosi-match-modal { z-index: 10002; }
         #vwt-meter-modal { z-index: 10002; }
         #analisi-choice-modal { z-index: 10003; }
         .modal-content-centered { border-radius: 28px; border: 4px solid var(--border-main); max-width: 400px; width: 92%; background: var(--bg-modal); overflow: hidden; transform: translateY(-120vh) scale(0.9); opacity: 0; transition: transform 0.45s cubic-bezier(0.175, 0.885, 0.32, 1.1), opacity 0.35s ease; -webkit-backface-visibility: hidden; backface-visibility: hidden; }
         .modal-overlay.active .modal-content-centered { transform: translateY(0) scale(1); opacity: 1; }
-        
+        .modal-overlay.active.amb-modal-entering .modal-content-centered { transform: translateY(-120vh) scale(0.9); opacity: 0; }
         .modal-overlay.exit-left .modal-content-centered { transform: translateX(-160%) rotate(-8deg); opacity: 0; transition: transform 0.42s cubic-bezier(0.4, 0, 1, 1), opacity 0.35s ease; }
         .modal-overlay.exit-right .modal-content-centered { transform: translateX(160%) rotate(8deg); opacity: 0; transition: transform 0.42s cubic-bezier(0.4, 0, 1, 1), opacity 0.35s ease; }
 

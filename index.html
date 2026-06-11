@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.12-numpad-v6';
+        window.SERVICEHUB_BUILD = '2026.06.12-numpad-v7';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
@@ -5174,6 +5174,8 @@ window.updateStoricoButton = async function() {
             const panel = document.getElementById('numpad-modal-panel');
             if (!panel) return;
             panel.classList.remove('numpad-modal-panel--user-pos');
+            panel.style.removeProperty('--numpad-tx');
+            panel.style.removeProperty('--numpad-ty');
             panel.style.transform = '';
         };
 
@@ -5183,11 +5185,14 @@ window.updateStoricoButton = async function() {
             const d = window.__numpadDragPos || { x: 0, y: 0 };
             if (!d.x && !d.y) {
                 panel.classList.remove('numpad-modal-panel--user-pos');
+                panel.style.removeProperty('--numpad-tx');
+                panel.style.removeProperty('--numpad-ty');
                 panel.style.transform = '';
                 return;
             }
             panel.classList.add('numpad-modal-panel--user-pos');
-            panel.style.transform = 'translate(' + d.x + 'px, ' + d.y + 'px)';
+            panel.style.setProperty('--numpad-tx', d.x + 'px');
+            panel.style.setProperty('--numpad-ty', d.y + 'px');
         };
 
         window.initNumpadDrag = function () {
@@ -5198,12 +5203,23 @@ window.updateStoricoButton = async function() {
             window.__numpadDragInited = true;
 
             let dragging = false;
+            let pendingDrag = false;
             let startX = 0;
             let startY = 0;
             let origX = 0;
             let origY = 0;
+            const DRAG_THRESHOLD = 4;
 
             const onMove = function (clientX, clientY) {
+                if (pendingDrag && !dragging) {
+                    const dx = clientX - startX;
+                    const dy = clientY - startY;
+                    if (Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+                    dragging = true;
+                    pendingDrag = false;
+                    handle.classList.add('numpad-drag-handle--active');
+                    panel.classList.add('numpad-modal-panel--dragging');
+                }
                 if (!dragging) return;
                 window.__numpadDragPos = {
                     x: origX + (clientX - startX),
@@ -5213,59 +5229,52 @@ window.updateStoricoButton = async function() {
             };
 
             const endDrag = function () {
+                pendingDrag = false;
                 if (!dragging) return;
                 dragging = false;
                 handle.classList.remove('numpad-drag-handle--active');
                 panel.classList.remove('numpad-modal-panel--dragging');
-                document.removeEventListener('mousemove', onMouseMove);
-                document.removeEventListener('mouseup', endDrag);
-                document.removeEventListener('touchmove', onTouchMove);
-                document.removeEventListener('touchend', endDrag);
-                document.removeEventListener('touchcancel', endDrag);
+                try { handle.releasePointerCapture(handle.__numpadDragPointerId); } catch (_) {}
+                handle.__numpadDragPointerId = null;
             };
 
-            const onMouseMove = function (e) {
+            const onPointerMove = function (e) {
+                if (!pendingDrag && !dragging) return;
                 e.preventDefault();
                 onMove(e.clientX, e.clientY);
             };
 
-            const onTouchMove = function (e) {
-                if (!e.touches[0]) return;
-                e.preventDefault();
-                onMove(e.touches[0].clientX, e.touches[0].clientY);
-            };
-
             const beginDrag = function (clientX, clientY, e) {
                 if (!window.isNumpadDraggable()) return false;
-                dragging = true;
+                if (pendingDrag || dragging) return true;
+                pendingDrag = true;
+                dragging = false;
                 startX = clientX;
                 startY = clientY;
                 origX = (window.__numpadDragPos || { x: 0 }).x;
                 origY = (window.__numpadDragPos || { y: 0 }).y;
-                handle.classList.add('numpad-drag-handle--active');
-                panel.classList.add('numpad-modal-panel--dragging');
-                document.addEventListener('mousemove', onMouseMove);
-                document.addEventListener('mouseup', endDrag);
+                if (e && e.pointerId != null) {
+                    handle.__numpadDragPointerId = e.pointerId;
+                    try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+                }
                 if (e && e.stopPropagation) e.stopPropagation();
                 if (e && e.preventDefault) e.preventDefault();
                 return true;
             };
 
-            handle.addEventListener('mousedown', function (e) {
-                if (e.target && e.target.closest && e.target.closest('button')) return;
-                if (e.button !== 0) return;
+            const isDragExcludedTarget = function (target) {
+                return !!(target && target.closest && target.closest('button'));
+            };
+
+            handle.addEventListener('pointerdown', function (e) {
+                if (isDragExcludedTarget(e.target)) return;
+                if (e.pointerType === 'mouse' && e.button !== 0) return;
                 beginDrag(e.clientX, e.clientY, e);
             });
 
-            handle.addEventListener('touchstart', function (e) {
-                if (e.target && e.target.closest && e.target.closest('button')) return;
-                const t = e.touches[0];
-                if (!t) return;
-                if (!beginDrag(t.clientX, t.clientY, e)) return;
-                document.addEventListener('touchmove', onTouchMove, { passive: false });
-                document.addEventListener('touchend', endDrag);
-                document.addEventListener('touchcancel', endDrag);
-            }, { passive: false });
+            handle.addEventListener('pointermove', onPointerMove);
+            handle.addEventListener('pointerup', endDrag);
+            handle.addEventListener('pointercancel', endDrag);
         };
 
         window.syncNumpadLivePreview = function () {
@@ -17986,21 +17995,24 @@ window.convertToHtml = async () => {
             padding: max(18px, calc(env(safe-area-inset-top, 0px) + 12px)) 14px max(18px, env(safe-area-inset-bottom, 0px)) !important;
         }
         #numpad-modal #numpad-modal-panel.modal-content-centered {
+            --numpad-tx: 0px;
+            --numpad-ty: 0px;
             margin: 0 auto !important;
             width: min(94vw, 400px) !important;
             max-width: 400px !important;
             flex-shrink: 0;
             pointer-events: auto;
-            transform: scale(0.9) !important;
+            transform: translate(var(--numpad-tx), var(--numpad-ty)) scale(0.9) !important;
             opacity: 0;
             transition: transform 0.72s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.58s ease !important;
         }
         #numpad-modal.active #numpad-modal-panel.modal-content-centered:not(.numpad-modal-panel--user-pos) {
-            transform: scale(1) !important;
+            transform: translate(0, 0) scale(1) !important;
             opacity: 1 !important;
         }
         #numpad-modal.active #numpad-modal-panel.numpad-modal-panel--user-pos {
             opacity: 1 !important;
+            transform: translate(var(--numpad-tx), var(--numpad-ty)) scale(1) !important;
         }
         #numpad-modal.active #numpad-modal-panel.numpad-modal-panel--dragging {
             transition: none !important;
@@ -20485,7 +20497,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=119')
+                navigator.serviceWorker.register('./sw.js?v=120')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();

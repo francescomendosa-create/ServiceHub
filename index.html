@@ -1098,12 +1098,11 @@ window.colorPreviewNumber = function(tankName, value) {
             syncStatus: 'offline' // 'offline' | 'syncing' | 'synced' | 'conflict'
         };
         
-        /** Solo lettura locale/cloud in memoria — MAI setDoc qui (bruciava la quota Firestore). */
+        /** Cache memoria (APP_DB + alarmConfig): nessuna lettura Firestore durante digitazione o colorazione. */
         window.getAlarmConfig = function () {
             const localData = (window.APP_DB && window.APP_DB.alarms) || {};
             const cloudData = window.alarmConfig || {};
-            if (cloudData && Object.keys(cloudData).length) return cloudData;
-            return localData;
+            return Object.assign({}, localData, cloudData);
         };
         
         // Sync da locale a cloud
@@ -2515,6 +2514,22 @@ window.colorPreviewNumber = function(tankName, value) {
         };
 
         window.refreshTankLevelAlarmVisuals = window.colorAllTankInputs;
+
+        /** Colorazione allarme su un solo campo — solo cache locale, nessuna rete. */
+        window.refreshAlarmVisualForField = function (el, forceMin) {
+            if (!el || !el.id) return;
+            if (['ph', 'cloro', 'reintegro'].includes(el.id)) {
+                if (typeof window.colorScamInputs === 'function') window.colorScamInputs(forceMin);
+                return;
+            }
+            if (typeof window.colorTankInput === 'function') {
+                window.colorTankInput(el);
+                return;
+            }
+            if (typeof window.applyAlarmLevelFillToField === 'function') {
+                window.applyAlarmLevelFillToField(el, forceMin);
+            }
+        };
 
         window.__snapshotStabilePlantLocalOnly = function () {
             if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
@@ -4933,14 +4948,8 @@ window.updateStoricoButton = async function() {
                     if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') return;
                     if (!el.closest || !el.closest('.main-container')) return;
                     if (el.closest('#settings-modal') || el.closest('#management-modal') || el.closest('#shift-modal')) return;
-                    if (typeof window.applyAlarmLevelFillToField === 'function') {
-                        window.applyAlarmLevelFillToField(el, true);
-                    }
-                    if (typeof window.colorTankInput === 'function') {
-                        window.colorTankInput(el);
-                    }
-                    if (['ph', 'cloro', 'reintegro'].includes(el.id) && typeof window.colorScamInputs === 'function') {
-                        window.colorScamInputs(true);
+                    if (typeof window.refreshAlarmVisualForField === 'function') {
+                        window.refreshAlarmVisualForField(el, true);
                     }
                 },
                 true
@@ -4983,11 +4992,8 @@ window.updateStoricoButton = async function() {
             
             // Applica colorazione input serbatoi
             setTimeout(() => {
-                if (!(window.__shIsAndroidTablet && window.__shIsAndroidTablet())) {
-                    window.colorAllTankInputs();
-                }
-                
-                // Aggiungi event listener per input change
+                window.colorAllTankInputs();
+
                 const tankInputIds = [
                     'inp-s818', 'inp-s817', 'inp-s846', 'inp-s848', 'inp-s854', 'inp-s864', 'inp-s121',
                     'inp-tk9000', 'inp-s133', 'inp-tk9201', 'inp-tk9204', 'inp-tk9205', 'inp-tk10000',
@@ -5000,80 +5006,38 @@ window.updateStoricoButton = async function() {
                     'inp-sf3', 'inp-s829', 'inp-daf', 'tk101',
                     'val-az-n2', 'val-az-pon', 'val-az-102a', 'val-az-102b'
                 ];
-                
-                if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) return;
 
-                tankInputIds.forEach(inputId => {
-                    const input = document.getElementById(inputId);
-                    if (input) {
-                        // Aggiungi event listener per input e change
-                        input.addEventListener('input', function() {
-                            if (!String(this.value == null ? '' : this.value).trim()) {
-                                this.style.backgroundColor = '';
-                                this.style.color = '';
-                                this.style.fontWeight = '';
-                                this.classList.remove('tank-warning', 'tank-critical', 'tank-normal');
-                            } else {
-                                window.colorTankInput(this);
-                            }
-                        });
-                        
-                        input.addEventListener('change', function() {
-                            window.colorTankInput(this);
-                        });
-                    }
-                });
-
-                // ✅ AGGIUNGI EVENT LISTENER PER TUTTI GLI INPUT TK (colorazione istantanea)
-                const allTankInputs = document.querySelectorAll('input[type="tel"]');
-                allTankInputs.forEach(input => {
-                    if (input && input.id && !tankInputIds.includes(input.id) && !['ph', 'cloro', 'reintegro'].includes(input.id)) {
-                        // Rimuovi event listener esistenti per evitare duplicazioni
-                        input.removeEventListener('input', handleTankInput);
-                        input.removeEventListener('change', handleTankInput);
-                        
-                        // Aggiungi event listener per input istantaneo
-                        input.addEventListener('input', handleTankInput);
-                        
-                        // Aggiungi event listener per change
-                        input.addEventListener('change', handleTankInput);
-                    }
-                });
-
-                // Funzione handler per evitare duplicazioni
-                function handleTankInput() {
-                    if (!String(this.value == null ? '' : this.value).trim()) {
-                        this.style.backgroundColor = '';
-                        this.style.color = '';
-                        this.style.fontWeight = '';
-                        this.classList.remove('tank-warning', 'tank-critical', 'tank-normal');
-                    } else {
-                        window.colorTankInput(this);
+                function handleAlarmFieldInput() {
+                    if (typeof window.refreshAlarmVisualForField === 'function') {
+                        window.refreshAlarmVisualForField(this);
                     }
                 }
 
-                // ✅ AGGIUNGI EVENT LISTENER PER INPUT SCAM (ph, cloro, reintegro)
-                const scamInputIds = ['ph', 'cloro', 'reintegro'];
-                scamInputIds.forEach(inputId => {
+                tankInputIds.forEach(inputId => {
                     const input = document.getElementById(inputId);
-                    if (input) {
-                        // Aggiungi event listener per input istantaneo
-                        input.addEventListener('input', function() {
-                            if (!this.value) {
-                                this.style.backgroundColor = '';
-                                this.style.color = '';
-                                this.style.fontWeight = '';
-                                this.classList.remove('tank-warning', 'tank-critical');
-                            } else {
-                                window.colorScamInputs();
-                            }
-                        });
-                        
-                        // Aggiungi event listener per change
-                        input.addEventListener('change', function() {
-                            window.colorScamInputs();
-                        });
-                    }
+                    if (!input) return;
+                    input.removeEventListener('input', handleAlarmFieldInput);
+                    input.removeEventListener('change', handleAlarmFieldInput);
+                    input.addEventListener('input', handleAlarmFieldInput);
+                    input.addEventListener('change', handleAlarmFieldInput);
+                });
+
+                document.querySelectorAll('input[type="tel"]').forEach(input => {
+                    if (!input || !input.id) return;
+                    if (tankInputIds.includes(input.id)) return;
+                    input.removeEventListener('input', handleAlarmFieldInput);
+                    input.removeEventListener('change', handleAlarmFieldInput);
+                    input.addEventListener('input', handleAlarmFieldInput);
+                    input.addEventListener('change', handleAlarmFieldInput);
+                });
+
+                ['ph', 'cloro', 'reintegro'].forEach(inputId => {
+                    const input = document.getElementById(inputId);
+                    if (!input) return;
+                    input.removeEventListener('input', handleAlarmFieldInput);
+                    input.removeEventListener('change', handleAlarmFieldInput);
+                    input.addEventListener('input', handleAlarmFieldInput);
+                    input.addEventListener('change', handleAlarmFieldInput);
                 });
             }, 100);
             
@@ -5255,6 +5219,9 @@ window.updateStoricoButton = async function() {
                 const npt = currentNumpadTarget;
                 if (currentNumpadTarget.id === 'vwt-notes' && val !== "") currentNumpadTarget.value = val + " mc";
                 else currentNumpadTarget.value = val;
+                if (typeof window.refreshAlarmVisualForField === 'function') {
+                    window.refreshAlarmVisualForField(npt, true);
+                }
                 window.saveData();
                 if (window.updateTankLevelArrowForInput) window.updateTankLevelArrowForInput(npt);
             }
@@ -5272,6 +5239,16 @@ window.updateStoricoButton = async function() {
             if (val === 'DEL') display.value = display.value.slice(0, -1);
             else if (val === 'CLR') display.value = '';
             else { if (val === '.' && display.value.includes('.')) return; display.value += val; }
+
+            if (currentNumpadTarget && !window.currentAnalisiPopupInput) {
+                const npt = currentNumpadTarget;
+                const prev = npt.value;
+                npt.value = (npt.id === 'vwt-notes' && display.value !== '') ? (display.value + ' mc') : display.value;
+                if (typeof window.refreshAlarmVisualForField === 'function') {
+                    window.refreshAlarmVisualForField(npt);
+                }
+                npt.value = prev;
+            }
             
             // Attiva calcoli real-time per popup analisi
             if (window.currentAnalisiPopupInput) {

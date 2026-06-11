@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.12-numpad-v14b';
+        window.SERVICEHUB_BUILD = '2026.06.12-numpad-v15';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
@@ -1749,6 +1749,8 @@ window.colorPreviewNumber = function(tankName, value) {
                     if (reportVal) data['inp-osmosi__report'] = reportVal;
                     const metaVal = input.getAttribute('data-osmosi-meta');
                     if (metaVal) data['inp-osmosi__meta'] = metaVal;
+                    const selAttr = input.getAttribute('data-osmosi-selected');
+                    if (selAttr) data['inp-osmosi__selected'] = selAttr;
                 }
             });
             (window.DCS_ACQUA_SHARED_FIELD_IDS || ['inp-tk9000', 'inp-tk9201']).forEach(function (fid) {
@@ -4845,6 +4847,11 @@ window.updateStoricoButton = async function() {
             if (typeof window.restoreUiScrollIfNeeded === 'function') {
                 setTimeout(window.restoreUiScrollIfNeeded, 120);
             }
+            setTimeout(function () {
+                if (typeof window.__ensureOsmosiLabelFromDomSources === 'function') {
+                    window.__ensureOsmosiLabelFromDomSources();
+                }
+            }, 800);
 
             const btnShModifica = document.getElementById('btn-sh-settings-modifica');
             if (btnShModifica) {
@@ -7093,6 +7100,23 @@ window.updateStoricoButton = async function() {
             return [];
         };
 
+        window.__parseOsmosiUnitsFromMetaLike = function (meta) {
+            if (!meta || typeof meta !== 'object') return [];
+            if (Array.isArray(meta.selected) && meta.selected.length) return meta.selected.slice();
+            const merged = (Array.isArray(meta.demi) ? meta.demi : []).concat(Array.isArray(meta.pozzi) ? meta.pozzi : []);
+            return merged.filter(function (u, i) { return u && merged.indexOf(u) === i; });
+        };
+
+        window.__parseOsmosiUnitsFromSelectedAttr = function (raw) {
+            if (!raw) return [];
+            return String(raw).split(',').map(function (u) { return u.trim(); }).filter(Boolean);
+        };
+
+        window.__osmosiInterfaceHasActiveConfig = function (raw) {
+            const s = String(raw || '').trim().toUpperCase();
+            return !!(s && s !== 'OSMOSI');
+        };
+
         window.__getOsmosiMetaObjectFromDom = function () {
             const inp = window.__resolveOsmosiInput && window.__resolveOsmosiInput();
             if (!inp) return null;
@@ -7107,18 +7131,21 @@ window.updateStoricoButton = async function() {
 
         window.__getOsmosiUnitsFromDom = function () {
             if (selectedOsmosiUnits && selectedOsmosiUnits.length) return selectedOsmosiUnits.slice();
-            const meta = window.__getOsmosiMetaObjectFromDom();
-            if (meta && Array.isArray(meta.selected) && meta.selected.length) return meta.selected.slice();
-            if (meta && (Array.isArray(meta.demi) || Array.isArray(meta.pozzi))) {
-                const merged = (meta.demi || []).concat(meta.pozzi || []);
-                const uniq = merged.filter(function (u, i) { return u && merged.indexOf(u) === i; });
-                if (uniq.length) return uniq;
+            const inp = window.__resolveOsmosiInput && window.__resolveOsmosiInput();
+            if (inp) {
+                const selAttr = inp.getAttribute('data-osmosi-selected');
+                if (selAttr) {
+                    const fromAttr = window.__parseOsmosiUnitsFromSelectedAttr(selAttr);
+                    if (fromAttr.length) return fromAttr;
+                }
             }
+            const meta = window.__getOsmosiMetaObjectFromDom();
+            const fromMeta = window.__parseOsmosiUnitsFromMetaLike(meta);
+            if (fromMeta.length) return fromMeta;
             if (typeof window.__parseOsmosiUnitsFromLabel === 'function') {
                 const fromLbl = window.__parseOsmosiUnitsFromLabel();
                 if (fromLbl.length) return fromLbl;
             }
-            const inp = window.__resolveOsmosiInput && window.__resolveOsmosiInput();
             if (inp && inp.value && typeof window.__parseOsmosiUnitsFromInterface === 'function') {
                 const fromIf = window.__parseOsmosiUnitsFromInterface(inp.value);
                 if (fromIf.length) return fromIf;
@@ -7130,9 +7157,10 @@ window.updateStoricoButton = async function() {
             const label = document.getElementById('osmosi-label-text');
             if (!label) return;
             const units = window.__getOsmosiUnitsFromDom();
-            const raw = String(label.innerText || '').replace(/^OSMOSI\s*/i, '').trim();
-            const labelPlain = !raw || /^OSMOSI$/i.test(raw);
-            if (units.length && labelPlain) {
+            if (!units.length) return;
+            const expected = 'OSMOSI ' + units.join('+');
+            const current = String(label.innerText || '').replace(/\s+/g, ' ').trim().toUpperCase();
+            if (current !== expected.toUpperCase()) {
                 selectedOsmosiUnits = units.slice();
                 window.__syncOsmosiLabelFromSelection(units);
             }
@@ -7140,17 +7168,14 @@ window.updateStoricoButton = async function() {
 
         window.__shouldApplyRemoteOsmosiLabel = function (stored) {
             const remoteUnits = window.__parseOsmosiUnitsFromStored(stored);
-            const localUnits = window.__getOsmosiUnitsFromDom();
-            if (localUnits.length && !remoteUnits.length) {
-                const lblEdited = window.__plantFieldEditMs && window.__plantFieldEditMs['osmosi-label-text'];
-                const metaEdited = window.__plantFieldEditMs && window.__plantFieldEditMs['inp-osmosi'];
-                const guardMs = window.__PLANT_REMOTE_GUARD_MS || 8000;
-                if ((lblEdited && Date.now() - lblEdited < guardMs) ||
-                    (metaEdited && Date.now() - metaEdited < guardMs)) {
-                    return false;
-                }
-                return false;
+            const inp = window.__resolveOsmosiInput && window.__resolveOsmosiInput();
+            if (inp && window.__osmosiInterfaceHasActiveConfig(inp.value)) {
+                const localUnits = window.__getOsmosiUnitsFromDom();
+                if (localUnits.length && !remoteUnits.length) return false;
+                if (!remoteUnits.length) return false;
             }
+            const localUnits = window.__getOsmosiUnitsFromDom();
+            if (localUnits.length && !remoteUnits.length) return false;
             return true;
         };
 
@@ -7160,10 +7185,19 @@ window.updateStoricoButton = async function() {
             if (units && units.length) {
                 osmLabel.innerText = 'OSMOSI ' + units.join('+');
                 osmLabel.className = 'osmosi-label-dynamic text-blue-600 font-black';
-            } else {
-                osmLabel.innerText = 'OSMOSI';
-                osmLabel.className = 'osmosi-label-dynamic';
+                return;
             }
+            const recovered = window.__getOsmosiUnitsFromDom();
+            if (recovered.length) {
+                selectedOsmosiUnits = recovered.slice();
+                osmLabel.innerText = 'OSMOSI ' + recovered.join('+');
+                osmLabel.className = 'osmosi-label-dynamic text-blue-600 font-black';
+                return;
+            }
+            const inp = window.__resolveOsmosiInput && window.__resolveOsmosiInput();
+            if (inp && window.__osmosiInterfaceHasActiveConfig(inp.value)) return;
+            osmLabel.innerText = 'OSMOSI';
+            osmLabel.className = 'osmosi-label-dynamic';
         };
 
         window.__captureOsmosiState = function () {
@@ -7234,9 +7268,21 @@ window.updateStoricoButton = async function() {
         window.__reconcileOsmosiUiFromPayload = function (data) {
             if (!data || typeof data !== 'object') return;
             if (window.__osmosiFlowLock) return;
+            const inpEl = window.__resolveOsmosiInput && window.__resolveOsmosiInput();
+            if (inpEl && data['inp-osmosi__selected']) {
+                inpEl.setAttribute('data-osmosi-selected', String(data['inp-osmosi__selected']));
+            }
             if (data['inp-osmosi__meta'] && typeof window.__applyOsmosiMetaFromStored === 'function') {
                 if (window.__applyOsmosiMetaFromStored(data['inp-osmosi__meta'], data['inp-osmosi__report'])) {
                     window.__ensureOsmosiLabelFromDomSources();
+                    return;
+                }
+            }
+            if (data['inp-osmosi__selected']) {
+                const fromSel = window.__parseOsmosiUnitsFromSelectedAttr(data['inp-osmosi__selected']);
+                if (fromSel.length) {
+                    selectedOsmosiUnits = fromSel.slice();
+                    window.__syncOsmosiLabelFromSelection(fromSel);
                     return;
                 }
             }
@@ -7289,6 +7335,9 @@ window.updateStoricoButton = async function() {
                 demi: (demiUnits || []).slice(),
                 pozzi: (pozziUnits || []).slice()
             }));
+            const selList = (selectedOsmosiUnits || []).slice();
+            if (selList.length) inp.setAttribute('data-osmosi-selected', selList.join(','));
+            else inp.removeAttribute('data-osmosi-selected');
             window.__syncOsmosiLabelFromSelection(selectedOsmosiUnits || []);
             window.__plantFieldEditMs = window.__plantFieldEditMs || {};
             window.__plantFieldEditMs['inp-osmosi'] = Date.now();
@@ -7316,6 +7365,10 @@ window.updateStoricoButton = async function() {
                 if (osmLabel) window.__syncOsmosiLabelFromSelection(selectedOsmosiUnits);
                 const inp = window.__resolveOsmosiInput && window.__resolveOsmosiInput();
                 if (inp) inp.setAttribute('data-osmosi-meta', JSON.stringify(meta));
+                if (inp) {
+                    if (selected.length) inp.setAttribute('data-osmosi-selected', selected.join(','));
+                    else inp.removeAttribute('data-osmosi-selected');
+                }
                 let interfaceStr = window.__buildOsmosiInterfaceDisplay(demiUnits, pozziUnits);
                 if (typeof window.__normalizeOsmosiInterfaceDisplay === 'function') {
                     interfaceStr = window.__normalizeOsmosiInterfaceDisplay(interfaceStr);
@@ -7545,7 +7598,17 @@ window.updateStoricoButton = async function() {
         window.__parseOsmosiUnitsFromInterface = function (raw) {
             if (!raw) return [];
             const s = String(raw).toUpperCase().trim();
-            if (!s || s === 'DEMI' || s === 'POZZI' || s.indexOf('TUTTE') >= 0) return [];
+            if (!s) return [];
+            const metaUnits = window.__parseOsmosiUnitsFromMetaLike(window.__getOsmosiMetaObjectFromDom());
+            if (s === 'DEMI' || s === 'POZZI' || s.indexOf('TUTTE') >= 0) {
+                if (metaUnits.length) return metaUnits;
+                const inp = window.__resolveOsmosiInput && window.__resolveOsmosiInput();
+                if (inp) {
+                    const fromAttr = window.__parseOsmosiUnitsFromSelectedAttr(inp.getAttribute('data-osmosi-selected'));
+                    if (fromAttr.length) return fromAttr;
+                }
+                return [];
+            }
             const units = [];
             s.split(',').forEach(function (part) {
                 const m = part.trim().match(/^(.+?)\s+(DEMI|POZZI)$/);
@@ -7842,9 +7905,16 @@ window.updateStoricoButton = async function() {
                     }
                     continue;
                 }
+                if (id === 'inp-osmosi__selected') {
+                    const osmSel = document.getElementById('inp-osmosi');
+                    if (osmSel && val != null && val !== undefined && String(val).trim()) {
+                        osmSel.setAttribute('data-osmosi-selected', String(val));
+                    }
+                    continue;
+                }
                 if (id === 'osmosi-label-text') {
                     if (window.__osmosiFlowLock) continue;
-                    if (data['inp-osmosi__meta']) continue;
+                    if (data['inp-osmosi__meta'] || data['inp-osmosi__selected']) continue;
                     const osmLblEl = document.getElementById('osmosi-label-text');
                     if (osmLblEl && typeof val === 'object') {
                         if (forcePlant && typeof window.__shouldApplyRemoteOsmosiLabel === 'function' &&
@@ -20760,7 +20830,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=128')
+                navigator.serviceWorker.register('./sw.js?v=129')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();

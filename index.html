@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.11-numpad-display';
+        window.SERVICEHUB_BUILD = '2026.06.11-numpad-float';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
@@ -5152,6 +5152,98 @@ window.updateStoricoButton = async function() {
             // Rimuovo tutte le modifiche per usare le stesse dimensioni del mobile
         };
 
+        window.isNumpadFloatingDevice = function () {
+            return typeof window.isServiceHubPhone === 'function' && !window.isServiceHubPhone();
+        };
+
+        window.__numpadDragPos = { x: 0, y: 0 };
+
+        window.resetNumpadPanelPosition = function () {
+            window.__numpadDragPos = { x: 0, y: 0 };
+            const panel = document.getElementById('numpad-modal-panel');
+            if (panel) panel.style.transform = 'translate(-50%, -50%)';
+        };
+
+        window.applyNumpadPanelTransform = function () {
+            const panel = document.getElementById('numpad-modal-panel');
+            if (!panel || !window.isNumpadFloatingDevice()) return;
+            const d = window.__numpadDragPos || { x: 0, y: 0 };
+            panel.style.transform = 'translate(calc(-50% + ' + d.x + 'px), calc(-50% + ' + d.y + 'px))';
+        };
+
+        window.initNumpadDrag = function () {
+            if (window.__numpadDragInited) return;
+            const handle = document.getElementById('numpad-drag-handle');
+            const panel = document.getElementById('numpad-modal-panel');
+            if (!handle || !panel) return;
+            window.__numpadDragInited = true;
+
+            let dragging = false;
+            let startX = 0;
+            let startY = 0;
+            let origX = 0;
+            let origY = 0;
+
+            const onMove = function (clientX, clientY) {
+                if (!dragging) return;
+                window.__numpadDragPos = {
+                    x: origX + (clientX - startX),
+                    y: origY + (clientY - startY)
+                };
+                window.applyNumpadPanelTransform();
+            };
+
+            const endDrag = function () {
+                if (!dragging) return;
+                dragging = false;
+                handle.classList.remove('numpad-drag-handle--active');
+                panel.classList.remove('numpad-modal-panel--dragging');
+            };
+
+            handle.addEventListener('pointerdown', function (e) {
+                if (!window.isNumpadFloatingDevice()) return;
+                if (e.target && e.target.closest && e.target.closest('button')) return;
+                if (e.button !== 0 && e.pointerType === 'mouse') return;
+                dragging = true;
+                startX = e.clientX;
+                startY = e.clientY;
+                origX = (window.__numpadDragPos || { x: 0 }).x;
+                origY = (window.__numpadDragPos || { y: 0 }).y;
+                handle.classList.add('numpad-drag-handle--active');
+                panel.classList.add('numpad-modal-panel--dragging');
+                if (handle.setPointerCapture) handle.setPointerCapture(e.pointerId);
+                e.preventDefault();
+            });
+
+            handle.addEventListener('pointermove', function (e) {
+                onMove(e.clientX, e.clientY);
+            });
+
+            handle.addEventListener('pointerup', endDrag);
+            handle.addEventListener('pointercancel', endDrag);
+        };
+
+        window.syncNumpadLivePreview = function () {
+            if (!window.isNumpadFloatingDevice()) return;
+            if (!currentNumpadTarget || window.__numpadView !== 'value' || window.currentAnalisiPopupInput) return;
+            const display = document.getElementById('numpad-display');
+            if (!display) return;
+            const val = display.value;
+            const npt = currentNumpadTarget;
+            if (npt.id === 'vwt-notes' && val !== '') npt.value = val + ' mc';
+            else npt.value = val;
+            if (typeof window.refreshAlarmVisualForField === 'function') window.refreshAlarmVisualForField(npt, true);
+            if (typeof window.updateTankLevelArrowForInput === 'function') window.updateTankLevelArrowForInput(npt);
+        };
+
+        window.revertNumpadLivePreview = function () {
+            if (!window.isNumpadFloatingDevice()) return;
+            if (!currentNumpadTarget || window.__numpadLivePreviewOrigin === undefined) return;
+            currentNumpadTarget.value = window.__numpadLivePreviewOrigin;
+            if (typeof window.refreshAlarmVisualForField === 'function') window.refreshAlarmVisualForField(currentNumpadTarget, true);
+            if (typeof window.updateTankLevelArrowForInput === 'function') window.updateTankLevelArrowForInput(currentNumpadTarget);
+        };
+
         window.__numpadView = 'value';
         window.__numpadAlarmActiveField = 'yellow';
         window.__numpadAlarmDraft = { yellow: '', red: '' };
@@ -5393,6 +5485,10 @@ window.updateStoricoButton = async function() {
             if (alarmPanel) alarmPanel.hidden = true;
             if (typeof window.syncNumpadViewLayout === 'function') window.syncNumpadViewLayout();
             currentNumpadTarget = input;
+            window.__numpadLivePreviewOrigin = input.value;
+            window.__numpadCommitted = false;
+            if (typeof window.resetNumpadPanelPosition === 'function') window.resetNumpadPanelPosition();
+            if (typeof window.initNumpadDrag === 'function') window.initNumpadDrag();
             const section = labelEl.closest('.col-section');
             const sectionLabel = section ? section.querySelector('.v-label-text').textContent : "N/D";
             window.__numpadSavedContext = sectionLabel.toUpperCase();
@@ -5423,6 +5519,10 @@ window.updateStoricoButton = async function() {
         };
 
         window.closeNumpad = () => {
+            if (!window.__numpadCommitted && typeof window.revertNumpadLivePreview === 'function') {
+                window.revertNumpadLivePreview();
+            }
+            window.__numpadCommitted = false;
             window.__numpadView = 'value';
             if (typeof window.closeNumpadSettingsMenu === 'function') window.closeNumpadSettingsMenu();
             const alarmPanel = document.getElementById('numpad-alarm-panel');
@@ -5469,7 +5569,10 @@ window.updateStoricoButton = async function() {
             if (nextRow) {
                 const nextLabel = nextRow.querySelector('.cell-label-main, .amb-label, .bd-label');
                 if (nextLabel) {
-                    // Chiudi il numpad corrente e aprilo per il prossimo
+                    if (window.isNumpadFloatingDevice()) {
+                        window.__numpadCommitted = true;
+                        if (typeof window.saveData === 'function') window.saveData();
+                    }
                     window.closeNumpad();
                     setTimeout(() => window.openNumpad(nextLabel), 100);
                 }
@@ -5544,6 +5647,7 @@ window.updateStoricoButton = async function() {
                 if (window.updateTankLevelArrowForInput) window.updateTankLevelArrowForInput(npt);
             }
             const next = nextNumpadTarget;
+            window.__numpadCommitted = true;
             window.closeNumpad();
             if (next) {
                 const nextRow = next.closest('tr') || next.closest('.amb-row') || next.closest('.bd-input-row');
@@ -5566,6 +5670,7 @@ window.updateStoricoButton = async function() {
             else if (val === 'CLR') display.value = '';
             else { if (val === '.' && display.value.includes('.')) return; display.value += val; }
 
+            if (typeof window.syncNumpadLivePreview === 'function') window.syncNumpadLivePreview();
             if (typeof window.refreshNumpadAlarmVisual === 'function') {
                 window.refreshNumpadAlarmVisual();
             }
@@ -17798,12 +17903,44 @@ window.convertToHtml = async () => {
         .numpad-alarm-row-val--empty { color: #94a3b8; font-weight: 700; font-size: 11px; }
         .numpad-value-panel[hidden] { display: none !important; }
         .numpad-display-bezel {
-            padding: 0 5px;
-            border-left: 2px solid #94a3b8;
-            border-right: 2px solid #94a3b8;
-            border-radius: 2px;
-            background: transparent;
+            padding: 4px;
+            border-radius: 10px;
+            background: #e8edf3;
+            border: 2px solid #cbd5e1;
+            box-shadow: inset 0 1px 3px rgba(15, 23, 42, 0.08);
             box-sizing: border-box;
+        }
+        /* PC + tablet: numpad flottante, sfondo sempre nitido */
+        body:not(.sh-device-phone) #numpad-modal.active {
+            background: transparent !important;
+            backdrop-filter: none !important;
+            -webkit-backdrop-filter: none !important;
+            pointer-events: none;
+            display: block;
+        }
+        body:not(.sh-device-phone) #numpad-modal.active #numpad-modal-panel {
+            position: fixed;
+            left: 50%;
+            top: 50%;
+            margin: 0;
+            width: min(92vw, 400px);
+            max-width: 400px;
+            opacity: 1;
+            transform: translate(-50%, -50%);
+            pointer-events: auto;
+            z-index: 10002;
+            box-shadow: 0 16px 48px rgba(0, 0, 0, 0.28), 0 4px 12px rgba(0, 0, 0, 0.18);
+        }
+        body:not(.sh-device-phone) #numpad-modal.active #numpad-modal-panel.numpad-modal-panel--dragging {
+            transition: none;
+            user-select: none;
+        }
+        body:not(.sh-device-phone) .numpad-drag-handle {
+            cursor: grab;
+            touch-action: none;
+        }
+        body:not(.sh-device-phone) .numpad-drag-handle.numpad-drag-handle--active {
+            cursor: grabbing;
         }
         #numpad-modal #numpad-display {
             display: block;
@@ -19037,8 +19174,8 @@ window.convertToHtml = async () => {
     <input type="hidden" id="inp-analisi-torb-perm" value="">
     <input type="hidden" id="inp-analisi-torb-ult" value="">
     <div id="numpad-modal" class="modal-overlay" onclick="if(event.target === this) window.closeNumpad()">
-        <div class="modal-content-centered" onclick="event.stopPropagation()">
-            <div class="px-4 py-3 bg-slate-900 text-white flex flex-col relative justify-center border-b-2 border-slate-700">
+        <div id="numpad-modal-panel" class="modal-content-centered" onclick="event.stopPropagation()">
+            <div id="numpad-drag-handle" class="numpad-drag-handle px-4 py-3 bg-slate-900 text-white flex flex-col relative justify-center border-b-2 border-slate-700">
                 <div class="numpad-header-actions">
                     <button type="button" id="numpad-settings-btn" class="numpad-settings-btn" onclick="window.onNumpadHeaderBtnClick(event)" aria-label="Impostazioni numpad" hidden>
                         <span id="numpad-settings-icon-gear" class="numpad-settings-icon" aria-hidden="true">

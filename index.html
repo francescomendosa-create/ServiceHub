@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.12-numpad-v12';
+        window.SERVICEHUB_BUILD = '2026.06.12-numpad-v13';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
@@ -1787,7 +1787,7 @@ window.colorPreviewNumber = function(tankName, value) {
                             selected = window.__parseOsmosiUnitsFromLabel();
                         }
                         payload.selected = selected;
-                        payload.text = btn.innerText || 'OSMOSI';
+                        payload.text = selected.length ? ('OSMOSI ' + selected.join('+')) : (String(btn.innerText || 'OSMOSI').replace(/<[^>]*>/g, ''));
                     }
                     data[btn.id] = payload;
                 }
@@ -7081,6 +7081,79 @@ window.updateStoricoButton = async function() {
             window.__syncModalBodyLock();
         };
 
+        window.__parseOsmosiUnitsFromStored = function (stored) {
+            if (!stored || typeof stored !== 'object') return [];
+            if (Array.isArray(stored.selected) && stored.selected.length) return stored.selected.slice();
+            if (stored.text) {
+                const raw = String(stored.text).replace(/<[^>]*>/g, '').replace(/^OSMOSI\s*/i, '').trim();
+                if (raw && raw.toUpperCase() !== 'OSMOSI') {
+                    return raw.split('+').map(function (u) { return u.trim(); }).filter(Boolean);
+                }
+            }
+            return [];
+        };
+
+        window.__getOsmosiMetaObjectFromDom = function () {
+            const inp = window.__resolveOsmosiInput && window.__resolveOsmosiInput();
+            if (!inp) return null;
+            try {
+                const raw = inp.getAttribute('data-osmosi-meta');
+                if (!raw) return null;
+                return JSON.parse(raw);
+            } catch (_) {
+                return null;
+            }
+        };
+
+        window.__getOsmosiUnitsFromDom = function () {
+            if (selectedOsmosiUnits && selectedOsmosiUnits.length) return selectedOsmosiUnits.slice();
+            const meta = window.__getOsmosiMetaObjectFromDom();
+            if (meta && Array.isArray(meta.selected) && meta.selected.length) return meta.selected.slice();
+            if (meta && (Array.isArray(meta.demi) || Array.isArray(meta.pozzi))) {
+                const merged = (meta.demi || []).concat(meta.pozzi || []);
+                const uniq = merged.filter(function (u, i) { return u && merged.indexOf(u) === i; });
+                if (uniq.length) return uniq;
+            }
+            if (typeof window.__parseOsmosiUnitsFromLabel === 'function') {
+                const fromLbl = window.__parseOsmosiUnitsFromLabel();
+                if (fromLbl.length) return fromLbl;
+            }
+            const inp = window.__resolveOsmosiInput && window.__resolveOsmosiInput();
+            if (inp && inp.value && typeof window.__parseOsmosiUnitsFromInterface === 'function') {
+                const fromIf = window.__parseOsmosiUnitsFromInterface(inp.value);
+                if (fromIf.length) return fromIf;
+            }
+            return [];
+        };
+
+        window.__ensureOsmosiLabelFromDomSources = function () {
+            const label = document.getElementById('osmosi-label-text');
+            if (!label) return;
+            const units = window.__getOsmosiUnitsFromDom();
+            const raw = String(label.innerText || '').replace(/^OSMOSI\s*/i, '').trim();
+            const labelPlain = !raw || /^OSMOSI$/i.test(raw);
+            if (units.length && labelPlain) {
+                selectedOsmosiUnits = units.slice();
+                window.__syncOsmosiLabelFromSelection(units);
+            }
+        };
+
+        window.__shouldApplyRemoteOsmosiLabel = function (stored) {
+            const remoteUnits = window.__parseOsmosiUnitsFromStored(stored);
+            const localUnits = window.__getOsmosiUnitsFromDom();
+            if (localUnits.length && !remoteUnits.length) {
+                const lblEdited = window.__plantFieldEditMs && window.__plantFieldEditMs['osmosi-label-text'];
+                const metaEdited = window.__plantFieldEditMs && window.__plantFieldEditMs['inp-osmosi'];
+                const guardMs = window.__PLANT_REMOTE_GUARD_MS || 8000;
+                if ((lblEdited && Date.now() - lblEdited < guardMs) ||
+                    (metaEdited && Date.now() - metaEdited < guardMs)) {
+                    return false;
+                }
+                return false;
+            }
+            return true;
+        };
+
         window.__syncOsmosiLabelFromSelection = function (units) {
             const osmLabel = document.getElementById('osmosi-label-text');
             if (!osmLabel) return;
@@ -7127,60 +7200,62 @@ window.updateStoricoButton = async function() {
             currentMatches = Object.assign({}, snap.matches || {});
         };
 
-        window.__applyOsmosiLabelFromStored = function (el, stored) {
-            if (!el || stored == null) return;
-            let units = [];
-            if (typeof stored === 'object') {
-                if (Array.isArray(stored.selected) && stored.selected.length) {
-                    units = stored.selected.slice();
-                } else if (stored.text) {
-                    const raw = String(stored.text).replace(/<[^>]*>/g, '').replace(/^OSMOSI\s*/i, '').trim();
-                    if (raw && raw.toUpperCase() !== 'OSMOSI') {
-                        units = raw.split('+').map(function (u) { return u.trim(); }).filter(Boolean);
-                    }
-                }
-                if (units.length) {
-                    selectedOsmosiUnits = units.slice();
-                    window.__syncOsmosiLabelFromSelection(units);
-                    if (stored.class) el.className = stored.class;
-                    return;
-                }
-                if (stored.text) {
-                    el.innerText = String(stored.text).replace(/<[^>]*>/g, '');
-                    el.className = stored.class || 'osmosi-label-dynamic';
-                    if (stored.style) el.setAttribute('style', stored.style);
-                    return;
-                }
+        window.__applyOsmosiLabelFromStored = function (el, stored, opts) {
+            opts = opts || {};
+            if (!el || stored == null) return false;
+            let units = window.__parseOsmosiUnitsFromStored(stored);
+            if (!units.length && opts.allowReset !== true) {
+                units = window.__getOsmosiUnitsFromDom();
             }
-            window.__syncOsmosiLabelFromSelection([]);
+            if (units.length) {
+                selectedOsmosiUnits = units.slice();
+                window.__syncOsmosiLabelFromSelection(units);
+                if (stored.class) el.className = stored.class;
+                return true;
+            }
+            if (stored.text && opts.allowReset !== true) {
+                const plain = String(stored.text).replace(/<[^>]*>/g, '').replace(/^OSMOSI\s*/i, '').trim();
+                if (!plain || /^OSMOSI$/i.test(plain)) {
+                    window.__ensureOsmosiLabelFromDomSources();
+                    return !!window.__getOsmosiUnitsFromDom().length;
+                }
+                el.innerText = String(stored.text).replace(/<[^>]*>/g, '');
+                el.className = stored.class || 'osmosi-label-dynamic';
+                if (stored.style) el.setAttribute('style', stored.style);
+                return true;
+            }
+            if (opts.allowReset === true) {
+                window.__syncOsmosiLabelFromSelection([]);
+                return true;
+            }
+            return false;
         };
 
         window.__reconcileOsmosiUiFromPayload = function (data) {
             if (!data || typeof data !== 'object') return;
             if (window.__osmosiFlowLock) return;
             if (data['inp-osmosi__meta'] && typeof window.__applyOsmosiMetaFromStored === 'function') {
-                if (window.__applyOsmosiMetaFromStored(data['inp-osmosi__meta'], data['inp-osmosi__report'])) return;
+                if (window.__applyOsmosiMetaFromStored(data['inp-osmosi__meta'], data['inp-osmosi__report'])) {
+                    window.__ensureOsmosiLabelFromDomSources();
+                    return;
+                }
             }
             const lblData = data['osmosi-label-text'];
             if (lblData) {
                 const el = document.getElementById('osmosi-label-text');
-                let units = [];
-                if (Array.isArray(lblData.selected) && lblData.selected.length) {
-                    units = lblData.selected.slice();
-                } else if (lblData.text) {
-                    const raw = String(lblData.text).replace(/<[^>]*>/g, '').replace(/^OSMOSI\s*/i, '').trim();
-                    if (raw && raw.toUpperCase() !== 'OSMOSI') {
-                        units = raw.split('+').map(function (u) { return u.trim(); }).filter(Boolean);
-                    }
+                if (el && typeof window.__shouldApplyRemoteOsmosiLabel === 'function' &&
+                    !window.__shouldApplyRemoteOsmosiLabel(lblData)) {
+                    window.__ensureOsmosiLabelFromDomSources();
+                    return;
                 }
+                let units = window.__parseOsmosiUnitsFromStored(lblData);
                 if (units.length) {
                     selectedOsmosiUnits = units.slice();
                     window.__syncOsmosiLabelFromSelection(units);
                     return;
                 }
                 if (el && typeof window.__applyOsmosiLabelFromStored === 'function') {
-                    window.__applyOsmosiLabelFromStored(el, lblData);
-                    return;
+                    if (window.__applyOsmosiLabelFromStored(el, lblData)) return;
                 }
             }
             const inpVal = data['inp-osmosi'];
@@ -7197,6 +7272,7 @@ window.updateStoricoButton = async function() {
                 osmNorm.value = window.__normalizeOsmosiInterfaceDisplay(osmNorm.value);
                 if (typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(osmNorm);
             }
+            window.__ensureOsmosiLabelFromDomSources();
         };
 
         window.__commitOsmosiInterfaceState = function (demiUnits, pozziUnits, reportHtml) {
@@ -7224,14 +7300,20 @@ window.updateStoricoButton = async function() {
             if (!metaRaw) return false;
             try {
                 const meta = typeof metaRaw === 'string' ? JSON.parse(metaRaw) : metaRaw;
-                if (!meta || !Array.isArray(meta.selected)) return false;
-                selectedOsmosiUnits = meta.selected.slice();
+                if (!meta || typeof meta !== 'object') return false;
+                let selected = Array.isArray(meta.selected) ? meta.selected.slice() : [];
                 const demiUnits = Array.isArray(meta.demi) ? meta.demi.slice() : [];
                 const pozziUnits = Array.isArray(meta.pozzi) ? meta.pozzi.slice() : [];
-                const osmLabel = document.getElementById('osmosi-label-text');
-                if (osmLabel && selectedOsmosiUnits.length) {
-                    window.__syncOsmosiLabelFromSelection(selectedOsmosiUnits);
+                if (!selected.length) {
+                    selected = demiUnits.concat(pozziUnits).filter(function (u, i, arr) {
+                        return u && arr.indexOf(u) === i;
+                    });
                 }
+                if (!selected.length) return false;
+                selectedOsmosiUnits = selected.slice();
+                meta.selected = selected.slice();
+                const osmLabel = document.getElementById('osmosi-label-text');
+                if (osmLabel) window.__syncOsmosiLabelFromSelection(selectedOsmosiUnits);
                 const inp = window.__resolveOsmosiInput && window.__resolveOsmosiInput();
                 if (inp) inp.setAttribute('data-osmosi-meta', JSON.stringify(meta));
                 let interfaceStr = window.__buildOsmosiInterfaceDisplay(demiUnits, pozziUnits);
@@ -7764,8 +7846,17 @@ window.updateStoricoButton = async function() {
                     if (window.__osmosiFlowLock) continue;
                     if (data['inp-osmosi__meta']) continue;
                     const osmLblEl = document.getElementById('osmosi-label-text');
-                    if (osmLblEl && typeof val === 'object' && typeof window.__applyOsmosiLabelFromStored === 'function') {
-                        window.__applyOsmosiLabelFromStored(osmLblEl, val);
+                    if (osmLblEl && typeof val === 'object') {
+                        if (forcePlant && typeof window.__shouldApplyRemoteOsmosiLabel === 'function' &&
+                            !window.__shouldApplyRemoteOsmosiLabel(val)) {
+                            if (typeof window.__ensureOsmosiLabelFromDomSources === 'function') {
+                                window.__ensureOsmosiLabelFromDomSources();
+                            }
+                            continue;
+                        }
+                        if (typeof window.__applyOsmosiLabelFromStored === 'function') {
+                            window.__applyOsmosiLabelFromStored(osmLblEl, val);
+                        }
                     }
                     continue;
                 }
@@ -7817,6 +7908,9 @@ window.updateStoricoButton = async function() {
                 window.__reconcileOsmosiUiFromPayload(data);
             } else if (data['inp-osmosi__meta'] && typeof window.__applyOsmosiMetaFromStored === 'function') {
                 window.__applyOsmosiMetaFromStored(data['inp-osmosi__meta'], data['inp-osmosi__report']);
+            }
+            if (typeof window.__ensureOsmosiLabelFromDomSources === 'function') {
+                window.__ensureOsmosiLabelFromDomSources();
             } else {
                 const osmNorm = document.getElementById('inp-osmosi');
                 if (osmNorm && osmNorm.value && typeof window.__normalizeOsmosiInterfaceDisplay === 'function') {
@@ -20630,7 +20724,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=125')
+                navigator.serviceWorker.register('./sw.js?v=126')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();

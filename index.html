@@ -636,7 +636,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.10-phone-layout-popups';
+        window.SERVICEHUB_BUILD = '2026.06.10-ios-popup-final';
         window.__phoneSectionsLayoutReady = false;
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
@@ -5387,6 +5387,10 @@ window.updateStoricoButton = async function() {
             }
         };
 
+        window.closeVwtPopup = () => {
+            window.__closeAmbModalNow(document.getElementById('vwt-modal'));
+        };
+
         window.openVwtPopup = () => {
             const now = Date.now();
             if (now - (window.__lastVwtPopupOpenMs || 0) < 350) return;
@@ -5401,7 +5405,8 @@ window.updateStoricoButton = async function() {
             });
             const meter = document.getElementById('vwt-meter-modal');
             if (meter) meter.classList.remove('active', 'exit-left', 'exit-right');
-            window.__openAmbModalNow(m);
+            if (typeof window.__activateModalAnimated === 'function') window.__activateModalAnimated(m);
+            else window.__openAmbModalNow(m);
         };
 
         window.openAnalisiPopup = () => {
@@ -6135,10 +6140,12 @@ window.updateStoricoButton = async function() {
             // Aggiorna testo e colore del bottone
             window.updateAnalisiText();
             
-            // Chiudi popup analisi
             const modal = document.getElementById('analisi-choice-modal');
-            modal.classList.add('exit-right');
-            setTimeout(() => { modal.classList.remove('active', 'exit-right'); }, 400);
+            if (typeof window.__dismissAmbModal === 'function') window.__dismissAmbModal(modal, 'right');
+            else {
+                modal.classList.add('exit-right');
+                setTimeout(() => { modal.classList.remove('active', 'exit-right'); }, 400);
+            }
             // Continua con ANALISI (primo serbatoio dopo la riga analisi)
             setTimeout(() => {
                 const analisiRow = document.getElementById('amb-row-analisi');
@@ -6154,21 +6161,36 @@ window.updateStoricoButton = async function() {
             const modal2 = document.getElementById('analisi-choice-modal-page2');
             
             if (modal1.classList.contains('active')) {
-                // Passa alla pagina 2 - sincronizza INGRESSO con portata VWT
                 const vwtNotes = document.getElementById('vwt-notes') || document.getElementById('inp-vwt-notes');
                 const ingressoInput = document.getElementById('analisi-sigla-1-input');
                 if (vwtNotes && ingressoInput) {
                     const flowVal = vwtNotes.value.replace(' mc', '').trim();
                     ingressoInput.value = flowVal;
                 }
-                // Calcola il riciclo iniziale
                 window.updateRiciclo();
-                modal1.classList.remove('active');
-                modal2.classList.add('active');
+                if (window.isServiceHubPhone && window.isServiceHubPhone()) {
+                    window.__ensureAmbPhoneBackdropEl().classList.add('active');
+                    modal1.classList.remove('active', 'exit-left', 'exit-right');
+                    modal2.classList.remove('exit-left', 'exit-right');
+                    modal2.classList.add('active');
+                    window.__primeAmbModalContentEnter(modal2);
+                    window.__syncModalBodyLock();
+                } else {
+                    modal1.classList.remove('active');
+                    modal2.classList.add('active');
+                }
             } else {
-                // Torna alla pagina 1
-                modal2.classList.remove('active');
-                modal1.classList.add('active');
+                if (window.isServiceHubPhone && window.isServiceHubPhone()) {
+                    window.__ensureAmbPhoneBackdropEl().classList.add('active');
+                    modal2.classList.remove('active', 'exit-left', 'exit-right');
+                    modal1.classList.remove('exit-left', 'exit-right');
+                    modal1.classList.add('active');
+                    window.__primeAmbModalContentEnter(modal1);
+                    window.__syncModalBodyLock();
+                } else {
+                    modal2.classList.remove('active');
+                    modal1.classList.add('active');
+                }
             }
         };
 
@@ -6176,10 +6198,12 @@ window.updateStoricoButton = async function() {
         window.confirmAnalisiValuesPage2 = () => {
             console.log('Salva valori pagina 2');
             
-            // Chiudi popup analisi pagina 2
             const modal = document.getElementById('analisi-choice-modal-page2');
-            modal.classList.add('exit-right');
-            setTimeout(() => { modal.classList.remove('active', 'exit-right'); }, 400);
+            if (typeof window.__dismissAmbModal === 'function') window.__dismissAmbModal(modal, 'right');
+            else {
+                modal.classList.add('exit-right');
+                setTimeout(() => { modal.classList.remove('active', 'exit-right'); }, 400);
+            }
             
             // Prosegui ai serbatoi dopo analisi
             setTimeout(() => {
@@ -6349,8 +6373,7 @@ window.updateStoricoButton = async function() {
                 }
             }
             const m = document.getElementById('vwt-meter-modal');
-            window.__closeAmbModalNow(m, { keepBackdrop: true });
-            window.openOsmosiPopup();
+            window.openOsmosiPopup({ fromMeter: m });
         };
 
         window.__clearPopupInteractionLocks = function () {
@@ -6364,6 +6387,10 @@ window.updateStoricoButton = async function() {
 
         window.__activateModalAnimated = function (modalEl) {
             if (!modalEl) return;
+            if (window.isServiceHubPhone && window.isServiceHubPhone() && window.__isAmbFlowModalEl(modalEl)) {
+                window.__openAmbModalNow(modalEl);
+                return;
+            }
             const wasActive = modalEl.classList.contains('active');
             modalEl.classList.remove('exit-left', 'exit-right', 'active');
             if (!wasActive) void modalEl.offsetHeight;
@@ -6412,18 +6439,59 @@ window.updateStoricoButton = async function() {
         window.__lastOsmosiPopupOpenMs = 0;
         window.__osmosiFlowLock = false;
 
+        window.__AMB_PHONE_MODAL_IDS = ['vwt-modal', 'vwt-meter-modal', 'osmosi-modal', 'osmosi-match-modal', 'analisi-choice-modal', 'analisi-choice-modal-page2'];
+        window.__AMB_MODAL_SWAP_MS = 400;
+
+        window.__isAmbFlowModalEl = function (el) {
+            return !!(el && el.id && window.__AMB_PHONE_MODAL_IDS.indexOf(el.id) >= 0);
+        };
+
+        window.__ensureAmbPhoneBackdropEl = function () {
+            var el = document.getElementById('amb-modal-backdrop');
+            if (!el) {
+                el = document.createElement('div');
+                el.id = 'amb-modal-backdrop';
+                el.setAttribute('aria-hidden', 'true');
+                document.body.appendChild(el);
+            }
+            return el;
+        };
+
+        window.__syncAmbPhoneBackdrop = function () {
+            if (!window.isServiceHubPhone || !window.isServiceHubPhone()) return;
+            var backdrop = window.__ensureAmbPhoneBackdropEl();
+            var sel = window.__AMB_PHONE_MODAL_IDS.map(function (id) {
+                return '#' + id + '.active,#' + id + '.exit-left,#' + id + '.exit-right';
+            }).join(',');
+            var open = document.querySelector(sel) || window.__osmosiFlowLock;
+            backdrop.classList.toggle('active', !!open);
+        };
+
         window.__syncModalBodyLock = function () {
             const ambOpen = document.querySelector('#vwt-modal.active,#vwt-meter-modal.active,#osmosi-modal.active,#osmosi-match-modal.active,#analisi-choice-modal.active,#analisi-choice-modal-page2.active');
-            const animOpen = document.querySelector('.modal-overlay.exit-left, .modal-overlay.exit-right');
+            const animOpen = document.querySelector('#vwt-modal.exit-left,#vwt-meter-modal.exit-left,#osmosi-modal.exit-left,#osmosi-match-modal.exit-left,#analisi-choice-modal.exit-left,#analisi-choice-modal-page2.exit-left,#vwt-modal.exit-right,#vwt-meter-modal.exit-right,#osmosi-modal.exit-right,#osmosi-match-modal.exit-right,#analisi-choice-modal.exit-right,#analisi-choice-modal-page2.exit-right');
             const locked = !!ambOpen || !!animOpen || !!window.__osmosiFlowLock;
             document.body.classList.toggle('sh-modal-open', locked);
             document.documentElement.classList.toggle('sh-modal-open', locked);
+            window.__syncAmbPhoneBackdrop();
+        };
+
+        window.__primeAmbModalContentEnter = function (modalEl) {
+            if (!modalEl) return;
+            var content = modalEl.querySelector('.modal-content-centered');
+            if (!content) return;
+            content.classList.add('amb-content-enter-pending');
+            void content.offsetHeight;
+            content.classList.remove('amb-content-enter-pending');
         };
 
         window.__openAmbModalNow = function (modalEl) {
             if (!modalEl) return;
+            var isPhone = window.isServiceHubPhone && window.isServiceHubPhone() && window.__isAmbFlowModalEl(modalEl);
+            if (isPhone) window.__ensureAmbPhoneBackdropEl().classList.add('active');
             modalEl.classList.remove('exit-left', 'exit-right');
             modalEl.classList.add('active');
+            if (isPhone) window.__primeAmbModalContentEnter(modalEl);
             window.__syncModalBodyLock();
         };
 
@@ -6431,13 +6499,46 @@ window.updateStoricoButton = async function() {
             opts = opts || {};
             if (!modalEl) return;
             modalEl.classList.remove('active', 'exit-left', 'exit-right');
-            if (opts.keepBackdrop !== true) window.__syncModalBodyLock();
+            window.__syncModalBodyLock();
         };
 
-        window.__AMB_MODAL_SWAP_MS = 420;
+        window.__dismissAmbModal = function (modalEl, direction) {
+            if (!modalEl) return;
+            var exitClass = direction === 'right' ? 'exit-right' : 'exit-left';
+            var isPhone = window.isServiceHubPhone && window.isServiceHubPhone() && window.__isAmbFlowModalEl(modalEl);
+            if (isPhone) window.__ensureAmbPhoneBackdropEl().classList.add('active');
+            modalEl.classList.remove('active');
+            modalEl.classList.add(exitClass);
+            window.__syncModalBodyLock();
+            setTimeout(function () {
+                modalEl.classList.remove(exitClass);
+                window.__syncModalBodyLock();
+            }, window.__AMB_MODAL_SWAP_MS);
+        };
 
         window.__swapAmbModal = function (fromModal, toModal, opts) {
             opts = opts || {};
+            var isPhone = window.isServiceHubPhone && window.isServiceHubPhone();
+            if (isPhone && (window.__isAmbFlowModalEl(fromModal) || window.__isAmbFlowModalEl(toModal))) {
+                window.__ensureAmbPhoneBackdropEl().classList.add('active');
+                var exitClass = opts.direction === 'right' ? 'exit-right' : 'exit-left';
+                if (toModal) {
+                    toModal.classList.remove('exit-left', 'exit-right');
+                    window.__openAmbModalNow(toModal);
+                }
+                if (fromModal && fromModal !== toModal) {
+                    fromModal.classList.add(exitClass);
+                    fromModal.classList.remove('active');
+                    window.__syncModalBodyLock();
+                    setTimeout(function () {
+                        fromModal.classList.remove(exitClass);
+                        window.__syncModalBodyLock();
+                    }, window.__AMB_MODAL_SWAP_MS);
+                } else {
+                    window.__syncModalBodyLock();
+                }
+                return;
+            }
             if (opts.instant) {
                 if (toModal) window.__openAmbModalNow(toModal);
                 if (fromModal) fromModal.classList.remove('active', 'exit-left', 'exit-right');
@@ -6633,7 +6734,8 @@ window.updateStoricoButton = async function() {
             }
         };
 
-        window.openOsmosiPopup = () => {
+        window.openOsmosiPopup = (opts) => {
+            opts = opts || {};
             const now = Date.now();
             if (now - window.__lastOsmosiPopupOpenMs < 350) return;
             if (window.__osmosiFlowLock) return;
@@ -6666,7 +6768,9 @@ window.updateStoricoButton = async function() {
             selectedOsmosiUnits = restoredUnits;
             currentMatches = {};
 
-            window.__openAmbModalNow(m);
+            if (opts.fromMeter) window.__swapAmbModal(opts.fromMeter, m);
+            else if (typeof window.__activateModalAnimated === 'function') window.__activateModalAnimated(m);
+            else window.__openAmbModalNow(m);
         };
 
         window.__ensureAmbSpecialPopupRows = function () {
@@ -6780,8 +6884,8 @@ window.updateStoricoButton = async function() {
             const units = window.selectOsmosiOption(value, { deferLabel: true }) || [];
             btn.classList.add('is-selected');
             if (value && units.length) {
+                window.openOsmosiMatchPopup(units, { stack: true, prepareOnly: true });
                 window.__swapAmbModal(modal, matchModal);
-                window.openOsmosiMatchPopup(units, { stack: true });
             } else {
                 window.__closeAmbModalNow(modal);
                 window.__osmosiFlowLock = false;
@@ -6889,7 +6993,7 @@ window.updateStoricoButton = async function() {
                 window.__preselectOsmosiCInMatchPopup(container);
             }
 
-            window.__openAmbModalNow(m);
+            if (!opts.prepareOnly) window.__openAmbModalNow(m);
         };
 
         window.__formatOsmosiUnitGroup = function (part) {
@@ -16881,12 +16985,37 @@ window.convertToHtml = async () => {
         body.sh-modal-open {
             overflow: hidden !important;
         }
+        #amb-modal-backdrop { display: none; }
+        body.sh-device-phone #amb-modal-backdrop {
+            display: block;
+            position: fixed;
+            inset: 0;
+            z-index: 10000;
+            background: rgba(0, 0, 0, 0.75);
+            visibility: hidden;
+            opacity: 0;
+            pointer-events: none;
+            transition: none;
+            -webkit-backface-visibility: hidden;
+            backface-visibility: hidden;
+            -webkit-transform: translateZ(0);
+            transform: translateZ(0);
+        }
+        body.sh-device-phone #amb-modal-backdrop.active {
+            visibility: visible;
+            opacity: 1;
+            pointer-events: auto;
+        }
         body.sh-device-phone #vwt-modal,
         body.sh-device-phone #vwt-meter-modal,
         body.sh-device-phone #osmosi-modal,
         body.sh-device-phone #osmosi-match-modal,
         body.sh-device-phone #analisi-choice-modal,
         body.sh-device-phone #analisi-choice-modal-page2 {
+            background: transparent !important;
+            backdrop-filter: none !important;
+            -webkit-backdrop-filter: none !important;
+            transition: none !important;
             -webkit-transform: translateZ(0);
             transform: translateZ(0);
         }
@@ -16898,21 +17027,20 @@ window.convertToHtml = async () => {
         body.sh-device-phone #analisi-choice-modal-page2:not(.active):not(.exit-left):not(.exit-right) {
             visibility: hidden !important;
             pointer-events: none !important;
-            background: transparent !important;
-            backdrop-filter: none !important;
-            -webkit-backdrop-filter: none !important;
-            transition: visibility 0s linear 0.35s, background-color 0s !important;
         }
         body.sh-device-phone #vwt-modal.active,
         body.sh-device-phone #vwt-meter-modal.active,
         body.sh-device-phone #osmosi-modal.active,
         body.sh-device-phone #osmosi-match-modal.active,
         body.sh-device-phone #analisi-choice-modal.active,
-        body.sh-device-phone #analisi-choice-modal-page2.active,
+        body.sh-device-phone #analisi-choice-modal-page2.active {
+            visibility: visible !important;
+            pointer-events: auto !important;
+        }
         body.sh-device-phone #vwt-modal.exit-left,
+        body.sh-device-phone #vwt-modal.exit-right,
         body.sh-device-phone #vwt-meter-modal.exit-left,
         body.sh-device-phone #vwt-meter-modal.exit-right,
-        body.sh-device-phone #vwt-modal.exit-right,
         body.sh-device-phone #osmosi-modal.exit-left,
         body.sh-device-phone #osmosi-modal.exit-right,
         body.sh-device-phone #osmosi-match-modal.exit-left,
@@ -16922,24 +17050,6 @@ window.convertToHtml = async () => {
         body.sh-device-phone #analisi-choice-modal-page2.exit-left,
         body.sh-device-phone #analisi-choice-modal-page2.exit-right {
             visibility: visible !important;
-            pointer-events: auto !important;
-            backdrop-filter: none !important;
-            -webkit-backdrop-filter: none !important;
-            background: rgba(0, 0, 0, 0.75) !important;
-            transition: visibility 0s, background-color 0s !important;
-        }
-        body.sh-device-phone #vwt-modal.exit-left,
-        body.sh-device-phone #vwt-modal.exit-right,
-        body.sh-device-phone #vwt-meter-modal.exit-left,
-        body.sh-device-phone #vwt-meter-modal.exit-right,
-        body.sh-device-phone #osmosi-modal.exit-left,
-        body.sh-device-phone #osmosi-modal.exit-right,
-        body.sh-device-phone #osmosi-match-modal.exit-left,
-        body.sh-device-phone #osmosi-match-modal.exit-right,
-        body.sh-device-phone #analisi-choice-modal.exit-left,
-        body.sh-device-phone #analisi-choice-modal.exit-right,
-        body.sh-device-phone #analisi-choice-modal-page2.exit-left,
-        body.sh-device-phone #analisi-choice-modal-page2.exit-right {
             pointer-events: none !important;
         }
         body.sh-device-phone #vwt-modal .modal-content-centered,
@@ -16948,9 +17058,12 @@ window.convertToHtml = async () => {
         body.sh-device-phone #osmosi-match-modal .modal-content-centered,
         body.sh-device-phone #analisi-choice-modal .modal-content-centered,
         body.sh-device-phone #analisi-choice-modal-page2 .modal-content-centered {
-            transform: translateY(-120vh) scale(0.9);
+            transform: translateY(28px) scale(0.95);
             opacity: 0;
-            transition: transform 0.42s cubic-bezier(0.175, 0.885, 0.32, 1.1), opacity 0.35s ease !important;
+            transition: transform 0.38s cubic-bezier(0.175, 0.885, 0.32, 1.1), opacity 0.32s ease !important;
+            -webkit-backface-visibility: hidden;
+            backface-visibility: hidden;
+            will-change: transform, opacity;
         }
         body.sh-device-phone #vwt-modal.active .modal-content-centered,
         body.sh-device-phone #vwt-meter-modal.active .modal-content-centered,
@@ -16961,15 +17074,20 @@ window.convertToHtml = async () => {
             transform: translateY(0) scale(1) !important;
             opacity: 1 !important;
         }
+        body.sh-device-phone .modal-content-centered.amb-content-enter-pending {
+            transform: translateY(28px) scale(0.95) !important;
+            opacity: 0 !important;
+            transition: none !important;
+        }
         body.sh-device-phone #vwt-modal.exit-left .modal-content-centered,
         body.sh-device-phone #vwt-meter-modal.exit-left .modal-content-centered,
         body.sh-device-phone #osmosi-modal.exit-left .modal-content-centered,
         body.sh-device-phone #osmosi-match-modal.exit-left .modal-content-centered,
         body.sh-device-phone #analisi-choice-modal.exit-left .modal-content-centered,
         body.sh-device-phone #analisi-choice-modal-page2.exit-left .modal-content-centered {
-            transform: translateX(-160%) rotate(-8deg) !important;
+            transform: translateX(-130%) rotate(-6deg) !important;
             opacity: 0 !important;
-            transition: transform 0.42s cubic-bezier(0.4, 0, 1, 1), opacity 0.35s ease !important;
+            transition: transform 0.38s cubic-bezier(0.4, 0, 1, 1), opacity 0.3s ease !important;
         }
         body.sh-device-phone #vwt-modal.exit-right .modal-content-centered,
         body.sh-device-phone #vwt-meter-modal.exit-right .modal-content-centered,
@@ -16977,9 +17095,9 @@ window.convertToHtml = async () => {
         body.sh-device-phone #osmosi-match-modal.exit-right .modal-content-centered,
         body.sh-device-phone #analisi-choice-modal.exit-right .modal-content-centered,
         body.sh-device-phone #analisi-choice-modal-page2.exit-right .modal-content-centered {
-            transform: translateX(160%) rotate(8deg) !important;
+            transform: translateX(130%) rotate(6deg) !important;
             opacity: 0 !important;
-            transition: transform 0.42s cubic-bezier(0.4, 0, 1, 1), opacity 0.35s ease !important;
+            transition: transform 0.38s cubic-bezier(0.4, 0, 1, 1), opacity 0.3s ease !important;
         }
         body.sh-device-phone .osmosi-btn,
         body.sh-device-phone .vwt-btn,
@@ -18141,13 +18259,13 @@ window.convertToHtml = async () => {
         </div>
     </div>
 
-    <div id="analisi-choice-modal" class="modal-overlay" onclick="if(event.target === this) { window.confirmAnalisiValues(); this.classList.remove('active'); }">
+    <div id="analisi-choice-modal" class="modal-overlay" onclick="if(event.target === this) window.confirmAnalisiValues();">
         <div class="modal-content-centered" onclick="event.stopPropagation()">
             <div class="px-6 py-6 bg-slate-900 text-white font-black italic text-center text-xl border-b-4 border-slate-800 uppercase tracking-tighter">
                 <div class="flex items-center justify-center gap-0">
                     <button onclick="window.resetAllAnalisiValues()" class="w-8 h-8 bg-black text-white font-black text-sm font-bold rounded-full border-2 border-gray-800 shadow-lg hover:bg-gray-800 transition-all transform" style="background-color: #0ea5e9; border-bottom: 6px solid #0284c7; border-left: none; border-right: none; border-top: none; transition: all 0.15s ease; box-shadow: 0 6px 12px rgba(14, 165, 233, 0.4), 0 3px 6px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.08); transform: translateY(-1px);" onmousedown="this.style.transform='translateY(2px) scale(0.9)'" onmouseup="this.style.transform='translateY(-1px)'" onmouseleave="this.style.transform='translateY(-1px)'" ontouchstart="this.style.transform='translateY(2px) scale(0.9)'" ontouchend="this.style.transform='translateY(-1px)'">R</button>
                     <span class="flex-1 text-center cursor-pointer" onclick="window.toggleAnalisiPage()">ANALISI</span>
-                    <button onclick="document.getElementById('analisi-choice-modal').classList.remove('active')" class="w-8 h-8 bg-red-600 text-white font-black text-sm font-bold rounded-full border-2 border-red-800 shadow-lg hover:bg-red-700 transition-all transform active:scale-90" style="background-color: #dc2626; border-bottom: 6px solid #991b1b; border-left: none; border-right: none; border-top: none; transition: all 0.15s ease; box-shadow: 0 6px 12px rgba(220, 38, 38, 0.4), 0 3px 6px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.08); transform: translateY(-1px);">X</button>
+                    <button onclick="typeof window.__dismissAmbModal==='function'?window.__dismissAmbModal(document.getElementById('analisi-choice-modal'),'right'):document.getElementById('analisi-choice-modal').classList.remove('active')" class="w-8 h-8 bg-red-600 text-white font-black text-sm font-bold rounded-full border-2 border-red-800 shadow-lg hover:bg-red-700 transition-all transform active:scale-90" style="background-color: #dc2626; border-bottom: 6px solid #991b1b; border-left: none; border-right: none; border-top: none; transition: all 0.15s ease; box-shadow: 0 6px 12px rgba(220, 38, 38, 0.4), 0 3px 6px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.08); transform: translateY(-1px);">X</button>
                 </div>
             </div>
             <!-- Linea divisoria "uscita WWT" -->
@@ -18309,13 +18427,13 @@ window.convertToHtml = async () => {
     </div>
 
     <!-- SECONDA PAGINA POPUP ANALISI -->
-    <div id="analisi-choice-modal-page2" class="modal-overlay" onclick="if(event.target === this) { window.confirmAnalisiValuesPage2(); this.classList.remove('active'); }">
+    <div id="analisi-choice-modal-page2" class="modal-overlay" onclick="if(event.target === this) window.confirmAnalisiValuesPage2();">
         <div class="modal-content-centered" onclick="event.stopPropagation()">
             <div class="px-6 py-6 bg-slate-900 text-white font-black italic text-center text-xl border-b-4 border-slate-800 uppercase tracking-tighter">
                 <div class="flex items-center justify-center gap-0">
                     <button onclick="window.resetAllAnalisiValuesPage2()" class="w-8 h-8 bg-black text-white font-black text-sm font-bold rounded-full border-2 border-gray-800 shadow-lg hover:bg-gray-800 transition-all transform" style="background-color: #0ea5e9; border-bottom: 6px solid #0284c7; border-left: none; border-right: none; border-top: none; transition: all 0.15s ease; box-shadow: 0 6px 12px rgba(14, 165, 233, 0.4), 0 3px 6px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.08); transform: translateY(-1px);" onmousedown="this.style.transform='translateY(2px) scale(0.9)'" onmouseup="this.style.transform='translateY(-1px)'" onmouseleave="this.style.transform='translateY(-1px)'" ontouchstart="this.style.transform='translateY(2px) scale(0.9)'" ontouchend="this.style.transform='translateY(-1px)'">R</button>
                     <span class="flex-1 text-center cursor-pointer" onclick="window.toggleAnalisiPage()">ANALISI 2</span>
-                    <button onclick="document.getElementById('analisi-choice-modal-page2').classList.remove('active')" class="w-8 h-8 bg-red-600 text-white font-black text-sm font-bold rounded-full border-2 border-red-800 shadow-lg hover:bg-red-700 transition-all transform active:scale-90" style="background-color: #dc2626; border-bottom: 6px solid #991b1b; border-left: none; border-right: none; border-top: none; transition: all 0.15s ease; box-shadow: 0 6px 12px rgba(220, 38, 38, 0.4), 0 3px 6px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.08); transform: translateY(-1px);">X</button>
+                    <button onclick="typeof window.__dismissAmbModal==='function'?window.__dismissAmbModal(document.getElementById('analisi-choice-modal-page2'),'right'):document.getElementById('analisi-choice-modal-page2').classList.remove('active')" class="w-8 h-8 bg-red-600 text-white font-black text-sm font-bold rounded-full border-2 border-red-800 shadow-lg hover:bg-red-700 transition-all transform active:scale-90" style="background-color: #dc2626; border-bottom: 6px solid #991b1b; border-left: none; border-right: none; border-top: none; transition: all 0.15s ease; box-shadow: 0 6px 12px rgba(220, 38, 38, 0.4), 0 3px 6px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.08); transform: translateY(-1px);">X</button>
                 </div>
             </div>
             <!-- Linea divisoria "titolo 1" -->
@@ -18458,7 +18576,9 @@ window.convertToHtml = async () => {
         </div>
     </div>
 
-    <div id="vwt-modal" class="modal-overlay" onclick="if(window.__osmosiFlowLock)return;if(event.target===this){this.classList.remove('active');window.__syncModalBodyLock&&window.__syncModalBodyLock();}">
+    <div id="amb-modal-backdrop" aria-hidden="true"></div>
+
+    <div id="vwt-modal" class="modal-overlay" onclick="if(window.__osmosiFlowLock)return;if(event.target===this&&typeof window.closeVwtPopup==='function')window.closeVwtPopup();">
         <div class="modal-content-centered" onclick="event.stopPropagation()">
             <div class="px-6 py-6 bg-slate-900 border-b-4 border-slate-800"><h3 class="text-white font-black italic uppercase tracking-tighter text-xl text-center">Configurazione impianto</h3></div>
             <div class="p-6 flex flex-col gap-3 bg-slate-50">

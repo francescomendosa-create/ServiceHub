@@ -5132,6 +5132,7 @@ window.updateStoricoButton = async function() {
                 const target = e.target;
                 if (window.__isAmbSpecialPopupTarget && window.__isAmbSpecialPopupTarget(target)) return;
                 if (globalInteractionLock) return;
+                if (e.target.closest && e.target.closest('#numpad-modal-panel')) return;
                 if (target.classList.contains('cell-label-main') || target.classList.contains('bd-label') || (target.classList.contains('amb-label') && !target.innerText.includes("WWT") && !target.innerText.includes("OSMOSI") && !target.querySelector('.vwt-label-dynamic') && !target.querySelector('.osmosi-label-dynamic'))) { window.openNumpad(target); }
             });
         });
@@ -5154,6 +5155,18 @@ window.updateStoricoButton = async function() {
 
         window.isNumpadFloatingDevice = function () {
             return typeof window.isServiceHubPhone === 'function' && !window.isServiceHubPhone();
+        };
+
+        window.isNumpadDraggable = function () {
+            if (typeof window.isServiceHubPhone === 'function' && window.isServiceHubPhone()) return false;
+            if (typeof window.isServiceHubTablet === 'function' && window.isServiceHubTablet()) return true;
+            return typeof window.isServiceHubDesktop === 'function' && window.isServiceHubDesktop();
+        };
+
+        window.onNumpadOverlayClick = function (e) {
+            if (!e || e.target !== e.currentTarget) return;
+            if (typeof window.isNumpadFloatingDevice === 'function' && window.isNumpadFloatingDevice()) return;
+            window.closeNumpad();
         };
 
         window.__numpadDragPos = { x: 0, y: 0 };
@@ -5202,28 +5215,39 @@ window.updateStoricoButton = async function() {
             };
 
             const endDrag = function () {
+                dragArmed = false;
                 if (!dragging) return;
                 dragging = false;
                 handle.classList.remove('numpad-drag-handle--active');
                 panel.classList.remove('numpad-modal-panel--dragging');
             };
 
+            let dragArmed = false;
+
             handle.addEventListener('pointerdown', function (e) {
-                if (!window.isNumpadFloatingDevice()) return;
+                if (!window.isNumpadDraggable()) return;
                 if (e.target && e.target.closest && e.target.closest('button')) return;
                 if (e.button !== 0 && e.pointerType === 'mouse') return;
-                dragging = true;
+                dragArmed = true;
+                dragging = false;
                 startX = e.clientX;
                 startY = e.clientY;
                 origX = (window.__numpadDragPos || { x: 0 }).x;
                 origY = (window.__numpadDragPos || { y: 0 }).y;
-                handle.classList.add('numpad-drag-handle--active');
-                panel.classList.add('numpad-modal-panel--dragging');
                 if (handle.setPointerCapture) handle.setPointerCapture(e.pointerId);
+                if (e.stopPropagation) e.stopPropagation();
                 e.preventDefault();
             });
 
             handle.addEventListener('pointermove', function (e) {
+                if (!dragArmed) return;
+                const dx = e.clientX - startX;
+                const dy = e.clientY - startY;
+                if (!dragging && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
+                    dragging = true;
+                    handle.classList.add('numpad-drag-handle--active');
+                    panel.classList.add('numpad-modal-panel--dragging');
+                }
                 onMove(e.clientX, e.clientY);
             });
 
@@ -5540,7 +5564,8 @@ window.updateStoricoButton = async function() {
             const numpadModal = document.getElementById('numpad-modal');
             if (numpadModal && numpadModal.classList.contains('active')) {
                 if (typeof window.commitNumpadFieldValue === 'function') window.commitNumpadFieldValue();
-                if (window.switchNumpadField(labelEl)) return;
+                if (typeof window.switchNumpadField === 'function' && window.switchNumpadField(labelEl)) return;
+                return;
             }
             if (!window.populateNumpadForLabel(labelEl)) return;
             if (typeof window.initNumpadDrag === 'function') window.initNumpadDrag();
@@ -17938,23 +17963,24 @@ window.convertToHtml = async () => {
             box-shadow: inset 0 1px 3px rgba(15, 23, 42, 0.08);
             box-sizing: border-box;
         }
-        /* Numpad: entra dal basso verso l'alto (tutti i dispositivi) */
+        /* Numpad: compare lentamente al centro (tablet + PC) */
         #numpad-modal {
-            align-items: flex-end !important;
+            align-items: center !important;
             justify-content: center !important;
-            padding: 0 14px max(14px, env(safe-area-inset-bottom, 0px)) !important;
+            padding: max(18px, calc(env(safe-area-inset-top, 0px) + 12px)) 14px max(18px, env(safe-area-inset-bottom, 0px)) !important;
         }
         #numpad-modal #numpad-modal-panel {
             margin: 0 auto;
             width: min(94vw, 400px);
             max-width: 400px;
             flex-shrink: 0;
-            transform: translateY(calc(100% + 36px)) !important;
+            pointer-events: auto;
+            transform: scale(0.9) translateY(18px) !important;
             opacity: 0;
             transition: transform 0.72s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.58s ease;
         }
         #numpad-modal.active #numpad-modal-panel:not(.numpad-modal-panel--user-pos) {
-            transform: translateY(0) !important;
+            transform: scale(1) translateY(0) !important;
             opacity: 1;
         }
         #numpad-modal.active #numpad-modal-panel.numpad-modal-panel--user-pos {
@@ -17964,7 +17990,16 @@ window.convertToHtml = async () => {
             transition: none !important;
             user-select: none;
         }
-        /* PC + tablet: sfondo sempre nitido, numpad trascinabile */
+        /* Smartphone: centrato come prima, fade + scale */
+        body.sh-device-phone #numpad-modal #numpad-modal-panel {
+            transform: scale(0.92) !important;
+            opacity: 0;
+        }
+        body.sh-device-phone #numpad-modal.active #numpad-modal-panel:not(.numpad-modal-panel--user-pos) {
+            transform: scale(1) !important;
+            opacity: 1;
+        }
+        /* PC + tablet: sfondo nitido, click passa sotto tranne sul pannello */
         body:not(.sh-device-phone) #numpad-modal.active {
             background: transparent !important;
             backdrop-filter: none !important;
@@ -17976,12 +18011,17 @@ window.convertToHtml = async () => {
             pointer-events: auto;
             box-shadow: 0 16px 48px rgba(0, 0, 0, 0.28), 0 4px 12px rgba(0, 0, 0, 0.18);
         }
+        /* Trascinamento: solo PC desktop */
         body:not(.sh-device-phone) .numpad-drag-handle {
-            cursor: grab;
             touch-action: none;
         }
-        body:not(.sh-device-phone) .numpad-drag-handle.numpad-drag-handle--active {
-            cursor: grabbing;
+        @media (hover: hover) and (pointer: fine) {
+            .numpad-drag-handle {
+                cursor: grab;
+            }
+            .numpad-drag-handle.numpad-drag-handle--active {
+                cursor: grabbing;
+            }
         }
         #numpad-modal #numpad-display {
             display: block;
@@ -19214,8 +19254,8 @@ window.convertToHtml = async () => {
     <input type="hidden" id="inp-analisi-torb-a11005" value="">
     <input type="hidden" id="inp-analisi-torb-perm" value="">
     <input type="hidden" id="inp-analisi-torb-ult" value="">
-    <div id="numpad-modal" class="modal-overlay" onclick="if(event.target === this) window.closeNumpad()">
-        <div id="numpad-modal-panel" class="modal-content-centered" onclick="event.stopPropagation()">
+    <div id="numpad-modal" class="modal-overlay" onclick="window.onNumpadOverlayClick(event)">
+        <div id="numpad-modal-panel" class="modal-content-centered" onclick="event.stopPropagation()" onmousedown="event.stopPropagation()" ontouchstart="event.stopPropagation()">
             <div id="numpad-drag-handle" class="numpad-drag-handle px-4 py-3 bg-slate-900 text-white flex flex-col relative justify-center border-b-2 border-slate-700">
                 <div class="numpad-header-actions">
                     <button type="button" id="numpad-settings-btn" class="numpad-settings-btn" onclick="window.onNumpadHeaderBtnClick(event)" aria-label="Impostazioni numpad" hidden>

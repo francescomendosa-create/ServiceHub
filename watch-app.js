@@ -312,11 +312,235 @@
 
   function closeContatoriNumpad() {
 
+    stopCntSpeech();
+
     var pad = $('sw-cnt-numpad');
 
     if (pad) pad.classList.add('sw-view--hidden');
 
     state.numpadBuffer = '';
+
+  }
+
+
+
+  var cntSpeechRecognition = null;
+
+  var cntSpeechListening = false;
+
+
+
+  function normalizeSpeechText(text) {
+
+    return String(text || '').toLowerCase()
+
+      .replace(/[àá]/g, 'a').replace(/[èé]/g, 'e').replace(/[ìí]/g, 'i')
+
+      .replace(/[òó]/g, 'o').replace(/[ùú]/g, 'u');
+
+  }
+
+
+
+  function parseSpokenCounterDigits(transcript) {
+
+    var raw = normalizeSpeechText(transcript);
+
+    var wordMap = {
+
+      zero: '0', zeri: '0',
+
+      uno: '1', una: '1', un: '1',
+
+      due: '2', tre: '3', quattro: '4', cinque: '5',
+
+      sei: '6', sette: '7', otto: '8', nove: '9'
+
+    };
+
+    var fromDigits = raw.replace(/[^\d]/g, '');
+
+    var fromWords = '';
+
+    raw.split(/[\s,.;:+\-/]+/).forEach(function (tok) {
+
+      tok = tok.replace(/[^a-z0-9]/g, '');
+
+      if (!tok) return;
+
+      if (/^\d+$/.test(tok)) {
+
+        fromWords += tok;
+
+        return;
+
+      }
+
+      if (wordMap[tok] != null) fromWords += wordMap[tok];
+
+    });
+
+    var out = fromWords.length >= fromDigits.length ? fromWords : (fromWords || fromDigits);
+
+    return out.slice(0, CNT_MAX_LEN);
+
+  }
+
+
+
+  function setCntMicButtonState(active) {
+
+    var btn = $('sw-cnt-numpad-mic');
+
+    if (!btn) return;
+
+    btn.classList.toggle('sw-cnt-numpad-mic--active', !!active);
+
+  }
+
+
+
+  function initCntSpeechRecognition() {
+
+    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+
+      var micBtn = $('sw-cnt-numpad-mic');
+
+      if (micBtn) micBtn.classList.add('sw-cnt-numpad-mic--disabled');
+
+      return null;
+
+    }
+
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    var rec = new SR();
+
+    rec.lang = 'it-IT';
+
+    rec.interimResults = true;
+
+    rec.continuous = false;
+
+    rec.maxAlternatives = 1;
+
+
+
+    rec.onresult = function (e) {
+
+      var transcript = '';
+
+      for (var i = e.resultIndex; i < e.results.length; i++) {
+
+        transcript += e.results[i][0].transcript;
+
+      }
+
+      var digits = parseSpokenCounterDigits(transcript);
+
+      if (digits) {
+
+        state.numpadBuffer = digits;
+
+        updateNumpadDisplay();
+
+      }
+
+    };
+
+
+
+    rec.onstart = function () {
+
+      cntSpeechListening = true;
+
+      setCntMicButtonState(true);
+
+      try { navigator.vibrate(12); } catch (_) {}
+
+    };
+
+
+
+    rec.onend = function () {
+
+      cntSpeechListening = false;
+
+      setCntMicButtonState(false);
+
+    };
+
+
+
+    rec.onerror = function (ev) {
+
+      cntSpeechListening = false;
+
+      setCntMicButtonState(false);
+
+      if (ev && ev.error !== 'aborted' && ev.error !== 'no-speech') {
+
+        console.warn('[ServiceWatch] dettatura:', ev.error);
+
+      }
+
+    };
+
+
+
+    return rec;
+
+  }
+
+
+
+  function stopCntSpeech() {
+
+    if (cntSpeechRecognition && cntSpeechListening) {
+
+      try { cntSpeechRecognition.stop(); } catch (_) {}
+
+    }
+
+    cntSpeechListening = false;
+
+    setCntMicButtonState(false);
+
+  }
+
+
+
+  function toggleCntSpeech() {
+
+    if (!cntSpeechRecognition) return;
+
+    if (cntSpeechListening) {
+
+      stopCntSpeech();
+
+      return;
+
+    }
+
+    try {
+
+      cntSpeechRecognition.start();
+
+    } catch (e) {
+
+      try {
+
+        cntSpeechRecognition.stop();
+
+        setTimeout(function () {
+
+          try { cntSpeechRecognition.start(); } catch (_) {}
+
+        }, 120);
+
+      } catch (_) {}
+
+    }
 
   }
 
@@ -905,6 +1129,22 @@
     if (numpadCancel) {
 
       numpadCancel.addEventListener('click', closeContatoriNumpad);
+
+    }
+
+    cntSpeechRecognition = initCntSpeechRecognition();
+
+    var numpadMic = $('sw-cnt-numpad-mic');
+
+    if (numpadMic) {
+
+      numpadMic.addEventListener('click', function () {
+
+        if (!cntSpeechRecognition) return;
+
+        toggleCntSpeech();
+
+      });
 
     }
 

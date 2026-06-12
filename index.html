@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.12-chem-plant-sync-v46';
+        window.SERVICEHUB_BUILD = '2026.06.12-aria-compressor-v47';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
@@ -9539,7 +9539,6 @@ window.updateStoricoButton = async function() {
             return /^v(105a|105b|mk10600)_(fic|pc|lc)$/i.test(String(fieldId || ''));
         };
 
-        /** Sigla misura compressore Blowdown: solo FIC / PIC / LIC (senza ripetere MK 10500…). */
         window.shortBdCompressorMeasureLabel = function (label, fieldId) {
             const id = String(fieldId || '').toLowerCase();
             if (id.endsWith('_fic')) return 'FIC';
@@ -9559,6 +9558,56 @@ window.updateStoricoButton = async function() {
             const m = clean.match(/\b(FIC|PIC|LIC|LC)\b/i);
             if (m) return m[1].toUpperCase() === 'LC' ? 'LIC' : m[1].toUpperCase();
             return clean;
+        };
+
+        window.ARIA_COMPRESSORS = [
+            { id: 'sa-A', machine: 'MK 9600 A' },
+            { id: 'sa-B', machine: 'MK 9600 B' },
+            { id: 'sa-C', machine: 'MK 9600 C' },
+            { id: 'sa-151', machine: 'MK 151' }
+        ];
+        window.ARIA_COMPRESSOR_MEASURES = [
+            { key: 'portata', label: 'PORTATA' },
+            { key: 'temp', label: 'TEMP.' },
+            { key: 'press', label: 'PRESS.' }
+        ];
+
+        window.resolveAriaCompressorFieldLabel = function(inp) {
+            if (!inp || !inp.id) return '';
+            const tr = inp.closest('tr');
+            const machineEl = tr && tr.querySelector('.cell-label-main');
+            const machineLbl = machineEl ? machineEl.innerText.replace(/\s+/g, ' ').trim() : '';
+            const td = inp.closest('td');
+            const table = inp.closest('table');
+            if (!td || !table || !tr) return machineLbl;
+            const colIdx = Array.from(tr.children).indexOf(td);
+            const headRow = table.querySelector('tr.th-bg');
+            const headCell = headRow && headRow.children[colIdx];
+            const colLbl = headCell ? headCell.innerText.replace(/\s+/g, ' ').trim() : '';
+            if (machineLbl && colLbl) return machineLbl + ' · ' + colLbl;
+            return machineLbl || colLbl || inp.id;
+        };
+
+        window.buildAriaCompressorReportRows = function() {
+            const rows = [];
+            (window.ARIA_COMPRESSORS || []).forEach(function(c) {
+                const st = document.getElementById(c.id);
+                if (st) {
+                    rows.push({
+                        label: c.machine,
+                        val: st.innerText.includes('MARCIA') ? 'MARCIA' : 'FERMO',
+                        isStatus: true,
+                        active: st.innerText.includes('MARCIA')
+                    });
+                }
+                (window.ARIA_COMPRESSOR_MEASURES || []).forEach(function(m) {
+                    const inp = document.getElementById(c.id + '-' + m.key);
+                    if (inp && String(inp.value || '').trim() !== '') {
+                        rows.push({ label: m.label, val: String(inp.value).trim(), isStatus: false });
+                    }
+                });
+            });
+            return rows;
         };
 
         window.syncBluedownCompressorShortLabels = function () {
@@ -9624,6 +9673,11 @@ window.updateStoricoButton = async function() {
             if (!inp) return 'VALORE';
             const id = inp.id || '';
             let label = '';
+
+            if (moduleId === 'sec-aria' && window.resolveAriaCompressorFieldLabel) {
+                label = window.resolveAriaCompressorFieldLabel(inp);
+                if (label) return label;
+            }
 
             if (moduleId === 'sec-stoccaggio-interno' && window.getStoccaggioInternoInputLabel) {
                 label = window.getStoccaggioInternoInputLabel(inp) || '';
@@ -9778,6 +9832,10 @@ window.updateStoricoButton = async function() {
                         if (lab) label = lab.innerText.replace(/[↑↓▲▼]/g, '').replace(/\s+/g, ' ').trim();
                     }
                 }
+                const tr = inp.closest('tr');
+                if (secId === 'sec-aria' && tr && window.resolveAriaCompressorFieldLabel) {
+                    label = window.resolveAriaCompressorFieldLabel(inp);
+                }
                 const amb = inp.closest('.amb-row');
                 if (amb) {
                     const lab = amb.querySelector('.amb-label');
@@ -9792,7 +9850,6 @@ window.updateStoricoButton = async function() {
                             : lab.innerText.replace(/\s+/g, ' ').trim();
                     }
                 }
-                const tr = inp.closest('tr');
                 if (tr && !label) {
                     const cell = tr.querySelector('.cell-label-main');
                     if (cell) label = cell.innerText.replace(/\s+/g, ' ').trim();
@@ -15504,9 +15561,11 @@ if (hiddenModules.length === 0) {
                     });
                 }
             });
+        } else if (id === 'sec-aria') {
+            rows.push.apply(rows, window.buildAriaCompressorReportRows ? window.buildAriaCompressorReportRows() : []);
         } else {
             // STATUS (fix duplicati + formato corretto) per altri moduli
-            sec.querySelectorAll('.status-cell-btn, .status-header.compact').forEach(st => { 
+            sec.querySelectorAll('.status-cell-btn, .status-header.compact').forEach(st => {
                 if (st.classList.contains('compact')) {
                  let sigla = st.innerHTML.split('<br>')[0].trim();
 
@@ -16423,6 +16482,8 @@ window.buildDigitalCardsHTML = function() {
                         const stoccData = window.getNotturnoStoccaggioReportData();
                         if (!stoccData.rows.length) return '';
                         contentHTML = window.buildStoccaggioDigitalRowsHTML(stoccData.rows);
+                    } else if (moduleId === 'sec-aria' && window.buildAriaCompressorReportRows) {
+                        rows.push.apply(rows, window.buildAriaCompressorReportRows());
                     } else {
                         // LOGICA COMPLETA DEL REPORT PREVIEW PER ALTRI MODULI
                         // STATUS (fix duplicati + formato corretto)
@@ -19641,6 +19702,11 @@ window.convertToHtml = async () => {
         .dark .th-bg { background-color: #1e293b; }
         .cell-label-main { background-color: #f8fafc; font-weight: 800; text-align: center; text-transform: uppercase; }
         .dark .cell-label-main { background-color: #1e293b; }
+        #sec-aria .aria-compressor-table .th-bg td { font-size: 8px; letter-spacing: 0; padding: 0 1px; line-height: 1.15; }
+        #sec-aria .aria-compressor-table td { height: 38px; min-width: 0; }
+        #sec-aria .aria-compressor-table .cell-label-main { font-size: 8px; line-height: 1.15; padding: 2px; }
+        #sec-aria .aria-compressor-table input { font-size: 10px; min-height: 36px; padding: 0 2px; }
+        #sec-aria .aria-compressor-table .status-cell-btn { min-height: 36px; font-size: 9px; }
         .status-cell-btn { cursor: pointer; text-align: center; font-weight: 800; color: white; font-size: 10px; height: 100%; display: flex; align-items: center; justify-content: center; border: 2px solid rgba(0,0,0,0.3); border-radius: 6px; box-shadow: 0 4px 6px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.3), inset 0 -1px 0 rgba(0,0,0,0.3); text-shadow: 0 1px 2px rgba(0,0,0,0.5); transition: all 0.2s ease; position: relative; }
         .status-cell-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.4), inset 0 -1px 0 rgba(0,0,0,0.4); }
         .status-cell-btn:active { transform: translateY(2px); box-shadow: 0 2px 3px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.2), inset 0 -1px 0 rgba(0,0,0,0.2); }
@@ -22320,7 +22386,43 @@ window.convertToHtml = async () => {
             </div>
             <div id="sec-aria" class="col-section col-collapsed">
                 <div class="v-label-container" style="background-color: #3b82f6;" ontouchstart="window.startPress(event, 'sec-aria')" ontouchmove="window.movePress(event)" ontouchend="window.endPress(event, 'sec-aria')" onmousedown="window.startPress(event, 'sec-aria')" onmouseup="window.endPress(event, 'sec-aria')"><span class="v-label-text" id="lbl-sec-aria">ARIA</span></div>
-                <table><tr class="th-bg"><td>MACCHINA</td><td>STATO</td></tr><tr><td class="cell-label-main">MK 9600 A</td><td><div id="sa-A" class="status-cell-btn bg-fermo" onclick="window.toggleStatus('sa-A')">FERMO</div></td></tr><tr><td class="cell-label-main">MK 9600 B</td><td><div id="sa-B" class="status-cell-btn bg-fermo" onclick="window.toggleStatus('sa-B')">FERMO</div></td></tr><tr><td class="cell-label-main">MK 9600 C</td><td><div id="sa-C" class="status-cell-btn bg-fermo" onclick="window.toggleStatus('sa-C')">FERMO</div></td></tr><tr><td class="cell-label-main">MK 151</td><td><div id="sa-151" class="status-cell-btn bg-fermo" onclick="window.toggleStatus('sa-151')">FERMO</div></td></tr></table>
+                <table class="aria-compressor-table">
+                    <tr class="th-bg">
+                        <td>MACCHINA</td>
+                        <td>STATO</td>
+                        <td>PORTATA</td>
+                        <td>TEMP.</td>
+                        <td>PRESS.</td>
+                    </tr>
+                    <tr>
+                        <td class="cell-label-main">MK 9600 A</td>
+                        <td><div id="sa-A" class="status-cell-btn bg-fermo" onclick="window.toggleStatus('sa-A')">FERMO</div></td>
+                        <td><input type="tel" id="sa-A-portata" onchange="window.saveData()"></td>
+                        <td><input type="tel" id="sa-A-temp" onchange="window.saveData()"></td>
+                        <td><input type="tel" id="sa-A-press" onchange="window.saveData()"></td>
+                    </tr>
+                    <tr>
+                        <td class="cell-label-main">MK 9600 B</td>
+                        <td><div id="sa-B" class="status-cell-btn bg-fermo" onclick="window.toggleStatus('sa-B')">FERMO</div></td>
+                        <td><input type="tel" id="sa-B-portata" onchange="window.saveData()"></td>
+                        <td><input type="tel" id="sa-B-temp" onchange="window.saveData()"></td>
+                        <td><input type="tel" id="sa-B-press" onchange="window.saveData()"></td>
+                    </tr>
+                    <tr>
+                        <td class="cell-label-main">MK 9600 C</td>
+                        <td><div id="sa-C" class="status-cell-btn bg-fermo" onclick="window.toggleStatus('sa-C')">FERMO</div></td>
+                        <td><input type="tel" id="sa-C-portata" onchange="window.saveData()"></td>
+                        <td><input type="tel" id="sa-C-temp" onchange="window.saveData()"></td>
+                        <td><input type="tel" id="sa-C-press" onchange="window.saveData()"></td>
+                    </tr>
+                    <tr>
+                        <td class="cell-label-main">MK 151</td>
+                        <td><div id="sa-151" class="status-cell-btn bg-fermo" onclick="window.toggleStatus('sa-151')">FERMO</div></td>
+                        <td><input type="tel" id="sa-151-portata" onchange="window.saveData()"></td>
+                        <td><input type="tel" id="sa-151-temp" onchange="window.saveData()"></td>
+                        <td><input type="tel" id="sa-151-press" onchange="window.saveData()"></td>
+                    </tr>
+                </table>
             </div>
             <div id="sec-azoto" class="col-section col-collapsed">
                 <div class="v-label-container" style="background-color: #6366f1;" ontouchstart="window.startPress(event, 'sec-azoto')" ontouchmove="window.movePress(event)" ontouchend="window.endPress(event, 'sec-azoto')" onmousedown="window.startPress(event, 'sec-azoto')" onmouseup="window.endPress(event, 'sec-azoto')"><span class="v-label-text" id="lbl-sec-azoto">AZOTO</span></div>

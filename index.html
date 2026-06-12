@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.12-numpad-v20';
+        window.SERVICEHUB_BUILD = '2026.06.12-numpad-v21';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
@@ -9975,6 +9975,10 @@ window.updateStoricoButton = async function() {
                         });
                     });
                 }
+                if (item.schedeConfig && window.countRapportinoEnabledSchede(item.schedeConfig) > 0 && !item.schedeConfigUpdatedAt) {
+                    item.schedeConfigUpdatedAt = item.updatedAt || store.lastUpdate || new Date().toISOString();
+                    changed = true;
+                }
             });
             if (changed) window.saveRapportiniStore(store);
             if (window.ensureFuochistaRapportinoItem(store)) {
@@ -10000,6 +10004,35 @@ window.updateStoricoButton = async function() {
             return Number.isFinite(t) ? t : 0;
         };
 
+        window.mergeRapportinoItemSnapshot = function(local, remote) {
+            if (!local && remote) return JSON.parse(JSON.stringify(remote));
+            if (local && !remote) return JSON.parse(JSON.stringify(local));
+            if (!local && !remote) return null;
+            const lMs = window.parseRapportinoUpdatedMs(local.updatedAt);
+            const rMs = window.parseRapportinoUpdatedMs(remote.updatedAt);
+            const base = lMs >= rMs ? JSON.parse(JSON.stringify(local)) : JSON.parse(JSON.stringify(remote));
+            const weaker = lMs >= rMs ? remote : local;
+            const lScMs = window.parseRapportinoUpdatedMs(local.schedeConfigUpdatedAt);
+            const rScMs = window.parseRapportinoUpdatedMs(remote.schedeConfigUpdatedAt);
+            const lEnabled = window.countRapportinoEnabledSchede(local.schedeConfig);
+            const rEnabled = window.countRapportinoEnabledSchede(remote.schedeConfig);
+            if (lScMs > rScMs && local.schedeConfig) {
+                base.schedeConfig = JSON.parse(JSON.stringify(local.schedeConfig));
+                base.schedeConfigUpdatedAt = local.schedeConfigUpdatedAt;
+            } else if (rScMs > lScMs && remote.schedeConfig) {
+                base.schedeConfig = JSON.parse(JSON.stringify(remote.schedeConfig));
+                base.schedeConfigUpdatedAt = remote.schedeConfigUpdatedAt;
+            } else if (lEnabled > rEnabled && local.schedeConfig) {
+                base.schedeConfig = JSON.parse(JSON.stringify(local.schedeConfig));
+                if (local.schedeConfigUpdatedAt) base.schedeConfigUpdatedAt = local.schedeConfigUpdatedAt;
+            } else if (rEnabled > lEnabled && remote.schedeConfig) {
+                base.schedeConfig = JSON.parse(JSON.stringify(remote.schedeConfig));
+                if (remote.schedeConfigUpdatedAt) base.schedeConfigUpdatedAt = remote.schedeConfigUpdatedAt;
+            }
+            if (!base.name && weaker && weaker.name) base.name = weaker.name;
+            return base;
+        };
+
         window.mergeRapportiniStores = function(localStore, remoteStore, fromCloud) {
             if (!remoteStore || !remoteStore.items) return localStore;
             if (!localStore || !localStore.items) {
@@ -10017,9 +10050,7 @@ window.updateStoricoButton = async function() {
                 if (!l && r) outItems[rid] = JSON.parse(JSON.stringify(r));
                 else if (l && !r) outItems[rid] = JSON.parse(JSON.stringify(l));
                 else if (l && r) {
-                    outItems[rid] = window.parseRapportinoUpdatedMs(r.updatedAt) >= window.parseRapportinoUpdatedMs(l.updatedAt)
-                        ? JSON.parse(JSON.stringify(r))
-                        : JSON.parse(JSON.stringify(l));
+                    outItems[rid] = window.mergeRapportinoItemSnapshot(l, r);
                 }
                 if (outItems[rid] && outItems[rid].data) {
                     outItems[rid].data = window.extractRapportinoOnlyData(outItems[rid].data);
@@ -10368,11 +10399,13 @@ window.updateStoricoButton = async function() {
                     if (!store.activeId || !store.items[store.activeId]) store.activeId = 'generale';
                     window.updateRapportinoSettingsButton();
                     const activeItem = store.items[store.activeId];
-                    if (activeItem && activeItem.schedeConfig) {
+                    if (activeItem && typeof window.applyRapportinoItem === 'function') {
+                        window.applyRapportinoItem(activeItem);
+                    } else if (activeItem && activeItem.schedeConfig) {
+                        if (typeof window.applyDeviceHiddenModulesForActiveRapportino === 'function') {
+                            window.applyDeviceHiddenModulesForActiveRapportino();
+                        }
                         window.applyRapportinoSchedeConfig(activeItem.schedeConfig);
-                    }
-                    if (typeof window.applyDeviceHiddenModulesForActiveRapportino === 'function') {
-                        window.applyDeviceHiddenModulesForActiveRapportino();
                     }
                     return store;
                 } else {
@@ -10416,14 +10449,13 @@ window.updateStoricoButton = async function() {
             if (typeof window.persistSessionPrefs === 'function') window.persistSessionPrefs();
             window.updateRapportinoSettingsButton();
             const activeItem = store.items[store.activeId];
-            if (activeItem && activeItem.schedeConfig) {
-                window.applyRapportinoSchedeConfig(activeItem.schedeConfig);
-            }
-            if (typeof window.applyDeviceHiddenModulesForActiveRapportino === 'function') {
-                window.applyDeviceHiddenModulesForActiveRapportino();
-            }
-            if (activeItem && typeof window.applyRapportinoItem === 'function' && opts.applyActiveItem) {
+            if (activeItem && typeof window.applyRapportinoItem === 'function') {
                 window.applyRapportinoItem(activeItem);
+            } else if (activeItem && activeItem.schedeConfig) {
+                if (typeof window.applyDeviceHiddenModulesForActiveRapportino === 'function') {
+                    window.applyDeviceHiddenModulesForActiveRapportino();
+                }
+                window.applyRapportinoSchedeConfig(activeItem.schedeConfig);
             }
             if (typeof window.syncServiceWatchSettingsUI === 'function') {
                 window.syncServiceWatchSettingsUI();
@@ -10459,7 +10491,6 @@ window.updateStoricoButton = async function() {
             if (window.shouldKeepAllSectionsExpanded && window.shouldKeepAllSectionsExpanded()) {
                 if (typeof window.expandAllSectionsLayout === 'function') window.expandAllSectionsLayout();
             }
-            updateModulesVisibility();
             window.applyRapportinoSchedeConfig(item.schedeConfig);
             updateModulesVisibility();
             window.applyCustomRapportinoFieldValues(item.data || {});
@@ -10912,17 +10943,23 @@ window.updateStoricoButton = async function() {
             const store = window.loadRapportiniStore();
             if (!store || !store.items[id]) return;
             window.syncRapportinoModificaFromDomInputs();
+            const now = new Date().toISOString();
             store.items[id].schedeConfig = window.cloneRapportinoConfig(draft);
-            window.saveRapportiniStore(store, { pushCloud: true });
+            store.items[id].schedeConfigUpdatedAt = now;
+            store.items[id].updatedAt = now;
+            window.saveRapportiniStore(store, { pushCloud: true, flushCloud: true });
             window.rapportinoManagerShowList();
-            if (store.activeId === id) {
-                window.applyRapportinoSchedeConfig(store.items[id].schedeConfig);
-                updateModulesVisibility();
-                window.applyCustomRapportinoFieldValues((store.items[id].data) || {});
+            window.renderRapportinoManagerList();
+            const fresh = window.loadRapportiniStore();
+            const savedItem = fresh && fresh.items[id];
+            const savedName = (savedItem && savedItem.name) || id;
+            if (fresh && fresh.activeId !== id) {
+                await window.switchToRapportino(id);
+            } else if (savedItem) {
+                window.applyRapportinoItem(savedItem);
                 if (typeof window.saveData === 'function') void window.saveData(true);
             }
-            alert('Rapportino «' + (store.items[id].name || id) + '» salvato.' +
-                (store.activeId !== id ? '\n\nPassa al rapportino «' + (store.items[id].name || id) + '» per vederlo in cruscotto.' : ''));
+            alert('Rapportino «' + savedName + '» salvato.\n\nLe schede attive sono ora visibili nel cruscotto.');
         };
 
         window.NOTT_FILTRA_TIME_PLACEHOLDER = '00:00';

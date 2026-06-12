@@ -318,6 +318,8 @@
 
     dismissActiveKeyboard();
 
+    closeNativeDictationInput();
+
     state.numpadBuffer = state.contatori[CNT_FIELD_ID] || '';
 
     updateNumpadDisplay();
@@ -333,6 +335,8 @@
   function closeContatoriNumpad() {
 
     stopAllVoice();
+
+    closeNativeDictationInput();
 
     clearNumpadHint();
 
@@ -506,6 +510,170 @@
 
 
 
+  function canUseNativeDictationInput() {
+
+    var ua = navigator.userAgent || '';
+
+    var sw = window.screen ? Math.min(window.screen.width, window.screen.height) : 999;
+
+    var isWatchLike = /Watch/i.test(ua) || sw <= 230;
+
+    return isWatchLike || (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window) && !canUseMediaRecorderVoice());
+
+  }
+
+
+
+  function updateMicButtonForVoiceMode() {
+
+    var btn = $('sw-cnt-numpad-mic');
+
+    if (!btn) return;
+
+    var label = btn.querySelector('.sw-cnt-numpad-mic-label');
+
+    if (!label) return;
+
+    if (cntVoiceMode === 'native') label.textContent = 'Detta';
+
+    else label.textContent = 'Voce';
+
+  }
+
+
+
+  function syncNativeVoiceInputFromBuffer() {
+
+    var inp = $('sw-cnt-voice-input');
+
+    if (inp && document.activeElement !== inp) inp.value = state.numpadBuffer || '';
+
+  }
+
+
+
+  function applyNativeVoiceInputValue(raw) {
+
+    var digits = parseSpokenCounterDigits(raw);
+
+    if (digits) {
+
+      state.numpadBuffer = digits;
+
+      updateNumpadDisplay();
+
+      clearNumpadHint();
+
+      try { navigator.vibrate(10); } catch (_) {}
+
+    }
+
+    syncNativeVoiceInputFromBuffer();
+
+  }
+
+
+
+  function closeNativeDictationInput() {
+
+    var inp = $('sw-cnt-voice-input');
+
+    if (!inp) return;
+
+    inp.classList.remove('sw-cnt-voice-input--live');
+
+    try { inp.blur(); } catch (_) {}
+
+    setCntMicButtonState(false);
+
+  }
+
+
+
+  function startNativeDictation() {
+
+    var inp = $('sw-cnt-voice-input');
+
+    if (!inp) {
+
+      showNumpadHint('Dettatura non disponibile');
+
+      return;
+
+    }
+
+    inp.value = state.numpadBuffer || '';
+
+    inp.classList.add('sw-cnt-voice-input--live');
+
+    showNumpadHint('Tocca il microfono sulla tastiera Watch');
+
+    setCntMicButtonState(true);
+
+    try { navigator.vibrate(12); } catch (_) {}
+
+    setTimeout(function () {
+
+      try {
+
+        inp.focus();
+
+        if (inp.setSelectionRange) inp.setSelectionRange(0, inp.value.length);
+
+      } catch (_) {}
+
+    }, 80);
+
+  }
+
+
+
+  function bindNativeVoiceInput() {
+
+    var inp = $('sw-cnt-voice-input');
+
+    if (!inp || inp.dataset.boundNative === '1') return;
+
+    inp.dataset.boundNative = '1';
+
+    inp.addEventListener('input', function () {
+
+      applyNativeVoiceInputValue(inp.value);
+
+    });
+
+    inp.addEventListener('change', function () {
+
+      applyNativeVoiceInputValue(inp.value);
+
+    });
+
+    inp.addEventListener('blur', function () {
+
+      closeNativeDictationInput();
+
+    });
+
+    inp.addEventListener('keydown', function (e) {
+
+      if (e.key === 'Enter') {
+
+        e.preventDefault();
+
+        applyNativeVoiceInputValue(inp.value);
+
+        closeNativeDictationInput();
+
+        confirmContatoriNumpad();
+
+      }
+
+    });
+
+  }
+
+
+
   function pickRecorderMime() {
 
     var types = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/aac'];
@@ -627,6 +795,8 @@
     }
 
     if (canUseMediaRecorderVoice()) return 'record';
+
+    if (canUseNativeDictationInput()) return 'native';
 
     return 'none';
 
@@ -1072,6 +1242,26 @@
 
     try { navigator.vibrate(12); } catch (_) {}
 
+    if (cntVoiceMode === 'native') {
+
+      var nativeInp = $('sw-cnt-voice-input');
+
+      if (nativeInp && nativeInp.classList.contains('sw-cnt-voice-input--live')) {
+
+        closeNativeDictationInput();
+
+        clearNumpadHint();
+
+        return;
+
+      }
+
+      startNativeDictation();
+
+      return;
+
+    }
+
     dismissActiveKeyboard();
 
     if (cntVoiceMode === 'speech') {
@@ -1120,11 +1310,7 @@
 
     }
 
-    if (!getWatchGeminiKey()) {
-      showNumpadHint('Voce Watch: imposta chiave Gemini attiva in ServiceHub');
-    } else {
-      showNumpadHint('Voce non disponibile su questo dispositivo — prova da iPhone');
-    }
+    showNumpadHint('Voce non disponibile — usa il tastierino');
 
   }
 
@@ -1895,6 +2081,10 @@
     }
 
     cntVoiceMode = initCntVoiceSupport();
+
+    bindNativeVoiceInput();
+
+    updateMicButtonForVoiceMode();
 
     bindMicButton($('sw-cnt-numpad-mic'));
 

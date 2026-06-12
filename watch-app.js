@@ -40,12 +40,19 @@
     setScrollTheme(name);
   }
 
+  function rapportinoHasChemModule(item) {
+    var sc = item && item.schedeConfig && item.schedeConfig.modules &&
+      item.schedeConfig.modules['sec-chemicals'];
+    return !!(sc && sc.enabled !== false);
+  }
+
   function getChemCountsFromStore(remote) {
     var pass = 0;
     var hp = 0;
     if (!remote || !remote.items) return { pass: 0, hp: 0 };
     Object.keys(remote.items).forEach(function (rid) {
       var item = remote.items[rid];
+      if (!rapportinoHasChemModule(item)) return;
       var d = item && item.data;
       if (!d) return;
       pass = Math.max(pass, parseInt(d._nottChemPass, 10) || 0);
@@ -172,6 +179,7 @@
     if (!db || !auth || !state.authOk || !rapportiniRef) return;
     try {
       var mod = await import('https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js');
+      var now = new Date().toISOString();
       var snap = await mod.getDoc(rapportiniRef);
       var remote = snap.exists() ? snap.data() : { items: {}, activeId: 'generale' };
       if (!remote.items) remote.items = {};
@@ -180,25 +188,31 @@
           id: 'notturno',
           name: 'Notturno',
           data: {},
-          updatedAt: new Date().toISOString()
+          updatedAt: now
         };
       }
       if (!remote.items.notturno.data) remote.items.notturno.data = {};
       remote.items.notturno.data._nottChemPass = state.pass;
       remote.items.notturno.data._nottChemHp = state.hp;
-      remote.items.notturno.updatedAt = new Date().toISOString();
+      remote.items.notturno.updatedAt = now;
       Object.keys(remote.items).forEach(function (rid) {
         var item = remote.items[rid];
         if (!item) return;
-        var sc = item.schedeConfig && item.schedeConfig.modules && item.schedeConfig.modules['sec-chemicals'];
-        if (!sc || sc.enabled === false) return;
+        if (!rapportinoHasChemModule(item)) return;
         if (!item.data) item.data = {};
         item.data._nottChemPass = state.pass;
         item.data._nottChemHp = state.hp;
-        item.updatedAt = new Date().toISOString();
+        item.updatedAt = now;
       });
-      remote.lastUpdate = new Date().toISOString();
+      remote.lastUpdate = now;
       await mod.setDoc(rapportiniRef, remote);
+      var plantRef = mod.doc(db, 'artifacts', APP_ID, 'sharedDial', 'plant');
+      await mod.setDoc(plantRef, {
+        chemPass: state.pass,
+        chemHp: state.hp,
+        lastUpdate: now,
+        syncRevision: Date.now()
+      }, { merge: true });
     } catch (e) {
       console.warn('[ServiceWatch] persist chem:', e && e.message);
     }

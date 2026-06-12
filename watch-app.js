@@ -8,8 +8,7 @@
     hp: 0,
     modules: { chemicals: { enabled: false } },
     ready: false,
-    authOk: false,
-    lastRemote: null
+    authOk: false
   };
 
   var db = null;
@@ -108,33 +107,8 @@
     };
   }
 
-  function buildChemRapportiniMerge(pass, hp, remote) {
-    var ts = new Date().toISOString();
-    var merge = { lastUpdate: ts, items: {} };
-    var ids = remote && remote.items ? Object.keys(remote.items) : ['notturno'];
-    ids.forEach(function (rid) {
-      var item = remote.items[rid];
-      var sc = item && item.schedeConfig && item.schedeConfig.modules && item.schedeConfig.modules['sec-chemicals'];
-      if (rid !== 'notturno' && (!sc || sc.enabled === false)) return;
-      merge.items[rid] = {
-        data: { _nottChemPass: pass, _nottChemHp: hp },
-        updatedAt: ts
-      };
-    });
-    if (!merge.items.notturno) {
-      merge.items.notturno = {
-        id: 'notturno',
-        name: 'Notturno',
-        data: { _nottChemPass: pass, _nottChemHp: hp },
-        updatedAt: ts
-      };
-    }
-    return merge;
-  }
-
   function applyRemoteStore(remote) {
     if (!remote) return;
-    state.lastRemote = remote;
     var localCfg = loadWatchLocalConfig();
     var remoteSw = remote.serviceWatch;
     if (remoteSw && remoteSw.modules || localCfg) {
@@ -198,18 +172,33 @@
     if (!db || !auth || !state.authOk || !rapportiniRef) return;
     try {
       var mod = await import('https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js');
-      var ts = new Date().toISOString();
-      var rapMerge = buildChemRapportiniMerge(state.pass, state.hp, state.lastRemote || {});
-      var plantRef = mod.doc(db, 'artifacts', APP_ID, 'sharedDial', 'plant');
-      await Promise.all([
-        mod.setDoc(rapportiniRef, rapMerge, { merge: true }),
-        mod.setDoc(plantRef, {
-          chemPass: state.pass,
-          chemHp: state.hp,
-          lastUpdate: ts,
-          syncRevision: Date.now()
-        }, { merge: true })
-      ]);
+      var snap = await mod.getDoc(rapportiniRef);
+      var remote = snap.exists() ? snap.data() : { items: {}, activeId: 'generale' };
+      if (!remote.items) remote.items = {};
+      if (!remote.items.notturno) {
+        remote.items.notturno = {
+          id: 'notturno',
+          name: 'Notturno',
+          data: {},
+          updatedAt: new Date().toISOString()
+        };
+      }
+      if (!remote.items.notturno.data) remote.items.notturno.data = {};
+      remote.items.notturno.data._nottChemPass = state.pass;
+      remote.items.notturno.data._nottChemHp = state.hp;
+      remote.items.notturno.updatedAt = new Date().toISOString();
+      Object.keys(remote.items).forEach(function (rid) {
+        var item = remote.items[rid];
+        if (!item) return;
+        var sc = item.schedeConfig && item.schedeConfig.modules && item.schedeConfig.modules['sec-chemicals'];
+        if (!sc || sc.enabled === false) return;
+        if (!item.data) item.data = {};
+        item.data._nottChemPass = state.pass;
+        item.data._nottChemHp = state.hp;
+        item.updatedAt = new Date().toISOString();
+      });
+      remote.lastUpdate = new Date().toISOString();
+      await mod.setDoc(rapportiniRef, remote);
     } catch (e) {
       console.warn('[ServiceWatch] persist chem:', e && e.message);
     }

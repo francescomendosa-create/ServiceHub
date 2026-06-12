@@ -14,7 +14,11 @@
   var db = null;
   var auth = null;
   var rapportiniRef = null;
+  var plantRef = null;
+  var cachedRapportiniRemote = null;
+  var cachedPlantRemote = null;
   var unsub = null;
+  var unsubPlant = null;
 
   function $(id) { return document.getElementById(id); }
 
@@ -46,7 +50,15 @@
     return !!(sc && sc.enabled !== false);
   }
 
-  function getChemCountsFromStore(remote) {
+  function parseChemFromPlant(plantData) {
+    if (!plantData || (plantData.chemPass == null && plantData.chemHp == null)) return null;
+    return {
+      pass: Math.max(0, parseInt(plantData.chemPass, 10) || 0),
+      hp: Math.max(0, parseInt(plantData.chemHp, 10) || 0)
+    };
+  }
+
+  function getChemCountsFromRapportiniFallback(remote) {
     var pass = 0;
     var hp = 0;
     if (!remote || !remote.items) return { pass: 0, hp: 0 };
@@ -59,6 +71,21 @@
       hp = Math.max(hp, parseInt(d._nottChemHp, 10) || 0);
     });
     return { pass: pass, hp: hp };
+  }
+
+  /** Fonte unica Firestore: sharedDial/plant (chemPass/chemHp), fallback rapportini. */
+  function resolveChemCountsFromFirestore() {
+    var fromPlant = parseChemFromPlant(cachedPlantRemote);
+    if (fromPlant) return fromPlant;
+    return getChemCountsFromRapportiniFallback(cachedRapportiniRemote);
+  }
+
+  function applyChemCountsFromFirestore() {
+    var c = resolveChemCountsFromFirestore();
+    state.pass = c.pass;
+    state.hp = c.hp;
+    state.ready = true;
+    updateChemUI();
   }
 
   function updateChemUI() {
@@ -116,6 +143,7 @@
 
   function applyRemoteStore(remote) {
     if (!remote) return;
+    cachedRapportiniRemote = remote;
     var localCfg = loadWatchLocalConfig();
     var remoteSw = remote.serviceWatch;
     if (remoteSw && remoteSw.modules || localCfg) {
@@ -124,11 +152,12 @@
       saveWatchLocalConfig(merged);
       renderMenu();
     }
-    var c = getChemCountsFromStore(remote);
-    state.pass = c.pass;
-    state.hp = c.hp;
-    state.ready = true;
-    updateChemUI();
+    applyChemCountsFromFirestore();
+  }
+
+  function applyRemotePlant(plantData) {
+    cachedPlantRemote = plantData || null;
+    applyChemCountsFromFirestore();
   }
 
   function enabledModules() {
@@ -175,11 +204,24 @@
   async function persistChemCounts(pass, hp) {
     state.pass = Math.max(0, pass | 0);
     state.hp = Math.max(0, hp | 0);
+    var now = new Date().toISOString();
+    var rev = Date.now();
+    cachedPlantRemote = Object.assign({}, cachedPlantRemote || {}, {
+      chemPass: state.pass,
+      chemHp: state.hp,
+      lastUpdate: now,
+      syncRevision: rev
+    });
     updateChemUI();
-    if (!db || !auth || !state.authOk || !rapportiniRef) return;
+    if (!db || !auth || !state.authOk || !rapportiniRef || !plantRef) return;
     try {
       var mod = await import('https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js');
-      var now = new Date().toISOString();
+      await mod.setDoc(plantRef, {
+        chemPass: state.pass,
+        chemHp: state.hp,
+        lastUpdate: now,
+        syncRevision: rev
+      }, { merge: true });
       var snap = await mod.getDoc(rapportiniRef);
       var remote = snap.exists() ? snap.data() : { items: {}, activeId: 'generale' };
       if (!remote.items) remote.items = {};
@@ -206,13 +248,7 @@
       });
       remote.lastUpdate = now;
       await mod.setDoc(rapportiniRef, remote);
-      var plantRef = mod.doc(db, 'artifacts', APP_ID, 'sharedDial', 'plant');
-      await mod.setDoc(plantRef, {
-        chemPass: state.pass,
-        chemHp: state.hp,
-        lastUpdate: now,
-        syncRevision: Date.now()
-      }, { merge: true });
+      cachedRapportiniRemote = remote;
     } catch (e) {
       console.warn('[ServiceWatch] persist chem:', e && e.message);
     }
@@ -269,18 +305,28 @@
     auth = authMod.getAuth(app);
     db = fsMod.getFirestore(app);
     rapportiniRef = fsMod.doc(db, 'artifacts', APP_ID, 'sharedDial', 'rapportini');
+    plantRef = fsMod.doc(db, 'artifacts', APP_ID, 'sharedDial', 'plant');
     await authMod.signInAnonymously(auth);
     state.authOk = true;
     if (unsub) unsub();
+    if (unsubPlant) unsubPlant();
+    unsubPlant = fsMod.onSnapshot(plantRef, function (snap) {
+      if (!snap.exists()) return;
+      var md = snap.metadata;
+      if (md && md.hasPendingWrites) return;
+      applyRemotePlant(snap.data());
+    });
     unsub = fsMod.onSnapshot(rapportiniRef, function (snap) {
       if (!snap.exists()) return;
       var md = snap.metadata;
       if (md && md.hasPendingWrites) return;
       applyRemoteStore(snap.data());
     });
-    var first = await fsMod.getDoc(rapportiniRef);
-    if (first.exists()) applyRemoteStore(first.data());
-    else state.ready = true;
+    var plantFirst = await fsMod.getDoc(plantRef);
+    if (plantFirst.exists()) applyRemotePlant(plantFirst.data());
+    var rapportiniFirst = await fsMod.getDoc(rapportiniRef);
+    if (rapportiniFirst.exists()) applyRemoteStore(rapportiniFirst.data());
+    else if (!plantFirst.exists()) state.ready = true;
   }
 
   (function hydrateWatchModulesFromLocal() {

@@ -318,6 +318,8 @@
 
     stopCntSpeech();
 
+    clearNumpadHint();
+
     var pad = $('sw-cnt-numpad');
 
     if (pad) pad.classList.add('sw-view--hidden');
@@ -331,6 +333,8 @@
   var cntSpeechRecognition = null;
 
   var cntSpeechListening = false;
+
+  var cntMicHintTimer = null;
 
 
 
@@ -404,13 +408,43 @@
 
 
 
+  function clearNumpadHint() {
+
+    if (cntMicHintTimer) {
+
+      clearTimeout(cntMicHintTimer);
+
+      cntMicHintTimer = null;
+
+    }
+
+    var hint = $('sw-cnt-numpad-hint');
+
+    if (hint) hint.textContent = '';
+
+  }
+
+
+
+  function showNumpadHint(msg) {
+
+    var hint = $('sw-cnt-numpad-hint');
+
+    if (!hint) return;
+
+    clearNumpadHint();
+
+    hint.textContent = msg;
+
+    cntMicHintTimer = setTimeout(clearNumpadHint, 2400);
+
+  }
+
+
+
   function initCntSpeechRecognition() {
 
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-
-      var micBtn = $('sw-cnt-numpad-mic');
-
-      if (micBtn) micBtn.classList.add('sw-cnt-numpad-mic--disabled');
 
       return null;
 
@@ -526,6 +560,8 @@
 
     }
 
+    clearNumpadHint();
+
     try {
 
       cntSpeechRecognition.start();
@@ -545,6 +581,126 @@
       } catch (_) {}
 
     }
+
+  }
+
+
+
+  function focusDictateInputFallback() {
+
+    var inp = $('sw-cnt-dictate-inp');
+
+    if (!inp) return false;
+
+    inp.value = state.numpadBuffer || '';
+
+    try {
+
+      inp.focus({ preventScroll: true });
+
+    } catch (_) {
+
+      try { inp.focus(); } catch (__) {}
+
+    }
+
+    try {
+
+      inp.setSelectionRange(inp.value.length, inp.value.length);
+
+    } catch (_) {}
+
+    return true;
+
+  }
+
+
+
+  function handleMicPress() {
+
+    try { navigator.vibrate(12); } catch (_) {}
+
+    if (cntSpeechRecognition) {
+
+      toggleCntSpeech();
+
+      return;
+
+    }
+
+    if (focusDictateInputFallback()) {
+
+      showNumpadHint('Tocca il microfono sulla tastiera');
+
+      return;
+
+    }
+
+    showNumpadHint('Dettatura non disponibile qui');
+
+  }
+
+
+
+  function bindDictateInput() {
+
+    var inp = $('sw-cnt-dictate-inp');
+
+    if (!inp) return;
+
+    inp.addEventListener('input', function () {
+
+      var digits = String(inp.value || '').replace(/\D/g, '').slice(0, CNT_MAX_LEN);
+
+      if (inp.value !== digits) inp.value = digits;
+
+      state.numpadBuffer = digits;
+
+      updateNumpadDisplay();
+
+    });
+
+    inp.addEventListener('blur', function () {
+
+      var digits = String(inp.value || '').replace(/\D/g, '').slice(0, CNT_MAX_LEN);
+
+      state.numpadBuffer = digits;
+
+      updateNumpadDisplay();
+
+    });
+
+  }
+
+
+
+  function bindMicButton(btn) {
+
+    if (!btn || btn.dataset.boundMic === '1') return;
+
+    btn.dataset.boundMic = '1';
+
+    var lastMicTap = 0;
+
+    var onMic = function (e) {
+
+      if (e && e.type === 'touchend') e.preventDefault();
+
+      var now = Date.now();
+
+      if (now - lastMicTap < 380) return;
+
+      lastMicTap = now;
+
+      if (e) e.stopPropagation();
+
+      handleMicPress();
+
+    };
+
+    btn.addEventListener('click', onMic);
+
+    btn.addEventListener('touchend', onMic);
 
   }
 
@@ -1118,6 +1274,12 @@
 
       if (!e.touches || e.touches.length !== 1) return;
 
+      if (e.target && e.target.closest && e.target.closest('#sw-cnt-numpad-mic, #sw-cnt-numpad-cancel, #sw-cnt-numpad-grid, .sw-numpad-key, #sw-cnt-numpad-display')) {
+
+        return;
+
+      }
+
       var t = e.touches[0];
 
       if (t.clientX > EDGE_PX) return;
@@ -1268,19 +1430,9 @@
 
     cntSpeechRecognition = initCntSpeechRecognition();
 
-    var numpadMic = $('sw-cnt-numpad-mic');
+    bindDictateInput();
 
-    if (numpadMic) {
-
-      numpadMic.addEventListener('click', function () {
-
-        if (!cntSpeechRecognition) return;
-
-        toggleCntSpeech();
-
-      });
-
-    }
+    bindMicButton($('sw-cnt-numpad-mic'));
 
     buildNumpadGrid();
 

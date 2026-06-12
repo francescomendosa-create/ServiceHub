@@ -332,7 +332,7 @@
 
   function closeContatoriNumpad() {
 
-    stopCntSpeech();
+    stopAllVoice();
 
     clearNumpadHint();
 
@@ -358,7 +358,21 @@
 
   var cntMicPermissionOk = null;
 
+  var cntVoiceMode = 'none';
+
+  var cntMediaRecorder = null;
+
+  var cntMediaStream = null;
+
+  var cntRecordChunks = [];
+
+  var cntRecording = false;
+
+  var cntRecordTimer = null;
+
   var CNT_SPEECH_LANG = 'it-IT';
+
+  var CNT_RECORD_MAX_MS = 8000;
 
 
 
@@ -465,6 +479,158 @@
   }
 
 
+
+  function getWatchGeminiKey() {
+
+    var localCfg = loadWatchLocalConfig();
+
+    if (localCfg && localCfg.geminiVoiceKey) return String(localCfg.geminiVoiceKey).trim();
+
+    if (cachedRapportiniRemote && cachedRapportiniRemote.serviceWatch && cachedRapportiniRemote.serviceWatch.geminiVoiceKey) {
+
+      return String(cachedRapportiniRemote.serviceWatch.geminiVoiceKey).trim();
+
+    }
+
+    return '';
+
+  }
+
+
+
+  function canUseMediaRecorderVoice() {
+
+    return !!(window.MediaRecorder && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+
+  }
+
+
+
+  function pickRecorderMime() {
+
+    var types = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/aac'];
+
+    for (var i = 0; i < types.length; i++) {
+
+      if (MediaRecorder.isTypeSupported(types[i])) return types[i];
+
+    }
+
+    return '';
+
+  }
+
+
+
+  function blobToBase64(blob) {
+
+    return new Promise(function (resolve, reject) {
+
+      var reader = new FileReader();
+
+      reader.onload = function () {
+
+        var dataUrl = String(reader.result || '');
+
+        resolve(dataUrl.split(',')[1] || '');
+
+      };
+
+      reader.onerror = reject;
+
+      reader.readAsDataURL(blob);
+
+    });
+
+  }
+
+
+
+  async function callGeminiAudioDigits(base64Data, mimeType, apiKey) {
+
+    var models = ['gemini-2.0-flash-lite', 'gemini-2.0-flash', 'gemini-2.5-flash-lite'];
+
+    var prompt = 'Contatore numerico italiano. Estrai SOLO cifre 0-9 pronunciate. Rispondi solo con le cifre attaccate, esempio 12345. Niente parole, spazi o unità.';
+
+    var lastErr = null;
+
+    for (var i = 0; i < models.length; i++) {
+
+      try {
+
+        var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + models[i] + ':generateContent?key=' + encodeURIComponent(apiKey);
+
+        var res = await fetch(url, {
+
+          method: 'POST',
+
+          headers: { 'Content-Type': 'application/json' },
+
+          body: JSON.stringify({
+
+            contents: [{
+
+              parts: [
+
+                { text: prompt },
+
+                { inline_data: { mime_type: mimeType || 'audio/webm', data: base64Data } }
+
+              ]
+
+            }]
+
+          })
+
+        });
+
+        if (!res.ok) {
+
+          lastErr = new Error('HTTP ' + res.status);
+
+          continue;
+
+        }
+
+        var json = await res.json();
+
+        var parts = json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts;
+
+        var text = parts ? parts.map(function (p) { return p.text || ''; }).join('') : '';
+
+        return String(text || '').trim();
+
+      } catch (e) {
+
+        lastErr = e;
+
+      }
+
+    }
+
+    throw lastErr || new Error('Gemini voice failed');
+
+  }
+
+
+
+  function initCntVoiceSupport() {
+
+    var speech = initCntSpeechRecognition();
+
+    if (speech) {
+
+      cntSpeechRecognition = speech;
+
+      return 'speech';
+
+    }
+
+    if (canUseMediaRecorderVoice()) return 'record';
+
+    return 'none';
+
+  }
 
   function speechErrorMessage(code) {
 
@@ -710,35 +876,251 @@
 
 
 
+  function stopCntVoiceRecord(transcribe) {
+
+    if (cntRecordTimer) {
+
+      clearTimeout(cntRecordTimer);
+
+      cntRecordTimer = null;
+
+    }
+
+    if (cntMediaRecorder && cntRecording) {
+
+      if (transcribe === false) cntMediaRecorder.onstop = null;
+
+      try {
+
+        if (cntMediaRecorder.state === 'recording') cntMediaRecorder.stop();
+
+      } catch (_) {}
+
+    }
+
+    cntRecording = false;
+
+    if (cntMediaStream) {
+
+      cntMediaStream.getTracks().forEach(function (t) { t.stop(); });
+
+      cntMediaStream = null;
+
+    }
+
+    if (transcribe === false) {
+
+      cntRecordChunks = [];
+
+      setCntMicButtonState(false);
+
+    }
+
+  }
+
+
+
+  async function transcribeRecordedAudio() {
+
+    setCntMicButtonState(false);
+
+    if (!cntRecordChunks.length) {
+
+      showNumpadHint('Non ho sentito nulla');
+
+      return;
+
+    }
+
+    var mimeType = (cntMediaRecorder && cntMediaRecorder.mimeType) || pickRecorderMime() || 'audio/webm';
+
+    var blob = new Blob(cntRecordChunks, { type: mimeType });
+
+    cntRecordChunks = [];
+
+    var apiKey = getWatchGeminiKey();
+
+    if (!apiKey) {
+
+      showNumpadHint('Su iPhone: Impostazioni → Chiave Gemini');
+
+      return;
+
+    }
+
+    showNumpadHint('Trascrizione…');
+
+    try {
+
+      var base64 = await blobToBase64(blob);
+
+      var text = await callGeminiAudioDigits(base64, mimeType, apiKey);
+
+      var digits = parseSpokenCounterDigits(text);
+
+      if (digits) {
+
+        state.numpadBuffer = digits;
+
+        updateNumpadDisplay();
+
+        clearNumpadHint();
+
+        try { navigator.vibrate(10); } catch (_) {}
+
+        return;
+
+      }
+
+      showNumpadHint('Non ho capito i numeri');
+
+    } catch (e) {
+
+      console.warn('[ServiceWatch] gemini voice:', e && e.message);
+
+      showNumpadHint('Errore trascrizione voce');
+
+    }
+
+  }
+
+
+
+  async function startCntVoiceRecord() {
+
+    var allowed = await ensureMicPermission();
+
+    if (!allowed) return false;
+
+    if (!getWatchGeminiKey()) {
+
+      showNumpadHint('Su iPhone: Impostazioni → Chiave Gemini');
+
+      return false;
+
+    }
+
+    try {
+
+      var stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+
+      cntMediaStream = stream;
+
+      cntRecordChunks = [];
+
+      var mimeType = pickRecorderMime();
+
+      cntMediaRecorder = mimeType ? new MediaRecorder(stream, { mimeType: mimeType }) : new MediaRecorder(stream);
+
+      cntMediaRecorder.ondataavailable = function (ev) {
+
+        if (ev.data && ev.data.size) cntRecordChunks.push(ev.data);
+
+      };
+
+      cntMediaRecorder.onstop = function () {
+
+        void transcribeRecordedAudio();
+
+      };
+
+      cntMediaRecorder.start();
+
+      cntRecording = true;
+
+      setCntMicButtonState(true);
+
+      showNumpadHint('Parla ora…');
+
+      try { navigator.vibrate(12); } catch (_) {}
+
+      cntRecordTimer = setTimeout(function () {
+
+        if (cntRecording) stopCntVoiceRecord(true);
+
+      }, CNT_RECORD_MAX_MS);
+
+      return true;
+
+    } catch (e) {
+
+      console.warn('[ServiceWatch] record:', e && e.message);
+
+      stopCntVoiceRecord(false);
+
+      showNumpadHint('Microfono non disponibile');
+
+      return false;
+
+    }
+
+  }
+
+
+
+  function stopAllVoice() {
+
+    stopCntSpeech();
+
+    stopCntVoiceRecord(false);
+
+  }
+
+
+
   async function handleMicPress() {
 
     try { navigator.vibrate(12); } catch (_) {}
 
-    if (!cntSpeechRecognition) {
-
-      showNumpadHint('Voce non supportata qui');
-
-      return;
-
-    }
-
-    if (cntSpeechWanted || cntSpeechListening) {
-
-      stopCntSpeech();
-
-      clearNumpadHint();
-
-      return;
-
-    }
-
     dismissActiveKeyboard();
 
-    var allowed = await ensureMicPermission();
+    if (cntVoiceMode === 'speech') {
 
-    if (!allowed) return;
+      if (!cntSpeechRecognition) {
 
-    startCntSpeech();
+        showNumpadHint('Voce non supportata qui');
+
+        return;
+
+      }
+
+      if (cntSpeechWanted || cntSpeechListening) {
+
+        stopCntSpeech();
+
+        clearNumpadHint();
+
+        return;
+
+      }
+
+      var allowedSpeech = await ensureMicPermission();
+
+      if (!allowedSpeech) return;
+
+      startCntSpeech();
+
+      return;
+
+    }
+
+    if (cntVoiceMode === 'record') {
+
+      if (cntRecording) {
+
+        stopCntVoiceRecord(true);
+
+        return;
+
+      }
+
+      await startCntVoiceRecord();
+
+      return;
+
+    }
+
+    showNumpadHint('Voce non disponibile');
 
   }
 
@@ -1016,11 +1398,15 @@
 
     if (localTs > remoteTs && local.modules) {
 
-      return { modules: JSON.parse(JSON.stringify(local.modules)), updatedAt: local.updatedAt };
+      var localOut = { modules: JSON.parse(JSON.stringify(local.modules)), updatedAt: local.updatedAt };
+
+      if (remote && remote.geminiVoiceKey) localOut.geminiVoiceKey = remote.geminiVoiceKey;
+
+      return localOut;
 
     }
 
-    return {
+    var merged = {
 
       modules: mergeWatchModules(local.modules, remote.modules),
 
@@ -1031,6 +1417,12 @@
         : (local.updatedAt || remote.updatedAt || new Date().toISOString())
 
     };
+
+    if (remote && remote.geminiVoiceKey) merged.geminiVoiceKey = remote.geminiVoiceKey;
+
+    else if (local && local.geminiVoiceKey) merged.geminiVoiceKey = local.geminiVoiceKey;
+
+    return merged;
 
   }
 
@@ -1498,7 +1890,7 @@
 
     }
 
-    cntSpeechRecognition = initCntSpeechRecognition();
+    cntVoiceMode = initCntVoiceSupport();
 
     bindMicButton($('sw-cnt-numpad-mic'));
 

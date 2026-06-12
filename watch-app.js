@@ -254,11 +254,43 @@
 
 
 
+  function fitNumpadDisplayFont() {
+
+    var disp = $('sw-cnt-numpad-display');
+
+    if (!disp) return;
+
+    var len = state.numpadBuffer.length;
+
+    if (!len) {
+
+      disp.style.fontSize = '';
+
+      disp.style.letterSpacing = '';
+
+      return;
+
+    }
+
+    var base = Math.min(window.innerWidth || 200, 260);
+
+    var fs = Math.round(Math.min(32, Math.max(15, base * 0.13 - len * 1.05)));
+
+    disp.style.fontSize = fs + 'px';
+
+    disp.style.letterSpacing = len > 8 ? '-0.03em' : (len > 5 ? '0' : '0.02em');
+
+  }
+
+
+
   function updateNumpadDisplay() {
 
     var disp = $('sw-cnt-numpad-display');
 
     if (disp) disp.textContent = state.numpadBuffer || '—';
+
+    fitNumpadDisplayFont();
 
   }
 

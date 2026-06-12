@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.12-numpad-v25';
+        window.SERVICEHUB_BUILD = '2026.06.12-numpad-v27';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
@@ -1799,10 +1799,14 @@ window.colorPreviewNumber = function(tankName, value) {
                 var acquaInp = document.querySelector('#sec-acqua input[id="' + fid + '"]');
                 if (acquaInp) data[fid] = acquaInp.value;
             });
-            var chemPassEl = document.querySelector('.js-chem-pass-count, #nott-chem-pass-count');
-            var chemHpEl = document.querySelector('.js-chem-hp-count, #nott-chem-hp-count');
-            if (chemPassEl) data.chemPass = Math.max(0, parseInt(chemPassEl.textContent, 10) || 0);
-            if (chemHpEl) data.chemHp = Math.max(0, parseInt(chemHpEl.textContent, 10) || 0);
+            if (window.__chemCountsLive) {
+                data.chemPass = Math.max(0, window.__chemCountsLive.pass | 0);
+                data.chemHp = Math.max(0, window.__chemCountsLive.hp | 0);
+            } else if (typeof window.getSharedChemCounts === 'function') {
+                var chemCounts = window.getSharedChemCounts();
+                data.chemPass = Math.max(0, chemCounts.pass | 0);
+                data.chemHp = Math.max(0, chemCounts.hp | 0);
+            }
             document.querySelectorAll('.status-cell-btn, .status-header, .vwt-label-dynamic, .osmosi-label-dynamic').forEach(function(btn) {
                 if (btn.id && btn.id !== 'numpad-tank-btn') {
                     const payload = {
@@ -5211,6 +5215,7 @@ window.updateStoricoButton = async function() {
                 if (window.__isAmbSpecialPopupTarget && window.__isAmbSpecialPopupTarget(target)) return;
                 if (globalInteractionLock) return;
                 if (e.target.closest && e.target.closest('#numpad-modal-panel')) return;
+                if (target.closest && target.closest('[data-no-numpad="1"]')) return;
                 if (target.classList.contains('cell-label-main') || target.classList.contains('bd-label') || (target.classList.contains('amb-label') && !target.innerText.includes("WWT") && !target.innerText.includes("OSMOSI") && !target.querySelector('.vwt-label-dynamic') && !target.querySelector('.osmosi-label-dynamic'))) { window.openNumpad(target); }
             });
         });
@@ -8407,12 +8412,23 @@ window.updateStoricoButton = async function() {
                 window.refreshAllTankLevelArrows();
             }
             if (data.chemPass != null || data.chemHp != null) {
-                var chemC = window.getSharedChemCounts ? window.getSharedChemCounts(data) : null;
-                if (chemC && typeof window.updateNotturnoChemCounterUI === 'function') {
-                    window.updateNotturnoChemCounterUI(chemC.pass, chemC.hp);
+                var remoteP = Math.max(0, parseInt(data.chemPass, 10) || 0);
+                var remoteH = Math.max(0, parseInt(data.chemHp, 10) || 0);
+                var liveP = window.__chemCountsLive ? (window.__chemCountsLive.pass | 0) : 0;
+                var liveH = window.__chemCountsLive ? (window.__chemCountsLive.hp | 0) : 0;
+                var passEl = document.querySelector('.js-chem-pass-count, #nott-chem-pass-count');
+                var hpEl = document.querySelector('.js-chem-hp-count, #nott-chem-hp-count');
+                var uiP = passEl ? (parseInt(passEl.textContent, 10) || 0) : 0;
+                var uiH = hpEl ? (parseInt(hpEl.textContent, 10) || 0) : 0;
+                var pass = Math.max(remoteP, liveP, uiP);
+                var hp = Math.max(remoteH, liveH, uiH);
+                if (typeof window.setSharedChemCounts === 'function') {
+                    window.setSharedChemCounts(pass, hp);
+                } else if (typeof window.updateNotturnoChemCounterUI === 'function') {
+                    window.updateNotturnoChemCounterUI(pass, hp);
                 }
-                if (chemC && typeof window.syncChemCountsToLinkedRapportini === 'function') {
-                    window.syncChemCountsToLinkedRapportini(chemC.pass, chemC.hp, { skipPlantSave: true });
+                if (typeof window.syncChemCountsToLinkedRapportini === 'function') {
+                    window.syncChemCountsToLinkedRapportini(pass, hp, { skipPlantSave: true, pushCloud: false });
                 }
             }
         }
@@ -8485,37 +8501,41 @@ window.updateStoricoButton = async function() {
             return { pass: pass, hp: hp };
         };
 
+        window.__maxChemDomCount = function(selector) {
+            let max = 0;
+            document.querySelectorAll(selector).forEach(function(el) {
+                max = Math.max(max, parseInt(el.textContent, 10) || 0);
+            });
+            return max;
+        };
+
         window.getSharedChemCounts = function(data) {
-            if (data && (data.chemPass != null || data.chemHp != null)) {
-                return {
-                    pass: Math.max(0, parseInt(data.chemPass, 10) || 0),
-                    hp: Math.max(0, parseInt(data.chemHp, 10) || 0)
-                };
-            }
-            if (data && (data._nottChemPass != null || data._nottChemHp != null)) {
-                return {
-                    pass: Math.max(0, parseInt(data._nottChemPass, 10) || 0),
-                    hp: Math.max(0, parseInt(data._nottChemHp, 10) || 0)
-                };
-            }
-            const plant = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
-            if (plant && (plant.chemPass != null || plant.chemHp != null)) {
-                return {
-                    pass: Math.max(0, parseInt(plant.chemPass, 10) || 0),
-                    hp: Math.max(0, parseInt(plant.chemHp, 10) || 0)
-                };
+            let pass = window.__chemCountsLive ? Math.max(0, window.__chemCountsLive.pass | 0) : 0;
+            let hp = window.__chemCountsLive ? Math.max(0, window.__chemCountsLive.hp | 0) : 0;
+            if (data) {
+                if (data.chemPass != null) pass = Math.max(pass, parseInt(data.chemPass, 10) || 0);
+                if (data.chemHp != null) hp = Math.max(hp, parseInt(data.chemHp, 10) || 0);
+                if (data._nottChemPass != null) pass = Math.max(pass, parseInt(data._nottChemPass, 10) || 0);
+                if (data._nottChemHp != null) hp = Math.max(hp, parseInt(data._nottChemHp, 10) || 0);
             }
             const linked = window.getChemCountsFromLinkedRapportini();
-            if (linked.pass > 0 || linked.hp > 0) return linked;
-            const passEl = document.querySelector('.js-chem-pass-count, #nott-chem-pass-count');
-            const hpEl = document.querySelector('.js-chem-hp-count, #nott-chem-hp-count');
-            if (passEl && hpEl) {
-                return {
-                    pass: Math.max(0, parseInt(passEl.textContent, 10) || 0),
-                    hp: Math.max(0, parseInt(hpEl.textContent, 10) || 0)
-                };
+            pass = Math.max(pass, linked.pass);
+            hp = Math.max(hp, linked.hp);
+            const plant = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
+            if (plant) {
+                if (plant.chemPass != null) pass = Math.max(pass, parseInt(plant.chemPass, 10) || 0);
+                if (plant.chemHp != null) hp = Math.max(hp, parseInt(plant.chemHp, 10) || 0);
             }
-            return linked;
+            pass = Math.max(pass, window.__maxChemDomCount('.js-chem-pass-count, #nott-chem-pass-count'));
+            hp = Math.max(hp, window.__maxChemDomCount('.js-chem-hp-count, #nott-chem-hp-count'));
+            return { pass: pass, hp: hp };
+        };
+
+        window.setSharedChemCounts = function(pass, hp) {
+            pass = Math.max(0, pass | 0);
+            hp = Math.max(0, hp | 0);
+            window.__chemCountsLive = { pass: pass, hp: hp };
+            window.updateNotturnoChemCounterUI(pass, hp);
         };
 
         window.syncChemCountsToLinkedRapportini = function(pass, hp, opts) {
@@ -8553,17 +8573,17 @@ window.updateStoricoButton = async function() {
             const linked = window.getChemCountsFromLinkedRapportini();
             const plantHas = plant && (plant.chemPass != null || plant.chemHp != null);
             if (!plantHas && (linked.pass > 0 || linked.hp > 0)) {
-                window.syncChemCountsToLinkedRapportini(linked.pass, linked.hp, { skipPlantSave: false });
-                if (typeof window.updateNotturnoChemCounterUI === 'function') {
-                    window.updateNotturnoChemCounterUI(linked.pass, linked.hp);
+                if (typeof window.setSharedChemCounts === 'function') {
+                    window.setSharedChemCounts(linked.pass, linked.hp);
                 }
+                window.syncChemCountsToLinkedRapportini(linked.pass, linked.hp, { skipPlantSave: false });
             } else if (plantHas) {
                 const p = Math.max(0, parseInt(plant.chemPass, 10) || 0);
                 const h = Math.max(0, parseInt(plant.chemHp, 10) || 0);
-                window.syncChemCountsToLinkedRapportini(p, h, { pushCloud: false, skipPlantSave: true });
-                if (typeof window.updateNotturnoChemCounterUI === 'function') {
-                    window.updateNotturnoChemCounterUI(p, h);
+                if (typeof window.setSharedChemCounts === 'function') {
+                    window.setSharedChemCounts(p, h);
                 }
+                window.syncChemCountsToLinkedRapportini(p, h, { pushCloud: false, skipPlantSave: true });
             }
         };
 
@@ -9899,8 +9919,8 @@ window.updateStoricoButton = async function() {
                 'onmouseup="window.endPress(event,\'sec-chemicals\')">' +
                 '<span class="v-label-text" id="lbl-sec-chemicals-vertical">' + t + '</span></div>' +
                 '<table><tr class="th-bg"><td>SIGLA</td><td>VALORE</td></tr>' +
-                '<tr><td class="cell-label-main">PASS</td><td><button type="button" class="chem-vert-count-btn js-chem-pass-count" onclick="window.incrementNotturnoChemCounter(\'pass\')">0</button></td></tr>' +
-                '<tr><td class="cell-label-main">HP</td><td><button type="button" class="chem-vert-count-btn js-chem-hp-count chem-vert-count-hp" onclick="window.incrementNotturnoChemCounter(\'hp\')">0</button></td></tr>' +
+                '<tr><td class="cell-label-main chem-vert-label" data-no-numpad="1">PASS</td><td><button type="button" class="chem-vert-count-btn js-chem-pass-count" onclick="window.incrementNotturnoChemCounter(\'pass\', event)">0</button></td></tr>' +
+                '<tr><td class="cell-label-main chem-vert-label" data-no-numpad="1">HP</td><td><button type="button" class="chem-vert-count-btn js-chem-hp-count" onclick="window.incrementNotturnoChemCounter(\'hp\', event)">0</button></td></tr>' +
                 '</table>' +
                 '<button type="button" class="chem-vert-reset-btn" onclick="window.resetNotturnoChemCounters()">RESET</button>';
         };
@@ -9971,6 +9991,13 @@ window.updateStoricoButton = async function() {
         /** Solo Stoccaggio interno richiede layout Notturno (tendina serbatoi). Chemicals disponibile su tutti i rapportini. */
         window.RAPPORTINI_NOTTURNO_ONLY_TAB_IDS = ['sec-stoccaggio-interno'];
 
+        window.isChemCounterUiVisible = function() {
+            const tendina = document.getElementById('notturno-chemicals-tendina');
+            if (tendina && tendina.style.display !== 'none') return true;
+            const vert = document.getElementById('sec-chemicals-vertical');
+            return !!(vert && vert.style.display !== 'none' && vert.querySelector('.js-chem-pass-count, .js-chem-hp-count'));
+        };
+
         window.isActiveRapportinoChemicalsModuleActive = function() {
             const store = window.loadRapportiniStore && window.loadRapportiniStore();
             if (!store || !store.activeId || !store.items[store.activeId]) return false;
@@ -9978,6 +10005,10 @@ window.updateStoricoButton = async function() {
                 store.items[store.activeId].schedeConfig.modules &&
                 store.items[store.activeId].schedeConfig.modules['sec-chemicals'];
             return !!(mod && mod.enabled !== false);
+        };
+
+        window.canUseChemCounters = function() {
+            return window.isActiveRapportinoChemicalsModuleActive() || window.isChemCounterUiVisible();
         };
 
         window.defaultSchedaOrientation = function(secId) {
@@ -10098,9 +10129,29 @@ window.updateStoricoButton = async function() {
                 rb3.appendChild(vert);
             }
             const counts = window.getSharedChemCounts();
-            vert.innerHTML = window.buildChemicalsVerticalSectionHtml((chemMod && chemMod.title) || 'CHEMICALS');
+            const title = (chemMod && chemMod.title) || 'CHEMICALS';
+            const existingPass = vert.querySelector('.js-chem-pass-count');
+            const needsVertMarkupRefresh = existingPass && !vert.querySelector('.chem-vert-label');
+            if (existingPass && !needsVertMarkupRefresh) {
+                const lbl = document.getElementById('lbl-sec-chemicals-vertical');
+                if (lbl) lbl.textContent = title;
+                vert.style.display = 'flex';
+                if (window.__chemCountsLive) {
+                    window.updateNotturnoChemCounterUI(window.__chemCountsLive.pass, window.__chemCountsLive.hp);
+                } else {
+                    window.setSharedChemCounts(counts.pass, counts.hp);
+                }
+                return;
+            }
+            if (needsVertMarkupRefresh) {
+                vert.innerHTML = window.buildChemicalsVerticalSectionHtml(title);
+                vert.style.display = 'flex';
+                window.setSharedChemCounts(counts.pass, counts.hp);
+                return;
+            }
+            vert.innerHTML = window.buildChemicalsVerticalSectionHtml(title);
             vert.style.display = 'flex';
-            window.updateNotturnoChemCounterUI(counts.pass, counts.hp);
+            window.setSharedChemCounts(counts.pass, counts.hp);
         };
 
         window.isRapportinoModuleEnabled = function(secId, schedeConfig) {
@@ -11637,17 +11688,25 @@ window.updateStoricoButton = async function() {
         window.persistNotturnoChemCounts = function(pass, hp) {
             pass = Math.max(0, pass | 0);
             hp = Math.max(0, hp | 0);
-            window.updateNotturnoChemCounterUI(pass, hp);
-            window.syncChemCountsToLinkedRapportini(pass, hp);
+            window.setSharedChemCounts(pass, hp);
+            window.syncChemCountsToLinkedRapportini(pass, hp, { skipPlantSave: true });
+            if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
+            if (typeof window.saveData === 'function') void window.saveData(true);
             if (typeof window.flushRapportiniBackupNow === 'function') window.flushRapportiniBackupNow();
         };
 
-        window.incrementNotturnoChemCounter = function(which) {
-            if (!window.isActiveRapportinoChemicalsModuleActive()) return;
+        window.incrementNotturnoChemCounter = function(which, e) {
+            if (e) {
+                if (e.stopPropagation) e.stopPropagation();
+                if (e.preventDefault) e.preventDefault();
+            }
+            if (!window.canUseChemCounters()) return;
             const c = window.getSharedChemCounts();
-            if (which === 'pass') c.pass += 1;
-            else if (which === 'hp') c.hp += 1;
-            window.persistNotturnoChemCounts(c.pass, c.hp);
+            let pass = c.pass | 0;
+            let hp = c.hp | 0;
+            if (which === 'pass') pass += 1;
+            else if (which === 'hp') hp += 1;
+            window.persistNotturnoChemCounts(pass, hp);
             if (navigator.vibrate) {
                 try { navigator.vibrate(25); } catch (_) {}
             }
@@ -11689,7 +11748,9 @@ window.updateStoricoButton = async function() {
             if (bar) bar.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
             if (tendinaTitle) tendinaTitle.textContent = (chemMod && chemMod.title) || 'CHEMICALS';
             const counts = window.getSharedChemCounts();
-            window.updateNotturnoChemCounterUI(counts.pass, counts.hp);
+            if (typeof window.setSharedChemCounts === 'function') {
+                window.setSharedChemCounts(counts.pass, counts.hp);
+            }
         };
 
         window.toggleNotturnoChemicalsTendina = function(e) {
@@ -11731,7 +11792,9 @@ window.updateStoricoButton = async function() {
         window.restoreNotturnoChemicalsAfterApplyData = function() {
             if (!window.isActiveRapportinoChemicalsModuleActive()) return;
             const c = window.getSharedChemCounts();
-            window.updateNotturnoChemCounterUI(c.pass, c.hp);
+            if (typeof window.setSharedChemCounts === 'function') {
+                window.setSharedChemCounts(c.pass, c.hp);
+            }
         };
 
         window.getNotturnoChemicalsReportData = function() {
@@ -18433,16 +18496,23 @@ window.convertToHtml = async () => {
         .nott-chem-cell-lbl { font-size: 13px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.08em; color: #5b21b6; }
         .dark .nott-chem-cell-lbl { color: #ddd6fe; }
         .nott-chem-cell-val { font-size: 42px; font-weight: 900; line-height: 1; color: #4c1d95; font-variant-numeric: tabular-nums; }
-        .nott-chem-cell-val-hp { font-size: 52px; }
         .dark .nott-chem-cell-val { color: #ede9fe; }
         .nott-chem-reset-btn { width: 100%; margin-top: 10px; padding: 12px; border: none; border-radius: 8px; background: #dc2626; color: #fff; font-size: 11px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.06em; touch-action: manipulation; }
         .nott-chem-reset-btn:active { filter: brightness(0.9); }
         .rapportino-chem-vertical-section .chem-vert-count-btn {
-            width: 100%; min-height: 44px; border: 2px solid #6d28d9; border-radius: 8px;
+            width: 100%; min-height: 52px; height: 52px; border: 2px solid #6d28d9; border-radius: 8px;
             background: #f5f3ff; color: #4c1d95; font-size: 28px; font-weight: 900;
             font-variant-numeric: tabular-nums; cursor: pointer; touch-action: manipulation;
+            display: flex; align-items: center; justify-content: center; padding: 0 4px; line-height: 1;
+            box-sizing: border-box;
         }
-        .rapportino-chem-vertical-section .chem-vert-count-hp { font-size: 34px; }
+        .rapportino-chem-vertical-section .chem-vert-count-btn.js-chem-pass-count,
+        .rapportino-chem-vertical-section .chem-vert-count-btn.js-chem-hp-count {
+            font-size: 28px; min-height: 52px; height: 52px;
+        }
+        .rapportino-chem-vertical-section table td:last-child { width: 55%; vertical-align: middle; }
+        .rapportino-chem-vertical-section .chem-vert-label { pointer-events: none; }
+        .rapportino-chem-vertical-section .cell-label-main { min-width: 0; }
         .dark .rapportino-chem-vertical-section .chem-vert-count-btn { background: #2e1065; border-color: #a78bfa; color: #ede9fe; }
         .rapportino-chem-vertical-section .chem-vert-reset-btn {
             width: calc(100% - 16px); margin: 8px; padding: 10px; border: none; border-radius: 8px;
@@ -21032,13 +21102,13 @@ window.convertToHtml = async () => {
             </button>
             <div id="notturno-chemicals-tendina-body" class="nott-chem-tendina-body">
                 <div class="nott-chem-counters">
-                    <button type="button" class="nott-chem-cell nott-chem-cell-pass" onclick="window.incrementNotturnoChemCounter('pass')" aria-label="Incrementa PASS">
+                    <button type="button" class="nott-chem-cell nott-chem-cell-pass" onclick="window.incrementNotturnoChemCounter('pass', event)" aria-label="Incrementa PASS">
                         <span class="nott-chem-cell-lbl">PASS</span>
                         <span class="nott-chem-cell-val" id="nott-chem-pass-count">0</span>
                     </button>
-                    <button type="button" class="nott-chem-cell nott-chem-cell-hp" onclick="window.incrementNotturnoChemCounter('hp')" aria-label="Incrementa HP">
+                    <button type="button" class="nott-chem-cell nott-chem-cell-hp" onclick="window.incrementNotturnoChemCounter('hp', event)" aria-label="Incrementa HP">
                         <span class="nott-chem-cell-lbl">HP</span>
-                        <span class="nott-chem-cell-val nott-chem-cell-val-hp" id="nott-chem-hp-count">0</span>
+                        <span class="nott-chem-cell-val" id="nott-chem-hp-count">0</span>
                     </button>
                 </div>
                 <button type="button" class="nott-chem-reset-btn" onclick="window.resetNotturnoChemCounters()">RESET</button>

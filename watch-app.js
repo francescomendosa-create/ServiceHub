@@ -40,12 +40,18 @@
     setScrollTheme(name);
   }
 
-  function getChemCounts(data) {
-    data = data || {};
-    return {
-      pass: Math.max(0, parseInt(data._nottChemPass, 10) || 0),
-      hp: Math.max(0, parseInt(data._nottChemHp, 10) || 0)
-    };
+  function getChemCountsFromStore(remote) {
+    var pass = 0;
+    var hp = 0;
+    if (!remote || !remote.items) return { pass: 0, hp: 0 };
+    Object.keys(remote.items).forEach(function (rid) {
+      var item = remote.items[rid];
+      var d = item && item.data;
+      if (!d) return;
+      pass = Math.max(pass, parseInt(d._nottChemPass, 10) || 0);
+      hp = Math.max(hp, parseInt(d._nottChemHp, 10) || 0);
+    });
+    return { pass: pass, hp: hp };
   }
 
   function updateChemUI() {
@@ -111,8 +117,7 @@
       saveWatchLocalConfig(merged);
       renderMenu();
     }
-    var nott = remote.items && remote.items.notturno;
-    var c = getChemCounts(nott && nott.data);
+    var c = getChemCountsFromStore(remote);
     state.pass = c.pass;
     state.hp = c.hp;
     state.ready = true;
@@ -182,6 +187,16 @@
       remote.items.notturno.data._nottChemPass = state.pass;
       remote.items.notturno.data._nottChemHp = state.hp;
       remote.items.notturno.updatedAt = new Date().toISOString();
+      Object.keys(remote.items).forEach(function (rid) {
+        var item = remote.items[rid];
+        if (!item) return;
+        var sc = item.schedeConfig && item.schedeConfig.modules && item.schedeConfig.modules['sec-chemicals'];
+        if (!sc || sc.enabled === false) return;
+        if (!item.data) item.data = {};
+        item.data._nottChemPass = state.pass;
+        item.data._nottChemHp = state.hp;
+        item.updatedAt = new Date().toISOString();
+      });
       remote.lastUpdate = new Date().toISOString();
       await mod.setDoc(rapportiniRef, remote);
     } catch (e) {

@@ -30,6 +30,8 @@
 
     authOk: false,
 
+    voiceBridgeToken: null,
+
     currentView: 'view-home'
 
   };
@@ -338,6 +340,8 @@
 
     closeNativeDictationInput();
 
+    clearVoiceBridgeWait();
+
     clearNumpadHint();
 
     dismissActiveKeyboard();
@@ -510,15 +514,23 @@
 
 
 
-  function canUseNativeDictationInput() {
+  function isWatchLikeDevice() {
 
     var ua = navigator.userAgent || '';
 
     var sw = window.screen ? Math.min(window.screen.width, window.screen.height) : 999;
 
-    var isWatchLike = /Watch/i.test(ua) || sw <= 230;
+    return /Watch/i.test(ua) || sw <= 230;
 
-    return isWatchLike || (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window) && !canUseMediaRecorderVoice());
+  }
+
+
+
+  function canUseNativeDictationInput() {
+
+    if (isWatchLikeDevice()) return false;
+
+    return !('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window) && !canUseMediaRecorderVoice();
 
   }
 
@@ -534,7 +546,9 @@
 
     if (!label) return;
 
-    if (cntVoiceMode === 'native') label.textContent = 'Detta';
+    if (cntVoiceMode === 'iphone') label.textContent = 'iPhone';
+
+    else if (cntVoiceMode === 'native') label.textContent = 'Detta';
 
     else label.textContent = 'Voce';
 
@@ -674,6 +688,158 @@
 
 
 
+  function clearVoiceBridgeWait() {
+
+    state.voiceBridgeToken = null;
+
+    setCntMicButtonState(false);
+
+  }
+
+
+
+  function applyVoiceBridgeFromRemote(remote) {
+
+    if (!remote || !remote.serviceWatch || !remote.serviceWatch.voiceBridge) return;
+
+    var vb = remote.serviceWatch.voiceBridge;
+
+    var result = vb.result;
+
+    if (!result || !state.voiceBridgeToken || result.id !== state.voiceBridgeToken) return;
+
+    var pad = $('sw-cnt-numpad');
+
+    if (!pad || pad.classList.contains('sw-view--hidden')) return;
+
+    var age = Date.now() - new Date(result.at || 0).getTime();
+
+    if (age > 120000 || age < 0) return;
+
+    var digits = parseSpokenCounterDigits(result.digits || result.value || '');
+
+    if (!digits) return;
+
+    state.numpadBuffer = digits;
+
+    updateNumpadDisplay();
+
+    showNumpadHint('Ricevuto da iPhone ✓');
+
+    clearVoiceBridgeWait();
+
+    try { navigator.vibrate(20); } catch (_) {}
+
+    if (cntMicHintTimer) clearTimeout(cntMicHintTimer);
+
+    cntMicHintTimer = setTimeout(clearNumpadHint, 2000);
+
+  }
+
+
+
+  async function pushWatchVoiceBridgePending(token, fieldId) {
+
+    if (!db || !auth || !state.authOk || !rapportiniRef) return false;
+
+    try {
+
+      var mod = await import('https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js');
+
+      var snap = await mod.getDoc(rapportiniRef);
+
+      var remote = snap.exists() ? snap.data() : { items: {}, activeId: 'generale' };
+
+      var now = new Date().toISOString();
+
+      if (!remote.serviceWatch) remote.serviceWatch = {};
+
+      if (!remote.serviceWatch.modules && state.modules) {
+
+        remote.serviceWatch.modules = JSON.parse(JSON.stringify(state.modules));
+
+      }
+
+      remote.serviceWatch.voiceBridge = {
+
+        pending: { id: token, fieldId: fieldId, at: now },
+
+        result: null
+
+      };
+
+      remote.lastUpdate = now;
+
+      await mod.setDoc(rapportiniRef, remote);
+
+      cachedRapportiniRemote = remote;
+
+      return true;
+
+    } catch (e) {
+
+      console.warn('[ServiceWatch] voice bridge pending:', e && e.message);
+
+      return false;
+
+    }
+
+  }
+
+
+
+  async function requestIphoneVoiceBridge() {
+
+    if (state.voiceBridgeToken) {
+
+      clearVoiceBridgeWait();
+
+      clearNumpadHint();
+
+      return;
+
+    }
+
+    var token = 'wv-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+
+    state.voiceBridgeToken = token;
+
+    setCntMicButtonState(true);
+
+    showNumpadHint('Apri ServiceHub su iPhone…');
+
+    var ok = await pushWatchVoiceBridgePending(token, CNT_FIELD_ID);
+
+    if (!ok) {
+
+      clearVoiceBridgeWait();
+
+      showNumpadHint('Cloud non disponibile');
+
+      return;
+
+    }
+
+    showNumpadHint('Parla sull\'iPhone ora');
+
+    try { navigator.vibrate(12); } catch (_) {}
+
+    if (cntMicHintTimer) clearTimeout(cntMicHintTimer);
+
+    cntMicHintTimer = setTimeout(function () {
+
+      if (state.voiceBridgeToken === token) {
+
+        showNumpadHint('Apri ServiceHub su iPhone e attendi…');
+
+      }
+
+    }, 12000);
+
+  }
+
+
+
   function pickRecorderMime() {
 
     var types = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/aac'];
@@ -795,6 +961,8 @@
     }
 
     if (canUseMediaRecorderVoice()) return 'record';
+
+    if (isWatchLikeDevice()) return 'iphone';
 
     if (canUseNativeDictationInput()) return 'native';
 
@@ -1262,6 +1430,14 @@
 
     }
 
+    if (cntVoiceMode === 'iphone') {
+
+      requestIphoneVoiceBridge();
+
+      return;
+
+    }
+
     dismissActiveKeyboard();
 
     if (cntVoiceMode === 'speech') {
@@ -1645,6 +1821,8 @@
     applyChemCountsFromFirestore();
 
     applyContatoriFromRapportini();
+
+    applyVoiceBridgeFromRemote(remote);
 
   }
 

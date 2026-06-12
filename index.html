@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.12-contatore-filtra-v52';
+        window.SERVICEHUB_BUILD = '2026.06.12-device-active-rapportino-v53';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
@@ -8658,6 +8658,7 @@ window.updateStoricoButton = async function() {
             return changed;
         };
         window.SERVICEHUB_SESSION_KEY = 'servicehub_session_prefs';
+        /** Rapportino attivo (activeId): solo questo dispositivo — mai Firestore. */
         window.__rapportiniCloudHydrated = false;
         window.__rapportiniCloudDocMissing = false;
         window.__pendingActiveRapportinoItem = null;
@@ -8896,6 +8897,18 @@ window.updateStoricoButton = async function() {
                 if (p && p.activeId) return p;
             } catch (_) {}
             return null;
+        };
+
+        /** Rapportino visibile su questo dispositivo: session prefs → store locale, mai cloud. */
+        window.resolveDeviceActiveRapportinoId = function (items, localStore) {
+            if (!items || typeof items !== 'object') return 'generale';
+            const sess = typeof window.readSessionPrefs === 'function' ? window.readSessionPrefs() : null;
+            if (sess && sess.activeId && items[sess.activeId]) return sess.activeId;
+            const local = localStore || (window.loadRapportiniStore && window.loadRapportiniStore());
+            if (local && local.activeId && items[local.activeId]) return local.activeId;
+            if (items.generale) return 'generale';
+            const keys = Object.keys(items);
+            return keys.length ? keys[0] : 'generale';
         };
 
         window.persistSessionPrefs = function () {
@@ -11458,7 +11471,7 @@ window.updateStoricoButton = async function() {
             if (!remoteStore || !remoteStore.items) return localStore;
             if (!localStore || !localStore.items) {
                 const only = JSON.parse(JSON.stringify(remoteStore));
-                if (fromCloud && remoteStore.activeId) only.activeId = remoteStore.activeId;
+                only.activeId = window.resolveDeviceActiveRapportinoId(only.items, localStore);
                 return only;
             }
             const outItems = {};
@@ -11479,14 +11492,14 @@ window.updateStoricoButton = async function() {
             });
             const localMs = window.parseRapportinoUpdatedMs(localStore.lastUpdate);
             const remoteMs = window.parseRapportinoUpdatedMs(remoteStore.lastUpdate);
-            let activeId = fromCloud
-                ? (remoteStore.activeId || localStore.activeId || 'generale')
-                : (remoteMs >= localMs ? (remoteStore.activeId || localStore.activeId) : localStore.activeId);
-            const sessHint = window.__sessionActiveIdHint;
-            if (fromCloud && sessHint && outItems[sessHint] && (!remoteStore.activeId || remoteMs === 0)) {
-                activeId = sessHint;
+            const activeId = window.resolveDeviceActiveRapportinoId(outItems, localStore);
+            if (!activeId || !outItems[activeId]) {
+                return {
+                    activeId: outItems.generale ? 'generale' : Object.keys(outItems)[0],
+                    items: outItems,
+                    lastUpdate: new Date(Math.max(localMs, remoteMs)).toISOString()
+                };
             }
-            if (!activeId || !outItems[activeId]) activeId = outItems.generale ? 'generale' : Object.keys(outItems)[0];
             return {
                 activeId: activeId,
                 items: outItems,
@@ -11548,7 +11561,6 @@ window.updateStoricoButton = async function() {
                     slimItems[rid] = item;
                 });
                 const payload = {
-                    activeId: mergedStore.activeId || 'generale',
                     items: slimItems,
                     lastUpdate: mergedStore.lastUpdate || new Date().toISOString()
                 };
@@ -11578,30 +11590,29 @@ window.updateStoricoButton = async function() {
             });
             const merged = window.mergeRapportiniStores(local, remoteStore, true);
             if (!merged) return;
-            window.__sessionActiveIdHint = null;
-            const prevActive = local && local.activeId;
-            const prevUpdated = local && local.items && local.activeId && local.items[local.activeId]
-                ? local.items[local.activeId].updatedAt : null;
-            const newUpdated = merged.items && merged.activeId && merged.items[merged.activeId]
-                ? merged.items[merged.activeId].updatedAt : null;
-            const activeChanged = merged.activeId !== prevActive;
-            const dataChanged = newUpdated && newUpdated !== prevUpdated;
+            merged.activeId = window.resolveDeviceActiveRapportinoId(merged.items, local);
+            const deviceActiveId = merged.activeId;
+            const prevUpdated = local && local.items && local.items[deviceActiveId]
+                ? local.items[deviceActiveId].updatedAt : null;
+            const newUpdated = merged.items && merged.items[deviceActiveId]
+                ? merged.items[deviceActiveId].updatedAt : null;
+            const activeItemDataChanged = newUpdated && newUpdated !== prevUpdated;
             if (typeof window.stripHiddenModulesFromRapportinoStore === 'function') {
                 window.stripHiddenModulesFromRapportinoStore(merged);
             }
             window.__rapportiniApplyingFromCloud = true;
             window.__rapportiniStore = merged;
             window.__rapportiniApplyingFromCloud = false;
-            if (remoteWon || opts.force || activeChanged || dataChanged) {
+            if (remoteWon || opts.force || activeItemDataChanged) {
                 const applyActive = function () {
                     if (typeof window.applyDeviceHiddenModulesForActiveRapportino === 'function') {
                         window.applyDeviceHiddenModulesForActiveRapportino();
                     }
-                    if (merged.items[merged.activeId] && typeof window.applyRapportinoItem === 'function') {
+                    if (merged.items[deviceActiveId] && typeof window.applyRapportinoItem === 'function') {
                         if (window.__cloudPlantHydrated) {
-                            window.applyRapportinoItem(merged.items[merged.activeId]);
+                            window.applyRapportinoItem(merged.items[deviceActiveId]);
                         } else {
-                            window.__pendingActiveRapportinoItem = merged.items[merged.activeId];
+                            window.__pendingActiveRapportinoItem = merged.items[deviceActiveId];
                         }
                     }
                     if (typeof window.syncChemCountsFromFirestore === 'function') {
@@ -11873,6 +11884,8 @@ window.updateStoricoButton = async function() {
             if (sess && sess.activeId && store.items[sess.activeId]) store.activeId = sess.activeId;
             else if (window.__sessionActiveIdHint && store.items[window.__sessionActiveIdHint]) {
                 store.activeId = window.__sessionActiveIdHint;
+            } else if (typeof window.resolveDeviceActiveRapportinoId === 'function') {
+                store.activeId = window.resolveDeviceActiveRapportinoId(store.items, store);
             }
             if (!store.activeId || !store.items[store.activeId]) store.activeId = 'generale';
             if (typeof window.migrateHiddenModulesToDeviceLocalOnce === 'function') {

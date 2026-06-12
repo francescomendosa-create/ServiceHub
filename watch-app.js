@@ -300,7 +300,23 @@
 
 
 
+  function dismissActiveKeyboard() {
+
+    var ae = document.activeElement;
+
+    if (ae && ae !== document.body && typeof ae.blur === 'function') {
+
+      try { ae.blur(); } catch (_) {}
+
+    }
+
+  }
+
+
+
   function openContatoriNumpad() {
+
+    dismissActiveKeyboard();
 
     state.numpadBuffer = state.contatori[CNT_FIELD_ID] || '';
 
@@ -320,6 +336,8 @@
 
     clearNumpadHint();
 
+    dismissActiveKeyboard();
+
     var pad = $('sw-cnt-numpad');
 
     if (pad) pad.classList.add('sw-view--hidden');
@@ -334,7 +352,13 @@
 
   var cntSpeechListening = false;
 
+  var cntSpeechWanted = false;
+
   var cntMicHintTimer = null;
+
+  var cntMicPermissionOk = null;
+
+  var CNT_SPEECH_LANG = 'it-IT';
 
 
 
@@ -442,6 +466,30 @@
 
 
 
+  function speechErrorMessage(code) {
+
+    var map = {
+
+      'not-allowed': 'Microfono non autorizzato',
+
+      'service-not-allowed': 'Dettatura non consentita',
+
+      'no-speech': 'Non ho sentito nulla',
+
+      'network': 'Serve connessione per la voce',
+
+      'audio-capture': 'Microfono non disponibile',
+
+      'aborted': ''
+
+    };
+
+    return map[code] || 'Errore dettatura';
+
+  }
+
+
+
   function initCntSpeechRecognition() {
 
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
@@ -454,11 +502,11 @@
 
     var rec = new SR();
 
-    rec.lang = 'it-IT';
+    rec.lang = CNT_SPEECH_LANG;
 
     rec.interimResults = true;
 
-    rec.continuous = false;
+    rec.continuous = true;
 
     rec.maxAlternatives = 1;
 
@@ -468,7 +516,7 @@
 
       var transcript = '';
 
-      for (var i = e.resultIndex; i < e.results.length; i++) {
+      for (var i = 0; i < e.results.length; i++) {
 
         transcript += e.results[i][0].transcript;
 
@@ -482,6 +530,8 @@
 
         updateNumpadDisplay();
 
+        clearNumpadHint();
+
       }
 
     };
@@ -494,6 +544,8 @@
 
       setCntMicButtonState(true);
 
+      showNumpadHint('Ascolto… parla ora');
+
       try { navigator.vibrate(12); } catch (_) {}
 
     };
@@ -504,6 +556,22 @@
 
       cntSpeechListening = false;
 
+      if (cntSpeechWanted) {
+
+        try {
+
+          rec.start();
+
+          return;
+
+        } catch (_) {
+
+          cntSpeechWanted = false;
+
+        }
+
+      }
+
       setCntMicButtonState(false);
 
     };
@@ -512,13 +580,23 @@
 
     rec.onerror = function (ev) {
 
+      var code = ev && ev.error ? ev.error : '';
+
+      if (code === 'aborted') return;
+
+      cntSpeechWanted = false;
+
       cntSpeechListening = false;
 
       setCntMicButtonState(false);
 
-      if (ev && ev.error !== 'aborted' && ev.error !== 'no-speech') {
+      var msg = speechErrorMessage(code);
 
-        console.warn('[ServiceWatch] dettatura:', ev.error);
+      if (msg) showNumpadHint(msg);
+
+      if (code && code !== 'no-speech') {
+
+        console.warn('[ServiceWatch] dettatura:', code);
 
       }
 
@@ -532,7 +610,47 @@
 
 
 
+  async function ensureMicPermission() {
+
+    if (cntMicPermissionOk === true) return true;
+
+    if (cntMicPermissionOk === false) return false;
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+
+      cntMicPermissionOk = true;
+
+      return true;
+
+    }
+
+    try {
+
+      var stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+
+      stream.getTracks().forEach(function (t) { t.stop(); });
+
+      cntMicPermissionOk = true;
+
+      return true;
+
+    } catch (_) {
+
+      cntMicPermissionOk = false;
+
+      showNumpadHint('Microfono non autorizzato');
+
+      return false;
+
+    }
+
+  }
+
+
+
   function stopCntSpeech() {
+
+    cntSpeechWanted = false;
 
     if (cntSpeechRecognition && cntSpeechListening) {
 
@@ -548,17 +666,11 @@
 
 
 
-  function toggleCntSpeech() {
+  function startCntSpeech() {
 
-    if (!cntSpeechRecognition) return;
+    if (!cntSpeechRecognition) return false;
 
-    if (cntSpeechListening) {
-
-      stopCntSpeech();
-
-      return;
-
-    }
+    cntSpeechWanted = true;
 
     clearNumpadHint();
 
@@ -566,109 +678,67 @@
 
       cntSpeechRecognition.start();
 
+      return true;
+
     } catch (e) {
 
       try {
 
         cntSpeechRecognition.stop();
 
-        setTimeout(function () {
-
-          try { cntSpeechRecognition.start(); } catch (_) {}
-
-        }, 120);
-
       } catch (_) {}
 
+      setTimeout(function () {
+
+        if (!cntSpeechWanted) return;
+
+        try { cntSpeechRecognition.start(); } catch (_) {
+
+          cntSpeechWanted = false;
+
+          showNumpadHint('Impossibile avviare ascolto');
+
+        }
+
+      }, 150);
+
+      return true;
+
     }
 
   }
 
 
 
-  function focusDictateInputFallback() {
-
-    var inp = $('sw-cnt-dictate-inp');
-
-    if (!inp) return false;
-
-    inp.value = state.numpadBuffer || '';
-
-    try {
-
-      inp.focus({ preventScroll: true });
-
-    } catch (_) {
-
-      try { inp.focus(); } catch (__) {}
-
-    }
-
-    try {
-
-      inp.setSelectionRange(inp.value.length, inp.value.length);
-
-    } catch (_) {}
-
-    return true;
-
-  }
-
-
-
-  function handleMicPress() {
+  async function handleMicPress() {
 
     try { navigator.vibrate(12); } catch (_) {}
 
-    if (cntSpeechRecognition) {
+    if (!cntSpeechRecognition) {
 
-      toggleCntSpeech();
-
-      return;
-
-    }
-
-    if (focusDictateInputFallback()) {
-
-      showNumpadHint('Tocca il microfono sulla tastiera');
+      showNumpadHint('Voce non supportata qui');
 
       return;
 
     }
 
-    showNumpadHint('Dettatura non disponibile qui');
+    if (cntSpeechWanted || cntSpeechListening) {
 
-  }
+      stopCntSpeech();
 
+      clearNumpadHint();
 
+      return;
 
-  function bindDictateInput() {
+    }
 
-    var inp = $('sw-cnt-dictate-inp');
+    dismissActiveKeyboard();
 
-    if (!inp) return;
+    var allowed = await ensureMicPermission();
 
-    inp.addEventListener('input', function () {
+    if (!allowed) return;
 
-      var digits = String(inp.value || '').replace(/\D/g, '').slice(0, CNT_MAX_LEN);
-
-      if (inp.value !== digits) inp.value = digits;
-
-      state.numpadBuffer = digits;
-
-      updateNumpadDisplay();
-
-    });
-
-    inp.addEventListener('blur', function () {
-
-      var digits = String(inp.value || '').replace(/\D/g, '').slice(0, CNT_MAX_LEN);
-
-      state.numpadBuffer = digits;
-
-      updateNumpadDisplay();
-
-    });
+    startCntSpeech();
 
   }
 
@@ -1429,8 +1499,6 @@
     }
 
     cntSpeechRecognition = initCntSpeechRecognition();
-
-    bindDictateInput();
 
     bindMicButton($('sw-cnt-numpad-mic'));
 

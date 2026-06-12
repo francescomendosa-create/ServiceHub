@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.12-numpad-v40';
+        window.SERVICEHUB_BUILD = '2026.06.12-numpad-v41';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
@@ -10466,6 +10466,25 @@ window.updateStoricoButton = async function() {
             return window.isRapportinoModuleEnabled(secId, schedeConfig);
         };
 
+        window.enforceRapportinoPlantVisibility = function(schedeConfig, rapportinoId, hiddenList) {
+            const rid = rapportinoId || (window.loadRapportiniStore && window.loadRapportiniStore().activeId) || 'generale';
+            const cfg = schedeConfig || { modules: {} };
+            const hid = hiddenList || hiddenModules || [];
+            const usesFilter = window.rapportinoUsesSchedeFilter(rid, cfg);
+            (window.RAPPORTINI_SECTION_IDS || []).forEach(function(secId) {
+                if (secId === 'sec-stoccaggio-interno' || secId === 'sec-chemicals' || secId === 'sec-conducibilita') return;
+                const el = document.getElementById(secId);
+                if (!el) return;
+                let show;
+                if (!usesFilter) {
+                    show = hid.indexOf(secId) < 0;
+                } else {
+                    show = window.shouldShowPlantSchedaInDashboard(secId, cfg, rid, hid);
+                }
+                window.setPlantSchedaDomVisible(el, show);
+            });
+        };
+
         window.applyRapportinoDashboardVisibility = function(schedeConfig, opts) {
             opts = opts || {};
             const store = window.loadRapportiniStore();
@@ -10473,14 +10492,7 @@ window.updateStoricoButton = async function() {
             const item = store && store.items && store.items[rid];
             const cfg = schedeConfig || (item && item.schedeConfig) || { modules: {} };
             const hid = Array.isArray(opts.hiddenModules) ? opts.hiddenModules : (window.getDeviceHiddenModulesForRapportino(rid) || []);
-            window.RAPPORTINI_TAB_META.forEach(function(tab) {
-                if (tab.id === 'sec-stoccaggio-interno' || tab.id === 'sec-chemicals' || tab.id === 'sec-conducibilita') return;
-                if (rid === 'notturno' && window.isNotturnoFiltraLayoutActive && window.isNotturnoFiltraLayoutActive() && tab.id === 'sec-filtra') return;
-                const sec = document.getElementById(tab.id);
-                if (!sec) return;
-                const show = window.shouldShowPlantSchedaInDashboard(tab.id, cfg, rid, hid);
-                window.setPlantSchedaDomVisible(sec, show);
-            });
+            window.enforceRapportinoPlantVisibility(cfg, rid, hid);
             if (typeof window.syncCustomRapportinoSchedeDom === 'function') {
                 window.syncCustomRapportinoSchedeDom(cfg, hid);
             }
@@ -10560,12 +10572,7 @@ window.updateStoricoButton = async function() {
 
         window.setPlantSchedaDomVisible = function(secEl, show) {
             if (!secEl) return;
-            if (show) {
-                if (secEl.style.display === 'none') secEl.style.display = 'flex';
-                else if (!secEl.style.display) secEl.style.display = 'flex';
-            } else {
-                secEl.style.display = 'none';
-            }
+            secEl.style.display = show ? 'flex' : 'none';
         };
 
         window.applyFieldLabelInDom = function(fieldId, labelText) {
@@ -10797,6 +10804,36 @@ window.updateStoricoButton = async function() {
                             item.schedeConfig.modules = pruned.modules;
                             changed = true;
                         }
+                    }
+                    var fm = item.schedeConfig.modules;
+                    if (fm && fm['sec-chpp'] && fm['sec-amb'] && fm['sec-acqua'] &&
+                        fm['sec-chpp'].enabled !== false && fm['sec-amb'].enabled !== false) {
+                        var keepFu = {};
+                        ['sec-conducibilita', 'sec-chemicals', 'sec-aria', 'sec-well', 'sec-azoto', 'sec-bluedown'].forEach(function(k) {
+                            if (fm[k] && fm[k].enabled !== false) keepFu[k] = fm[k];
+                        });
+                        Object.keys(fm).forEach(function(k) {
+                            if (window.isCustomRapportinoScheda && window.isCustomRapportinoScheda(k)) keepFu[k] = fm[k];
+                        });
+                        if (!keepFu['sec-conducibilita']) {
+                            keepFu['sec-conducibilita'] = {
+                                enabled: true,
+                                title: window.CONDUCTIVITY_SCHEDA_TITLE || 'CONDUCIBILITÀ',
+                                orientation: 'horizontal',
+                                layout: 'conductivity-fields',
+                                fields: window.collectFieldsForConducibilitaSection()
+                            };
+                        }
+                        if (!keepFu['sec-chemicals']) {
+                            keepFu['sec-chemicals'] = {
+                                enabled: true,
+                                title: 'CHEMICALS',
+                                orientation: 'vertical',
+                                layout: 'vertical-counters'
+                            };
+                        }
+                        item.schedeConfig.modules = keepFu;
+                        changed = true;
                     }
                 }
                 if (rid !== 'generale' && rid !== 'notturno' && item.schedeConfig && item.schedeConfig.modules) {
@@ -11557,7 +11594,12 @@ window.updateStoricoButton = async function() {
             if (id === 'generale') {
                 const fromDom = window.buildFullRapportinoConfigFromDOM();
                 window.RAPPORTINI_TAB_META.forEach(function(tab) {
+                    if (tab.id === 'sec-stoccaggio-interno' || tab.id === 'sec-chemicals' || tab.id === 'sec-conducibilita') {
+                        if (draft.modules[tab.id]) delete draft.modules[tab.id];
+                        return;
+                    }
                     const domMod = fromDom.modules[tab.id];
+                    if (!domMod) return;
                     const prev = draft.modules[tab.id];
                     draft.modules[tab.id] = {
                         enabled: prev ? prev.enabled !== false : true,
@@ -11567,6 +11609,14 @@ window.updateStoricoButton = async function() {
                 });
             }
             return draft;
+        };
+
+        window.getGeneraleEditorSchedaIds = function() {
+            const fromDom = window.buildFullRapportinoConfigFromDOM();
+            return window.RAPPORTINI_TAB_META.map(function(t) { return t.id; }).filter(function(id) {
+                if (id === 'sec-stoccaggio-interno' || id === 'sec-chemicals' || id === 'sec-conducibilita') return false;
+                return !!fromDom.modules[id];
+            });
         };
 
         window.rapportinoManagerShowList = function() {
@@ -11587,17 +11637,12 @@ window.updateStoricoButton = async function() {
         };
 
         window.openRapportinoManager = function() {
-            const modal = document.getElementById('rapportino-modifica-modal');
-            if (modal) modal.classList.add('active');
+            window.ensureRapportiniInitialized();
             window._rapportiniModificaId = null;
             window._rapportiniModificaDraft = null;
             window.rapportinoManagerShowList();
-            const runInit = function() {
-                window.ensureRapportiniInitialized();
-                window.renderRapportinoManagerList();
-            };
-            if (window.__rapportiniInitializedOnce) runInit();
-            else requestAnimationFrame(runInit);
+            const modal = document.getElementById('rapportino-modifica-modal');
+            if (modal) modal.classList.add('active');
         };
 
         window.closeRapportinoManager = function() {
@@ -11606,6 +11651,10 @@ window.updateStoricoButton = async function() {
             window._rapportiniModificaDraft = null;
             window._rapportiniModificaId = null;
             window.rapportinoManagerShowList();
+            const store = window.loadRapportiniStore && window.loadRapportiniStore();
+            if (store && store.items[store.activeId] && typeof window.applyRapportinoItem === 'function') {
+                window.applyRapportinoItem(store.items[store.activeId]);
+            }
         };
 
         window.closeRapportinoModifica = function() {
@@ -11655,17 +11704,13 @@ window.updateStoricoButton = async function() {
             if (!store || !store.items[rapportinoId]) return;
             const item = store.items[rapportinoId];
             window._rapportiniModificaId = rapportinoId;
+            window._rapportiniModificaDraft = window.prepareRapportinoEditorDraft(rapportinoId);
             window.rapportinoManagerShowEditor();
             const title = document.getElementById('rapportino-modifica-title');
             const sub = document.getElementById('rapportino-editor-subtitle');
             if (title) title.textContent = item.name || rapportinoId;
             if (sub) sub.textContent = 'Attiva le schede, modifica i nomi e le sigle';
-            const list = document.getElementById('rapportino-modifica-list');
-            if (list) list.innerHTML = '<p class="text-center text-slate-400 font-bold text-xs py-6">Caricamento schede…</p>';
-            requestAnimationFrame(function() {
-                window._rapportiniModificaDraft = window.prepareRapportinoEditorDraft(rapportinoId);
-                window.renderRapportinoModificaList();
-            });
+            window.renderRapportinoModificaList();
         };
 
         window.openRapportinoModifica = function(rapportinoId) {
@@ -11690,6 +11735,12 @@ window.updateStoricoButton = async function() {
         };
 
         window.getRapportinoEditorSchedaOrder = function(draft, rapportinoId) {
+            if (rapportinoId === 'generale') {
+                const keys = Object.keys(draft.modules || {});
+                const generalePlant = window.getGeneraleEditorSchedaIds();
+                const custom = keys.filter(function(k) { return generalePlant.indexOf(k) < 0 && window.isCustomRapportinoScheda(k); });
+                return generalePlant.concat(custom);
+            }
             const keys = Object.keys(draft.modules || {});
             const plant = window.RAPPORTINI_TAB_META.map(function(t) { return t.id; }).filter(function(k) {
                 return keys.indexOf(k) >= 0 && window.isRapportinoTabAvailableForEditor(rapportinoId, k);
@@ -11732,14 +11783,13 @@ window.updateStoricoButton = async function() {
                     };
                 }
             } else {
-                delete draft.modules[secId];
+                if (window._rapportiniModificaId === 'generale') {
+                    draft.modules[secId].enabled = draft.modules[secId].enabled === false;
+                } else {
+                    delete draft.modules[secId];
+                }
             }
             window.renderRapportinoModificaList();
-            const store = window.loadRapportiniStore && window.loadRapportiniStore();
-            if (store && store.activeId === window._rapportiniModificaId && typeof window.applyRapportinoDashboardVisibility === 'function') {
-                const previewCfg = window.cloneRapportinoConfig(draft);
-                window.applyRapportinoDashboardVisibility(previewCfg, { rapportinoId: window._rapportiniModificaId, hiddenModules: window.hiddenModules || hiddenModules || [] });
-            }
         };
 
         window.toggleRapportinoModificaExpand = function(secId) {
@@ -11911,9 +11961,17 @@ window.updateStoricoButton = async function() {
                     mod.fields = window.collectFieldsForRapportinoSection(secId);
                 }
             });
-            const cleaned = window.pruneRapportinoSchedeConfig(window.cloneRapportinoConfig(draft));
+            let savedCfg;
+            if (id === 'generale') {
+                savedCfg = window.cloneRapportinoConfig(draft);
+                ['sec-stoccaggio-interno', 'sec-chemicals', 'sec-conducibilita'].forEach(function(tabId) {
+                    if (savedCfg.modules[tabId]) delete savedCfg.modules[tabId];
+                });
+            } else {
+                savedCfg = window.pruneRapportinoSchedeConfig(window.cloneRapportinoConfig(draft));
+            }
             const now = new Date().toISOString();
-            store.items[id].schedeConfig = cleaned;
+            store.items[id].schedeConfig = savedCfg;
             store.items[id].schedeConfigUpdatedAt = now;
             store.items[id].updatedAt = now;
             window.saveRapportiniStore(store, { pushCloud: true, flushCloud: true });

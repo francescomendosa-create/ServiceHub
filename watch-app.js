@@ -1120,7 +1120,11 @@
 
     }
 
-    showNumpadHint('Voce non disponibile');
+    if (!getWatchGeminiKey()) {
+      showNumpadHint('Voce Watch: imposta chiave Gemini attiva in ServiceHub');
+    } else {
+      showNumpadHint('Voce non disponibile su questo dispositivo — prova da iPhone');
+    }
 
   }
 

@@ -28,7 +28,9 @@
 
     ready: false,
 
-    authOk: false
+    authOk: false,
+
+    currentView: 'view-home'
 
   };
 
@@ -85,6 +87,8 @@
 
 
   function showView(name) {
+
+    state.currentView = name;
 
     ['view-home', 'view-menu', 'view-chemicals', 'view-contatori', 'view-empty'].forEach(function (id) {
 
@@ -1044,6 +1048,136 @@
 
 
 
+  function isContatoriNumpadOpen() {
+
+    var pad = $('sw-cnt-numpad');
+
+    return !!(pad && !pad.classList.contains('sw-view--hidden'));
+
+  }
+
+
+
+  function goBackOneStep() {
+
+    if (isContatoriNumpadOpen()) {
+
+      closeContatoriNumpad();
+
+      try { navigator.vibrate(8); } catch (_) {}
+
+      return;
+
+    }
+
+    var v = state.currentView || 'view-home';
+
+    if (v === 'view-chemicals' || v === 'view-contatori') {
+
+      showView('view-menu');
+
+      try { navigator.vibrate(10); } catch (_) {}
+
+      return;
+
+    }
+
+    if (v === 'view-menu' || v === 'view-empty') {
+
+      showView('view-home');
+
+      try { navigator.vibrate(10); } catch (_) {}
+
+    }
+
+  }
+
+
+
+  function bindSwipeBackGesture() {
+
+    var track = null;
+
+    var EDGE_PX = 32;
+
+    var MIN_DX = 64;
+
+    var MAX_DY = 56;
+
+
+
+    function resetSwipeTrack() {
+
+      track = null;
+
+    }
+
+
+
+    document.addEventListener('touchstart', function (e) {
+
+      if (!e.touches || e.touches.length !== 1) return;
+
+      var t = e.touches[0];
+
+      if (t.clientX > EDGE_PX) return;
+
+      if (!isContatoriNumpadOpen() && state.currentView === 'view-home') return;
+
+      track = { startX: t.clientX, startY: t.clientY };
+
+    }, { passive: true });
+
+
+
+    document.addEventListener('touchmove', function (e) {
+
+      if (!track || !e.touches || e.touches.length !== 1) return;
+
+      var t = e.touches[0];
+
+      var dx = t.clientX - track.startX;
+
+      var dy = Math.abs(t.clientY - track.startY);
+
+      if (dx < 0 || dy > MAX_DY) resetSwipeTrack();
+
+    }, { passive: true });
+
+
+
+    document.addEventListener('touchend', function (e) {
+
+      if (!track) return;
+
+      var c = e.changedTouches && e.changedTouches[0];
+
+      if (!c) {
+
+        resetSwipeTrack();
+
+        return;
+
+      }
+
+      var dx = c.clientX - track.startX;
+
+      var dy = Math.abs(c.clientY - track.startY);
+
+      if (dx >= MIN_DX && dy <= MAX_DY) goBackOneStep();
+
+      resetSwipeTrack();
+
+    }, { passive: true });
+
+
+
+    document.addEventListener('touchcancel', resetSwipeTrack, { passive: true });
+
+  }
+
+
+
   function bindUI() {
 
     var home = $('view-home');
@@ -1149,6 +1283,8 @@
     }
 
     buildNumpadGrid();
+
+    bindSwipeBackGesture();
 
   }
 

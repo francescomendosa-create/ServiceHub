@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.12-numpad-v19';
+        window.SERVICEHUB_BUILD = '2026.06.12-numpad-v20';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
@@ -8456,6 +8456,7 @@ window.updateStoricoButton = async function() {
             if (key.indexOf('_nott') === 0) return true;
             if (/^nott-f-s\d+(-start|-end|-pi|-pf)$/.test(key)) return true;
             if (window.isNotturnoStoccaggioFieldKey && window.isNotturnoStoccaggioFieldKey(key)) return true;
+            if (/^rsig-/.test(key)) return true;
             return false;
         };
 
@@ -9678,6 +9679,93 @@ window.updateStoricoButton = async function() {
             }
         };
 
+        window.isCustomRapportinoScheda = function(secId) {
+            return String(secId || '').indexOf('rsched-') === 0;
+        };
+
+        window.isCustomRapportinoFieldId = function(fieldId) {
+            return /^rsig-/.test(String(fieldId || ''));
+        };
+
+        window.getCustomRapportinoSchedaIds = function(schedeConfig) {
+            const cfg = schedeConfig || {};
+            const mods = cfg.modules || {};
+            return Object.keys(mods).filter(function(secId) {
+                return window.isCustomRapportinoScheda(secId) && mods[secId] && mods[secId].enabled !== false;
+            });
+        };
+
+        window.buildCustomRapportinoSchedaHtml = function(secId, mod) {
+            const title = (mod && mod.title) ? String(mod.title) : secId;
+            const fields = (mod && mod.fields) ? mod.fields.filter(function(f) {
+                return f && f.enabled !== false;
+            }) : [];
+            const rows = fields.map(function(f) {
+                const fid = f.id || '';
+                const label = window.escRapportinoHtml(f.label || fid);
+                const safeId = fid.replace(/"/g, '&quot;');
+                return '<tr><td class="cell-label-main">' + label + '</td>' +
+                    '<td><input type="tel" id="' + safeId + '" onchange="window.saveActiveRapportinoFromUI && window.saveActiveRapportinoFromUI()"></td></tr>';
+            }).join('');
+            const tableBody = rows || '<tr><td class="cell-label-main text-slate-400" colspan="2">Nessuna sigla</td></tr>';
+            return '<div class="v-label-container rapportino-custom-vlabel" style="background-color:#475569;" ' +
+                'ontouchstart="window.startPress(event,\'' + secId.replace(/'/g, "\\'") + '\')" ontouchmove="window.movePress(event)" ' +
+                'ontouchend="window.endPress(event,\'' + secId.replace(/'/g, "\\'") + '\')" ' +
+                'onmousedown="window.startPress(event,\'' + secId.replace(/'/g, "\\'") + '\')" ' +
+                'onmouseup="window.endPress(event,\'' + secId.replace(/'/g, "\\'") + '\')">' +
+                '<span class="v-label-text" id="lbl-' + secId + '">' + window.escRapportinoHtml(title) + '</span></div>' +
+                '<table><tr class="th-bg"><td>SIGLA</td><td>VALORE</td></tr>' + tableBody + '</table>';
+        };
+
+        window.syncCustomRapportinoSchedeDom = function(schedeConfig) {
+            const cfg = schedeConfig || { modules: {} };
+            const mc = document.querySelector('.main-container');
+            if (!mc) return;
+            let row = document.getElementById('row-block-custom');
+            if (!row) {
+                row = document.createElement('div');
+                row.id = 'row-block-custom';
+                row.className = 'row-block rapportino-custom-row-block';
+                row.style.minHeight = '180px';
+                row.style.borderBottom = 'none';
+                mc.appendChild(row);
+            }
+            const wanted = window.getCustomRapportinoSchedaIds(cfg);
+            Array.from(row.querySelectorAll('.rapportino-custom-section')).forEach(function(sec) {
+                if (wanted.indexOf(sec.id) < 0) sec.remove();
+            });
+            wanted.forEach(function(secId) {
+                const mod = cfg.modules[secId];
+                let sec = document.getElementById(secId);
+                if (!sec) {
+                    sec = document.createElement('div');
+                    sec.id = secId;
+                    sec.className = 'col-section col-expanded rapportino-custom-section';
+                    row.appendChild(sec);
+                }
+                sec.innerHTML = window.buildCustomRapportinoSchedaHtml(secId, mod);
+                const hidden = hiddenModules.includes(secId);
+                sec.style.display = hidden ? 'none' : 'flex';
+            });
+            const anyVisible = wanted.some(function(secId) {
+                const el = document.getElementById(secId);
+                return el && el.style.display !== 'none';
+            });
+            row.style.display = anyVisible ? 'flex' : 'none';
+        };
+
+        window.applyCustomRapportinoFieldValues = function(data) {
+            document.querySelectorAll('#row-block-custom input[id^="rsig-"]').forEach(function(inp) {
+                inp.value = '';
+            });
+            if (!data || typeof data !== 'object') return;
+            Object.keys(data).forEach(function(k) {
+                if (!window.isCustomRapportinoFieldId(k)) return;
+                const inp = document.getElementById(k);
+                if (inp) inp.value = data[k] != null ? String(data[k]) : '';
+            });
+        };
+
         window.isRapportinoModuleEnabled = function(secId, schedeConfig) {
             const mod = schedeConfig && schedeConfig.modules && schedeConfig.modules[secId];
             return !!(mod && mod.enabled !== false);
@@ -9774,6 +9862,9 @@ window.updateStoricoButton = async function() {
             window.updateRapportiniRowBlocksVisibility();
             window.syncNotturnoModulesAfterVisibility();
             if (typeof window.__ensureAmbSpecialPopupRows === 'function') window.__ensureAmbSpecialPopupRows();
+            if (typeof window.syncCustomRapportinoSchedeDom === 'function') {
+                window.syncCustomRapportinoSchedeDom(cfg);
+            }
         };
 
         window.updateRapportiniRowBlocksVisibility = function() {
@@ -9793,6 +9884,15 @@ window.updateStoricoButton = async function() {
             if (rb1) rb1.style.display = row1.some(visible) ? 'flex' : 'none';
             if (rb2) rb2.style.display = row2.some(visible) ? 'flex' : 'none';
             if (rb3) rb3.style.display = row3.some(visible) ? 'flex' : 'none';
+            const rbCustom = document.getElementById('row-block-custom');
+            if (rbCustom) {
+                const customIds = window.getCustomRapportinoSchedaIds(cfg);
+                const customVisible = customIds.some(function(id) {
+                    const el = document.getElementById(id);
+                    return el && el.style.display !== 'none';
+                });
+                rbCustom.style.display = customVisible ? 'flex' : 'none';
+            }
         };
 
         window.migrateRapportiniSchedeConfig = function(store) {
@@ -10361,6 +10461,8 @@ window.updateStoricoButton = async function() {
             }
             updateModulesVisibility();
             window.applyRapportinoSchedeConfig(item.schedeConfig);
+            updateModulesVisibility();
+            window.applyCustomRapportinoFieldValues(item.data || {});
             const rapportinoOnly = window.extractRapportinoOnlyData(item.data || {});
             updateBoilerInputs();
             if (typeof window.syncFiltraPanelForActiveRapportino === 'function') {
@@ -10489,10 +10591,6 @@ window.updateStoricoButton = async function() {
             } catch (e) {
                 return { modules: {} };
             }
-        };
-
-        window.isCustomRapportinoScheda = function(secId) {
-            return String(secId || '').indexOf('rsched-') === 0;
         };
 
         window.mergeRapportinoFieldsFromDom = function(savedFields, domFields) {
@@ -10815,14 +10913,16 @@ window.updateStoricoButton = async function() {
             if (!store || !store.items[id]) return;
             window.syncRapportinoModificaFromDomInputs();
             store.items[id].schedeConfig = window.cloneRapportinoConfig(draft);
-            window.saveRapportiniStore(store);
+            window.saveRapportiniStore(store, { pushCloud: true });
             window.rapportinoManagerShowList();
             if (store.activeId === id) {
                 window.applyRapportinoSchedeConfig(store.items[id].schedeConfig);
                 updateModulesVisibility();
-                if (typeof window.saveData === 'function') await window.saveData(true);
+                window.applyCustomRapportinoFieldValues((store.items[id].data) || {});
+                if (typeof window.saveData === 'function') void window.saveData(true);
             }
-            alert('Rapportino «' + (store.items[id].name || id) + '» salvato.');
+            alert('Rapportino «' + (store.items[id].name || id) + '» salvato.' +
+                (store.activeId !== id ? '\n\nPassa al rapportino «' + (store.items[id].name || id) + '» per vederlo in cruscotto.' : ''));
         };
 
         window.NOTT_FILTRA_TIME_PLACEHOLDER = '00:00';
@@ -11686,6 +11786,12 @@ window.updateStoricoButton = async function() {
 
         window.updateModulesVisibility = () => {
             const allIds = GROUPS.flat();
+            const schedeCfg = window.getActiveRapportinoSchedeConfig();
+            if (schedeCfg) {
+                window.getCustomRapportinoSchedaIds(schedeCfg).forEach(function (id) {
+                    if (allIds.indexOf(id) < 0) allIds.push(id);
+                });
+            }
             if (window.isNotturnoFiltraLayoutActive && window.isNotturnoFiltraLayoutActive()) {
                 if (allIds.indexOf('sec-stoccaggio-interno') < 0) allIds.push('sec-stoccaggio-interno');
                 if (allIds.indexOf('sec-filtra') < 0) allIds.push('sec-filtra');
@@ -11722,7 +11828,6 @@ window.updateStoricoButton = async function() {
             const row1Modules = ['sec-chpp', 'sec-well', 'sec-amb', 'sec-ambiente2'];
             const row2Modules = ['sec-acqua', 'sec-scam', 'sec-filtra'];
             const row3Modules = ['sec-bluedown', 'sec-aria', 'sec-azoto'];
-            const schedeCfg = window.getActiveRapportinoSchedeConfig();
             const visibleInRapportino = function(id) {
                 if (schedeCfg && !window.isRapportinoModuleEnabled(id, schedeCfg)) return false;
                 return !hiddenModules.includes(id);
@@ -11778,11 +11883,16 @@ window.updateStoricoButton = async function() {
                         if (el) el.style.display = 'none';
                     } else if (window.isNotturnoFiltraLayoutActive() && window.isNotturnoTendinaModuleId(id)) {
                         /* Tendine notturno: display gestito da syncNotturno* (block, non flex) */
+                    } else if (window.isCustomRapportinoScheda(id)) {
+                        if (el) el.style.display = hiddenModules.includes(id) ? 'none' : 'flex';
                     } else if (el) {
                         el.style.display = 'flex';
                     }
                 }
             });
+            if (typeof window.syncCustomRapportinoSchedeDom === 'function' && schedeCfg) {
+                window.syncCustomRapportinoSchedeDom(schedeCfg);
+            }
             window.updateRapportiniRowBlocksVisibility();
             window.syncNotturnoModulesAfterVisibility();
             document.body.classList.toggle('sh-has-sent-modules', count > 0);
@@ -20630,6 +20740,8 @@ window.convertToHtml = async () => {
             </div>
         </div>
 
+        <div id="row-block-custom" class="row-block rapportino-custom-row-block" style="display:none; min-height:180px; border-bottom:none;"></div>
+
     </div>
 
     <!-- UI Navigazione Inferiore -->
@@ -21227,7 +21339,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=133')
+                navigator.serviceWorker.register('./sw.js?v=134')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();

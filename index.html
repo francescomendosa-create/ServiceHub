@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.12-numpad-v30';
+        window.SERVICEHUB_BUILD = '2026.06.12-numpad-v31';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
@@ -8573,6 +8573,109 @@ window.updateStoricoButton = async function() {
             }
         };
 
+        window.__rapportiniChemCountsEqual = function(storeA, storeB) {
+            const ids = {};
+            if (storeA && storeA.items) Object.keys(storeA.items).forEach(function(rid) { ids[rid] = true; });
+            if (storeB && storeB.items) Object.keys(storeB.items).forEach(function(rid) { ids[rid] = true; });
+            return Object.keys(ids).every(function(rid) {
+                const da = storeA && storeA.items && storeA.items[rid] ? storeA.items[rid].data : null;
+                const db = storeB && storeB.items && storeB.items[rid] ? storeB.items[rid].data : null;
+                const pa = Math.max(0, parseInt(da && da._nottChemPass, 10) || 0);
+                const pb = Math.max(0, parseInt(db && db._nottChemPass, 10) || 0);
+                const ha = Math.max(0, parseInt(da && da._nottChemHp, 10) || 0);
+                const hb = Math.max(0, parseInt(db && db._nottChemHp, 10) || 0);
+                return pa === pb && ha === hb;
+            });
+        };
+
+        window.__rapportiniItemsEqualExceptChem = function(local, merged) {
+            if (!local || !merged || !local.items || !merged.items) return false;
+            const lids = Object.keys(local.items);
+            const mids = Object.keys(merged.items);
+            if (lids.length !== mids.length) return false;
+            return lids.every(function(rid) {
+                const la = local.items[rid];
+                const ma = merged.items[rid];
+                if (!ma) return false;
+                if (JSON.stringify(la.schedeConfig || null) !== JSON.stringify(ma.schedeConfig || null)) return false;
+                const lda = Object.assign({}, la.data || {});
+                const mda = Object.assign({}, ma.data || {});
+                delete lda._nottChemPass;
+                delete lda._nottChemHp;
+                delete mda._nottChemPass;
+                delete mda._nottChemHp;
+                if (JSON.stringify(lda) !== JSON.stringify(mda)) return false;
+                return (la.manualShift || null) === (ma.manualShift || null) &&
+                    JSON.stringify(la.sectionsLayout || null) === JSON.stringify(ma.sectionsLayout || null);
+            });
+        };
+
+        window.applyChemCountsFromRapportiniStore = function(store) {
+            if (!window.rapportinoHasAnyChemicalsEnabled()) return false;
+            if (window.__chemIncrementGuard) return false;
+            const prevStore = window.__rapportiniStore;
+            window.__rapportiniStore = store;
+            const linked = window.getChemCountsFromLinkedRapportini();
+            if (prevStore) window.__rapportiniStore = prevStore;
+            else window.__rapportiniStore = store;
+            const liveP = window.__chemCountsLive ? (window.__chemCountsLive.pass | 0) : 0;
+            const liveH = window.__chemCountsLive ? (window.__chemCountsLive.hp | 0) : 0;
+            const pass = Math.max(liveP, linked.pass | 0);
+            const hp = Math.max(liveH, linked.hp | 0);
+            const changed = !window.__chemCountsLive ||
+                window.__chemCountsLive.pass !== pass || window.__chemCountsLive.hp !== hp;
+            if (changed) {
+                window.__chemCountsLive = { pass: pass, hp: hp };
+                window.updateNotturnoChemCounterUI(pass, hp);
+            }
+            return changed;
+        };
+
+        window.pushChemCountsToCloudNow = async function(pass, hp) {
+            if (!user || !user.uid || !db || window.__firestoreQuotaBlocked) return;
+            if (!window.__rapportiniCloudHydrated && !window.__cloudPlantHydrated) return;
+            pass = Math.max(0, pass | 0);
+            hp = Math.max(0, hp | 0);
+            const ts = new Date().toISOString();
+            const rev = Date.now();
+            const plantPatch = {
+                chemPass: pass,
+                chemHp: hp,
+                lastUpdate: ts,
+                syncRevision: rev
+            };
+            const rapMerge = { lastUpdate: ts, items: {} };
+            const store = window.loadRapportiniStore && window.loadRapportiniStore();
+            if (store && store.items) {
+                Object.keys(store.items).forEach(function(rid) {
+                    if (!window.rapportinoHasChemicalsModuleEnabled(store.items[rid])) return;
+                    rapMerge.items[rid] = {
+                        data: { _nottChemPass: pass, _nottChemHp: hp },
+                        updatedAt: ts
+                    };
+                });
+            }
+            try {
+                const jobs = [
+                    setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), plantPatch, { merge: true })
+                ];
+                if (Object.keys(rapMerge.items).length) {
+                    jobs.push(setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'rapportini'), rapMerge, { merge: true }));
+                }
+                await Promise.all(jobs);
+                window.__appliedPlantSyncRevision = rev;
+                window.__lastLocalPlantSaveMs = Date.now();
+                if (window.__plantSyncBaseline) {
+                    window.__plantSyncBaseline.chemPass = pass;
+                    window.__plantSyncBaseline.chemHp = hp;
+                    window.__plantSyncBaseline.lastUpdate = ts;
+                    window.__plantSyncBaseline.syncRevision = rev;
+                }
+            } catch (e) {
+                console.warn('[ServiceHub] push chem cloud:', e && e.message);
+            }
+        };
+
         window.migrateChemCountsToPlantStore = function() {
             const plant = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
             const linked = window.getChemCountsFromLinkedRapportini();
@@ -10567,6 +10670,18 @@ window.updateStoricoButton = async function() {
             window.__rapportiniApplyingFromCloud = true;
             window.__rapportiniStore = merged;
             window.__rapportiniApplyingFromCloud = false;
+            const chemChanged = !window.__rapportiniChemCountsEqual(local, merged);
+            const chemOnlyDelta = chemChanged &&
+                window.__rapportiniItemsEqualExceptChem(local, merged) &&
+                !activeChanged;
+            if (typeof window.applyChemCountsFromRapportiniStore === 'function') {
+                window.applyChemCountsFromRapportiniStore(merged);
+            }
+            if (chemOnlyDelta && !opts.force) {
+                if (typeof window.flushRapportiniBackupNow === 'function') window.flushRapportiniBackupNow();
+                if (typeof window.persistSessionPrefs === 'function') window.persistSessionPrefs();
+                return;
+            }
             if (remoteWon || opts.force || activeChanged || dataChanged) {
                 const applyActive = function () {
                     if (typeof window.applyDeviceHiddenModulesForActiveRapportino === 'function') {
@@ -11691,19 +11806,6 @@ window.updateStoricoButton = async function() {
             window.updateNotturnoChemCounterUI(c.pass, c.hp);
         };
 
-        window.__scheduleChemPlantCloudSave = function() {
-            clearTimeout(window.__chemPlantSaveTimer);
-            if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
-            if (typeof window.__flushPlantCloudSaveNow === 'function') {
-                void window.__flushPlantCloudSaveNow(true);
-                return;
-            }
-            window.__chemPlantSaveTimer = setTimeout(function() {
-                window.__chemPlantSaveTimer = null;
-                if (typeof window.saveData === 'function') void window.saveData(true);
-            }, 120);
-        };
-
         window.persistNotturnoChemCounts = function(pass, hp) {
             pass = Math.max(0, pass | 0);
             hp = Math.max(0, hp | 0);
@@ -11711,14 +11813,15 @@ window.updateStoricoButton = async function() {
             window.updateNotturnoChemCounterUI(pass, hp);
             window.syncChemCountsToLinkedRapportini(pass, hp, {
                 skipPlantSave: true,
-                pushCloud: true,
-                flushCloud: true
+                pushCloud: false
             });
             if (typeof window.flushRapportiniBackupNow === 'function') window.flushRapportiniBackupNow();
             if (typeof window.__writeChemCountsToPlantBackup === 'function') {
                 window.__writeChemCountsToPlantBackup(pass, hp);
             }
-            window.__scheduleChemPlantCloudSave();
+            if (typeof window.pushChemCountsToCloudNow === 'function') {
+                void window.pushChemCountsToCloudNow(pass, hp);
+            }
         };
 
         window.__writeChemCountsToPlantBackup = function(pass, hp) {

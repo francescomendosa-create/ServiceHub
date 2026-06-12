@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.12-numpad-v42';
+        window.SERVICEHUB_BUILD = '2026.06.12-numpad-v43';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
@@ -1011,11 +1011,17 @@ window.colorPreviewNumber = function(tankName, value) {
                 const cfg = rid && store.items[rid] && store.items[rid].schedeConfig;
                 const visible = group.filter(function (mid) {
                     const hid = window.hiddenModules || hiddenModules || [];
-                    if (hid.includes(mid)) return false;
-                    if (cfg && window.rapportinoUsesSchedeFilter && window.rapportinoUsesSchedeFilter(rid, cfg)) {
-                        return window.shouldShowPlantSchedaInDashboard(mid, cfg, rid, hid);
+                    if (hid.indexOf(mid) >= 0) return false;
+                    if (!cfg) return rid !== 'fuochista' && rid !== 'notturno';
+                    return window.shouldShowPlantSchedaInDashboard(mid, cfg, rid, hid);
+                });
+                group.forEach(function (sid) {
+                    const el = document.getElementById(sid);
+                    if (!el) return;
+                    if (visible.indexOf(sid) < 0) {
+                        el.style.setProperty('display', 'none', 'important');
+                        return;
                     }
-                    return true;
                 });
                 if (!visible.length) return;
                 const expandedNow = group.filter(function (sid) {
@@ -1027,6 +1033,8 @@ window.colorPreviewNumber = function(tankName, value) {
                 group.forEach(function (sid) {
                     const el = document.getElementById(sid);
                     if (!el) return;
+                    if (visible.indexOf(sid) < 0) return;
+                    el.style.setProperty('display', 'flex', 'important');
                     if (sid === keepId) {
                         el.classList.remove('col-collapsed');
                         el.classList.add('col-expanded');
@@ -10478,6 +10486,15 @@ window.updateStoricoButton = async function() {
                 const show = window.shouldShowPlantSchedaInDashboard(secId, cfg, rid, hid);
                 window.setPlantSchedaDomVisible(el, show);
             });
+            if (rid !== 'generale') {
+                window.RAPPORTINI_TAB_META.forEach(function(tab) {
+                    if (tab.id === 'sec-stoccaggio-interno' || tab.id === 'sec-chemicals' || tab.id === 'sec-conducibilita') return;
+                    const el = document.getElementById(tab.id);
+                    if (!el) return;
+                    const show = window.shouldShowPlantSchedaInDashboard(tab.id, cfg, rid, hid);
+                    window.setPlantSchedaDomVisible(el, show);
+                });
+            }
         };
 
         window.applyRapportinoDashboardVisibility = function(schedeConfig, opts) {
@@ -10567,7 +10584,27 @@ window.updateStoricoButton = async function() {
 
         window.setPlantSchedaDomVisible = function(secEl, show) {
             if (!secEl) return;
-            secEl.style.display = show ? 'flex' : 'none';
+            secEl.style.setProperty('display', show ? 'flex' : 'none', 'important');
+        };
+
+        /** Config salvato: solo moduli ancora presenti e attivi nel draft. */
+        window.buildSavedSchedeConfigFromDraft = function(rapportinoId, draft) {
+            const d = window.cloneRapportinoConfig(draft || { modules: {} });
+            if (!d.modules) d.modules = {};
+            if (rapportinoId === 'generale') {
+                if (d.modules['sec-stoccaggio-interno']) delete d.modules['sec-stoccaggio-interno'];
+                return d;
+            }
+            const out = { modules: {} };
+            Object.keys(d.modules).forEach(function(k) {
+                const mod = d.modules[k];
+                if (mod && mod.enabled !== false) out.modules[k] = mod;
+            });
+            return out;
+        };
+
+        window.compactRapportinoSchedeConfig = function(rapportinoId, schedeConfig) {
+            return window.buildSavedSchedeConfigFromDraft(rapportinoId, schedeConfig || { modules: {} });
         };
 
         window.applyFieldLabelInDom = function(fieldId, labelText) {
@@ -10769,6 +10806,8 @@ window.updateStoricoButton = async function() {
                 }
                 if (rid === 'fuochista') {
                     if (!item.schedeConfig.modules) item.schedeConfig.modules = {};
+                    item.schedeConfig = window.compactRapportinoSchedeConfig('fuochista', item.schedeConfig);
+                    if (!item.schedeConfig.modules) item.schedeConfig.modules = {};
                     if (!item.schedeConfig.modules['sec-conducibilita']) {
                         item.schedeConfig.modules['sec-conducibilita'] = {
                             enabled: true,
@@ -10834,6 +10873,7 @@ window.updateStoricoButton = async function() {
                         item.schedeConfig.modules = keepFu;
                         changed = true;
                     }
+                    item.schedeConfig = window.compactRapportinoSchedeConfig('fuochista', item.schedeConfig);
                 }
                 if (rid !== 'generale' && rid !== 'notturno' && item.schedeConfig && item.schedeConfig.modules) {
                     Object.keys(item.schedeConfig.modules).forEach(function(k) {
@@ -10922,20 +10962,15 @@ window.updateStoricoButton = async function() {
             const weaker = lMs >= rMs ? remote : local;
             const lScMs = window.parseRapportinoUpdatedMs(local.schedeConfigUpdatedAt);
             const rScMs = window.parseRapportinoUpdatedMs(remote.schedeConfigUpdatedAt);
-            const lEnabled = window.countRapportinoEnabledSchede(local.schedeConfig, rapportinoId);
-            const rEnabled = window.countRapportinoEnabledSchede(remote.schedeConfig, rapportinoId);
-            if (lScMs > rScMs && local.schedeConfig) {
-                base.schedeConfig = JSON.parse(JSON.stringify(local.schedeConfig));
-                base.schedeConfigUpdatedAt = local.schedeConfigUpdatedAt;
-            } else if (rScMs > lScMs && remote.schedeConfig) {
-                base.schedeConfig = JSON.parse(JSON.stringify(remote.schedeConfig));
-                base.schedeConfigUpdatedAt = remote.schedeConfigUpdatedAt;
-            } else if (lEnabled > rEnabled && local.schedeConfig) {
+            if (local.schedeConfig && (!remote.schedeConfig || lScMs >= rScMs)) {
                 base.schedeConfig = JSON.parse(JSON.stringify(local.schedeConfig));
                 if (local.schedeConfigUpdatedAt) base.schedeConfigUpdatedAt = local.schedeConfigUpdatedAt;
-            } else if (rEnabled > lEnabled && remote.schedeConfig) {
+            } else if (remote.schedeConfig) {
                 base.schedeConfig = JSON.parse(JSON.stringify(remote.schedeConfig));
                 if (remote.schedeConfigUpdatedAt) base.schedeConfigUpdatedAt = remote.schedeConfigUpdatedAt;
+            } else if (local.schedeConfig) {
+                base.schedeConfig = JSON.parse(JSON.stringify(local.schedeConfig));
+                if (local.schedeConfigUpdatedAt) base.schedeConfigUpdatedAt = local.schedeConfigUpdatedAt;
             }
             if (!base.name && weaker && weaker.name) base.name = weaker.name;
             return base;
@@ -11028,7 +11063,7 @@ window.updateStoricoButton = async function() {
                     }
                 } catch (_) {}
                 const slimItems = {};
-                Object.keys(mergedStore.items || {}).forEach(function (rid) {
+                Object.keys(store.items || {}).forEach(function (rid) {
                     const item = JSON.parse(JSON.stringify(store.items[rid]));
                     item.data = window.extractRapportinoOnlyData(item.data || {});
                     delete item.hiddenModules;
@@ -11408,6 +11443,9 @@ window.updateStoricoButton = async function() {
             const rid = item.id || (window.loadRapportiniStore && window.loadRapportiniStore() && window.loadRapportiniStore().activeId) || 'generale';
             hiddenModules = window.getDeviceHiddenModulesForRapportino(rid);
             window.hiddenModules = hiddenModules;
+            if (typeof window.applyRapportinoDashboardVisibility === 'function') {
+                window.applyRapportinoDashboardVisibility(item.schedeConfig, { rapportinoId: rid, hiddenModules: hiddenModules });
+            }
             window.applySectionsLayout(item.sectionsLayout);
             if (window.shouldKeepAllSectionsExpanded && window.shouldKeepAllSectionsExpanded()) {
                 if (typeof window.expandAllSectionsLayout === 'function') window.expandAllSectionsLayout();
@@ -11433,6 +11471,9 @@ window.updateStoricoButton = async function() {
                 window.applyRapportinoDashboardVisibility(item.schedeConfig, { rapportinoId: rid, hiddenModules: hiddenModules });
             }
             requestAnimationFrame(function () {
+                if (typeof window.applyRapportinoDashboardVisibility === 'function') {
+                    window.applyRapportinoDashboardVisibility(item.schedeConfig, { rapportinoId: rid, hiddenModules: hiddenModules });
+                }
                 if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
                 if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
                 if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
@@ -11810,7 +11851,7 @@ window.updateStoricoButton = async function() {
             window.renderRapportinoModificaList();
             const store = window.loadRapportiniStore && window.loadRapportiniStore();
             if (store && store.activeId === window._rapportiniModificaId && typeof window.applyRapportinoDashboardVisibility === 'function') {
-                const previewCfg = window.cloneRapportinoConfig(draft);
+                const previewCfg = window.buildSavedSchedeConfigFromDraft(window._rapportiniModificaId, draft);
                 window.applyRapportinoDashboardVisibility(previewCfg, {
                     rapportinoId: window._rapportiniModificaId,
                     hiddenModules: window.hiddenModules || hiddenModules || []
@@ -11898,12 +11939,22 @@ window.updateStoricoButton = async function() {
         window.deleteSchedaFromDraft = function(secId) {
             const draft = window._rapportiniModificaDraft;
             if (!draft || !draft.modules[secId]) return;
-            if (!window.isCustomRapportinoScheda(secId)) {
+            if (window.isCustomRapportinoScheda(secId)) {
+                delete draft.modules[secId];
+            } else if (window._rapportiniModificaId === 'generale') {
                 draft.modules[secId].enabled = false;
             } else {
                 delete draft.modules[secId];
             }
             window.renderRapportinoModificaList();
+            const store = window.loadRapportiniStore && window.loadRapportiniStore();
+            if (store && store.activeId === window._rapportiniModificaId && typeof window.applyRapportinoDashboardVisibility === 'function') {
+                const previewCfg = window.buildSavedSchedeConfigFromDraft(window._rapportiniModificaId, draft);
+                window.applyRapportinoDashboardVisibility(previewCfg, {
+                    rapportinoId: window._rapportiniModificaId,
+                    hiddenModules: window.hiddenModules || hiddenModules || []
+                });
+            }
         };
 
         window.renderRapportinoModificaList = function() {
@@ -12002,15 +12053,15 @@ window.updateStoricoButton = async function() {
             });
             let savedCfg;
             if (id === 'generale') {
-                savedCfg = window.cloneRapportinoConfig(draft);
-                if (savedCfg.modules['sec-stoccaggio-interno']) delete savedCfg.modules['sec-stoccaggio-interno'];
+                savedCfg = window.buildSavedSchedeConfigFromDraft('generale', draft);
             } else {
-                savedCfg = window.pruneRapportinoSchedeConfig(window.cloneRapportinoConfig(draft));
+                savedCfg = window.buildSavedSchedeConfigFromDraft(id, draft);
             }
             const now = new Date().toISOString();
             store.items[id].schedeConfig = savedCfg;
             store.items[id].schedeConfigUpdatedAt = now;
             store.items[id].updatedAt = now;
+            window.__rapportiniStore = store;
             window.saveRapportiniStore(store, { pushCloud: true, flushCloud: true });
             const fresh = window.loadRapportiniStore();
             const savedItem = fresh && fresh.items[id];
@@ -13231,6 +13282,9 @@ window.updateStoricoButton = async function() {
             }
             if (typeof window.expandAllSectionsLayout === 'function' && window.shouldKeepAllSectionsExpanded()) {
                 window.expandAllSectionsLayout();
+            }
+            if (typeof window.applyRapportinoDashboardVisibility === 'function') {
+                window.applyRapportinoDashboardVisibility(schedeCfg, { rapportinoId: rid, hiddenModules: hiddenModules });
             }
         };
 

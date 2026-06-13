@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.13-chat-speech-fix-v79';
+        window.SERVICEHUB_BUILD = '2026.06.13-chat-speech-fix-v80';
         window.SERVICE_WATCH_BUILD = '2026.06.12-watch-numpad-only-v16';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
@@ -23311,7 +23311,7 @@ window.convertToHtml = async () => {
                     </button>
                 </div>
             </div>
-            <div id="ai-settings-dock" data-speech="v79" style="flex-shrink:0;padding:10px 16px calc(12px + env(safe-area-inset-bottom));background:inherit;border-top:1px solid #334155;position:relative;z-index:200;pointer-events:auto;touch-action:manipulation;-webkit-transform:translateZ(0);transform:translateZ(0);">
+            <div id="ai-settings-dock" data-speech="v80" style="flex-shrink:0;padding:10px 16px calc(12px + env(safe-area-inset-bottom));background:inherit;border-top:1px solid #334155;position:relative;z-index:200;pointer-events:auto;touch-action:manipulation;-webkit-transform:translateZ(0);transform:translateZ(0);">
                 <div id="ai-robot-head" onclick="window.toggleChatVisibility()" style="display:flex;justify-content:center;margin-bottom:8px;cursor:pointer;touch-action:manipulation;pointer-events:auto;min-height:44px;align-items:center;">
                     <i class="fas fa-robot" style="font-size:22px;color:#475569;"></i>
                 </div>
@@ -29254,99 +29254,105 @@ window.clearConvChatInput = function(ev) {
     window.syncConvChatClearBtn();
 };
 
-// --- Motore vocale chat rapida (globale, stabile su iOS) ---
-window.__initAiQuickSpeechEngine = function() {
-    var QS = window.__aiQuickSpeech;
-    if (QS && QS.v === 'v79' && QS.recognition) return QS;
+// --- Motore vocale chat rapida: logica v68, init al primo tap (iOS) ---
+window.__aiSpeechStatus = function(msg) {
+    var el = document.getElementById('ai-quick-chat-status');
+    if (!el) return;
+    if (!msg) { el.style.display = 'none'; el.textContent = ''; return; }
+    el.style.display = 'block';
+    el.textContent = msg;
+};
 
-    QS = window.__aiQuickSpeech = { v: 'v79', isRecording: false, userWantsStop: false, prefixAtStart: '', recognition: null, hasApi: false };
+window.__aiEnsureRecognition = function() {
+    if (window.__aiRec) return window.__aiRec;
+    var SR = window.webkitSpeechRecognition || window.SpeechRecognition;
+    if (!SR) return null;
 
-    QS.inp = function() { return document.getElementById('ai-chat-input'); };
-    QS.mic = function() { return document.getElementById('ai-mic-btn'); };
-    QS.send = function() { return document.getElementById('ai-send-btn'); };
+    var rec = new SR();
+    rec.lang = 'it-IT';
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
 
-    QS.resetMicUi = function() {
-        QS.isRecording = false;
-        var mic = QS.mic();
-        var send = QS.send();
-        if (mic) {
-            mic.style.background = '#ef4444';
-            mic.innerHTML = '<i class="fas fa-microphone"></i>';
-            mic.style.animation = '';
+    rec.onresult = function(e) {
+        var inp = document.getElementById('ai-chat-input');
+        if (!inp) return;
+        var session = '';
+        for (var i = e.resultIndex || 0; i < e.results.length; i++) {
+            session += e.results[i][0].transcript;
         }
-        if (send) send.innerHTML = '<i class="fas fa-paper-plane"></i>';
+        var prefix = window.__aiRecPrefix || '';
+        var sep = prefix && session ? ' ' : '';
+        inp.value = prefix + sep + session;
+        inp.scrollLeft = inp.scrollWidth;
+        try { inp.setSelectionRange(inp.value.length, inp.value.length); } catch (e2) {}
+        window.syncAiChatClearBtn();
     };
 
-    QS.setRecordingUi = function() {
-        QS.isRecording = true;
-        var mic = QS.mic();
-        var send = QS.send();
+    rec.onstart = function() {
+        window.__aiRecRunning = true;
+        var mic = document.getElementById('ai-mic-btn');
+        var send = document.getElementById('ai-send-btn');
         if (mic) {
             mic.style.background = '#ef4444';
             mic.innerHTML = '<i class="fas fa-stop"></i>';
             mic.style.animation = 'blink 0.5s infinite';
         }
         if (send) send.innerHTML = '<i class="fas fa-arrow-right"></i>';
+        window.__aiSpeechStatus('Ascolto… parla ora');
     };
 
-    QS.syncScroll = function() {
-        var inp = QS.inp();
-        if (!inp) return;
-        inp.scrollLeft = inp.scrollWidth;
-        try { inp.setSelectionRange(inp.value.length, inp.value.length); } catch (e2) {}
-        window.syncAiChatClearBtn();
+    rec.onend = function() {
+        window.__aiRecRunning = false;
+        var inp = document.getElementById('ai-chat-input');
+        if (inp) window.__aiRecPrefix = (inp.value || '').replace(/\s+$/, '');
+        var mic = document.getElementById('ai-mic-btn');
+        if (mic) {
+            mic.style.background = '#ef4444';
+            mic.innerHTML = '<i class="fas fa-microphone"></i>';
+            mic.style.animation = '';
+        }
+        window.__aiSpeechStatus('');
     };
 
-    if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) return QS;
-    QS.hasApi = true;
-
-    QS.buildRecognition = function() {
-        var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        var rec = new SpeechRecognition();
-        rec.lang = 'it-IT';
-        rec.interimResults = true;
-        rec.continuous = !(window.isServiceHubPhone && window.isServiceHubPhone());
-
-        rec.onresult = function(e) {
-            var session = '';
-            for (var i = 0; i < e.results.length; i++) {
-                session += e.results[i][0].transcript;
-            }
-            var inp = QS.inp();
-            if (!inp) return;
-            var sep = QS.prefixAtStart && session ? ' ' : '';
-            inp.value = QS.prefixAtStart + sep + session;
-            QS.syncScroll();
-        };
-
-        rec.onstart = function() {
-            QS.userWantsStop = false;
-            QS.setRecordingUi();
-            var inp = QS.inp();
-            if (inp) try { inp.blur(); } catch (eB) {}
-        };
-
-        rec.onend = function() {
-            QS.isRecording = false;
-            QS.resetMicUi();
-            var inp = QS.inp();
-            if (inp) QS.prefixAtStart = (inp.value || '').replace(/\s+$/, '');
-            QS.userWantsStop = false;
-            try { QS.recognition = QS.buildRecognition(); } catch (eR) {}
-        };
-
-        rec.onerror = function(ev) {
-            QS.isRecording = false;
-            QS.resetMicUi();
-            if (ev && ev.error === 'not-allowed') alert('Permesso microfono negato.');
-            try { QS.recognition = QS.buildRecognition(); } catch (eR2) {}
-        };
-
-        return rec;
+    rec.onerror = function(ev) {
+        window.__aiRecRunning = false;
+        var mic = document.getElementById('ai-mic-btn');
+        if (mic) {
+            mic.style.background = '#ef4444';
+            mic.innerHTML = '<i class="fas fa-microphone"></i>';
+            mic.style.animation = '';
+        }
+        var err = ev && ev.error ? ev.error : '';
+        if (err === 'no-speech' || err === 'aborted') {
+            window.__aiSpeechStatus('');
+            return;
+        }
+        if (err === 'not-allowed') {
+            window.__aiSpeechStatus('Microfono bloccato. Impostazioni iPhone → Safari → Microfono → Consenti.');
+            alert('Permesso microfono negato. Vai in Impostazioni iPhone → Safari → Microfono e consenti.');
+            return;
+        }
+        window.__aiSpeechStatus('Errore microfono: ' + (err || 'sconosciuto'));
     };
 
-    QS.recognition = QS.buildRecognition();
-    return QS;
+    window.__aiRec = rec;
+    return rec;
+};
+
+window.__aiQuickSpeechStop = function() {
+    if (window.__aiRec && window.__aiRecRunning) {
+        try { window.__aiRec.stop(); } catch (e) {}
+    }
+    window.__aiRecRunning = false;
+    var mic = document.getElementById('ai-mic-btn');
+    var send = document.getElementById('ai-send-btn');
+    if (mic) {
+        mic.style.background = '#ef4444';
+        mic.innerHTML = '<i class="fas fa-microphone"></i>';
+        mic.style.animation = '';
+    }
+    if (send) send.innerHTML = '<i class="fas fa-paper-plane"></i>';
+    window.__aiSpeechStatus('');
 };
 
 window.__aiMicTap = function(ev) {
@@ -29355,47 +29361,55 @@ window.__aiMicTap = function(ev) {
         if (ev.type === 'touchend') window.__aiMicTouchAt = Date.now();
         if (ev.type === 'click' && window.__aiMicTouchAt && (Date.now() - window.__aiMicTouchAt) < 450) return false;
     }
-    var QS = window.__initAiQuickSpeechEngine();
-    if (!QS.hasApi) {
+
+    var inp = document.getElementById('ai-chat-input');
+    var mic = document.getElementById('ai-mic-btn');
+    var send = document.getElementById('ai-send-btn');
+    if (!inp || !mic) return false;
+
+    if (window.__aiRecRunning) {
+        window.__aiQuickSpeechStop();
+        return false;
+    }
+
+    var rec = window.__aiEnsureRecognition();
+    if (!rec) {
         alert('Vocale non supportato in questo browser.');
         return false;
     }
-    if (QS.isRecording) window.__aiQuickSpeechStop();
-    else window.__aiQuickSpeechStart();
-    return false;
-};
 
-window.__aiQuickSpeechStart = function() {
-    var QS = window.__initAiQuickSpeechEngine();
-    if (!QS.hasApi) return;
-    var inp = QS.inp();
-    if (!inp) return;
-    QS.prefixAtStart = (inp.value || '').replace(/\s+$/, '');
-    QS.userWantsStop = false;
-    if (!QS.recognition) {
-        try { QS.recognition = QS.buildRecognition(); } catch (e0) { return; }
-    }
+    window.__aiRecPrefix = (inp.value || '').replace(/\s+$/, '');
+
     try {
-        QS.recognition.start();
+        rec.start();
+        window.__aiRecRunning = true;
+        mic.style.background = '#ef4444';
+        mic.innerHTML = '<i class="fas fa-stop"></i>';
+        mic.style.animation = 'blink 0.5s infinite';
+        if (send) send.innerHTML = '<i class="fas fa-arrow-right"></i>';
     } catch (err) {
-        QS.resetMicUi();
-        try { QS.recognition = QS.buildRecognition(); } catch (e3) {}
-        alert('Microfono: ' + (err && err.message ? err.message : String(err)));
-        return;
+        window.__aiRecRunning = false;
+        window.__aiRec = null;
+        var msg = err && err.message ? err.message : String(err);
+        if (/InvalidState|already started/i.test(msg)) {
+            try { rec.stop(); } catch (e2) {}
+            window.__aiRec = null;
+            rec = window.__aiEnsureRecognition();
+            if (rec) {
+                try {
+                    rec.start();
+                    window.__aiRecRunning = true;
+                    mic.style.background = '#ef4444';
+                    mic.innerHTML = '<i class="fas fa-stop"></i>';
+                    mic.style.animation = 'blink 0.5s infinite';
+                    if (send) send.innerHTML = '<i class="fas fa-arrow-right"></i>';
+                    return false;
+                } catch (err2) {}
+            }
+        }
+        alert('Microfono: ' + msg);
     }
-    QS.setRecordingUi();
-    try { inp.blur(); } catch (e4) {}
-};
-
-window.__aiQuickSpeechStop = function() {
-    var QS = window.__aiQuickSpeech;
-    if (!QS) return;
-    QS.userWantsStop = true;
-    QS.isRecording = false;
-    QS.resetMicUi();
-    if (QS.recognition) {
-        try { QS.recognition.stop(); } catch (e) {}
-    }
+    return false;
 };
 
 // --- FIX PANNELLO, INVIO E VOCALE ---
@@ -29407,26 +29421,26 @@ function fixAIPanel() {
     if (chatSection && dock && !dock.contains(chatSection)) {
         if (robotHead && !dock.contains(robotHead)) robotHead.remove();
         chatSection.remove();
-        window.__aiQuickSpeech = null;
+        window.__aiRec = null;
+        window.__aiRecRunning = false;
         window.__aiPanelWired = null;
     }
     if (chatSection && !dock) {
         if (robotHead) robotHead.remove();
         chatSection.remove();
-        window.__aiQuickSpeech = null;
+        window.__aiRec = null;
+        window.__aiRecRunning = false;
         window.__aiPanelWired = null;
     }
 
     dock = document.getElementById('ai-settings-dock');
     if (!dock) return;
-    if (window.__aiPanelWired === 'v79') return;
+    if (window.__aiPanelWired === 'v80') return;
 
     const inputField = document.getElementById('ai-chat-input');
     const sendBtn = document.getElementById('ai-send-btn');
     const openConvBtn = document.getElementById('open-conversation-btn');
     if (!inputField || !sendBtn) return;
-
-    window.__initAiQuickSpeechEngine();
 
     const sendAction = async function() {
         window.__aiQuickSpeechStop();
@@ -29434,7 +29448,8 @@ function fixAIPanel() {
         const val = inputField.value;
         inputField.value = "";
         window.syncAiChatClearBtn();
-        window.__aiQuickSpeech && window.__aiQuickSpeech.resetMicUi();
+        window.__aiSpeechStatus('');
+        sendBtn.innerHTML = '<i class="fas fa-paper-plane"></i>';
         const statusEl = document.getElementById('ai-quick-chat-status');
         if (statusEl) {
             statusEl.style.display = 'block';
@@ -29465,7 +29480,7 @@ function fixAIPanel() {
         };
     }
 
-    window.__aiPanelWired = 'v79';
+    window.__aiPanelWired = 'v80';
 }
 
 if (document.readyState === 'loading') {

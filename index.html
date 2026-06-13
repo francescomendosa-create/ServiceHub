@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.12-gemini-context-v66';
+        window.SERVICEHUB_BUILD = '2026.06.12-gemini-context-v67';
         window.SERVICE_WATCH_BUILD = '2026.06.12-watch-numpad-only-v16';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
@@ -28541,18 +28541,16 @@ window.buildGeminiArchiveSummaryForAI = function(maxEntries) {
     });
 };
 
-/** Livelli serbatoi correnti (stessi campi dei trend). */
+/** Livelli serbatoi correnti (trend + tutti gli inp-* a schermo). */
 window.buildGeminiCurrentTankLevels = function() {
     var out = {};
-    var fields = typeof window.getTrendTankFieldIds === 'function' ? window.getTrendTankFieldIds() : [];
-    fields.forEach(function(fid) {
-        var el = document.getElementById(fid);
-        if (!el) return;
-        var mm = parseFloat(String(el.value || '').replace(',', '.'));
+    var add = function(fid, mm) {
         if (!Number.isFinite(mm)) return;
         var nid = window.normalizeTrendFieldId(fid);
+        if (out[nid] && out[nid].livello_mm === mm) return;
         var sigla = typeof window.formatTrendDisplayLabel === 'function'
-            ? window.formatTrendDisplayLabel(fid, false) : nid;
+            ? window.formatTrendDisplayLabel(fid, false)
+            : (typeof window.getTankName === 'function' ? window.getTankName(nid) : nid);
         var tankKey = typeof window.getTankName === 'function' ? window.getTankName(nid) : nid;
         var maxMm = window.TANK_MAX && window.normalizeTankId
             ? window.TANK_MAX[window.normalizeTankId(tankKey)] : null;
@@ -28562,21 +28560,35 @@ window.buildGeminiCurrentTankLevels = function() {
             tonnellate: window.calculateTons ? window.calculateTons(tankKey, mm) : null,
             max_mm: maxMm || null
         };
+    };
+    var fields = typeof window.getTrendTankFieldIds === 'function' ? window.getTrendTankFieldIds() : [];
+    fields.forEach(function(fid) {
+        var el = document.getElementById(fid);
+        if (!el) return;
+        add(fid, parseFloat(String(el.value || '').replace(',', '.')));
+    });
+    document.querySelectorAll('input[id^="inp-"]').forEach(function(el) {
+        if (!el.id || el.type === 'hidden') return;
+        var mm = parseFloat(String(el.value || '').replace(',', '.'));
+        if (!Number.isFinite(mm) || mm <= 0) return;
+        add(el.id, mm);
     });
     return out;
 };
 
-/** Velocità mm/ora da storico archivi (come i trend, ma pre-calcolato per l'AI). */
-window.buildGeminiVelocitaStimate = function(archivi) {
-    if (!archivi || archivi.length < 2) return [];
+/** Velocità mm/ora da archivi reali (non riassunto). */
+window.buildGeminiVelocitaStimate = function() {
+    var archivi = typeof window.collectRealArchives === 'function'
+        ? window.collectRealArchives().slice(-25) : [];
+    if (archivi.length < 1) return [];
     var results = [];
     var tankIds = typeof window.getTrendTankFieldIds === 'function' ? window.getTrendTankFieldIds() : [];
     tankIds.forEach(function(fid) {
         var nid = window.normalizeTrendFieldId(fid);
         var points = [];
-        archivi.forEach(function(a) {
-            var v = window.archiveSnapshotValue(a, nid);
-            var ts = window.getArchiveTimestampMs(a);
+        archivi.forEach(function(entry) {
+            var v = window.archiveSnapshotValue(entry, nid);
+            var ts = window.getArchiveTimestampMs(entry);
             if (Number.isFinite(v) && ts) points.push({ ts: ts, v: v });
         });
         var liveEl = document.getElementById(fid);
@@ -28604,6 +28616,48 @@ window.buildGeminiVelocitaStimate = function(archivi) {
         });
     });
     return results;
+};
+
+/** Riassunto testuale (prioritario nel prompt, sopravvive al troncamento JSON). */
+window.buildGeminiRiassuntoTesto = function(ctx) {
+    ctx = ctx || {};
+    var lines = [];
+    var meta = ctx.meta || {};
+    lines.push('Turno: ' + (meta.turno || '?'));
+    if (meta.rapportinoAttivo) lines.push('Rapportino: ' + (meta.rapportinoAttivo.titolo || meta.rapportinoAttivo.id));
+    var liv = ctx.livelliSerbatoiCorrenti || {};
+    Object.keys(liv).forEach(function(k) {
+        var L = liv[k];
+        if (!L || !Number.isFinite(L.livello_mm) || L.livello_mm <= 0) return;
+        lines.push((L.sigla || k) + ': ' + L.livello_mm + ' mm, ' + (L.tonnellate != null ? L.tonnellate + ' t' : 'tonn. n/d'));
+    });
+    (ctx.velocitaStimate || []).forEach(function(v) {
+        lines.push('Velocità ' + v.sigla + ': ' + v.mm_per_ora + ' mm/h (' + v.direzione + ', da ' + v.mm_inizio + ' a ' + v.mm_fine + ' in ' + v.ore + ' h)');
+    });
+    (ctx.trendSerbatoiTurno || []).forEach(function(t) {
+        lines.push('Trend turno ' + t.tank + ': ' + t.start + ' → ' + t.end + ' mm');
+    });
+    lines.push('Archivi storico disponibili: ' + ((ctx.storicoArchivi || []).length));
+    if (ctx.note) lines.push('Note: ' + String(ctx.note).slice(0, 200));
+    return lines.join('\n');
+};
+
+window.formatGeminiContextBadge = function(stats) {
+    if (!stats) return '';
+    return stats.livelli + ' serbatoi · ' + stats.archivi + ' archivi · ' + stats.velocita + ' velocità · ' + stats.inputs + ' campi';
+};
+
+window.updateGeminiContextBadgeUI = function() {
+    var stats = window.__geminiLastContextStats;
+    if (!stats) return;
+    var txt = window.formatGeminiContextBadge(stats);
+    ['gemini-ctx-badge', 'conv-gemini-ctx-badge'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) {
+            el.textContent = 'Dati inviati: ' + txt;
+            el.style.display = 'block';
+        }
+    });
 };
 
 /** Contesto impianto completo per Gemini (chat e analisi). */
@@ -28651,7 +28705,7 @@ window.buildGeminiPlantContext = function(opts) {
         livelliSerbatoiCorrenti = window.buildGeminiCurrentTankLevels();
     } catch (eL) {}
     try {
-        velocitaStimate = window.buildGeminiVelocitaStimate(storicoArchivi);
+        velocitaStimate = window.buildGeminiVelocitaStimate();
     } catch (eV) {}
 
     var calcoliTonnellate = {};
@@ -28835,6 +28889,7 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
         "Per aggiungere note al report: [SCRIVI_NOTE: testo].";
 
     let datiJson = window.trimGeminiContextJson(datiImpianto, imageData ? 14000 : (isChat ? 28000 : 32000));
+    const riassuntoTesto = window.buildGeminiRiassuntoTesto(datiImpianto);
 
     // #region agent log
     (function() {
@@ -28845,16 +28900,18 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
             velocita: (datiImpianto.velocitaStimate || []).length,
             inputs: Object.keys(datiImpianto.inputValues || {}).length,
             jsonLen: datiJson.length,
+            riassuntoLen: riassuntoTesto.length,
             isChat: !!isChat
         };
         window.__geminiLastContextStats = stats;
         try { localStorage.setItem('__gemini_dbg_ctx', JSON.stringify(stats)); } catch (eDbg) {}
+        console.log('[GeminiCtx]', stats, riassuntoTesto.slice(0, 120));
         fetch('http://127.0.0.1:7464/ingest/45331caf-5a3a-4a68-9b21-c643731dc985', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a1d034' },
             body: JSON.stringify({
                 sessionId: 'a1d034',
-                runId: 'post-fix-v66',
+                runId: 'post-fix-v67',
                 hypothesisId: 'H1-context-complete',
                 location: 'index.html:callGeminiAPI',
                 message: 'Gemini context built',
@@ -28893,8 +28950,8 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
         contentParts.push({ text: imagePrompt });
     } else {
         const promptFinale = isChat ?
-            `${istruzioneChat}\n\nDOMANDA UTENTE: ${promptText}\n\nCONTESTO IMPIANTO (JSON):\n${datiJson}` :
-            `${istruzioneEsperto}\nDATI: ${datiJson}\nRICHIESTA: ${promptText}`;
+            `${istruzioneChat}\n\nRIASSUNTO LIVE IMPIANTO:\n${riassuntoTesto}\n\nDOMANDA UTENTE: ${promptText}\n\nCONTESTO IMPIANTO (JSON):\n${datiJson}` :
+            `${istruzioneEsperto}\nRIASSUNTO:\n${riassuntoTesto}\n\nDATI: ${datiJson}\nRICHIESTA: ${promptText}`;
         
         contentParts.push({ text: promptFinale });
     }
@@ -28905,9 +28962,33 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
         const out = await window.runGeminiWithKeyRotation(contentParts, {
             models: modelli2026,
             timeoutMs: timeoutMs,
-            generationConfig: { temperature: 0.15, maxOutputTokens: imageData ? 2048 : 1536 }
+            generationConfig: { temperature: 0.15, maxOutputTokens: imageData ? 2048 : (isChat ? 2048 : 1536) }
         });
         let testoRisposta = out.text;
+        // #region agent log
+        try {
+            var okStats = Object.assign({}, window.__geminiLastContextStats || {}, {
+                ok: true,
+                responseLen: (testoRisposta || '').length,
+                at: Date.now()
+            });
+            localStorage.setItem('__gemini_dbg_last', JSON.stringify(okStats));
+            fetch('http://127.0.0.1:7464/ingest/45331caf-5a3a-4a68-9b21-c643731dc985', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a1d034' },
+                body: JSON.stringify({
+                    sessionId: 'a1d034',
+                    runId: 'post-fix-v67',
+                    hypothesisId: 'H2-response-ok',
+                    location: 'index.html:callGeminiAPI:success',
+                    message: 'Gemini response received',
+                    data: okStats,
+                    timestamp: Date.now()
+                })
+            }).catch(function() {});
+        } catch (eOk) {}
+        window.updateGeminiContextBadgeUI();
+        // #endregion
         if (isChat) {
             memoriaAI += "\n- " + promptText;
             try {
@@ -28993,6 +29074,7 @@ function fixAIPanel() {
             </button>
         </div>
         <div id="ai-quick-chat-status" style="display:none; margin-top:8px; padding:10px; background:#0f172a; border:1px solid #334155; border-radius:8px; font-size:12px; white-space:pre-wrap; max-height:140px; overflow-y:auto; line-height:1.35; color:#e2e8f0;"></div>
+        <div id="gemini-ctx-badge" style="display:none; margin-top:6px; font-size:10px; color:#64748b; line-height:1.3;"></div>
     `;
     
     settingsContent.appendChild(robotHead);
@@ -29058,6 +29140,7 @@ function fixAIPanel() {
         try {
             const res = await window.callGeminiAPIWithTimeout(val, true, null, 50000);
             if (statusEl) statusEl.textContent = res;
+            window.updateGeminiContextBadgeUI();
         } catch(err) {
             if (statusEl) statusEl.textContent = window.formatGeminiError(err && err.message);
         }
@@ -29219,6 +29302,7 @@ window.showConversationModal = async function(draftUserLine) {
                 <button type="button" onclick="this.closest('#conversation-modal').remove()" style="background:transparent; border:none; color:#94a3b8; cursor:pointer; font-size:22px; line-height:1;">×</button>
             </div>
             <div id="conversation-history" style="flex:1; min-height:0; overflow-y:auto; background:#0f172a; padding:14px; border-radius:10px; font-size:14px; line-height:1.45; white-space:pre-wrap; border:1px solid #334155; word-break:break-word;">${window._escapeHtmlConv(historyText).replace(/\n/g, '<br>')}</div>
+            <div id="conv-gemini-ctx-badge" style="display:none; flex-shrink:0; margin-top:8px; font-size:10px; color:#64748b; line-height:1.3;"></div>
             <div id="conv-file-preview" style="display:none; flex-shrink:0; margin-top:10px; padding:10px; background:#0f172a; border:1px solid #334155; border-radius:8px;">
                 <div style="display:flex; align-items:center; gap:10px;">
                     <img id="conv-preview-img" style="max-width:80px; max-height:80px; border-radius:4px; object-fit:cover;">
@@ -29409,6 +29493,7 @@ window.initConversationModal = function(draftUserLine) {
                 pending.removeAttribute('id');
                 pending.innerHTML = 'AI: ' + window._escapeHtmlConv(res).replace(/\n/g, '<br>');
             }
+            window.updateGeminiContextBadgeUI();
         } catch (err) {
             const pending = document.getElementById('conv-pending-ai');
             const errMsg = window._escapeHtmlConv(window.formatGeminiError(err && err.message)).replace(/\n/g, '<br>');

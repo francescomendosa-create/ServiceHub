@@ -653,8 +653,8 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.12-watch-voice-bridge-v59';
-        window.SERVICE_WATCH_BUILD = '2026.06.12-watch-voice-bridge-v15';
+        window.SERVICEHUB_BUILD = '2026.06.12-watch-numpad-only-v60';
+        window.SERVICE_WATCH_BUILD = '2026.06.12-watch-numpad-only-v16';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
         /** Un solo remoto: link collega + app SvcRemote = stesso sito Firebase. */
@@ -11576,16 +11576,7 @@ window.updateStoricoButton = async function() {
                     lastUpdate: mergedStore.lastUpdate || new Date().toISOString()
                 };
                 if (typeof window.loadServiceWatchConfig === 'function') {
-                    payload.serviceWatch = typeof window.attachGeminiVoiceKeyForWatch === 'function'
-                        ? window.attachGeminiVoiceKeyForWatch(window.loadServiceWatchConfig())
-                        : window.loadServiceWatchConfig();
-                }
-                if (rapportiniSnap && rapportiniSnap.exists()) {
-                    const remoteSw = rapportiniSnap.data().serviceWatch;
-                    if (remoteSw && remoteSw.voiceBridge) {
-                        payload.serviceWatch = payload.serviceWatch || {};
-                        payload.serviceWatch.voiceBridge = remoteSw.voiceBridge;
-                    }
+                    payload.serviceWatch = window.loadServiceWatchConfig();
                 }
                 await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'rapportini'), payload);
             } catch (e) {
@@ -11598,9 +11589,6 @@ window.updateStoricoButton = async function() {
             opts = opts || {};
             if (remoteStore.serviceWatch && typeof window.applyServiceWatchConfigFromCloud === 'function') {
                 window.applyServiceWatchConfigFromCloud(remoteStore.serviceWatch);
-            }
-            if (remoteStore.serviceWatch && typeof window.handleServiceWatchVoiceBridge === 'function') {
-                window.handleServiceWatchVoiceBridge(remoteStore.serviceWatch);
             }
             const local = window.loadRapportiniStore();
             let remoteWon = false;
@@ -24129,148 +24117,6 @@ window.applyServiceWatchConfigFromCloud = function (remoteSw) {
     }
 };
 
-window.parseWatchVoiceBridgeDigits = function (text) {
-    var raw = String(text || '').toLowerCase()
-        .replace(/[àá]/g, 'a').replace(/[èé]/g, 'e').replace(/[ìí]/g, 'i')
-        .replace(/[òó]/g, 'o').replace(/[ùú]/g, 'u');
-    var wordMap = {
-        zero: '0', zeri: '0',
-        uno: '1', una: '1', un: '1',
-        due: '2', tre: '3', quattro: '4', cinque: '5',
-        sei: '6', sette: '7', otto: '8', nove: '9'
-    };
-    var fromDigits = raw.replace(/[^\d]/g, '');
-    var fromWords = '';
-    raw.split(/[\s,.;:+\-/]+/).forEach(function (tok) {
-        tok = tok.replace(/[^a-z0-9]/g, '');
-        if (!tok) return;
-        if (/^\d+$/.test(tok)) { fromWords += tok; return; }
-        if (wordMap[tok] != null) fromWords += wordMap[tok];
-    });
-    var out = fromWords.length >= fromDigits.length ? fromWords : (fromWords || fromDigits);
-    return out.slice(0, 12);
-};
-
-window.stopWatchVoiceBridgeListening = function () {
-    window.__watchVoiceBridgeWanted = false;
-    if (window.__watchVoiceBridgeRec) {
-        try { window.__watchVoiceBridgeRec.stop(); } catch (_) {}
-        window.__watchVoiceBridgeRec = null;
-    }
-    window.__watchVoiceBridgeListening = false;
-};
-
-window.submitWatchVoiceBridgeResult = async function (requestId, digits) {
-    if (!requestId || !digits) return;
-    if (!user || !user.uid || !db) return;
-    try {
-        const rapportiniDoc = doc(db, 'artifacts', appId, 'sharedDial', 'rapportini');
-        const snap = await getDoc(rapportiniDoc);
-        const remote = snap.exists() ? snap.data() : { items: {} };
-        if (!remote.serviceWatch) {
-            remote.serviceWatch = typeof window.loadServiceWatchConfig === 'function'
-                ? window.loadServiceWatchConfig() : { modules: {} };
-        }
-        const now = new Date().toISOString();
-        remote.serviceWatch.voiceBridge = remote.serviceWatch.voiceBridge || {};
-        remote.serviceWatch.voiceBridge.result = {
-            id: requestId,
-            digits: String(digits),
-            at: now
-        };
-        remote.lastUpdate = now;
-        await setDoc(rapportiniDoc, remote);
-        window.__watchVoiceBridgeAnswered = window.__watchVoiceBridgeAnswered || {};
-        window.__watchVoiceBridgeAnswered[requestId] = true;
-        window.stopWatchVoiceBridgeListening();
-        if (typeof window.__serviceHubFlashToast === 'function') {
-            window.__serviceHubFlashToast('Numeri inviati al Watch ✓', false);
-        }
-    } catch (e) {
-        console.warn('[ServiceHub] watch voice bridge result:', e && e.message);
-        if (typeof window.__serviceHubFlashToast === 'function') {
-            window.__serviceHubFlashToast('Invio al Watch non riuscito', true);
-        }
-    }
-};
-
-window.startWatchVoiceBridgeListening = function (pending) {
-    if (!pending || !pending.id) return;
-    if (window.__watchVoiceBridgeListening) return;
-    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) {
-        if (typeof window.__serviceHubFlashToast === 'function') {
-            window.__serviceHubFlashToast('Dettatura non disponibile su questo iPhone.', true);
-        }
-        return;
-    }
-    window.__watchVoiceBridgeAnswered = window.__watchVoiceBridgeAnswered || {};
-    if (window.__watchVoiceBridgeAnswered[pending.id]) return;
-    window.__watchVoiceBridgeListening = true;
-    window.__watchVoiceBridgeWanted = true;
-    var rec = new SR();
-    window.__watchVoiceBridgeRec = rec;
-    rec.lang = 'it-IT';
-    rec.interimResults = true;
-    rec.continuous = true;
-    rec.maxAlternatives = 1;
-    var bestDigits = '';
-    rec.onresult = function (e) {
-        var transcript = '';
-        for (var i = 0; i < e.results.length; i++) {
-            transcript += e.results[i][0].transcript;
-        }
-        var digits = window.parseWatchVoiceBridgeDigits(transcript);
-        if (digits) bestDigits = digits;
-    };
-    rec.onend = function () {
-        window.__watchVoiceBridgeListening = false;
-        if (window.__watchVoiceBridgeWanted && bestDigits) {
-            void window.submitWatchVoiceBridgeResult(pending.id, bestDigits);
-        } else if (window.__watchVoiceBridgeWanted) {
-            try { rec.start(); return; } catch (_) {}
-        }
-        window.__watchVoiceBridgeRec = null;
-    };
-    rec.onerror = function (ev) {
-        var code = ev && ev.error ? ev.error : '';
-        if (code === 'not-allowed' && typeof window.__serviceHubFlashToast === 'function') {
-            window.__serviceHubFlashToast('Consenti microfono su iPhone per la voce Watch.', true);
-        }
-        window.__watchVoiceBridgeWanted = false;
-    };
-    try {
-        rec.start();
-        if (typeof window.__serviceHubFlashToast === 'function') {
-            window.__serviceHubFlashToast('Watch: parla i numeri del contatore…', false);
-        }
-        setTimeout(function () {
-            if (window.__watchVoiceBridgeRec === rec) {
-                window.__watchVoiceBridgeWanted = false;
-                try { rec.stop(); } catch (_) {}
-            }
-        }, 9000);
-    } catch (e) {
-        window.__watchVoiceBridgeListening = false;
-        window.__watchVoiceBridgeRec = null;
-    }
-};
-
-window.handleServiceWatchVoiceBridge = function (remoteSw) {
-    if (!remoteSw || !remoteSw.voiceBridge || !remoteSw.voiceBridge.pending) return;
-    var p = remoteSw.voiceBridge.pending;
-    if (!p.id || !p.at) return;
-    window.__watchVoiceBridgeAnswered = window.__watchVoiceBridgeAnswered || {};
-    if (window.__watchVoiceBridgeAnswered[p.id]) return;
-    var vb = remoteSw.voiceBridge;
-    if (vb.result && vb.result.id === p.id) return;
-    var age = Date.now() - new Date(p.at).getTime();
-    if (age > 60000 || age < 0) return;
-    if (window.__watchVoiceBridgeLastPendingId === p.id) return;
-    window.__watchVoiceBridgeLastPendingId = p.id;
-    window.startWatchVoiceBridgeListening(p);
-};
-
 window.syncServiceWatchSettingsUI = function () {
     var cfg = window.loadServiceWatchConfig();
     var chemOn = !!(cfg.modules && cfg.modules.chemicals && cfg.modules.chemicals.enabled);
@@ -28067,14 +27913,6 @@ window.getGeminiKeySlots = function() {
 
 window.getGeminiApiKeysList = function() {
     return window.getGeminiKeySlots().map(function(s) { return s.key; });
-};
-
-window.attachGeminiVoiceKeyForWatch = function(cfg) {
-    cfg = JSON.parse(JSON.stringify(cfg || {}));
-    var key = typeof window.getGeminiApiKey === 'function' ? String(window.getGeminiApiKey() || '').trim() : '';
-    if (key) cfg.geminiVoiceKey = key;
-    else delete cfg.geminiVoiceKey;
-    return cfg;
 };
 
 window.clearAllGeminiKeyCooldowns = function() {

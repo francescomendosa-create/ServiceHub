@@ -28990,6 +28990,50 @@ window.callGeminiAPIWithTimeout = function(promptText, isChat, imageData, timeou
     ]);
 };
 
+/** Dettatura: mantieni sempre visibile l'ultima parola (textarea + anteprima live). */
+window.syncSpeechInputFollowCaret = function(el, opts) {
+    if (!el) return;
+    opts = opts || {};
+    var text = el.value || '';
+    var len = text.length;
+    requestAnimationFrame(function() {
+        requestAnimationFrame(function() {
+            try { el.setSelectionRange(len, len); } catch (e) {}
+            if (el.tagName === 'TEXTAREA') {
+                el.style.height = 'auto';
+                var maxH = opts.maxHeight || 132;
+                el.style.height = Math.min(el.scrollHeight, maxH) + 'px';
+                el.scrollTop = el.scrollHeight;
+            } else {
+                el.scrollLeft = el.scrollWidth;
+            }
+            var preview = opts.previewEl;
+            if (preview) {
+                preview.textContent = text || '';
+                preview.scrollTop = preview.scrollHeight;
+            }
+            try {
+                el.scrollIntoView({ block: 'center', behavior: 'auto' });
+            } catch (e2) {}
+            if (preview && opts.recording) {
+                try { preview.scrollIntoView({ block: 'center', behavior: 'auto' }); } catch (e3) {}
+            }
+        });
+    });
+};
+
+window.setSpeechLivePreviewActive = function(el, active, inputEl) {
+    if (!el) return;
+    if (active) {
+        el.style.display = 'block';
+        el.classList.add('active');
+        if (inputEl) el.textContent = inputEl.value || '';
+    } else {
+        el.style.display = 'none';
+        el.classList.remove('active');
+    }
+};
+
 // --- FIX PANNELLO, INVIO E VOCALE ---
 function fixAIPanel() {
     const settingsContent = document.querySelector('.settings-sheet');
@@ -29017,12 +29061,13 @@ function fixAIPanel() {
             </button>
             <button onclick="importAIMemory()" style="background:#1e293b; border:1px solid #334155; color:#22c55e; width:24px; height:24px; cursor:pointer; border-radius:4px; font-size:10px; display:flex; align-items:center; justify-content:center;" title="Importa memoria AI">↑</button>
         </div>
-        <div style="display:flex; gap:10px; margin-bottom:10px;">
+        <div id="ai-speech-live-preview" class="sh-speech-live-preview" style="display:none;" aria-live="polite"></div>
+        <div style="display:flex; gap:10px; margin-bottom:10px; align-items:flex-end;">
             <button id="ai-mic-btn" style="background:#ef4444; border:none; color:white; border-radius:8px; width:50px; height:44px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
                 <i class="fas fa-microphone" id="mic-icon"></i>
             </button>
-            <input type="text" id="ai-chat-input" placeholder="Parla o scrivi..." 
-                style="flex:1; padding:10px; border-radius:8px; border:1px solid #334155; background:#0f172a; color:white; font-size:14px;">
+            <textarea id="ai-chat-input" rows="2" placeholder="Parla o scrivi…" 
+                class="sh-chat-speech-input"></textarea>
             <button id="ai-send-btn" style="background:#3b82f6; border:none; color:white; border-radius:8px; width:50px; height:44px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
                 <i class="fas fa-paper-plane"></i>
             </button>
@@ -29035,48 +29080,58 @@ function fixAIPanel() {
     settingsContent.appendChild(chatSection);
     
     const inputField = document.getElementById('ai-chat-input');
+    const speechPreview = document.getElementById('ai-speech-live-preview');
     const micBtn = document.getElementById('ai-mic-btn');
     const sendBtn = document.getElementById('ai-send-btn');
     const openConvBtn = document.getElementById('open-conversation-btn');
     
     let isRecording = false;
     let recognition = null;
+    let aiSpeechFinal = '';
+    let aiMicPrefix = '';
 
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         recognition = new SpeechRecognition();
         recognition.lang = 'it-IT';
         recognition.interimResults = true;
+        recognition.continuous = true;
 
         recognition.onresult = (e) => {
-            const transcript = Array.from(e.results).map(r => r[0].transcript).join('');
-            inputField.value = transcript;
-            // Scorri automaticamente alla fine per mostrare sempre le ultime parole
-            inputField.scrollLeft = inputField.scrollWidth;
-            // Posiziona cursore alla fine del testo durante la registrazione
-            inputField.setSelectionRange(inputField.value.length, inputField.value.length);
-            inputField.focus();
+            let interim = '';
+            for (let i = e.resultIndex; i < e.results.length; i++) {
+                const piece = e.results[i][0].transcript;
+                if (e.results[i].isFinal) aiSpeechFinal += piece;
+                else interim += piece;
+            }
+            const sep = aiMicPrefix && (aiSpeechFinal || interim) ? ' ' : '';
+            inputField.value = aiMicPrefix + sep + aiSpeechFinal + interim;
+            window.syncSpeechInputFollowCaret(inputField, {
+                previewEl: speechPreview,
+                recording: isRecording,
+                maxHeight: 120
+            });
         };
 
         recognition.onstart = () => {
             isRecording = true;
-            // Mantiene sempre il colore rosso, cambia solo icona
+            aiMicPrefix = (inputField.value || '').replace(/\s+$/g, '');
+            aiSpeechFinal = '';
+            window.setSpeechLivePreviewActive(speechPreview, true, inputField);
             micBtn.style.background = '#ef4444';
             micBtn.innerHTML = '<i class="fas fa-stop"></i>';
-            // Microfono lampeggia velocemente
             micBtn.style.animation = 'blink 0.5s infinite';
-            // Tasto blu mostra freccia orizzontale
             sendBtn.innerHTML = '<i class="fas fa-arrow-right"></i>';
+            try { inputField.focus(); } catch (eF) {}
         };
 
         recognition.onend = () => {
             isRecording = false;
+            window.setSpeechLivePreviewActive(speechPreview, false);
+            window.syncSpeechInputFollowCaret(inputField, { maxHeight: 120 });
             micBtn.style.background = '#ef4444';
             micBtn.innerHTML = '<i class="fas fa-microphone"></i>';
-            // Ferma lampeggio microfono
             micBtn.style.animation = '';
-            // Mantiene la freccia sul tasto blu per indicare che può inviare
-            // sendBtn.innerHTML = '<i class="fas fa-paper-plane"></i>'; // Rimosso per mantenere la freccia
         };
     }
 
@@ -29113,7 +29168,12 @@ function fixAIPanel() {
         }
     };
 
-    inputField.addEventListener("keypress", (e) => { if (e.key === "Enter") sendAction(); });
+    inputField.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendAction(); }
+    });
+    inputField.addEventListener('input', () => {
+        window.syncSpeechInputFollowCaret(inputField, { maxHeight: 120 });
+    });
     sendBtn.onclick = sendAction;
     
     if (openConvBtn) {
@@ -29147,6 +29207,47 @@ styleAI.innerHTML = `
     .ai-loading span:nth-child(3) { animation-delay: 0.4s; }
     @keyframes ai-dots { 0%, 100% { opacity: 0; } 50% { opacity: 1; } }
     @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    .sh-speech-live-preview {
+        display: none;
+        margin-bottom: 8px;
+        padding: 12px 14px;
+        background: #0f172a;
+        border: 2px solid #ef4444;
+        border-radius: 10px;
+        color: #f8fafc;
+        font-size: 16px;
+        font-weight: 600;
+        line-height: 1.45;
+        max-height: 96px;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        word-break: break-word;
+        scroll-behavior: smooth;
+    }
+    .sh-speech-live-preview.active { display: block; }
+    .sh-chat-speech-input {
+        flex: 1;
+        min-width: 0;
+        min-height: 44px;
+        max-height: 132px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid #334155;
+        background: #0f172a;
+        color: #fff;
+        font-size: 14px;
+        line-height: 1.4;
+        resize: none;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        box-sizing: border-box;
+        font-family: inherit;
+    }
+    .sh-chat-speech-input:focus {
+        outline: none;
+        border-color: #3b82f6;
+        box-shadow: 0 0 0 2px rgba(59,130,246,0.25);
+    }
 `;
 document.head.appendChild(styleAI);
 
@@ -29269,12 +29370,13 @@ window.showConversationModal = async function(draftUserLine) {
                     </div>
                 </div>
             </div>
-            <div style="display:flex; gap:8px; margin-top:12px; flex-shrink:0; align-items:stretch;">
+            <div id="conv-speech-live-preview" class="sh-speech-live-preview" style="display:none; flex-shrink:0; margin-top:10px;" aria-live="polite"></div>
+            <div style="display:flex; gap:8px; margin-top:12px; flex-shrink:0; align-items:flex-end;">
                 <button type="button" id="conv-mic-btn" style="background:#ef4444; border:none; color:white; border-radius:8px; width:48px; min-height:44px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
                     <i class="fas fa-microphone"></i>
                 </button>
-                <input type="text" id="conv-chat-input" placeholder="Scrivi qui e invia…" 
-                    style="flex:1; min-width:0; padding:10px 12px; border-radius:8px; border:1px solid #334155; background:#0f172a; color:white; font-size:14px;">
+                <textarea id="conv-chat-input" rows="2" placeholder="Scrivi qui e invia…" 
+                    class="sh-chat-speech-input"></textarea>
                 <button type="button" id="conv-file-btn" style="background:#8b5cf6; border:none; color:white; border-radius:8px; width:48px; min-height:44px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;" title="Allega immagine o PDF (Gemini multimodale)">
                     <i class="fas fa-image"></i>
                 </button>
@@ -29292,6 +29394,7 @@ window.showConversationModal = async function(draftUserLine) {
 window.initConversationModal = function(draftUserLine) {
     const historyDiv = document.getElementById('conversation-history');
     const inputField = document.getElementById('conv-chat-input');
+    const speechPreview = document.getElementById('conv-speech-live-preview');
     const micBtn = document.getElementById('conv-mic-btn');
     const sendBtn = document.getElementById('conv-send-btn');
     const fileBtn = document.getElementById('conv-file-btn');
@@ -29366,23 +29469,29 @@ window.initConversationModal = function(draftUserLine) {
             }
             var sep = convMicPrefix && (convSpeechFinal || interim) ? " " : "";
             inputField.value = convMicPrefix + sep + convSpeechFinal + interim;
-            try {
-                inputField.setSelectionRange(inputField.value.length, inputField.value.length);
-            } catch (e3) {}
+            window.syncSpeechInputFollowCaret(inputField, {
+                previewEl: speechPreview,
+                recording: isRecording,
+                maxHeight: 132
+            });
         };
 
         recognition.onstart = function() {
             isRecording = true;
             convMicPrefix = (inputField.value || "").replace(/\s+$/g, "");
             convSpeechFinal = "";
+            window.setSpeechLivePreviewActive(speechPreview, true, inputField);
             micBtn.style.background = '#b91c1c';
             micBtn.innerHTML = '<i class="fas fa-stop"></i>';
             micBtn.title = 'Tocca di nuovo per fermare, oppure premi Invio per inviare la trascrizione';
             micBtn.style.animation = 'blink 0.5s infinite';
+            try { inputField.focus(); } catch (eF) {}
         };
 
         recognition.onend = function() {
             isRecording = false;
+            window.setSpeechLivePreviewActive(speechPreview, false);
+            window.syncSpeechInputFollowCaret(inputField, { maxHeight: 132 });
             micBtn.style.background = '#ef4444';
             micBtn.innerHTML = '<i class="fas fa-microphone"></i>';
             micBtn.title = 'Dettatura: avvia / ferma. Invio invia tutto il testo nel campo.';
@@ -29548,7 +29657,12 @@ window.initConversationModal = function(draftUserLine) {
         await window.persistAIChatTranscriptFromHistoryDiv(historyDiv);
     };
 
-    inputField.addEventListener("keypress", (e) => { if (e.key === "Enter") sendAction(); });
+    inputField.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendAction(); }
+    });
+    inputField.addEventListener('input', function() {
+        window.syncSpeechInputFollowCaret(inputField, { maxHeight: 132 });
+    });
     sendBtn.onclick = sendAction;
 };
 

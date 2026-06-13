@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.13-chat-speech-restore-12f3685-v84';
+        window.SERVICEHUB_BUILD = '2026.06.13-chat-speech-fix-v85';
         window.SERVICE_WATCH_BUILD = '2026.06.12-watch-numpad-only-v16';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
@@ -23320,7 +23320,7 @@ window.convertToHtml = async () => {
                     </button>
                 </div>
             </div>
-            <div id="ai-settings-dock" data-speech="v84" style="flex-shrink:0;padding:10px 16px calc(12px + env(safe-area-inset-bottom));background:inherit;border-top:1px solid #334155;position:relative;z-index:200;pointer-events:auto;touch-action:manipulation;-webkit-transform:translateZ(0);transform:translateZ(0);">
+            <div id="ai-settings-dock" data-speech="v85" style="flex-shrink:0;padding:10px 16px calc(12px + env(safe-area-inset-bottom));background:inherit;border-top:1px solid #334155;position:relative;z-index:200;pointer-events:auto;touch-action:manipulation;-webkit-transform:translateZ(0);transform:translateZ(0);">
                 <div id="ai-robot-head" onclick="window.toggleChatVisibility()" style="display:flex;justify-content:center;margin-bottom:8px;cursor:pointer;touch-action:manipulation;pointer-events:auto;min-height:44px;align-items:center;">
                     <i class="fas fa-robot" style="font-size:22px;color:#475569;"></i>
                 </div>
@@ -29263,7 +29263,7 @@ window.clearConvChatInput = function(ev) {
     window.syncConvChatClearBtn();
 };
 
-// --- FIX PANNELLO, INVIO E VOCALE — ripristino commit 12f3685 (Jennifer funzionante) ---
+// --- FIX PANNELLO, INVIO E VOCALE ---
 function fixAIPanel() {
     if (window.__aiSpeechWired === window.SERVICEHUB_BUILD) return;
 
@@ -29276,43 +29276,57 @@ function fixAIPanel() {
     var isRecording = false;
     var recognition = null;
 
-    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-        var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        recognition = new SpeechRecognition();
-        recognition.lang = 'it-IT';
-        recognition.interimResults = true;
+    function resetMicUi() {
+        isRecording = false;
+        micBtn.style.background = '#ef4444';
+        micBtn.innerHTML = '<i class="fas fa-microphone"></i>';
+        micBtn.style.animation = '';
+        sendBtn.innerHTML = '<i class="fas fa-paper-plane"></i>';
+    }
 
-        recognition.onresult = function(e) {
+    function setRecordingUi() {
+        isRecording = true;
+        micBtn.style.background = '#ef4444';
+        micBtn.innerHTML = '<i class="fas fa-stop"></i>';
+        micBtn.style.animation = 'blink 0.5s infinite';
+        sendBtn.innerHTML = '<i class="fas fa-arrow-right"></i>';
+    }
+
+    function buildRecognition() {
+        var SR = window.webkitSpeechRecognition || window.SpeechRecognition;
+        if (!SR) return null;
+        var rec = new SR();
+        rec.lang = 'it-IT';
+        rec.interimResults = true;
+
+        rec.onresult = function(e) {
             var transcript = Array.from(e.results).map(function(r) { return r[0].transcript; }).join('');
             inputField.value = transcript;
             inputField.scrollLeft = inputField.scrollWidth;
             try { inputField.setSelectionRange(inputField.value.length, inputField.value.length); } catch (e2) {}
-            try { inputField.focus(); } catch (e3) {}
             window.syncAiChatClearBtn();
         };
 
-        recognition.onstart = function() {
-            isRecording = true;
-            micBtn.style.background = '#ef4444';
-            micBtn.innerHTML = '<i class="fas fa-stop"></i>';
-            micBtn.style.animation = 'blink 0.5s infinite';
-            sendBtn.innerHTML = '<i class="fas fa-arrow-right"></i>';
+        rec.onstart = function() { setRecordingUi(); };
+
+        rec.onend = function() { resetMicUi(); };
+
+        rec.onerror = function(ev) {
+            resetMicUi();
+            if (ev && (ev.error === 'no-speech' || ev.error === 'aborted')) return;
+            console.warn('[ServiceHub] SpeechRecognition:', ev && ev.error);
         };
 
-        recognition.onend = function() {
-            isRecording = false;
-            micBtn.style.background = '#ef4444';
-            micBtn.innerHTML = '<i class="fas fa-microphone"></i>';
-            micBtn.style.animation = '';
-        };
+        return rec;
     }
 
     window.__aiQuickSpeechStop = function() {
-        if (isRecording && recognition) {
+        if (recognition) {
             try { recognition.stop(); } catch (e) {}
+            try { recognition.abort(); } catch (e2) {}
         }
-        isRecording = false;
-        micBtn.style.animation = '';
+        recognition = null;
+        resetMicUi();
     };
 
     var sendAction = async function() {
@@ -29321,8 +29335,6 @@ function fixAIPanel() {
         var val = inputField.value;
         inputField.value = '';
         window.syncAiChatClearBtn();
-        micBtn.style.animation = '';
-        sendBtn.innerHTML = '<i class="fas fa-paper-plane"></i>';
         var statusEl = document.getElementById('ai-quick-chat-status');
         if (statusEl) {
             statusEl.style.display = 'block';
@@ -29337,15 +29349,28 @@ function fixAIPanel() {
         }
     };
 
-    micBtn.onclick = function() {
-        if (!recognition) return alert('Vocale non supportato');
+    micBtn.onclick = function(e) {
+        if (e) e.stopPropagation();
+
         if (isRecording) {
-            recognition.stop();
-        } else {
+            window.__aiQuickSpeechStop();
+            return;
+        }
+
+        if (!window.webkitSpeechRecognition && !window.SpeechRecognition) {
+            alert('Vocale non supportato');
+            return;
+        }
+
+        recognition = buildRecognition();
+        if (!recognition) return;
+
+        try {
             recognition.start();
-            isRecording = true;
-            micBtn.style.background = '#ef4444';
-            micBtn.innerHTML = '<i class="fas fa-stop"></i>';
+        } catch (err) {
+            recognition = null;
+            resetMicUi();
+            alert('Microfono: ' + (err && err.message ? err.message : String(err)));
         }
     };
 
@@ -29368,7 +29393,6 @@ function fixAIPanel() {
     window.__aiSpeechWired = window.SERVICEHUB_BUILD;
 }
 
-setInterval(fixAIPanel, 1000);
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', fixAIPanel);
 } else {

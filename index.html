@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.12-generale-cond-scroll-v64';
+        window.SERVICEHUB_BUILD = '2026.06.12-gemini-full-context-v65';
         window.SERVICE_WATCH_BUILD = '2026.06.12-watch-numpad-only-v16';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
@@ -15471,7 +15471,8 @@ window.updateStoricoButton = async function() {
         };
 
         // Funzione per calcolare i trend dei livelli dei serbatoi
-        window.getTankLevelTrend = function() {
+        window.getTankLevelTrend = function(opts) {
+            opts = opts || {};
             try {
                 var firstEntry = window.normalizeArchiveSnapshot(window.getShiftBaselineArchiveForTrend());
                 if (!firstEntry) return [];
@@ -15503,7 +15504,7 @@ window.updateStoricoButton = async function() {
                 // 🔥 ALERT LIVELLI >90%
                 const alerts = window.checkHighLevel(trends);
 
-                if (alerts.length > 0) {
+                if (!opts.silent && alerts.length > 0) {
                     alert(`Attenzione! Livelli superiori al 90%:\n${alerts.join('\n')}`);
                 }
 
@@ -28513,6 +28514,204 @@ window.formatGeminiError = function(message) {
     return msg || 'Errore Gemini sconosciuto.';
 };
 
+/** Storico archivi compatto per AI (trend nel tempo). */
+window.buildGeminiArchiveSummaryForAI = function(maxEntries) {
+    var limit = maxEntries == null ? 20 : maxEntries;
+    var archives = typeof window.collectRealArchives === 'function' ? window.collectRealArchives() : [];
+    var tankIds = typeof window.getTrendTankFieldIds === 'function' ? window.getTrendTankFieldIds() : [];
+    var measureIds = ['inp-analisi-cod', 'inp-analisi-cond', 'inp-analisi-o2-mbr1', 'inp-analisi-o2-mbr2',
+        'inp-analisi-cono', 'inp-analisi-cod-nuovo', 'inp-analisi-cod-vecchio'];
+    return archives.slice(-limit).map(function(entry) {
+        var row = {
+            time: entry.time || entry.archiveTime || '',
+            shift: entry.shift || '',
+            createdAt: entry.createdAt || null
+        };
+        tankIds.forEach(function(fid) {
+            var nid = window.normalizeTrendFieldId(fid);
+            var v = window.archiveSnapshotValue(entry, nid);
+            if (Number.isFinite(v) && v > 0) row[nid] = v;
+        });
+        measureIds.forEach(function(fid) {
+            var nid = window.normalizeTrendFieldId(fid);
+            var v = window.archiveSnapshotValue(entry, nid);
+            if (Number.isFinite(v)) row[nid] = v;
+        });
+        return row;
+    });
+};
+
+/** Contesto impianto completo per Gemini (chat e analisi). */
+window.buildGeminiPlantContext = function(opts) {
+    opts = opts || {};
+    var forChat = opts.forChat !== false;
+    var turnoEl = document.getElementById('current-shift-label');
+    var turno = turnoEl && turnoEl.innerText ? turnoEl.innerText.trim() : '';
+    var rapportinoAttivo = null;
+    try {
+        var store = window.loadRapportiniStore && window.loadRapportiniStore();
+        if (store && store.activeId && store.items && store.items[store.activeId]) {
+            rapportinoAttivo = {
+                id: store.activeId,
+                titolo: store.items[store.activeId].title || store.activeId,
+                schedeConfig: store.items[store.activeId].schedeConfig || null
+            };
+        }
+    } catch (eR) {}
+
+    var impiantoAttuale = {};
+    try {
+        if (typeof window.buildPlantPayloadFromDOM === 'function') {
+            impiantoAttuale = window.buildPlantPayloadFromDOM({ bumpRevision: false });
+        }
+    } catch (eP) {}
+
+    var trendSerbatoi = [];
+    var trendAnalisi = [];
+    try {
+        trendSerbatoi = window.getTankLevelTrend({ silent: true }) || [];
+    } catch (eT) {}
+    try {
+        trendAnalisi = window.getAnalisiTrend() || [];
+    } catch (eA) {}
+
+    var storicoArchivi = [];
+    try {
+        storicoArchivi = window.buildGeminiArchiveSummaryForAI(forChat ? 20 : 30);
+    } catch (eS) {}
+
+    var calcoliTonnellate = {};
+    if (window.TANK_DATABASE) {
+        Object.keys(window.TANK_DATABASE).forEach(function(tankId) {
+            var tankData = window.TANK_DATABASE[tankId];
+            var fid = typeof window.mapDcsSiglaToFieldId === 'function'
+                ? window.mapDcsSiglaToFieldId(tankId) : ('inp-' + String(tankId).toLowerCase());
+            var inp = fid ? document.getElementById(fid) : null;
+            var level = inp ? parseFloat(String(inp.value || '').replace(',', '.')) : NaN;
+            if (!Number.isFinite(level)) level = 0;
+            var tons = window.calculateTons ? window.calculateTons(tankId, level) : null;
+            calcoliTonnellate[tankId] = {
+                campo_id: fid || null,
+                coefficiente: tankData.coeff || 0,
+                livello_mm: level,
+                tonnellate: tons,
+                formula: 'livello ' + level + ' mm × coeff ' + (tankData.coeff || 0) + ' = ' + tons + ' t'
+            };
+        });
+    }
+
+    var inputValues = {};
+    document.querySelectorAll('input[id]').forEach(function(input) {
+        if (input.value !== '' && input.value != null) inputValues[input.id] = input.value;
+    });
+    var selectValues = {};
+    document.querySelectorAll('select[id]').forEach(function(sel) {
+        if (sel.value) selectValues[sel.id] = sel.value;
+    });
+    var textareaValues = {};
+    document.querySelectorAll('textarea[id]').forEach(function(ta) {
+        if (ta.value) textareaValues[ta.id] = ta.value;
+    });
+
+    var schedeData = {};
+    document.querySelectorAll('[id^="scheda_"]').forEach(function(el) {
+        if (!el.id) return;
+        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') {
+            if (el.value) schedeData[el.id] = el.value;
+        }
+    });
+
+    var localStorageData = {};
+    ['datiAppGlobali', 'turnoCorrente', 'ultimaModifica', 'memoria_calcoli'].forEach(function(key) {
+        var value = localStorage.getItem(key);
+        if (!value) return;
+        try { localStorageData[key] = JSON.parse(value); } catch (e) { localStorageData[key] = value; }
+    });
+
+    var analisiSettimanali = {};
+    try {
+        analisiSettimanali = JSON.parse(localStorage.getItem('analisiSettimanali') || '{}');
+    } catch (eAn) {}
+
+    var ctx = {
+        meta: {
+            build: window.SERVICEHUB_BUILD || '',
+            dataOra: new Date().toISOString(),
+            turno: turno,
+            rapportinoAttivo: rapportinoAttivo,
+            archiviDisponibili: storicoArchivi.length,
+            trendSerbatoiCount: trendSerbatoi.length
+        },
+        impiantoAttuale: impiantoAttuale,
+        databaseSerbatoi: window.TANK_DATABASE || {},
+        livelliMaxSerbatoi: window.TANK_MAX || {},
+        statiSerbatoi: window.tankStatuses || {},
+        calcoliTonnellate: calcoliTonnellate,
+        livelliAllarme: (function() {
+            try { return window.getAlarmConfig ? window.getAlarmConfig() : {}; } catch (e) { return {}; }
+        })(),
+        trendSerbatoiTurno: trendSerbatoi,
+        trendAnalisiTurno: trendAnalisi,
+        storicoArchivi: storicoArchivi,
+        analisiSettimanali: analisiSettimanali,
+        note: (document.getElementById('report-notes') && document.getElementById('report-notes').value) || '',
+        allarmi: Array.from(document.querySelectorAll('.alarm-item')).map(function(el) { return el.innerText; }),
+        inputValues: inputValues,
+        selectValues: selectValues,
+        textareaValues: textareaValues,
+        schedeData: schedeData,
+        localStorageData: localStorageData,
+        statusButtons: (function() {
+            var buttons = {};
+            document.querySelectorAll('.status-cell-btn, .status-header, .vwt-label-dynamic, .osmosi-label-dynamic').forEach(function(btn) {
+                if (btn.id && btn.id !== 'numpad-tank-btn') {
+                    buttons[btn.id] = {
+                        text: btn.innerText || btn.innerHTML,
+                        class: btn.className
+                    };
+                }
+            });
+            return buttons;
+        })()
+    };
+
+    if (!forChat) {
+        ctx.reportPreview = (function() {
+            try {
+                var container = document.getElementById('preview-sheet');
+                return container ? container.innerHTML.slice(0, 4000) : '';
+            } catch (e) { return ''; }
+        })();
+    }
+
+    return ctx;
+};
+
+window.trimGeminiContextJson = function(obj, maxChars) {
+    var max = maxChars == null ? 28000 : maxChars;
+    var json = JSON.stringify(obj);
+    if (json.length <= max) return json;
+    var copy = JSON.parse(json);
+    delete copy.reportPreview;
+    if (copy.storicoArchivi && copy.storicoArchivi.length > 10) {
+        copy.storicoArchivi = copy.storicoArchivi.slice(-10);
+        copy._note = 'storico archivi troncato agli ultimi 10';
+    }
+    if (copy.impiantoAttuale && typeof copy.impiantoAttuale === 'object') {
+        var slim = { shift: copy.impiantoAttuale.shift, lastUpdate: copy.impiantoAttuale.lastUpdate };
+        Object.keys(copy.impiantoAttuale).forEach(function(k) {
+            if (k === 'shift' || k === 'lastUpdate' || k === 'syncRevision') return;
+            var v = copy.impiantoAttuale[k];
+            if (v !== '' && v != null && typeof v !== 'object') slim[k] = v;
+            else if (v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length <= 6) slim[k] = v;
+        });
+        copy.impiantoAttuale = slim;
+    }
+    json = JSON.stringify(copy);
+    if (json.length <= max) return json;
+    return json.slice(0, max) + '\n…[contesto troncato]';
+};
+
 window.callGeminiAPI = async function(promptText, isChat = false, imageData = null) {
     if (!window.getGeminiApiKeysList().length) {
         throw new Error('Nessuna chiave Gemini. Impostazioni → inserisci almeno la chiave 1 (aistudio.google.com/apikey).');
@@ -28533,153 +28732,23 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
         memoriaAI = memoriaAI.slice(-8000);
     }
 
-    const datiImpianto = isChat ? {
-        turno: document.getElementById('current-shift-label')?.innerText?.trim() || '',
-        note: document.getElementById('report-notes')?.value || '',
-        allarmi: Array.from(document.querySelectorAll('.alarm-item')).map(function(el) { return el.innerText; }).slice(0, 20),
-        inputValues: (function() {
-            const inputs = {};
-            let n = 0;
-            document.querySelectorAll('input[id]').forEach(function(input) {
-                if (n > 80 || !input.value) return;
-                inputs[input.id] = input.value;
-                n++;
-            });
-            return inputs;
-        })()
-    } : {
-        statoSerbatoi: window.TANK_DATABASE || {},
-        analisi: JSON.parse(localStorage.getItem('analisiSettimanali')) || {},
-        note: document.getElementById('report-notes')?.value || "",
-        allarmi: Array.from(document.querySelectorAll('.alarm-item')).map(el => el.innerText),
-        // ✅ RACCOGLI TUTTI GLI INPUT DELL'INTERFACCIA
-        inputValues: (() => {
-            const inputs = {};
-            document.querySelectorAll('input').forEach(input => {
-                if (input.id && input.value) {
-                    inputs[input.id] = input.value;
-                }
-            });
-            return inputs;
-        })(),
-        // ✅ RACCOGLI TUTTI I SELECT
-        selectValues: (() => {
-            const selects = {};
-            document.querySelectorAll('select').forEach(select => {
-                if (select.id && select.value) {
-                    selects[select.id] = select.value;
-                }
-            });
-            return selects;
-        })(),
-        // ✅ RACCOGLI TUTTI I TEXTAREA
-        textareaValues: (() => {
-            const textareas = {};
-            document.querySelectorAll('textarea').forEach(textarea => {
-                if (textarea.id && textarea.value) {
-                    textareas[textarea.id] = textarea.value;
-                }
-            });
-            return textareas;
-        })(),
-        // ✅ RACCOGLI TUTTI I PULSANTI DI STATO
-        statusButtons: (() => {
-            const buttons = {};
-            document.querySelectorAll('.status-cell-btn, .status-header, .vwt-label-dynamic, .osmosi-label-dynamic').forEach(btn => {
-                if (btn.id && btn.id !== 'numpad-tank-btn') {
-                    buttons[btn.id] = {
-                        text: btn.innerHTML,
-                        class: btn.className,
-                        style: btn.getAttribute('style') || ""
-                    };
-                }
-            });
-            return buttons;
-        })(),
-        // ✅ RACCOGLI DATI DALLE SCHEDE
-        schedeData: (() => {
-            const schede = {};
-            document.querySelectorAll('[id^="scheda_"]').forEach(element => {
-                if (element.id) {
-                    if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {
-                        schede[element.id] = element.value;
-                    } else if (element.tagName === 'SELECT') {
-                        schede[element.id] = element.value;
-                    } else {
-                        schede[element.id] = element.innerHTML;
-                    }
-                }
-            });
-            return schede;
-        })(),
-        // ✅ DATI LOCAL STORAGE AGGIUNTIVI
-        localStorageData: (() => {
-            const data = {};
-            // Chiavi importanti dal localStorage
-            const keys = ['datiAppGlobali', 'turnoCorrente', 'ultimaModifica', 'memoria_calcoli'];
-            keys.forEach(key => {
-                const value = localStorage.getItem(key);
-                if (value) {
-                    try {
-                        data[key] = JSON.parse(value);
-                    } catch {
-                        data[key] = value;
-                    }
-                }
-            });
-            return data;
-        })(),
-        // ✅ COEFFICIENTI DI CALCOLO TONNELLATE
-        coefficientiTonnellate: window.TANK_DATABASE || {},
-        // ✅ LIVELLI DI ALLARME CONFIGURATI
-        livelliAllarme: (() => {
-            try {
-                return window.getAlarmConfig ? window.getAlarmConfig() : {};
-            } catch (e) {
-                return {};
-            }
-        })(),
-        // ✅ CONTENUTO REPORT PREVIEW
-        reportPreview: (() => {
-            try {
-                const container = document.getElementById('preview-sheet');
-                return container ? container.innerHTML : '';
-            } catch (e) {
-                return '';
-            }
-        })(),
-        // ✅ DATI CALCOLO TONNELLATE PER OGNI SERBATOIO
-        calcoliTonnellate: (() => {
-            const calcoli = {};
-            if (window.TANK_DATABASE) {
-                Object.keys(window.TANK_DATABASE).forEach(tankId => {
-                    const tankData = window.TANK_DATABASE[tankId];
-                    const input = document.getElementById('inp' + tankId);
-                    const level = input ? parseFloat(input.value) || 0 : 0;
-                    const tons = window.calculateTons ? window.calculateTons(tankId, level) : null;
-                    
-                    calcoli[tankId] = {
-                        coefficiente: tankData.coeff || 0,
-                        livello: level,
-                        tonnellate: tons,
-                        formula: `livello ${level} × coeff ${tankData.coeff || 0} = ${tons} tonnellate`
-                    };
-                });
-            }
-            return calcoli;
-        })()
-    };
+    const datiImpianto = window.buildGeminiPlantContext({ forChat: isChat });
 
     const istruzioneEsperto = "Sei un ingegnere tecnico. Sii ultra-sintetico. " +
         "Se i dati sono vuoti, rispondi 'Nessun dato'. " +
         "MEMORIA: " + memoriaAI + " " +
         "Per scrivere nel report usa: [SCRIVI_NOTE: testo].";
 
-    let datiJson = JSON.stringify(datiImpianto);
-    const maxJson = imageData ? 14000 : (isChat ? 10000 : 12000);
-    if (datiJson.length > maxJson) {
-        datiJson = datiJson.slice(0, maxJson) + "\n…[contesto troncato]";
-    }
+    const istruzioneChat = "Sei Jennifer, assistente tecnica integrata in STABILE 2026 (ServiceHub). " +
+        "Hai accesso COMPLETO al JSON sotto: livelli attuali di tutti i serbatoi e schede, coefficienti e tonnellate, " +
+        "stati serbatoi (A/D/P), trend del turno corrente (inizio turno vs adesso), storico archivi salvati (ogni salvataggio), " +
+        "analisi, conducibilità, note e memoria conversazione. " +
+        "Usa trendSerbatoiTurno e storicoArchivi per stimare velocità di discesa/salita (mm/ora o tempo stimato a un livello target) " +
+        "quando ci sono abbastanza punti; altrimenti spiega cosa manca (es. serve più storico o salvataggio). " +
+        "Rispondi in italiano, chiaro e operativo. MEMORIA: " + memoriaAI + " " +
+        "Per aggiungere note al report: [SCRIVI_NOTE: testo].";
+
+    let datiJson = window.trimGeminiContextJson(datiImpianto, imageData ? 14000 : (isChat ? 28000 : 32000));
 
     const istruzioneMultimodale = "Sei l'assistente tecnico integrato nell'app STABILE 2026. " +
         "L'utente ha allegato un file (immagine o PDF). Analizza il contenuto visibile o le pagine del documento. " +
@@ -28708,8 +28777,8 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
         
         contentParts.push({ text: imagePrompt });
     } else {
-        const promptFinale = isChat ? 
-            `AZIONE: ${promptText}\nDATI: ${datiJson}` :
+        const promptFinale = isChat ?
+            `${istruzioneChat}\n\nDOMANDA UTENTE: ${promptText}\n\nCONTESTO IMPIANTO (JSON):\n${datiJson}` :
             `${istruzioneEsperto}\nDATI: ${datiJson}\nRICHIESTA: ${promptText}`;
         
         contentParts.push({ text: promptFinale });

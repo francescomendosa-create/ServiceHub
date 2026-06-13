@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.13-stoccaggio-dcs-rows-v70';
+        window.SERVICEHUB_BUILD = '2026.06.13-chat-speech-fix-v71';
         window.SERVICE_WATCH_BUILD = '2026.06.12-watch-numpad-only-v16';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
@@ -29192,48 +29192,162 @@ window.callGeminiAPIWithTimeout = function(promptText, isChat, imageData, timeou
     ]);
 };
 
-/** Dettatura: mantieni sempre visibile l'ultima parola (textarea + anteprima live). */
+/** Dettatura chat: scroll campo testo (senza anteprima duplicata). */
 window.syncSpeechInputFollowCaret = function(el, opts) {
     if (!el) return;
     opts = opts || {};
     var text = el.value || '';
     var len = text.length;
     requestAnimationFrame(function() {
-        requestAnimationFrame(function() {
-            try { el.setSelectionRange(len, len); } catch (e) {}
-            if (el.tagName === 'TEXTAREA') {
-                el.style.height = 'auto';
-                var maxH = opts.maxHeight || 132;
-                el.style.height = Math.min(el.scrollHeight, maxH) + 'px';
-                el.scrollTop = el.scrollHeight;
-            } else {
-                el.scrollLeft = el.scrollWidth;
-            }
-            var preview = opts.previewEl;
-            if (preview) {
-                preview.textContent = text || '';
-                preview.scrollTop = preview.scrollHeight;
-            }
-            try {
-                el.scrollIntoView({ block: 'center', behavior: 'auto' });
-            } catch (e2) {}
-            if (preview && opts.recording) {
-                try { preview.scrollIntoView({ block: 'center', behavior: 'auto' }); } catch (e3) {}
-            }
-        });
+        try { el.setSelectionRange(len, len); } catch (e) {}
+        if (el.tagName === 'TEXTAREA') {
+            el.style.height = 'auto';
+            var maxH = opts.maxHeight || 132;
+            el.style.height = Math.min(el.scrollHeight, maxH) + 'px';
+            el.scrollTop = el.scrollHeight;
+        } else {
+            el.scrollLeft = el.scrollWidth;
+        }
+        if (!opts.skipScrollIntoView) {
+            try { el.scrollIntoView({ block: 'nearest', behavior: 'auto' }); } catch (e2) {}
+        }
     });
 };
 
-window.setSpeechLivePreviewActive = function(el, active, inputEl) {
-    if (!el) return;
-    if (active) {
-        el.style.display = 'block';
-        el.classList.add('active');
-        if (inputEl) el.textContent = inputEl.value || '';
-    } else {
-        el.style.display = 'none';
-        el.classList.remove('active');
+window.isChatSpeechPhone = function() {
+    return !!(window.isServiceHubPhone && window.isServiceHubPhone());
+};
+
+/** Controller vocale condiviso — chat veloce e conversazione. */
+window.createChatSpeechController = function(opts) {
+    opts = opts || {};
+    var input = opts.input;
+    var micBtn = opts.micBtn;
+    var sendBtn = opts.sendBtn;
+    var maxH = opts.maxHeight || 132;
+    var ctrl = { recording: false, recognition: null, stopRequested: false, final: '', prefix: '' };
+
+    if (!input || !micBtn) return ctrl;
+
+    if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
+        micBtn.onclick = function() { alert('Vocale non supportato'); };
+        return ctrl;
     }
+
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    var rec = new SR();
+    rec.lang = 'it-IT';
+    rec.interimResults = true;
+    rec.continuous = !window.isChatSpeechPhone();
+    ctrl.recognition = rec;
+
+    var syncInput = function() {
+        window.syncSpeechInputFollowCaret(input, {
+            maxHeight: maxH,
+            skipScrollIntoView: window.isChatSpeechPhone()
+        });
+    };
+
+    var setMicIdle = function() {
+        ctrl.recording = false;
+        micBtn.style.background = '#ef4444';
+        micBtn.innerHTML = '<i class="fas fa-microphone"></i>';
+        micBtn.style.animation = '';
+        if (sendBtn && opts.sendIconIdle) sendBtn.innerHTML = opts.sendIconIdle;
+    };
+
+    var setMicRecording = function() {
+        ctrl.recording = true;
+        micBtn.style.background = '#b91c1c';
+        micBtn.innerHTML = '<i class="fas fa-stop"></i>';
+        micBtn.style.animation = 'blink 0.5s infinite';
+        if (sendBtn && opts.sendIconRecording) sendBtn.innerHTML = opts.sendIconRecording;
+    };
+
+    rec.onresult = function(e) {
+        var interim = '';
+        for (var i = e.resultIndex; i < e.results.length; i++) {
+            var piece = e.results[i][0].transcript;
+            if (e.results[i].isFinal) ctrl.final += piece;
+            else interim += piece;
+        }
+        var sep = ctrl.prefix && (ctrl.final || interim) ? ' ' : '';
+        input.value = ctrl.prefix + sep + ctrl.final + interim;
+        syncInput();
+    };
+
+    rec.onstart = function() {
+        ctrl.stopRequested = false;
+        ctrl.prefix = (input.value || '').replace(/\s+$/, '');
+        ctrl.final = '';
+        setMicRecording();
+        try { input.focus(); } catch (eF) {}
+    };
+
+    rec.onend = function() {
+        setMicIdle();
+        syncInput();
+        if (typeof opts.onEnd === 'function') opts.onEnd();
+        if (ctrl._stopWaiter) {
+            var w = ctrl._stopWaiter;
+            ctrl._stopWaiter = null;
+            try { w(); } catch (eW) {}
+        }
+    };
+
+    rec.onerror = function(ev) {
+        if (ev && ev.error === 'aborted') {
+            setMicIdle();
+            return;
+        }
+        if (ev && ev.error === 'no-speech') return;
+        setMicIdle();
+    };
+
+    ctrl.stopIfRecording = function() {
+        return new Promise(function(resolve) {
+            if (!ctrl.recording || !rec) {
+                resolve();
+                return;
+            }
+            ctrl.stopRequested = true;
+            ctrl._stopWaiter = resolve;
+            try { rec.abort(); } catch (e) {
+                try { rec.stop(); } catch (e2) {}
+            }
+            setTimeout(function() {
+                if (ctrl._stopWaiter) {
+                    ctrl._stopWaiter = null;
+                    setMicIdle();
+                    resolve();
+                }
+            }, 1500);
+        });
+    };
+
+    ctrl.toggleMic = function(e) {
+        if (e) { e.preventDefault(); e.stopPropagation(); }
+        if (ctrl.recording) {
+            ctrl.stopRequested = true;
+            try { rec.abort(); } catch (e1) {
+                try { rec.stop(); } catch (e2) {}
+            }
+            setMicIdle();
+            return;
+        }
+        ctrl.stopRequested = false;
+        ctrl.prefix = (input.value || '').replace(/\s+$/, '');
+        ctrl.final = '';
+        try {
+            rec.start();
+        } catch (err) {
+            setMicIdle();
+            alert('Microfono: ' + (err.message || String(err)));
+        }
+    };
+
+    micBtn.onclick = function(e) { ctrl.toggleMic(e); };
+    return ctrl;
 };
 
 // --- FIX PANNELLO, INVIO E VOCALE ---
@@ -29263,7 +29377,6 @@ function fixAIPanel() {
             </button>
             <button onclick="importAIMemory()" style="background:#1e293b; border:1px solid #334155; color:#22c55e; width:24px; height:24px; cursor:pointer; border-radius:4px; font-size:10px; display:flex; align-items:center; justify-content:center;" title="Importa memoria AI">↑</button>
         </div>
-        <div id="ai-speech-live-preview" class="sh-speech-live-preview" style="display:none;" aria-live="polite"></div>
         <div style="display:flex; gap:10px; margin-bottom:10px; align-items:flex-end;">
             <button id="ai-mic-btn" style="background:#ef4444; border:none; color:white; border-radius:8px; width:50px; height:44px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
                 <i class="fas fa-microphone" id="mic-icon"></i>
@@ -29282,63 +29395,24 @@ function fixAIPanel() {
     settingsContent.appendChild(chatSection);
     
     const inputField = document.getElementById('ai-chat-input');
-    const speechPreview = document.getElementById('ai-speech-live-preview');
     const micBtn = document.getElementById('ai-mic-btn');
     const sendBtn = document.getElementById('ai-send-btn');
     const openConvBtn = document.getElementById('open-conversation-btn');
-    
-    let isRecording = false;
-    let recognition = null;
-    let aiSpeechFinal = '';
-    let aiMicPrefix = '';
 
-    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        recognition = new SpeechRecognition();
-        recognition.lang = 'it-IT';
-        recognition.interimResults = true;
-        recognition.continuous = true;
-
-        recognition.onresult = (e) => {
-            let interim = '';
-            for (let i = e.resultIndex; i < e.results.length; i++) {
-                const piece = e.results[i][0].transcript;
-                if (e.results[i].isFinal) aiSpeechFinal += piece;
-                else interim += piece;
-            }
-            const sep = aiMicPrefix && (aiSpeechFinal || interim) ? ' ' : '';
-            inputField.value = aiMicPrefix + sep + aiSpeechFinal + interim;
-            window.syncSpeechInputFollowCaret(inputField, {
-                previewEl: speechPreview,
-                recording: isRecording,
-                maxHeight: 120
-            });
-        };
-
-        recognition.onstart = () => {
-            isRecording = true;
-            aiMicPrefix = (inputField.value || '').replace(/\s+$/g, '');
-            aiSpeechFinal = '';
-            window.setSpeechLivePreviewActive(speechPreview, true, inputField);
-            micBtn.style.background = '#ef4444';
-            micBtn.innerHTML = '<i class="fas fa-stop"></i>';
-            micBtn.style.animation = 'blink 0.5s infinite';
-            sendBtn.innerHTML = '<i class="fas fa-arrow-right"></i>';
-            try { inputField.focus(); } catch (eF) {}
-        };
-
-        recognition.onend = () => {
-            isRecording = false;
-            window.setSpeechLivePreviewActive(speechPreview, false);
-            window.syncSpeechInputFollowCaret(inputField, { maxHeight: 120 });
-            micBtn.style.background = '#ef4444';
-            micBtn.innerHTML = '<i class="fas fa-microphone"></i>';
-            micBtn.style.animation = '';
-        };
-    }
+    window.__aiQuickSpeechCtrl = window.createChatSpeechController({
+        input: inputField,
+        micBtn: micBtn,
+        sendBtn: sendBtn,
+        maxHeight: 120,
+        sendIconIdle: '<i class="fas fa-paper-plane"></i>',
+        sendIconRecording: '<i class="fas fa-arrow-right"></i>'
+    });
 
     const sendAction = async () => {
-        if(!inputField.value) return;
+        if (window.__aiQuickSpeechCtrl && window.__aiQuickSpeechCtrl.stopIfRecording) {
+            await window.__aiQuickSpeechCtrl.stopIfRecording();
+        }
+        if(!inputField.value || !inputField.value.trim()) return;
         const val = inputField.value;
         inputField.value = "";
         micBtn.style.animation = '';
@@ -29357,29 +29431,22 @@ function fixAIPanel() {
         }
     };
 
-    micBtn.onclick = () => {
-        if (!recognition) return alert("Vocale non supportato");
-        if (isRecording) {
-            recognition.stop();
-        } else {
-            recognition.start();
-            isRecording = true;
-            // Mantiene sempre il colore rosso, cambia solo icona
-            micBtn.style.background = '#ef4444';
-            micBtn.innerHTML = '<i class="fas fa-stop"></i>';
-        }
-    };
-
     inputField.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendAction(); }
     });
     inputField.addEventListener('input', () => {
-        window.syncSpeechInputFollowCaret(inputField, { maxHeight: 120 });
+        window.syncSpeechInputFollowCaret(inputField, {
+            maxHeight: 120,
+            skipScrollIntoView: window.isChatSpeechPhone && window.isChatSpeechPhone()
+        });
     });
     sendBtn.onclick = sendAction;
     
     if (openConvBtn) {
         openConvBtn.onclick = async () => {
+            if (window.__aiQuickSpeechCtrl && window.__aiQuickSpeechCtrl.stopIfRecording) {
+                await window.__aiQuickSpeechCtrl.stopIfRecording();
+            }
             const draft = inputField.value.trim();
             inputField.value = '';
             await window.showConversationModal(draft);
@@ -29409,24 +29476,6 @@ styleAI.innerHTML = `
     .ai-loading span:nth-child(3) { animation-delay: 0.4s; }
     @keyframes ai-dots { 0%, 100% { opacity: 0; } 50% { opacity: 1; } }
     @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
-    .sh-speech-live-preview {
-        display: none;
-        margin-bottom: 8px;
-        padding: 12px 14px;
-        background: #0f172a;
-        border: 2px solid #ef4444;
-        border-radius: 10px;
-        color: #f8fafc;
-        font-size: 16px;
-        font-weight: 600;
-        line-height: 1.45;
-        max-height: 96px;
-        overflow-y: auto;
-        -webkit-overflow-scrolling: touch;
-        word-break: break-word;
-        scroll-behavior: smooth;
-    }
-    .sh-speech-live-preview.active { display: block; }
     .sh-chat-speech-input {
         flex: 1;
         min-width: 0;
@@ -29572,7 +29621,6 @@ window.showConversationModal = async function(draftUserLine) {
                     </div>
                 </div>
             </div>
-            <div id="conv-speech-live-preview" class="sh-speech-live-preview" style="display:none; flex-shrink:0; margin-top:10px;" aria-live="polite"></div>
             <div style="display:flex; gap:8px; margin-top:12px; flex-shrink:0; align-items:flex-end;">
                 <button type="button" id="conv-mic-btn" style="background:#ef4444; border:none; color:white; border-radius:8px; width:48px; min-height:44px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
                     <i class="fas fa-microphone"></i>
@@ -29596,7 +29644,6 @@ window.showConversationModal = async function(draftUserLine) {
 window.initConversationModal = function(draftUserLine) {
     const historyDiv = document.getElementById('conversation-history');
     const inputField = document.getElementById('conv-chat-input');
-    const speechPreview = document.getElementById('conv-speech-live-preview');
     const micBtn = document.getElementById('conv-mic-btn');
     const sendBtn = document.getElementById('conv-send-btn');
     const fileBtn = document.getElementById('conv-file-btn');
@@ -29616,123 +29663,19 @@ window.initConversationModal = function(draftUserLine) {
     
     let currentImageData = null;
 
-    let isRecording = false;
-    let recognition = null;
-    let convSpeechFinal = "";
-    let convMicPrefix = "";
-    let convSpeechStopResolver = null;
-
-    const finishConvSpeechStop = function() {
-        if (convSpeechStopResolver) {
-            const r = convSpeechStopResolver;
-            convSpeechStopResolver = null;
-            try { r(); } catch (e2) {}
-        }
-    };
+    window.__convSpeechCtrl = window.createChatSpeechController({
+        input: inputField,
+        micBtn: micBtn,
+        sendBtn: sendBtn,
+        maxHeight: 132
+    });
 
     const stopConvRecognitionIfNeeded = function() {
-        return new Promise(function(resolve) {
-            if (!recognition || !isRecording) {
-                resolve();
-                return;
-            }
-            convSpeechStopResolver = resolve;
-            try {
-                recognition.stop();
-            } catch (e) {
-                finishConvSpeechStop();
-                resolve();
-            }
-            setTimeout(function() {
-                if (convSpeechStopResolver) {
-                    finishConvSpeechStop();
-                    resolve();
-                }
-            }, 2500);
-        });
+        if (window.__convSpeechCtrl && window.__convSpeechCtrl.stopIfRecording) {
+            return window.__convSpeechCtrl.stopIfRecording();
+        }
+        return Promise.resolve();
     };
-
-    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        recognition = new SpeechRecognition();
-        recognition.lang = 'it-IT';
-        recognition.interimResults = true;
-        recognition.continuous = true;
-
-        recognition.onresult = function(e) {
-            var interim = "";
-            for (var i = e.resultIndex; i < e.results.length; i++) {
-                var piece = e.results[i][0].transcript;
-                if (e.results[i].isFinal) {
-                    convSpeechFinal += piece;
-                } else {
-                    interim += piece;
-                }
-            }
-            var sep = convMicPrefix && (convSpeechFinal || interim) ? " " : "";
-            inputField.value = convMicPrefix + sep + convSpeechFinal + interim;
-            window.syncSpeechInputFollowCaret(inputField, {
-                previewEl: speechPreview,
-                recording: isRecording,
-                maxHeight: 132
-            });
-        };
-
-        recognition.onstart = function() {
-            isRecording = true;
-            convMicPrefix = (inputField.value || "").replace(/\s+$/g, "");
-            convSpeechFinal = "";
-            window.setSpeechLivePreviewActive(speechPreview, true, inputField);
-            micBtn.style.background = '#b91c1c';
-            micBtn.innerHTML = '<i class="fas fa-stop"></i>';
-            micBtn.title = 'Tocca di nuovo per fermare, oppure premi Invio per inviare la trascrizione';
-            micBtn.style.animation = 'blink 0.5s infinite';
-            try { inputField.focus(); } catch (eF) {}
-        };
-
-        recognition.onend = function() {
-            isRecording = false;
-            window.setSpeechLivePreviewActive(speechPreview, false);
-            window.syncSpeechInputFollowCaret(inputField, { maxHeight: 132 });
-            micBtn.style.background = '#ef4444';
-            micBtn.innerHTML = '<i class="fas fa-microphone"></i>';
-            micBtn.title = 'Dettatura: avvia / ferma. Invio invia tutto il testo nel campo.';
-            micBtn.style.animation = '';
-            finishConvSpeechStop();
-        };
-
-        recognition.onerror = function(ev) {
-            console.warn('SpeechRecognition:', ev && ev.error);
-            if (ev && (ev.error === 'no-speech' || ev.error === 'aborted')) {
-                return;
-            }
-            isRecording = false;
-            micBtn.style.background = '#ef4444';
-            micBtn.innerHTML = '<i class="fas fa-microphone"></i>';
-            micBtn.style.animation = '';
-            finishConvSpeechStop();
-        };
-
-        micBtn.onclick = function() {
-            if (!recognition) {
-                alert('Riconoscimento vocale non disponibile in questo browser.');
-                return;
-            }
-            if (isRecording) {
-                try { recognition.stop(); } catch (e4) {}
-                return;
-            }
-            try {
-                recognition.start();
-            } catch (e5) {
-                alert('Microfono: ' + (e5.message || String(e5)));
-            }
-        };
-    } else {
-        micBtn.onclick = function() {
-            alert('Riconoscimento vocale non disponibile.');
-        };
-    }
 
     const sendAction = async function() {
         await stopConvRecognitionIfNeeded();

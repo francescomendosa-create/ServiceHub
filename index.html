@@ -28541,6 +28541,71 @@ window.buildGeminiArchiveSummaryForAI = function(maxEntries) {
     });
 };
 
+/** Livelli serbatoi correnti (stessi campi dei trend). */
+window.buildGeminiCurrentTankLevels = function() {
+    var out = {};
+    var fields = typeof window.getTrendTankFieldIds === 'function' ? window.getTrendTankFieldIds() : [];
+    fields.forEach(function(fid) {
+        var el = document.getElementById(fid);
+        if (!el) return;
+        var mm = parseFloat(String(el.value || '').replace(',', '.'));
+        if (!Number.isFinite(mm)) return;
+        var nid = window.normalizeTrendFieldId(fid);
+        var sigla = typeof window.formatTrendDisplayLabel === 'function'
+            ? window.formatTrendDisplayLabel(fid, false) : nid;
+        var tankKey = typeof window.getTankName === 'function' ? window.getTankName(nid) : nid;
+        var maxMm = window.TANK_MAX && window.normalizeTankId
+            ? window.TANK_MAX[window.normalizeTankId(tankKey)] : null;
+        out[nid] = {
+            sigla: sigla,
+            livello_mm: mm,
+            tonnellate: window.calculateTons ? window.calculateTons(tankKey, mm) : null,
+            max_mm: maxMm || null
+        };
+    });
+    return out;
+};
+
+/** Velocità mm/ora da storico archivi (come i trend, ma pre-calcolato per l'AI). */
+window.buildGeminiVelocitaStimate = function(archivi) {
+    if (!archivi || archivi.length < 2) return [];
+    var results = [];
+    var tankIds = typeof window.getTrendTankFieldIds === 'function' ? window.getTrendTankFieldIds() : [];
+    tankIds.forEach(function(fid) {
+        var nid = window.normalizeTrendFieldId(fid);
+        var points = [];
+        archivi.forEach(function(a) {
+            var v = window.archiveSnapshotValue(a, nid);
+            var ts = window.getArchiveTimestampMs(a);
+            if (Number.isFinite(v) && ts) points.push({ ts: ts, v: v });
+        });
+        var liveEl = document.getElementById(fid);
+        if (liveEl) {
+            var liveV = parseFloat(String(liveEl.value || '').replace(',', '.'));
+            if (Number.isFinite(liveV)) points.push({ ts: Date.now(), v: liveV });
+        }
+        points.sort(function(a, b) { return a.ts - b.ts; });
+        if (points.length < 2) return;
+        var first = points[0];
+        var last = points[points.length - 1];
+        var dtHours = (last.ts - first.ts) / 3600000;
+        if (dtHours < 0.02) return;
+        var delta = last.v - first.v;
+        results.push({
+            serbatoio: nid,
+            sigla: typeof window.formatTrendDisplayLabel === 'function'
+                ? window.formatTrendDisplayLabel(fid, false) : nid,
+            mm_inizio: first.v,
+            mm_fine: last.v,
+            delta_mm: Math.round(delta * 10) / 10,
+            ore: Math.round(dtHours * 100) / 100,
+            mm_per_ora: Math.round((delta / dtHours) * 10) / 10,
+            direzione: delta > 0 ? 'salita' : (delta < 0 ? 'discesa' : 'stabile')
+        });
+    });
+    return results;
+};
+
 /** Contesto impianto completo per Gemini (chat e analisi). */
 window.buildGeminiPlantContext = function(opts) {
     opts = opts || {};
@@ -28579,6 +28644,15 @@ window.buildGeminiPlantContext = function(opts) {
     try {
         storicoArchivi = window.buildGeminiArchiveSummaryForAI(forChat ? 20 : 30);
     } catch (eS) {}
+
+    var livelliSerbatoiCorrenti = {};
+    var velocitaStimate = [];
+    try {
+        livelliSerbatoiCorrenti = window.buildGeminiCurrentTankLevels();
+    } catch (eL) {}
+    try {
+        velocitaStimate = window.buildGeminiVelocitaStimate(storicoArchivi);
+    } catch (eV) {}
 
     var calcoliTonnellate = {};
     if (window.TANK_DATABASE) {
@@ -28653,6 +28727,8 @@ window.buildGeminiPlantContext = function(opts) {
         trendSerbatoiTurno: trendSerbatoi,
         trendAnalisiTurno: trendAnalisi,
         storicoArchivi: storicoArchivi,
+        livelliSerbatoiCorrenti: livelliSerbatoiCorrenti,
+        velocitaStimate: velocitaStimate,
         analisiSettimanali: analisiSettimanali,
         note: (document.getElementById('report-notes') && document.getElementById('report-notes').value) || '',
         allarmi: Array.from(document.querySelectorAll('.alarm-item')).map(function(el) { return el.innerText; }),
@@ -28730,6 +28806,15 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
     }
     if (memoriaAI.length > 8000) {
         memoriaAI = memoriaAI.slice(-8000);
+    }
+
+    if (isChat && typeof window.ensureBackupHistory === 'function') {
+        try {
+            await Promise.race([
+                window.ensureBackupHistory(),
+                new Promise(function(r) { setTimeout(r, 2800); })
+            ]);
+        } catch (eHist) {}
     }
 
     const datiImpianto = window.buildGeminiPlantContext({ forChat: isChat });

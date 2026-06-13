@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.13-chat-speech-fix-v72';
+        window.SERVICEHUB_BUILD = '2026.06.13-chat-speech-fix-v73';
         window.SERVICE_WATCH_BUILD = '2026.06.12-watch-numpad-only-v16';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
@@ -29211,130 +29211,150 @@ window.syncSpeechInputFollowCaret = function(el, opts) {
     });
 };
 
-/** Controller vocale — logica semplice (v68), senza anteprima duplicata. */
-window.createChatSpeechController = function(opts) {
-    opts = opts || {};
-    var input = opts.input;
-    var micBtn = opts.micBtn;
-    var sendBtn = opts.sendBtn;
-    var maxH = opts.maxHeight || 132;
-    var ctrl = { recording: false, recognition: null, prefixAtStart: '' };
+/** Setup dettatura — stessa logica v68 + no tastierino + continuous su tablet. */
+window.setupChatSpeech = function(cfg) {
+    cfg = cfg || {};
+    var input = cfg.input;
+    var micBtn = cfg.micBtn;
+    var sendBtn = cfg.sendBtn;
+    var isPhone = !!(cfg.isPhone);
+    var maxH = cfg.maxHeight || 132;
+    var state = { recording: false, recognition: null, prefix: '', stopWaiter: null };
 
-    if (!input || !micBtn) return ctrl;
+    if (!input || !micBtn) return state;
+
+    var lockKeyboard = function(on) {
+        if (on) {
+            input.setAttribute('readonly', 'readonly');
+            input.setAttribute('inputmode', 'none');
+            try { input.blur(); } catch (e) {}
+            try {
+                if (document.activeElement && document.activeElement !== micBtn) {
+                    document.activeElement.blur();
+                }
+            } catch (e2) {}
+        } else {
+            input.removeAttribute('readonly');
+            input.removeAttribute('inputmode');
+        }
+    };
+
+    var setIdle = function() {
+        state.recording = false;
+        micBtn.style.background = '#ef4444';
+        micBtn.innerHTML = '<i class="fas fa-microphone"></i>';
+        micBtn.style.animation = '';
+        if (sendBtn && cfg.sendIconIdle) sendBtn.innerHTML = cfg.sendIconIdle;
+    };
+
+    var setRec = function() {
+        state.recording = true;
+        micBtn.style.background = '#ef4444';
+        micBtn.innerHTML = '<i class="fas fa-stop"></i>';
+        micBtn.style.animation = 'blink 0.5s infinite';
+        if (sendBtn && cfg.sendIconRecording) sendBtn.innerHTML = cfg.sendIconRecording;
+    };
 
     if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
         micBtn.onclick = function() { alert('Vocale non supportato'); };
-        return ctrl;
+        return state;
     }
 
     var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     var rec = new SR();
     rec.lang = 'it-IT';
     rec.interimResults = true;
-    rec.continuous = false;
-    ctrl.recognition = rec;
-
-    var syncInput = function() {
-        window.syncSpeechInputFollowCaret(input, { maxHeight: maxH });
-    };
-
-    var setMicIdle = function() {
-        ctrl.recording = false;
-        micBtn.style.background = '#ef4444';
-        micBtn.innerHTML = '<i class="fas fa-microphone"></i>';
-        micBtn.style.animation = '';
-        if (sendBtn && opts.sendIconIdle) sendBtn.innerHTML = opts.sendIconIdle;
-    };
-
-    var setMicRecording = function() {
-        ctrl.recording = true;
-        micBtn.style.background = '#ef4444';
-        micBtn.innerHTML = '<i class="fas fa-stop"></i>';
-        micBtn.style.animation = 'blink 0.5s infinite';
-        if (sendBtn && opts.sendIconRecording) sendBtn.innerHTML = opts.sendIconRecording;
-    };
+    rec.continuous = !isPhone;
+    state.recognition = rec;
 
     rec.onresult = function(e) {
         var session = '';
         for (var i = 0; i < e.results.length; i++) {
             session += e.results[i][0].transcript;
         }
-        var sep = ctrl.prefixAtStart && session ? ' ' : '';
-        input.value = ctrl.prefixAtStart + sep + session;
-        syncInput();
+        if (cfg.replaceSessionOnly) {
+            input.value = session;
+        } else {
+            var sep = state.prefix && session ? ' ' : '';
+            input.value = state.prefix + sep + session;
+        }
+        window.syncSpeechInputFollowCaret(input, { maxHeight: maxH });
     };
 
     rec.onstart = function() {
-        ctrl.prefixAtStart = (input.value || '').replace(/\s+$/, '');
-        setMicRecording();
-        try { input.focus(); } catch (eF) {}
+        state.prefix = (input.value || '').replace(/\s+$/, '');
+        state.recording = true;
+        lockKeyboard(true);
+        setRec();
     };
 
     rec.onend = function() {
-        setMicIdle();
-        syncInput();
-        if (typeof opts.onEnd === 'function') opts.onEnd();
-        if (ctrl._stopWaiter) {
-            var w = ctrl._stopWaiter;
-            ctrl._stopWaiter = null;
+        state.recording = false;
+        lockKeyboard(false);
+        setIdle();
+        if (state.stopWaiter) {
+            var w = state.stopWaiter;
+            state.stopWaiter = null;
             try { w(); } catch (eW) {}
         }
     };
 
     rec.onerror = function(ev) {
         if (ev && (ev.error === 'no-speech' || ev.error === 'aborted')) return;
-        setMicIdle();
+        state.recording = false;
+        lockKeyboard(false);
+        setIdle();
         if (ev && ev.error === 'not-allowed') {
-            alert('Permesso microfono negato. Abilitalo in Impostazioni Safari → ServiceHub.');
+            alert('Permesso microfono negato.');
         }
     };
 
-    ctrl.stopIfRecording = function() {
+    state.stopIfRecording = function() {
         return new Promise(function(resolve) {
-            if (!ctrl.recording || !rec) {
+            if (!state.recording || !rec) {
                 resolve();
                 return;
             }
-            ctrl._stopWaiter = resolve;
+            state.stopWaiter = resolve;
             try { rec.stop(); } catch (e) {
-                setMicIdle();
+                lockKeyboard(false);
+                setIdle();
                 resolve();
                 return;
             }
             setTimeout(function() {
-                if (ctrl._stopWaiter) {
-                    ctrl._stopWaiter = null;
-                    setMicIdle();
+                if (state.stopWaiter) {
+                    state.stopWaiter = null;
+                    lockKeyboard(false);
+                    setIdle();
                     resolve();
                 }
-            }, 1200);
+            }, 1500);
         });
     };
 
-    ctrl.toggleMic = function() {
-        if (ctrl.recording) {
+    micBtn.onclick = function() {
+        if (state.recording) {
             try { rec.stop(); } catch (e) {}
-            setMicIdle();
+            state.recording = false;
+            lockKeyboard(false);
+            setIdle();
             return;
         }
-        ctrl.prefixAtStart = (input.value || '').replace(/\s+$/, '');
+        state.prefix = (input.value || '').replace(/\s+$/, '');
         try {
             rec.start();
-            setMicRecording();
         } catch (err) {
-            setMicIdle();
             var msg = err && err.message ? err.message : String(err);
-            if (msg.indexOf('start') !== -1 || msg.indexOf('already') !== -1) {
-                try { rec.stop(); } catch (e2) {}
-                return;
-            }
             alert('Microfono: ' + msg);
+            return;
         }
+        state.recording = true;
+        lockKeyboard(true);
+        setRec();
     };
 
-    micBtn.setAttribute('type', 'button');
-    micBtn.onclick = function() { ctrl.toggleMic(); };
-    return ctrl;
+    return state;
 };
 
 // --- FIX PANNELLO, INVIO E VOCALE ---
@@ -29364,13 +29384,13 @@ function fixAIPanel() {
             </button>
             <button onclick="importAIMemory()" style="background:#1e293b; border:1px solid #334155; color:#22c55e; width:24px; height:24px; cursor:pointer; border-radius:4px; font-size:10px; display:flex; align-items:center; justify-content:center;" title="Importa memoria AI">↑</button>
         </div>
-        <div style="display:flex; gap:10px; margin-bottom:10px; align-items:flex-end;">
-            <button type="button" id="ai-mic-btn" style="background:#ef4444; border:none; color:white; border-radius:8px; width:50px; height:44px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0; touch-action:manipulation;">
+        <div style="display:flex; gap:10px; margin-bottom:10px; align-items:center;">
+            <button type="button" id="ai-mic-btn" style="position:relative;z-index:5;background:#ef4444;border:none;color:white;border-radius:8px;width:50px;height:44px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;touch-action:manipulation;-webkit-tap-highlight-color:transparent;">
                 <i class="fas fa-microphone" id="mic-icon"></i>
             </button>
-            <textarea id="ai-chat-input" rows="2" placeholder="Parla o scrivi…" 
-                class="sh-chat-speech-input"></textarea>
-            <button id="ai-send-btn" style="background:#3b82f6; border:none; color:white; border-radius:8px; width:50px; height:44px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+            <input type="text" id="ai-chat-input" placeholder="Parla o scrivi…"
+                style="flex:1;min-width:0;padding:10px 12px;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#fff;font-size:16px;">
+            <button type="button" id="ai-send-btn" style="background:#3b82f6;border:none;color:white;border-radius:8px;width:50px;height:44px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
                 <i class="fas fa-paper-plane"></i>
             </button>
         </div>
@@ -29386,10 +29406,14 @@ function fixAIPanel() {
     const sendBtn = document.getElementById('ai-send-btn');
     const openConvBtn = document.getElementById('open-conversation-btn');
 
-    window.__aiQuickSpeechCtrl = window.createChatSpeechController({
+    const isPhone = window.isServiceHubPhone && window.isServiceHubPhone();
+
+    window.__aiQuickSpeechCtrl = window.setupChatSpeech({
         input: inputField,
         micBtn: micBtn,
         sendBtn: sendBtn,
+        isPhone: isPhone,
+        replaceSessionOnly: isPhone,
         maxHeight: 120,
         sendIconIdle: '<i class="fas fa-paper-plane"></i>',
         sendIconRecording: '<i class="fas fa-arrow-right"></i>'
@@ -29419,10 +29443,7 @@ function fixAIPanel() {
     };
 
     inputField.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendAction(); }
-    });
-    inputField.addEventListener('input', () => {
-        window.syncSpeechInputFollowCaret(inputField, { maxHeight: 120 });
+        if (e.key === 'Enter') { e.preventDefault(); sendAction(); }
     });
     sendBtn.onclick = sendAction;
     
@@ -29606,7 +29627,7 @@ window.showConversationModal = async function(draftUserLine) {
                 </div>
             </div>
             <div style="display:flex; gap:8px; margin-top:12px; flex-shrink:0; align-items:flex-end;">
-                <button type="button" id="conv-mic-btn" style="background:#ef4444; border:none; color:white; border-radius:8px; width:48px; min-height:44px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0; touch-action:manipulation;">
+                <button type="button" id="conv-mic-btn" style="position:relative;z-index:5;background:#ef4444;border:none;color:white;border-radius:8px;width:48px;min-height:44px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;touch-action:manipulation;-webkit-tap-highlight-color:transparent;">
                     <i class="fas fa-microphone"></i>
                 </button>
                 <textarea id="conv-chat-input" rows="2" placeholder="Scrivi qui e invia…" 
@@ -29647,10 +29668,12 @@ window.initConversationModal = function(draftUserLine) {
     
     let currentImageData = null;
 
-    window.__convSpeechCtrl = window.createChatSpeechController({
+    window.__convSpeechCtrl = window.setupChatSpeech({
         input: inputField,
         micBtn: micBtn,
         sendBtn: sendBtn,
+        isPhone: window.isServiceHubPhone && window.isServiceHubPhone(),
+        replaceSessionOnly: false,
         maxHeight: 132
     });
 

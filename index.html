@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="it">
 <head>
     <meta charset="UTF-8">
@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v161';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v162';
         window.aiSendTap = function (ev) {
             try {
                 if (ev) { ev.preventDefault(); ev.stopPropagation(); }
@@ -24157,7 +24157,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=251')
+                navigator.serviceWorker.register('./sw.js?v=252')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();
@@ -30338,4 +30338,788 @@ window.showConversationModal = async function(draftUserLine) {
             <div id="conv-chat-clear-row" style="display:none; justify-content:center; align-items:center; margin-top:8px; flex-shrink:0;">
                 <button type="button" onclick="window.clearConvChatInput(event)" title="Cancella tutta la dettatura"
                     style="display:inline-flex; align-items:center; gap:8px; background:#0f172a; border:1px solid #ef4444; color:#fca5a5; font-size:12px; font-weight:700; padding:8px 18px; border-radius:999px; cursor:pointer; touch-action:manipulation;">
-                
+                    <i class="fas fa-times"></i> Cancella dettatura
+                </button>
+            </div>
+            <input type="file" id="conv-file-input" accept="image/*,.pdf,application/pdf" style="display:none;">
+        </div>
+    `;
+    document.body.appendChild(div);
+    window.initConversationModal(draftUserLine || '');
+};
+
+window.initConversationModal = function(draftUserLine) {
+    const historyDiv = document.getElementById('conversation-history');
+    const inputField = document.getElementById('conv-chat-input');
+    const micBtn = document.getElementById('conv-mic-btn');
+    const sendBtn = document.getElementById('conv-send-btn');
+    const fileBtn = document.getElementById('conv-file-btn');
+    const fileInput = document.getElementById('conv-file-input');
+    const filePreview = document.getElementById('conv-file-preview');
+    const previewImg = document.getElementById('conv-preview-img');
+    const fileName = document.getElementById('conv-file-name');
+    const removeFileBtn = document.getElementById('conv-remove-file');
+    const sendFileBtn = document.getElementById('conv-send-file');
+
+    if (!historyDiv || !inputField || !micBtn || !sendBtn || !fileBtn || !fileInput || !sendFileBtn || !removeFileBtn) return;
+
+    if (draftUserLine) {
+        inputField.value = draftUserLine;
+        try { inputField.focus(); } catch (e) {}
+    }
+    
+    let currentImageData = null;
+
+    let isRecording = false;
+    let userWantsStop = false;
+    let recognition = null;
+    let convMicPrefix = "";
+    let convSpeechStopResolver = null;
+
+    const resetConvMicUi = function(keepStopFlag) {
+        isRecording = false;
+        if (!keepStopFlag) userWantsStop = false;
+        micBtn.style.background = '#ef4444';
+        micBtn.innerHTML = '<i class="fas fa-microphone"></i>';
+        micBtn.style.animation = '';
+    };
+
+    const finishConvSpeechStop = function() {
+        if (convSpeechStopResolver) {
+            const r = convSpeechStopResolver;
+            convSpeechStopResolver = null;
+            try { r(); } catch (e2) {}
+        }
+    };
+
+    const buildConvRecognition = function() {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const rec = new SpeechRecognition();
+        rec.lang = 'it-IT';
+        rec.interimResults = true;
+        rec.continuous = true;
+
+        rec.onresult = function(e) {
+            var session = '';
+            for (var i = 0; i < e.results.length; i++) {
+                session += e.results[i][0].transcript;
+            }
+            var sep = convMicPrefix && session ? ' ' : '';
+            inputField.value = convMicPrefix + sep + session;
+            inputField.scrollLeft = inputField.scrollWidth;
+            try { inputField.setSelectionRange(inputField.value.length, inputField.value.length); } catch (e3) {}
+            window.syncConvChatClearBtn();
+        };
+
+        rec.onstart = function() {
+            userWantsStop = false;
+            isRecording = true;
+            convMicPrefix = (inputField.value || '').replace(/\s+$/, '');
+            micBtn.style.background = '#ef4444';
+            micBtn.innerHTML = '<i class="fas fa-stop"></i>';
+            micBtn.style.animation = 'blink 0.5s infinite';
+            try { inputField.blur(); } catch (eB) {}
+        };
+
+        rec.onend = function() {
+            resetConvMicUi(true);
+            finishConvSpeechStop();
+            convMicPrefix = (inputField.value || '').replace(/\s+$/, '');
+            userWantsStop = false;
+            try { recognition = buildConvRecognition(); } catch (eRe) {}
+        };
+
+        rec.onerror = function(ev) {
+            resetConvMicUi(true);
+            finishConvSpeechStop();
+            recognition = buildConvRecognition();
+            userWantsStop = false;
+        };
+
+        return rec;
+    };
+
+    window.__convSpeechStop = function() {
+        userWantsStop = true;
+        if (recognition) {
+            try { recognition.stop(); } catch (e) {}
+        }
+        resetConvMicUi(true);
+        finishConvSpeechStop();
+        try { recognition = buildConvRecognition(); } catch (e2) {}
+    };
+
+    const stopConvRecognitionIfNeeded = function() {
+        return new Promise(function(resolve) {
+            if (!recognition || !isRecording) {
+                resolve();
+                return;
+            }
+            convSpeechStopResolver = resolve;
+            window.__convSpeechStop();
+            setTimeout(function() {
+                finishConvSpeechStop();
+                resolve();
+            }, 400);
+        });
+    };
+
+    window.__convMicTap = function(ev) {
+        if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+        if (!recognition) {
+            alert('Riconoscimento vocale non disponibile in questo browser.');
+            return false;
+        }
+        if (isRecording) {
+            window.__convSpeechStop();
+            return false;
+        }
+        convMicPrefix = (inputField.value || '').replace(/\s+$/, '');
+        userWantsStop = false;
+        try {
+            recognition.start();
+        } catch (e5) {
+            resetConvMicUi(false);
+            try { recognition = buildConvRecognition(); } catch (e6) {}
+            alert('Microfono: ' + (e5.message || String(e5)));
+            return false;
+        }
+        isRecording = true;
+        micBtn.style.background = '#ef4444';
+        micBtn.innerHTML = '<i class="fas fa-stop"></i>';
+        micBtn.style.animation = 'blink 0.5s infinite';
+        try { inputField.blur(); } catch (eB2) {}
+        return false;
+    };
+
+    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+        recognition = buildConvRecognition();
+
+        micBtn.onclick = function() {
+            window.__convMicTap(null);
+        };
+    } else {
+        micBtn.onclick = function() {
+            alert('Riconoscimento vocale non disponibile.');
+        };
+    }
+
+    inputField.addEventListener('input', function() { window.syncConvChatClearBtn(); });
+    if (inputField.value) window.syncConvChatClearBtn();
+
+    const sendAction = async function() {
+        await stopConvRecognitionIfNeeded();
+        await new Promise(function(r) { setTimeout(r, 220); });
+        if (!inputField.value || !inputField.value.trim()) return;
+        const val = inputField.value.trim();
+        inputField.value = "";
+
+        if (historyDiv.innerText.indexOf("Inizia una conversazione") !== -1) {
+            historyDiv.innerHTML = '';
+        }
+
+        historyDiv.insertAdjacentHTML('beforeend', '<br><br><span style="color: #22c55e; font-weight: 500;">' + window._escapeHtmlConv('Tu: ' + val).replace(/\n/g, '<br>') + '</span>');
+        historyDiv.scrollTop = historyDiv.scrollHeight;
+
+        historyDiv.insertAdjacentHTML('beforeend', "<br><br><span id=\"conv-pending-ai\">AI: Connessione a GeminiÔÇª</span>");
+        historyDiv.scrollTop = historyDiv.scrollHeight;
+
+        try {
+            const res = await window.callGeminiAPIWithTimeout(val, true, currentImageData, currentImageData ? 60000 : 50000);
+            const pending = document.getElementById('conv-pending-ai');
+            if (pending) {
+                pending.removeAttribute('id');
+                pending.innerHTML = 'AI: ' + window._escapeHtmlConv(res).replace(/\n/g, '<br>');
+            }
+            window.updateGeminiContextBadgeUI();
+        } catch (err) {
+            const pending = document.getElementById('conv-pending-ai');
+            const errMsg = window._escapeHtmlConv(window.formatGeminiError(err && err.message)).replace(/\n/g, '<br>');
+            if (pending) {
+                pending.removeAttribute('id');
+                pending.innerHTML = 'AI: ' + errMsg;
+            }
+        }
+        historyDiv.scrollTop = historyDiv.scrollHeight;
+        await window.persistAIChatTranscriptFromHistoryDiv(historyDiv);
+    };
+
+    // Funzionalit├á gestione file immagine
+    fileBtn.onclick = () => {
+        fileInput.click();
+    };
+
+    fileInput.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const isImg = file.type.indexOf('image/') === 0;
+        const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '');
+        if (!isImg && !isPdf) {
+            alert('Seleziona un\'immagine (JPG, PNG, ÔÇª) o un documento PDF.');
+            return;
+        }
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const mime = file.type || (isPdf ? 'application/pdf' : 'image/jpeg');
+            currentImageData = {
+                data: event.target.result,
+                name: file.name,
+                type: mime
+            };
+            fileName.textContent = file.name + (isPdf ? ' (PDF)' : '');
+            if (isImg) {
+                previewImg.style.display = 'block';
+                previewImg.src = event.target.result;
+            } else {
+                previewImg.style.display = 'none';
+                try { previewImg.removeAttribute('src'); } catch (e6) {}
+            }
+            filePreview.style.display = 'block';
+        };
+        reader.readAsDataURL(file);
+    };
+
+    removeFileBtn.onclick = () => {
+        currentImageData = null;
+        filePreview.style.display = 'none';
+        fileInput.value = '';
+    };
+
+    sendFileBtn.onclick = async () => {
+        if (!currentImageData) {
+            alert('Nessun file da inviare');
+            return;
+        }
+
+        await stopConvRecognitionIfNeeded();
+        await new Promise(function(r) { setTimeout(r, 200); });
+
+        if (historyDiv.innerText.indexOf("Inizia una conversazione") !== -1) {
+            historyDiv.innerHTML = '';
+        }
+
+        const tipoEt = currentImageData.type === 'application/pdf' ? 'PDF' : 'file';
+        historyDiv.insertAdjacentHTML('beforeend', '<br><br><span style="color: #22c55e; font-weight: 500;">' + window._escapeHtmlConv('Tu: [' + tipoEt + ': ' + currentImageData.name + ']') + '</span>');
+        historyDiv.scrollTop = historyDiv.scrollHeight;
+
+        historyDiv.insertAdjacentHTML('beforeend', "<br><br><span id=\"conv-pending-ai\">AI: Connessione a GeminiÔÇª</span>");
+        historyDiv.scrollTop = historyDiv.scrollHeight;
+
+        try {
+            const istruz = currentImageData.type === 'application/pdf'
+                ? 'Analizza questo PDF: estrai i dati principali e commenta in italiano in modo sintetico.'
+                : 'Analizza questa immagine nel contesto dell\'impianto: descrivi cosa vedi e commenta in italiano.';
+            const res = await window.callGeminiAPIWithTimeout(istruz, true, currentImageData, 60000);
+            const pending = document.getElementById('conv-pending-ai');
+            if (pending) {
+                pending.removeAttribute('id');
+                pending.innerHTML = 'AI: ' + window._escapeHtmlConv(res).replace(/\n/g, '<br>');
+            }
+            window.updateGeminiContextBadgeUI();
+
+            currentImageData = null;
+            filePreview.style.display = 'none';
+            fileInput.value = '';
+        } catch (err) {
+            const pending = document.getElementById('conv-pending-ai');
+            const errMsg = window._escapeHtmlConv(window.formatGeminiError(err && err.message)).replace(/\n/g, '<br>');
+            if (pending) {
+                pending.removeAttribute('id');
+                pending.innerHTML = 'AI: ' + errMsg;
+            }
+        }
+        historyDiv.scrollTop = historyDiv.scrollHeight;
+        await window.persistAIChatTranscriptFromHistoryDiv(historyDiv);
+    };
+
+    inputField.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); sendAction(); }
+    });
+    sendBtn.onclick = sendAction;
+};
+
+// --- SISTEMA CONVERSIONE COD NUOVO/TOC NUOVO REAL-TIME BIDIREZIONALE ---
+window.initCODTOCConversion = function() {
+    const codNuovoInput = document.getElementById('analisi-cod-nuovo-input');
+    const tocNuovoInput = document.getElementById('analisi-toc-nuovo-input');
+    const rapConvInput = document.getElementById('analisi-rapp-conv-input');
+    
+    if (!codNuovoInput || !tocNuovoInput || !rapConvInput) return;
+    
+    let isConverting = false;
+    
+    const getRapport = () => {
+        const val = parseFloat(rapConvInput.value) || 4.7;
+        return val > 0 ? val : 4.7;
+    };
+    
+    const convertCODNuovoToTOCNuovo = () => {
+        if (isConverting) return;
+        isConverting = true;
+        
+        const codValue = parseFloat(codNuovoInput.value) || 0;
+        const rapport = getRapport();
+        const tocValue = codValue / rapport;
+        
+        tocNuovoInput.value = tocValue.toFixed(2);
+        
+        setTimeout(() => { isConverting = false; }, 10);
+    };
+    
+    const convertTOCNuovoToCODNuovo = () => {
+        if (isConverting) return;
+        isConverting = true;
+        
+        const tocValue = parseFloat(tocNuovoInput.value) || 0;
+        const rapport = getRapport();
+        const codValue = tocValue * rapport;
+        
+        codNuovoInput.value = codValue.toFixed(2);
+        
+        setTimeout(() => { isConverting = false; }, 10);
+    };
+    
+    // Event listener real-time su COD NUOVO
+    codNuovoInput.addEventListener('input', convertCODNuovoToTOCNuovo);
+    codNuovoInput.addEventListener('change', convertCODNuovoToTOCNuovo);
+    
+    // Event listener real-time su TOC NUOVO (rendilo editabile)
+    tocNuovoInput.removeAttribute('readonly');
+    tocNuovoInput.addEventListener('input', convertTOCNuovoToCODNuovo);
+    tocNuovoInput.addEventListener('change', convertTOCNuovoToCODNuovo);
+    
+    // Event listener sul rapporto di conversione
+    rapConvInput.addEventListener('input', () => {
+        // Ricalcola TOC quando cambia il rapporto
+        if (codNuovoInput.value) {
+            convertCODNuovoToTOCNuovo();
+        }
+    });
+    
+    console.log(' Sistema conversione COD NUOVO/TOC NUOVO bidirezionale attivato');
+};
+
+// --- SISTEMA CONVERSIONE COD VECCHIO/TOC VECCHIO REAL-TIME BIDIREZIONALE ---
+window.initCODVecchioTOCVecchioConversion = function() {
+    const codVecchioInput = document.getElementById('analisi-cod-vecchio-input');
+    const tocVecchioInput = document.getElementById('analisi-toc-vecchio-input');
+    const rapConvInput = document.getElementById('analisi-rapp-conv-input');
+    
+    if (!codVecchioInput || !tocVecchioInput || !rapConvInput) return;
+    
+    let isConverting = false;
+    
+    const getRapport = () => {
+        const val = parseFloat(rapConvInput.value) || 4.7;
+        return val > 0 ? val : 4.7;
+    };
+    
+    const convertCODVecchioToTOCVecchio = () => {
+        if (isConverting) return;
+        isConverting = true;
+        
+        const codValue = parseFloat(codVecchioInput.value) || 0;
+        const rapport = getRapport();
+        const tocValue = codValue / rapport;
+        
+        tocVecchioInput.value = tocValue.toFixed(2);
+        
+        setTimeout(() => { isConverting = false; }, 10);
+    };
+    
+    const convertTOCVecchioToCODVecchio = () => {
+        if (isConverting) return;
+        isConverting = true;
+        
+        const tocValue = parseFloat(tocVecchioInput.value) || 0;
+        const rapport = getRapport();
+        const codValue = tocValue * rapport;
+        
+        codVecchioInput.value = codValue.toFixed(2);
+        
+        setTimeout(() => { isConverting = false; }, 10);
+    };
+    
+    // Event listener real-time su COD VECCHIO
+    codVecchioInput.addEventListener('input', convertCODVecchioToTOCVecchio);
+    codVecchioInput.addEventListener('change', convertCODVecchioToTOCVecchio);
+    
+    // Event listener real-time su TOC VECCHIO (rendilo editabile)
+    tocVecchioInput.removeAttribute('readonly');
+    tocVecchioInput.addEventListener('input', convertTOCVecchioToCODVecchio);
+    tocVecchioInput.addEventListener('change', convertTOCVecchioToCODVecchio);
+    
+    // Event listener sul rapporto di conversione
+    rapConvInput.addEventListener('input', () => {
+        // Ricalcola TOC quando cambia il rapporto
+        if (codVecchioInput.value) {
+            convertCODVecchioToTOCVecchio();
+        }
+    });
+    
+    console.log(' Sistema conversione COD VECCHIO/TOC VECCHIO bidirezionale attivato');
+};
+
+// Inizializza sistema quando il DOM ├¿ pronto
+document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(() => {
+        window.initCODTOCConversion();
+        window.initCODVecchioTOCVecchioConversion();
+    }, 1000);
+});
+
+// Inizializza anche quando si apre il modal analisi
+const observer = new MutationObserver((mutations) => {
+    mutations.forEach((mutation) => {
+        if (mutation.type === 'childList') {
+            const modal = document.getElementById('analisi-choice-modal');
+            if (modal && modal.classList.contains('active')) {
+                setTimeout(() => {
+                    window.initCODTOCConversion();
+                    window.initCODVecchioTOCVecchioConversion();
+                }, 100);
+            }
+        }
+    });
+});
+
+observer.observe(document.body, { childList: true, subtree: true });
+
+// --- MODULO AI-DEBUGGER ISTANTANEO 2026 ---
+
+// Array per catturare gli errori in tempo reale
+window.LAST_CODING_ERRORS = [];
+
+// Intercettore universale di errori (Cattura tutto: sintassi, variabili mancanti, fallimenti fetch)
+window.onerror = function(msg, url, lineNo, columnNo, error) {
+    const debugInfo = `Errore: ${msg}\nFile: ${url}\nLinea: ${lineNo}:${columnNo}`;
+    window.LAST_CODING_ERRORS.push(debugInfo);
+    if(window.LAST_CODING_ERRORS.length > 5) window.LAST_CODING_ERRORS.shift(); // Tiene solo gli ultimi 5
+    return false; 
+};
+
+// Funzione principale di Analisi Debug
+window.runAIDebug = async function() {
+    const debugModal = document.getElementById('ai-debug-window');
+    const content = document.getElementById('debug-content');
+    
+    // Mostra subito la finestra (Istantaneo)
+    debugModal.classList.add('active');
+    content.innerHTML = 'Connessione a Gemini per diagnosiÔÇª';
+
+    const codiceRecente = window.LAST_CODING_ERRORS.join("\n---\n") || "Nessun errore rilevato negli ultimi minuti.";
+    
+    const promptDebug = `Sei un Debugger Senior. Analizza questo errore tecnico nel mio codice JavaScript:
+    ---
+    ERROR LOG: ${codiceRecente}
+    ---
+    Spiega in italiano: 
+    1. Cosa si ├¿ rotto esattamente.
+    2. Il pezzo di codice mancante o errato.
+    3. Fornisci il fix pronto da copiare. 
+    Sii ultra-veloce e tecnico. Se non ci sono log, analizza l'ultima azione dell'utente.`;
+
+    try {
+        const risposta = await window.callGeminiAPIWithTimeout(promptDebug, true, null, 50000);
+        content.innerHTML = '<div style="color:#4ade80; margin-bottom:10px;">Diagnosi completata:</div>' + window._escapeHtmlConv(risposta);
+    } catch (err) {
+        content.innerHTML = '<div style="color:#f87171;">' + window._escapeHtmlConv(window.formatGeminiError(err && err.message)) + '</div>';
+    }
+};
+
+// --- INTERFACCIA GRAFICA DEBUG (Modal dedicato) ---
+function createDebugUI() {
+    if (document.getElementById('ai-debug-window')) return;
+
+    const div = document.createElement('div');
+    div.id = 'ai-debug-window';
+    div.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,0.9); z-index:1000000; display:none; align-items:center; justify-content:center; padding:20px; font-family:monospace;";
+    
+    div.innerHTML = `
+        <div style="background:#0f172a; border:2px solid #ef4444; border-radius:12px; width:100%; max-width:600px; display:flex; flex-direction:column; max-height:85vh; box-shadow: 0 0 20px rgba(239, 68, 68, 0.3);">
+            <div style="padding:15px; background:#1e293b; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155;">
+                <b style="color:#ef4444;"><i class="fas fa-bug"></i> TERMINALE DEBUG AI</b>
+                <button onclick="document.getElementById('ai-debug-window').classList.remove('active')" style="background:transparent; border:none; color:#94a3b8; font-size:24px; cursor:pointer;">&times;</button>
+            </div>
+            <div id="debug-content" style="padding:20px; overflow-y:auto; color:#cbd5e1; font-size:13px; line-height:1.5; white-space:pre-wrap;"></div>
+            <div style="padding:10px; background:#1e293b; text-align:right;">
+                <button onclick="window.runAIDebug()" style="background:#ef4444; color:white; border:none; padding:8px 15px; border-radius:5px; cursor:pointer; font-size:12px;">RI-ANALIZZA</button>
+            </div>
+        </div>
+        <style>
+            #ai-debug-window.active { display:flex !important; }
+            .ai-loading span { animation: blink 1s infinite; }
+            @keyframes blink { 0% {opacity:0} 50% {opacity:1} 100% {opacity:0} }
+        </style>
+    `;
+    document.body.appendChild(div);
+}
+createDebugUI();
+
+// Includi integrazione Gemini AI
+const geminiScript = document.createElement('script');
+geminiScript.src = 'gemini-integration.js';
+document.body.appendChild(geminiScript);
+
+console.log('Tentativo caricamento biologico-decision-system.js...');
+const biologicoScript = document.createElement('script');
+biologicoScript.src = './biologico-decision-system.js'; // Percorso relativo con ./
+biologicoScript.onload = function() {
+    console.log('Sistema decisioni biologiche caricato correttamente');
+    // Inizializza le decisioni dopo il caricamento
+    if (window.updateDisplayDecisioniAnalisi) {
+        console.log('Funzione updateDisplayDecisioniAnalisi trovata, inizializzazione...');
+        window.updateDisplayDecisioniAnalisi();
+    } else {
+        console.error('updateDisplayDecisioniAnalisi non trovata dopo il caricamento');
+    }
+};
+biologicoScript.onerror = function(event) {
+    console.error('ERRORE: impossibile caricare biologico-decision-system.js', event);
+    // Mostra errore all'utente
+    const errorDiv = document.getElementById('error-output');
+    if (errorDiv) {
+        errorDiv.innerHTML = '<div class="error">ERRORE: File biologico-decision-system.js non trovato! Assicurati che il file sia nella stessa cartella.</div>';
+    }
+    
+    // Fallback: prova a includere il codice direttamente se il file non ├¿ accessibile
+    console.log('Tentativo fallback: inclusione diretta del codice...');
+    
+    // Includi il codice direttamente inline
+    const biologicoCode = `
+// SISTEMA DI DECISIONE BIOLOGICO BASATO SU LIVELLI O2
+// Implementazione della logica decisionale per i tre reattori biologici
+
+window.BiologicoDecisionSystem = {
+    // Livelli O2 e configurazioni per Biologico 1 (A-10620)
+    biologico1Rules: [
+        {
+            condition: (o2) => o2 > 2,
+            decisions: { urea: true, acido: true, carbone: true, fermo: false },
+            description: "O2 > 2"
+        },
+        {
+            condition: (o2) => o2 > 1 && o2 <= 2,
+            decisions: { urea: true, acido: true, carbone: true, fermo: false },
+            description: "2>O2<1"
+        },
+        {
+            condition: (o2) => o2 > 0.5 && o2 <= 1,
+            decisions: { urea: false, acido: true, carbone: true, fermo: false },
+            description: "1>O2<0.5"
+        },
+        {
+            condition: (o2) => o2 < 0.5 && o2 > 0,
+            decisions: { urea: false, acido: true, carbone: true, fermo: false },
+            description: "< 0.5"
+        },
+        {
+            condition: (o2) => o2 === 0,
+            decisions: { urea: false, acido: false, carbone: false, fermo: true },
+            description: "0"
+        }
+    ],
+
+    // Livelli O2 e configurazioni per Biologico 2 (TK-10608)
+    biologico2Rules: [
+        {
+            condition: (o2) => o2 > 1,
+            decisions: { urea: true, acido: true },
+            description: "O2 > 1"
+        },
+        {
+            condition: (o2) => o2 === 0,
+            decisions: { urea: false, acido: false },
+            description: "O2 = 0 (FERMO IMPIANTO)"
+        }
+    ],
+
+    // Livelli O2 e configurazioni per Biologico 3 (A-10607/11)
+    biologico3Rules: [
+        {
+            condition: (o2) => o2 > 2,
+            decisions: { urea: false, acido: true },
+            description: "O2 > 2"
+        },
+        {
+            condition: (o2) => o2 > 1.5,
+            decisions: { urea: false, acido: true },
+            description: "O2 > 1.5"
+        },
+        {
+            condition: (o2) => o2 > 1,
+            decisions: { urea: false, acido: true },
+            description: "O2 > 1"
+        },
+        {
+            condition: (o2) => o2 === 0,
+            decisions: { urea: false, acido: false },
+            description: "O2 = 0"
+        }
+    ],
+
+    // Calcola decisioni per tutti i reattori considerando le interazioni
+    calcolaTutteDecisioni: function(o2B1, o2B2, o2B3) {
+        const o2_1 = parseFloat(o2B1) || 0;
+        const o2_2 = parseFloat(o2B2) || 0;
+        const o2_3 = parseFloat(o2B3) || 0;
+        
+        // Calcola decisioni Biologico 1
+        let decisioniB1 = { urea: false, acido: false, carbone: false, fermo: false };
+        if (o2_1 === 0) {
+            decisioniB1 = { urea: false, acido: false, carbone: false, fermo: true, o2Range: '0 (FERMO)' };
+        } else if (o2_1 < 0.5) {
+            decisioniB1 = { urea: false, acido: true, carbone: true, fermo: false, o2Range: '< 0.5' };
+        } else if (o2_1 < 1) {
+            decisioniB1 = { urea: false, acido: true, carbone: true, fermo: false, o2Range: '0.5-1' };
+        } else if (o2_1 <= 2) {
+            decisioniB1 = { urea: true, acido: true, carbone: true, fermo: false, o2Range: '1-2' };
+        } else {
+            decisioniB1 = { urea: true, acido: true, carbone: true, fermo: false, o2Range: '> 2' };
+        }
+        
+        // Calcola decisioni Biologico 2 (dipende da B1)
+        let decisioniB2 = { urea: false, acido: false, carbone: false, fermo: false };
+        if (o2_1 === 0) {
+            // Fermo impianto
+            decisioniB2 = { urea: false, acido: false, carbone: false, fermo: true, o2Range: 'FERMO IMPIANTO' };
+        } else {
+            // Se B1 non d├á urea (O2 < 1), B2 d├á urea+acido
+            if (o2_1 < 1 && o2_2 > 0) {
+                decisioniB2 = { urea: true, acido: true, carbone: false, fermo: false, o2Range: 'UREA+ACIDO (B1 non d├á urea)' };
+            } else {
+                // Altrimenti B2 d├á solo acido
+                decisioniB2 = { urea: false, acido: true, carbone: false, fermo: false, o2Range: 'SOLO ACIDO' };
+            }
+        }
+        
+        // Calcola decisioni Biologico 3
+        let decisioniB3 = { urea: false, acido: false, carbone: false, fermo: false };
+        if (o2_1 === 0) {
+            // Fermo impianto
+            decisioniB3 = { urea: false, acido: false, carbone: false, fermo: true, o2Range: 'FERMO IMPIANTO' };
+        } else if (o2_3 > 0) {
+            // Sempre acido se non ├¿ fermo
+            decisioniB3 = { urea: false, acido: true, carbone: false, fermo: false, o2Range: 'SOLO ACIDO' };
+        }
+        
+        return {
+            B1: decisioniB1,
+            B2: decisioniB2,
+            B3: decisioniB3
+        };
+    },
+    
+    // Metodo legacy per compatibilit├á
+    calcolaDecisioniReattore: function(o2Value, tipoReattore = 'B1') {
+        // Questo metodo ├¿ deprecato, usa calcolaTutteDecisioni
+        console.warn('calcolaDecisioniReattore ├¿ deprecato, usa calcolaTutteDecisioni');
+        const o2 = parseFloat(o2Value) || 0;
+        
+        if (tipoReattore === 'B1') {
+            if (o2 === 0) return { urea: false, acido: false, carbone: false, fermo: true, o2Range: '0' };
+            if (o2 < 0.5) return { urea: false, acido: true, carbone: true, fermo: false, o2Range: '< 0.5' };
+            if (o2 < 1) return { urea: false, acido: true, carbone: true, fermo: false, o2Range: '0.5-1' };
+            if (o2 <= 2) return { urea: true, acido: true, carbone: true, fermo: false, o2Range: '1-2' };
+            return { urea: true, acido: true, carbone: true, fermo: false, o2Range: '> 2' };
+        }
+        
+        return { urea: false, acido: false, carbone: false, fermo: false, o2Range: 'UNKNOWN' };
+    }
+};
+
+// Funzione principale per aggiornare il display delle decisioni
+window.updateDisplayDecisioniAnalisi = function() {
+    // Leggi tutti e tre i valori O2
+    const o2mbr1 = parseFloat(document.getElementById('analisi-o2-mbr1-input')?.value) || 0;
+    const o2mbr2 = parseFloat(document.getElementById('analisi-o2-mbr2-input')?.value) || 0;
+    const o2mbr3 = parseFloat(document.getElementById('analisi-o2-mbr3-input')?.value) || 0;
+    
+    // DEBUG: Log dei valori
+    console.log('DEBUG O2 MBR1:', o2mbr1, 'MBR2:', o2mbr2, 'MBR3:', o2mbr3);
+    
+    // Calcola tutte le decisioni con la nuova logica interattiva
+    const tutteDecisioni = window.BiologicoDecisionSystem.calcolaTutteDecisioni(o2mbr1, o2mbr2, o2mbr3);
+    const decisioniB1 = tutteDecisioni.B1;
+    const decisioniB2 = tutteDecisioni.B2;
+    const decisioniB3 = tutteDecisioni.B3;
+    
+    // DEBUG: Log delle decisioni
+    console.log('DEBUG Decisioni B1:', decisioniB1, 'B2:', decisioniB2, 'B3:', decisioniB3);
+    
+    // Genera testo completo per tutte le decisioni
+    const tuttiSimboli = [];
+    
+    // Aggiungi diciture complete per ogni reattore
+    ['Biologico1', 'Biologico2', 'Biologico3'].forEach((reattore, index) => {
+        const decisioni = [decisioniB1, decisioniB2, decisioniB3][index];
+        const simboli = [];
+        
+        if (decisioni.urea) simboli.push('UREA');
+        if (decisioni.acido) simboli.push('ACIDO');
+        
+        // Il carbone si dosa solo nel Biologico 1
+        if (reattore === 'Biologico1' && decisioni.carbone) simboli.push('CARBONE');
+        
+        if (decisioni.fermo) simboli.push('FERMO');
+        
+        if (simboli.length > 0) {
+            tuttiSimboli.push(\`\${reattore}:\${simboli.join('+')}\`);
+        }
+    });
+    
+    // Crea testo finale
+    const testoDecisioni = tuttiSimboli.length > 0 ? tuttiSimboli.join(' | ') : 'NESSUNA DECISIONE';
+    
+    // Aggiorna il display con colori
+    const displayElement = document.getElementById('analisi-decisioni-display');
+    if (displayElement) {
+        let testoColorato = testoDecisioni
+            .replace(/UREA/g, '<span style="color:#b45309; font-weight:bold;">UREA</span>')
+            .replace(/ACIDO/g, '<span style="color:#1d4ed8; font-weight:bold;">ACIDO</span>')
+            .replace(/CARBONE/g, '<span style="color:#111827; font-weight:bold;">CARBONE</span>')
+            .replace(/FERMO/g, '<span style="color:#dc2626; font-weight:bold;">FERMO</span>');
+        
+        displayElement.innerHTML = testoColorato;
+        console.log('Display decisioni aggiornato:', testoDecisioni);
+    } else {
+        console.error('Elemento display decisioni non trovato!');
+    }
+};
+
+// Funzione di test per debug
+window.testDecisioniBiologiche = function() {
+    console.log('=== TEST SISTEMA DECISIONI BIOLOGICHE ===');
+    
+    // Test con valori multipli per tutti i reattori
+    console.log('Test decisioni per tutti i reattori:');
+    const testO2Values = [1, 1.5, 3];
+    testO2Values.forEach((o2, index) => {
+        const reattore = \`B\${index + 1}\`;
+        const decisioniReattore = window.BiologicoDecisionSystem.calcolaDecisioniReattore(o2);
+        console.log(\`\${reattore} (O2=\${o2}):\`, decisioniReattore);
+    });
+    
+    // Aggiorna display manualmente
+    window.updateDisplayDecisioniAnalisi();
+    
+    console.log('=== FINE TEST ===');
+};
+`;
+    
+    // Esegui il codice inline
+    try {
+        eval(biologicoCode);
+        console.log('Codice biologico-decision-system.js caricato inline con successo');
+        
+        // Inizializza le decisioni
+        if (window.updateDisplayDecisioniAnalisi) {
+            window.updateDisplayDecisioniAnalisi();
+        }
+    } catch (error) {
+        console.error('Errore nell\'esecuzione del codice inline:', error);
+    }
+};
+document.body.appendChild(biologicoScript);
+</script>
+</html>

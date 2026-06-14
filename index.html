@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.13-chat-speech-fix-v87';
+        window.SERVICEHUB_BUILD = '2026.06.13-chat-speech-fix-v88';
         window.SERVICE_WATCH_BUILD = '2026.06.12-watch-numpad-only-v16';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
@@ -23320,7 +23320,7 @@ window.convertToHtml = async () => {
                     </button>
                 </div>
             </div>
-            <div id="ai-settings-dock" data-speech="v87" style="flex-shrink:0;padding:10px 16px calc(12px + env(safe-area-inset-bottom));background:inherit;border-top:1px solid #334155;position:relative;z-index:200;pointer-events:auto;touch-action:manipulation;-webkit-transform:translateZ(0);transform:translateZ(0);">
+            <div id="ai-settings-dock" data-speech="v88" style="flex-shrink:0;padding:10px 16px calc(12px + env(safe-area-inset-bottom));background:inherit;border-top:1px solid #334155;position:relative;z-index:200;pointer-events:auto;touch-action:manipulation;-webkit-transform:translateZ(0);transform:translateZ(0);">
                 <div id="ai-robot-head" onclick="window.toggleChatVisibility()" style="display:flex;justify-content:center;margin-bottom:8px;cursor:pointer;touch-action:manipulation;pointer-events:auto;min-height:44px;align-items:center;">
                     <i class="fas fa-robot" style="font-size:22px;color:#475569;"></i>
                 </div>
@@ -23843,7 +23843,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=135')
+                navigator.serviceWorker.register('./sw.js?v=136')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();
@@ -29263,7 +29263,7 @@ window.clearConvChatInput = function(ev) {
     window.syncConvChatClearBtn();
 };
 
-// --- FIX PANNELLO, INVIO E VOCALE (logica v68 / 12f3685, dock statico) ---
+// --- FIX PANNELLO, INVIO E VOCALE (iPhone: continuous + blur + auto-restart) ---
 function fixAIPanel() {
     if (window.__aiSpeechWired === window.SERVICEHUB_BUILD) return;
 
@@ -29274,7 +29274,11 @@ function fixAIPanel() {
     if (!inputField || !micBtn || !sendBtn || !document.getElementById('ai-settings-dock')) return;
 
     var isRecording = false;
+    var userWantsRecording = false;
+    var userWantsStop = false;
+    var micPrefix = '';
     var recognition = null;
+    var restartTimer = null;
 
     var resetMicUi = function() {
         isRecording = false;
@@ -29291,43 +29295,83 @@ function fixAIPanel() {
         sendBtn.innerHTML = '<i class="fas fa-arrow-right"></i>';
     };
 
-    var stopRecognition = function() {
-        if (recognition && isRecording) {
-            try { recognition.stop(); } catch (e) {}
-        }
-        resetMicUi();
-    };
-    window.__aiQuickSpeechStop = stopRecognition;
+    var buildRecognition = function() {
+        var SR = window.webkitSpeechRecognition || window.SpeechRecognition;
+        if (!SR) return null;
+        var rec = new SR();
+        rec.lang = 'it-IT';
+        rec.interimResults = true;
+        rec.continuous = true;
 
-    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-        var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        recognition = new SpeechRecognition();
-        recognition.lang = 'it-IT';
-        recognition.interimResults = true;
-
-        recognition.onresult = function(e) {
-            var transcript = Array.from(e.results).map(function(r) { return r[0].transcript; }).join('');
-            inputField.value = transcript;
+        rec.onresult = function(e) {
+            var session = '';
+            for (var i = 0; i < e.results.length; i++) {
+                session += e.results[i][0].transcript;
+            }
+            var sep = micPrefix && session ? ' ' : '';
+            inputField.value = micPrefix + sep + session;
             inputField.scrollLeft = inputField.scrollWidth;
-            try { inputField.setSelectionRange(inputField.value.length, inputField.value.length); } catch (e2) {}
-            try { inputField.focus(); } catch (e3) {}
             window.syncAiChatClearBtn();
         };
 
-        recognition.onstart = function() {
+        rec.onstart = function() {
+            userWantsStop = false;
             setMicRecordingUi();
         };
 
-        recognition.onend = function() {
-            resetMicUi();
+        rec.onend = function() {
+            isRecording = false;
+            if (userWantsStop || !userWantsRecording) {
+                userWantsRecording = false;
+                resetMicUi();
+                micPrefix = (inputField.value || '').replace(/\s+$/, '');
+                try { recognition = buildRecognition(); } catch (eRe) {}
+                return;
+            }
+            micPrefix = (inputField.value || '').replace(/\s+$/, '');
+            if (restartTimer) clearTimeout(restartTimer);
+            restartTimer = setTimeout(function() {
+                restartTimer = null;
+                if (!userWantsRecording || userWantsStop) return;
+                try {
+                    if (!recognition) recognition = buildRecognition();
+                    if (recognition) recognition.start();
+                } catch (eRestart) {
+                    userWantsRecording = false;
+                    resetMicUi();
+                    try { recognition = buildRecognition(); } catch (eRe2) {}
+                }
+            }, 150);
         };
 
-        recognition.onerror = function(ev) {
+        rec.onerror = function(ev) {
+            if (ev && ev.error === 'aborted') return;
+            if (userWantsRecording && !userWantsStop && ev && (ev.error === 'no-speech' || ev.error === 'network')) {
+                return;
+            }
+            userWantsRecording = false;
+            userWantsStop = false;
             resetMicUi();
-            if (ev && (ev.error === 'no-speech' || ev.error === 'aborted')) return;
-            console.warn('[ServiceHub] SpeechRecognition:', ev && ev.error);
+            try { recognition = buildRecognition(); } catch (eRe3) {}
         };
-    }
+
+        return rec;
+    };
+
+    var stopRecognition = function() {
+        userWantsStop = true;
+        userWantsRecording = false;
+        if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
+        if (recognition) {
+            try { recognition.stop(); } catch (e) {}
+        }
+        resetMicUi();
+        micPrefix = (inputField.value || '').replace(/\s+$/, '');
+        try { recognition = buildRecognition(); } catch (eRe) {}
+    };
+    window.__aiQuickSpeechStop = stopRecognition;
+
+    recognition = buildRecognition();
 
     var sendAction = async function() {
         stopRecognition();
@@ -29353,20 +29397,25 @@ function fixAIPanel() {
 
     micBtn.onclick = function(ev) {
         if (ev) { ev.preventDefault(); ev.stopPropagation(); }
-        if (!recognition) {
+        if (!recognition && !(recognition = buildRecognition())) {
             alert('Vocale non supportato in questo browser.');
             return;
         }
-        if (isRecording) {
-            try { recognition.stop(); } catch (e4) {}
-            resetMicUi();
+        if (userWantsRecording || isRecording) {
+            stopRecognition();
             return;
         }
+        micPrefix = (inputField.value || '').replace(/\s+$/, '');
+        userWantsStop = false;
+        userWantsRecording = true;
         try {
             recognition.start();
             setMicRecordingUi();
+            try { inputField.blur(); } catch (eB) {}
         } catch (e5) {
+            userWantsRecording = false;
             resetMicUi();
+            try { recognition = buildRecognition(); } catch (e6) {}
             alert('Microfono: ' + (e5 && e5.message ? e5.message : String(e5)));
         }
     };

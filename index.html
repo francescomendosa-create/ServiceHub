@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.13-chat-ai-set-level-v131';
+        window.SERVICEHUB_BUILD = '2026.06.13-chat-ai-set-level-v132';
         window.SERVICE_WATCH_BUILD = '2026.06.12-watch-numpad-only-v16';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
@@ -29082,25 +29082,59 @@ window.resolveGeminiPlantFieldId = function(ref) {
     if (!ref) return null;
     var s = String(ref).trim();
     if (!s) return null;
-    if (/^inp[-_a-z0-9]/i.test(s)) {
-        var norm = window.normalizeTrendFieldId(s);
-        if (document.getElementById(norm)) return norm;
-    }
     if (typeof window.mapDcsSiglaToFieldId === 'function') {
         var mapped = window.mapDcsSiglaToFieldId(s);
         if (mapped) return mapped;
     }
+    if (/^inp[-_a-z0-9]/i.test(s)) {
+        return window.normalizeTrendFieldId(s);
+    }
     return null;
+};
+
+window.applyGeminiPlantFieldValue = function(fieldId, num) {
+    if (!fieldId || !Number.isFinite(num)) return 0;
+    if (typeof window.renderStoccaggioInternoPanel === 'function') {
+        window.renderStoccaggioInternoPanel();
+    }
+    var strVal = String(num);
+    var n = 0;
+    if (typeof window.setAllPlantInputsById === 'function') {
+        n = window.setAllPlantInputsById(fieldId, strVal) || 0;
+    }
+    if (!n) {
+        document.querySelectorAll('input[id="' + fieldId + '"]').forEach(function(el) {
+            if (el.readOnly) return;
+            if (window.__shouldSkipInputForPlantPayload && window.__shouldSkipInputForPlantPayload(el)) return;
+            el.value = strVal;
+            n++;
+            try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e1) {}
+            try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (e2) {}
+        });
+    }
+    if (n) {
+        document.querySelectorAll('input[id="' + fieldId + '"]').forEach(function(el) {
+            if (typeof window.__mirrorAcquaSharedToStoccaggio === 'function') window.__mirrorAcquaSharedToStoccaggio(el);
+            if (typeof window.__mirrorConducibilitaSharedFields === 'function') window.__mirrorConducibilitaSharedFields(el);
+            if (typeof window.refreshAlarmVisualForField === 'function') window.refreshAlarmVisualForField(el, true);
+        });
+        if (typeof window.refreshStoccaggioInternoTons === 'function') window.refreshStoccaggioInternoTons();
+    }
+    return n;
 };
 
 window.applyGeminiChatActions = function(responseText) {
     if (!responseText) return { text: responseText || '', applied: [] };
     var text = String(responseText);
     var applied = [];
-    var re = /\[IMPOSTA_(?:LIVELLO|CAMPO):\s*([^\]]+)\]/gi;
-    var m;
-    while ((m = re.exec(text)) !== null) {
-        var inner = m[1];
+    var seen = {};
+    var patterns = [
+        /\[IMPOSTA_(?:LIVELLO|CAMPO):\s*([^\]]+)\]/gi,
+        /IMPOSTA_(?:LIVELLO|CAMPO):\s*(serbatoio\s*=\s*[^;\n]+(?:;\s*valore\s*=\s*[^;\n]+)?|campo_id\s*=\s*[^;\n]+(?:;\s*valore\s*=\s*[^;\n]+)?)/gi
+    ];
+
+    function parseAndApply(inner) {
+        if (!inner) return;
         var pairs = {};
         inner.split(/[;,]/).forEach(function(part) {
             var eqIdx = part.indexOf('=');
@@ -29116,25 +29150,35 @@ window.applyGeminiChatActions = function(responseText) {
             fieldId = window.resolveGeminiPlantFieldId(fieldId);
         }
         var valueRaw = pairs.valore || pairs.livello || pairs.value || pairs.mm;
-        if (!fieldId || valueRaw == null || valueRaw === '') continue;
+        if (!fieldId || valueRaw == null || valueRaw === '') return;
         var num = parseFloat(String(valueRaw).replace(',', '.').replace(/[^\d.-]/g, ''));
-        if (!Number.isFinite(num)) continue;
-        var el = document.getElementById(fieldId);
-        if (!el || el.readOnly) continue;
-        if (window.__shouldSkipInputForPlantPayload && window.__shouldSkipInputForPlantPayload(el)) continue;
-        el.value = String(num);
-        try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e1) {}
-        try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (e2) {}
-        if (typeof window.refreshAlarmVisualForField === 'function') window.refreshAlarmVisualForField(el, true);
+        if (!Number.isFinite(num)) return;
+        var dedupeKey = fieldId + '=' + num;
+        if (seen[dedupeKey]) return;
+        var n = window.applyGeminiPlantFieldValue(fieldId, num);
+        if (!n) return;
+        seen[dedupeKey] = true;
         var label = typeof window.formatTrendDisplayLabel === 'function'
             ? window.formatTrendDisplayLabel(fieldId, false)
             : (typeof window.getTankName === 'function' ? window.getTankName(fieldId) : fieldId);
-        applied.push({ fieldId: fieldId, label: label, value: num });
+        applied.push({ fieldId: fieldId, label: label, value: num, targets: n });
     }
-    text = text.replace(/\[IMPOSTA_(?:LIVELLO|CAMPO):\s*[^\]]+\]/gi, '').replace(/\n{3,}/g, '\n\n').trim();
+
+    patterns.forEach(function(re) {
+        var m;
+        while ((m = re.exec(text)) !== null) {
+            parseAndApply(m[1]);
+        }
+    });
+
+    text = text.replace(/\[IMPOSTA_(?:LIVELLO|CAMPO):\s*[^\]]+\]/gi, '');
+    text = text.replace(/IMPOSTA_(?:LIVELLO|CAMPO):\s*(serbatoio\s*=\s*[^;\n]+(?:;\s*valore\s*=\s*[^;\n]+)?|campo_id\s*=\s*[^;\n]+(?:;\s*valore\s*=\s*[^;\n]+)?)/gi, '');
+    text = text.replace(/\n{3,}/g, '\n\n').trim();
+
     if (applied.length) {
-        if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
-        if (typeof window.saveData === 'function') window.saveData();
+        if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
+        else if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
+        if (typeof window.saveData === 'function') window.saveData(true);
         if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
     }
     return { text: text, applied: applied };
@@ -29182,8 +29226,8 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
         "NON dire mai 'Nessun dato' se livelliSerbatoiCorrenti o inputValues contengono valori: usa quelli. " +
         "Quando l'utente chiede di impostare, aggiornare o aggiungere un livello a un serbatoio, DEVI eseguire la modifica con il tag (puoi usarne più di uno): " +
         "[IMPOSTA_LIVELLO: serbatoio=TK9000; valore=3500] oppure [IMPOSTA_LIVELLO: campo_id=inp-tk9000; valore=3500]. " +
-        "Usa campo_id da calcoliTonnellate nel JSON. Valore sempre in mm. Dopo il tag, conferma brevemente cosa hai impostato. " +
-        "NON dire che non puoi modificare l'impianto se conosci serbatoio e valore numerico. " +
+        "Usa campo_id da calcoliTonnellate nel JSON. Valore sempre in mm. NON dire 'ho impostato' se non hai scritto il tag: l'app applica SOLO i tag. " +
+        "Se l'app conferma con ✓, la modifica è reale su tutte le schede. " +
         "Per stime tempo a un livello target (es. 300 mm): usa velocitaStimate.mm_per_ora se direzione=discesa, " +
         "formula tempo_ore = (livello_attuale - target) / |mm_per_ora|. Se velocitaStimate è vuoto ma c'è storicoArchivi, calcola tu. " +
         "Se mancano punti storici, spiega che serve almeno 2 salvataggi. " +
@@ -29270,9 +29314,12 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
             testoRisposta = actionRes.text;
             if (actionRes.applied && actionRes.applied.length) {
                 var confirmLines = actionRes.applied.map(function(a) {
-                    return '✓ ' + a.label + ' → ' + a.value + ' mm';
+                    var extra = a.targets > 1 ? ' (' + a.targets + ' campi)' : '';
+                    return '✓ ' + a.label + ' → ' + a.value + ' mm' + extra;
                 }).join('\n');
                 testoRisposta = (testoRisposta ? testoRisposta + '\n\n' : '') + confirmLines;
+            } else if (/\b(impostato|aggiornato|inserito|scritto)\b/i.test(testoRisposta) && /livell|serbatoio|tk\s*\d/i.test(testoRisposta)) {
+                testoRisposta += '\n\n⚠ Non applicato in scheda: manca il tag [IMPOSTA_LIVELLO: ...]. Riprova chiedendo esplicitamente il valore in mm.';
             }
         }
         window.__geminiUnavailable = false;

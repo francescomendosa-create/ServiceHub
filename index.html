@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-restore-v145';
+        window.SERVICEHUB_BUILD = '2026.06.14-storage-robot-v146';
         window.SERVICE_WATCH_BUILD = '2026.06.12-watch-numpad-only-v16';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
@@ -1265,6 +1265,84 @@ window.colorPreviewNumber = function(tankName, value) {
             } catch (error) {
                 console.error('❌ Errore pulizia backup:', error);
             }
+        };
+
+        /** Stima spazio usato da ServiceHub nel browser (localStorage + cache SW). */
+        window.measureServiceHubStorage = function() {
+            var items = [];
+            var totalBytes = 0;
+            try {
+                for (var i = 0; i < localStorage.length; i++) {
+                    var key = localStorage.key(i);
+                    var val = localStorage.getItem(key) || '';
+                    var bytes = new Blob([val]).size;
+                    totalBytes += bytes;
+                    items.push({ key: key, kb: Math.round(bytes / 1024) });
+                }
+            } catch (e0) {}
+            items.sort(function(a, b) { return b.kb - a.kb; });
+            return { totalMb: (totalBytes / (1024 * 1024)).toFixed(2), items: items.slice(0, 12) };
+        };
+
+        /** Libera spazio browser senza cancellare i dati operativi dell'impianto. */
+        window.pruneServiceHubBrowserStorage = async function(interactive) {
+            var before = window.measureServiceHubStorage();
+            var removedKeys = 0;
+            var trimNotes = [];
+
+            try {
+                Object.keys(localStorage).filter(function(k) { return k.indexOf('alarmBackup_') === 0; }).sort().slice(0, -6)
+                    .forEach(function(k) { localStorage.removeItem(k); removedKeys++; });
+            } catch (e1) {}
+
+            try {
+                if (localStorage.getItem('stabileCurrentData') && localStorage.getItem('stabilePlantBackup')) {
+                    localStorage.removeItem('stabilePlantBackup');
+                    removedKeys++;
+                    trimNotes.push('backup impianto duplicato');
+                }
+            } catch (e2) {}
+
+            try {
+                var archives = JSON.parse(localStorage.getItem('stabileArchives') || '[]');
+                if (Array.isArray(archives) && archives.length > 8) {
+                    localStorage.setItem('stabileArchives', JSON.stringify(archives.slice(-8)));
+                    trimNotes.push('storico Salva ridotto agli ultimi 8');
+                }
+            } catch (e3) {}
+
+            try {
+                var t = localStorage.getItem('gemini_chat_transcript') || '';
+                if (t.length > 80000) {
+                    localStorage.setItem('gemini_chat_transcript', t.slice(-80000));
+                    trimNotes.push('chat AI accorciata');
+                }
+            } catch (e4) {}
+
+            try {
+                var mem = localStorage.getItem('gemini_long_term_memory') || '';
+                if (mem.length > 120000) {
+                    localStorage.setItem('gemini_long_term_memory', mem.slice(-120000));
+                    trimNotes.push('memoria AI accorciata');
+                }
+            } catch (e5) {}
+
+            try {
+                if (typeof caches !== 'undefined' && caches.keys) {
+                    var keys = await caches.keys();
+                    await Promise.all(keys.filter(function(k) {
+                        return k.indexOf('servicehub') === 0 && k !== 'servicehub-shell-realtime-sync-v2-v236';
+                    }).map(function(k) { removedKeys++; return caches.delete(k); }));
+                }
+            } catch (e6) {}
+
+            var after = window.measureServiceHubStorage();
+            var msg = 'Prima: ' + before.totalMb + ' MB\nDopo: ' + after.totalMb + ' MB';
+            if (trimNotes.length) msg += '\n\n' + trimNotes.join(', ');
+            msg += '\n\nI dati impianto (campi letture) restano. Se Chrome chiede ancora spazio, vai in Impostazioni sito → Cancella dati → solo \"Archiviati\" / \"Cache\".';
+            if (interactive) alert(msg);
+            if (typeof fixAIPanel === 'function') fixAIPanel(true);
+            return { before: before, after: after, notes: trimNotes };
         };
         
         // Migrazione sicura vecchie chiavi (solo su richiesta esplicita)
@@ -14516,7 +14594,7 @@ window.updateStoricoButton = async function() {
     }
 
     document.getElementById('settings-modal').classList.add('active');
-    if (typeof fixAIPanel === 'function') fixAIPanel();
+    if (typeof fixAIPanel === 'function') fixAIPanel(!document.getElementById('ai-robot-head'));
     if (typeof window.refreshQuickChatStatusFromTranscript === 'function') window.refreshQuickChatStatusFromTranscript();
     if (typeof window.checkForAppUpdateFromNetwork === 'function') window.checkForAppUpdateFromNetwork();
     if (typeof window.ensureRapportiniInitialized === 'function') window.ensureRapportiniInitialized();
@@ -23401,6 +23479,15 @@ window.convertToHtml = async () => {
                     <div id="theme-toggle-bg" class="w-16 h-9 bg-slate-300 rounded-full relative p-1.5 transition-colors"><div id="theme-toggle-dot" class="w-6 h-6 bg-white rounded-full transition-transform"></div></div>
                 </div>
 
+                <!-- SPAZIO BROWSER -->
+                <div class="mt-auto pt-8 border-t border-slate-100 dark:border-slate-800">
+                    <p class="text-[9px] font-black text-amber-600 dark:text-amber-400 uppercase tracking-widest mb-3 text-center">Spazio browser</p>
+                    <button type="button" onclick="window.pruneServiceHubBrowserStorage(true)" class="w-full bg-amber-600 text-white font-black py-4 rounded-[24px] uppercase border-b-4 border-amber-900 active:scale-95 transition-all outline-none">
+                        Libera spazio browser
+                    </button>
+                    <p class="text-[8px] text-slate-400 font-bold mt-3 text-center px-4 uppercase">Rimuove backup duplicati, chat AI vecchia e cache obsolete. Non cancella le letture dell'impianto.</p>
+                </div>
+
                 <!-- NUOVA SEZIONE RESET DATI -->
                 <div class="mt-auto pt-8 border-t border-slate-100 dark:border-slate-800">
                     <p class="text-[9px] font-black text-red-500 uppercase tracking-widest mb-3 text-center">Zona Pericolo</p>
@@ -29537,23 +29624,22 @@ window.toggleChatVisibility = function(ev) {
 };
 
 // --- FIX PANNELLO, INVIO E VOCALE (ripristino v126 dock + v130 chat) ---
-function fixAIPanel() {
+function fixAIPanel(forceRebuild) {
     var settingsContent = document.querySelector('.settings-sheet');
     if (!settingsContent) return;
 
     var existing = document.getElementById('ai-learning-section');
     var wasChatOpen = existing && existing.dataset.chatOpen === '1';
-    if (existing && existing.dataset.aiRestore === 'v145') {
-        var rh = document.getElementById('ai-robot-head');
-        if (rh) {
-            var tapRobot = function(e) {
-                if (e) { try { e.preventDefault(); e.stopPropagation(); } catch (e0) {} }
-                window.toggleChatVisibility(e);
-                return false;
-            };
-            rh.onclick = tapRobot;
-            rh.ontouchend = tapRobot;
-        }
+    var dockOk = document.getElementById('ai-settings-dock');
+    var robotOk = document.getElementById('ai-robot-head');
+    if (!forceRebuild && existing && existing.dataset.aiRestore === 'v146' && dockOk && robotOk) {
+        var tapRobot = function(e) {
+            if (e) { try { e.preventDefault(); e.stopPropagation(); } catch (e0) {} }
+            window.toggleChatVisibility(e);
+            return false;
+        };
+        robotOk.onclick = tapRobot;
+        robotOk.ontouchend = tapRobot;
         return;
     }
 
@@ -29581,7 +29667,7 @@ function fixAIPanel() {
 
     var chatSection = document.createElement('div');
     chatSection.id = 'ai-learning-section';
-    chatSection.dataset.aiRestore = 'v145';
+    chatSection.dataset.aiRestore = 'v146';
     chatSection.style.cssText = 'display:none;margin:0 0 8px;padding:14px 4px 10px;border-top:1px solid rgba(51,65,85,0.45);background:rgba(59,130,246,0.07);border-radius:12px;';
     chatSection.innerHTML = ''
         + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'
@@ -29611,7 +29697,7 @@ function fixAIPanel() {
     robotHead.setAttribute('tabindex', '0');
     robotHead.setAttribute('aria-label', 'Apri chat IA');
     robotHead.style.cssText = 'display:flex;justify-content:center;align-items:center;margin:0;padding:12px 0 8px;cursor:pointer;touch-action:manipulation;min-height:52px;transition:all 0.3s ease;pointer-events:auto;';
-    robotHead.innerHTML = '<i class="fas fa-robot" style="font-size:32px;color:#475569;transition:all 0.3s ease;pointer-events:none;"></i>';
+    robotHead.innerHTML = '<i class="fas fa-robot robot-settings-icon" style="font-size:36px;color:#60a5fa;transition:all 0.3s ease;pointer-events:none;"></i>';
     robotHead.onclick = function(e) {
         if (e) { try { e.preventDefault(); e.stopPropagation(); } catch (e0) {} }
         window.toggleChatVisibility(e);

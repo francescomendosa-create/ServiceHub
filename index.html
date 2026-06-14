@@ -29299,6 +29299,17 @@ function fixAIPanel() {
 
     var isRecording = false;
     var recognition = null;
+    var userWantsStop = false;
+    var micRestartCount = 0;
+    var gotText = false;
+
+    var showStopUi = function() {
+        isRecording = true;
+        micBtn.style.background = '#ef4444';
+        micBtn.innerHTML = '<i class="fas fa-stop"></i>';
+        micBtn.style.animation = 'blink 0.5s infinite';
+        sendBtn.innerHTML = '<i class="fas fa-arrow-right"></i>';
+    };
 
     var resetMicUi = function() {
         isRecording = false;
@@ -29309,13 +29320,17 @@ function fixAIPanel() {
         }
     };
 
-    if (window.webkitSpeechRecognition || window.SpeechRecognition) {
+    var startListenEngine = function() {
+        if (userWantsStop) return;
+        if (!(window.webkitSpeechRecognition || window.SpeechRecognition)) return;
         var SpeechRecognition = window.webkitSpeechRecognition || window.SpeechRecognition;
         recognition = new SpeechRecognition();
         recognition.lang = 'it-IT';
         recognition.interimResults = true;
+        recognition.continuous = true;
 
         recognition.onresult = function(e) {
+            gotText = true;
             var transcript = Array.from(e.results).map(function(r) { return r[0].transcript; }).join('');
             inputField.value = transcript;
             inputField.scrollLeft = inputField.scrollWidth;
@@ -29324,49 +29339,87 @@ function fixAIPanel() {
         };
 
         recognition.onstart = function() {
-            isRecording = true;
-            micBtn.style.background = '#ef4444';
-            micBtn.innerHTML = '<i class="fas fa-stop"></i>';
-            micBtn.style.animation = 'blink 0.5s infinite';
-            sendBtn.innerHTML = '<i class="fas fa-arrow-right"></i>';
+            showStopUi();
         };
 
         recognition.onend = function() {
-            isRecording = false;
-            micBtn.style.background = '#ef4444';
-            micBtn.innerHTML = '<i class="fas fa-microphone"></i>';
-            micBtn.style.animation = '';
+            if (userWantsStop || gotText) {
+                resetMicUi();
+                recognition = null;
+                return;
+            }
+            if (micRestartCount < 6) {
+                micRestartCount++;
+                setTimeout(function() {
+                    if (!userWantsStop) startListenEngine();
+                }, 300);
+                return;
+            }
+            resetMicUi();
+            recognition = null;
         };
-    }
+
+        recognition.onerror = function(ev) {
+            var code = ev && ev.error ? ev.error : '';
+            if (code === 'aborted' || code === 'no-speech') return;
+        };
+
+        try {
+            recognition.start();
+        } catch (e5) {
+            if (micRestartCount < 6 && !userWantsStop) {
+                micRestartCount++;
+                setTimeout(function() {
+                    if (!userWantsStop) startListenEngine();
+                }, 300);
+            } else {
+                resetMicUi();
+                recognition = null;
+            }
+        }
+    };
 
     window.__aiQuickSpeechStop = function() {
-        if (recognition && isRecording) {
+        userWantsStop = true;
+        micRestartCount = 99;
+        if (recognition) {
             try { recognition.stop(); } catch (e) {}
+            try { recognition.abort(); } catch (e2) {}
+            recognition = null;
         }
         resetMicUi();
     };
 
     window.__aiMicTapImpl = function(ev) {
         if (ev) { try { ev.stopPropagation(); } catch (e0) {} }
-        if (!recognition) {
+        if (!(window.webkitSpeechRecognition || window.SpeechRecognition)) {
             alert('Vocale non supportato');
             return false;
         }
         if (isRecording) {
-            try { recognition.stop(); } catch (eStop) {}
+            window.__aiQuickSpeechStop();
             return false;
         }
-        try {
-            recognition.start();
-        } catch (e5) {
-            alert('Microfono: ' + (e5 && e5.message ? e5.message : String(e5)));
-            return false;
+
+        userWantsStop = false;
+        micRestartCount = 0;
+        gotText = false;
+        showStopUi();
+
+        var go = function() {
+            startListenEngine();
+        };
+
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+            navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
+                stream.getTracks().forEach(function(t) { try { t.stop(); } catch (e) {} });
+                setTimeout(go, 120);
+            }).catch(function() {
+                go();
+            });
+        } else {
+            go();
         }
-        isRecording = true;
-        micBtn.style.background = '#ef4444';
-        micBtn.innerHTML = '<i class="fas fa-stop"></i>';
-        micBtn.style.animation = 'blink 0.5s infinite';
-        sendBtn.innerHTML = '<i class="fas fa-arrow-right"></i>';
         return false;
     };
 
@@ -29375,7 +29428,7 @@ function fixAIPanel() {
     };
 
     micBtn.onclick = window.aiMicTap;
-    micBtn.setAttribute('data-ai-mic-wired', '111');
+    micBtn.setAttribute('data-ai-mic-wired', '112');
 
     window.__aiSendQuickChat = async function() {
         window.__aiQuickSpeechStop();
@@ -29416,7 +29469,7 @@ function fixAIPanel() {
     }
 
     chatSection.dataset.aiBuild = window.SERVICEHUB_BUILD;
-    chatSection.dataset.aiSpeechVer = '111';
+    chatSection.dataset.aiSpeechVer = '112';
     chatSection.dataset.aiWired = '1';
 }
 

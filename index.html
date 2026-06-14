@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.13-chat-speech-restore-v112';
+        window.SERVICEHUB_BUILD = '2026.06.13-chat-speech-restore-v113';
         window.SERVICE_WATCH_BUILD = '2026.06.12-watch-numpad-only-v16';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
@@ -29244,7 +29244,7 @@ function fixAIPanel() {
 
     var existing = document.getElementById('ai-learning-section');
     var micExisting = document.getElementById('ai-mic-btn');
-    if (existing && existing.dataset.aiSpeechVer === '112' && micExisting && micExisting.getAttribute('data-ai-mic-wired') === '112') {
+    if (existing && existing.dataset.aiSpeechVer === '113' && micExisting && micExisting.getAttribute('data-ai-mic-wired') === '113') {
         return;
     }
 
@@ -29299,16 +29299,13 @@ function fixAIPanel() {
 
     var isRecording = false;
     var recognition = null;
-    var userWantsStop = false;
-    var micRestartCount = 0;
-    var gotText = false;
+    var micStream = null;
 
-    var showStopUi = function() {
-        isRecording = true;
-        micBtn.style.background = '#ef4444';
-        micBtn.innerHTML = '<i class="fas fa-stop"></i>';
-        micBtn.style.animation = 'blink 0.5s infinite';
-        sendBtn.innerHTML = '<i class="fas fa-arrow-right"></i>';
+    var releaseStream = function() {
+        if (micStream) {
+            try { micStream.getTracks().forEach(function(t) { t.stop(); }); } catch (e) {}
+            micStream = null;
+        }
     };
 
     var resetMicUi = function() {
@@ -29320,17 +29317,13 @@ function fixAIPanel() {
         }
     };
 
-    var startListenEngine = function() {
-        if (userWantsStop) return;
-        if (!(window.webkitSpeechRecognition || window.SpeechRecognition)) return;
+    if (window.webkitSpeechRecognition || window.SpeechRecognition) {
         var SpeechRecognition = window.webkitSpeechRecognition || window.SpeechRecognition;
         recognition = new SpeechRecognition();
         recognition.lang = 'it-IT';
         recognition.interimResults = true;
-        recognition.continuous = true;
 
         recognition.onresult = function(e) {
-            gotText = true;
             var transcript = Array.from(e.results).map(function(r) { return r[0].transcript; }).join('');
             inputField.value = transcript;
             inputField.scrollLeft = inputField.scrollWidth;
@@ -29339,86 +29332,65 @@ function fixAIPanel() {
         };
 
         recognition.onstart = function() {
-            showStopUi();
+            isRecording = true;
+            micBtn.style.background = '#ef4444';
+            micBtn.innerHTML = '<i class="fas fa-stop"></i>';
+            micBtn.style.animation = 'blink 0.5s infinite';
+            sendBtn.innerHTML = '<i class="fas fa-arrow-right"></i>';
         };
 
         recognition.onend = function() {
-            if (userWantsStop || gotText) {
-                resetMicUi();
-                recognition = null;
-                return;
-            }
-            if (micRestartCount < 6) {
-                micRestartCount++;
-                setTimeout(function() {
-                    if (!userWantsStop) startListenEngine();
-                }, 300);
-                return;
-            }
+            releaseStream();
             resetMicUi();
-            recognition = null;
         };
-
-        recognition.onerror = function(ev) {
-            var code = ev && ev.error ? ev.error : '';
-            if (code === 'aborted' || code === 'no-speech') return;
-        };
-
-        try {
-            recognition.start();
-        } catch (e5) {
-            if (micRestartCount < 6 && !userWantsStop) {
-                micRestartCount++;
-                setTimeout(function() {
-                    if (!userWantsStop) startListenEngine();
-                }, 300);
-            } else {
-                resetMicUi();
-                recognition = null;
-            }
-        }
-    };
+    }
 
     window.__aiQuickSpeechStop = function() {
-        userWantsStop = true;
-        micRestartCount = 99;
-        if (recognition) {
+        releaseStream();
+        if (recognition && isRecording) {
             try { recognition.stop(); } catch (e) {}
-            try { recognition.abort(); } catch (e2) {}
-            recognition = null;
         }
         resetMicUi();
     };
 
     window.__aiMicTapImpl = function(ev) {
         if (ev) { try { ev.stopPropagation(); } catch (e0) {} }
-        if (!(window.webkitSpeechRecognition || window.SpeechRecognition)) {
+        if (!recognition) {
             alert('Vocale non supportato');
             return false;
         }
         if (isRecording) {
-            window.__aiQuickSpeechStop();
+            releaseStream();
+            try { recognition.stop(); } catch (eStop) {}
+            resetMicUi();
             return false;
         }
 
-        userWantsStop = false;
-        micRestartCount = 0;
-        gotText = false;
-        showStopUi();
+        isRecording = true;
+        micBtn.style.background = '#ef4444';
+        micBtn.innerHTML = '<i class="fas fa-stop"></i>';
+        micBtn.style.animation = 'blink 0.5s infinite';
+        sendBtn.innerHTML = '<i class="fas fa-arrow-right"></i>';
 
-        var go = function() {
-            startListenEngine();
+        var startRec = function() {
+            try {
+                recognition.start();
+            } catch (e5) {
+                releaseStream();
+                resetMicUi();
+            }
         };
 
         if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
             navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
-                stream.getTracks().forEach(function(t) { try { t.stop(); } catch (e) {} });
-                setTimeout(go, 120);
+                releaseStream();
+                micStream = stream;
+                startRec();
             }).catch(function() {
-                go();
+                startRec();
             });
         } else {
-            go();
+            startRec();
         }
         return false;
     };

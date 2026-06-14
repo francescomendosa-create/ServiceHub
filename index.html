@@ -26,7 +26,7 @@
     <link rel="apple-touch-icon" href="sh-touch.png?v=shpc4">
     <link rel="preload" as="image" href="splash-mobile.png" media="(orientation: portrait) and (max-width: 599px)">
     <link rel="preload" as="image" href="splash-pc.png" media="(orientation: landscape), (min-width: 600px)">
-    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="no">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="ServiceHub">
     <meta name="mobile-web-app-capable" content="yes">
@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.13-chat-speech-restore-v104';
+        window.SERVICEHUB_BUILD = '2026.06.13-chat-speech-restore-v105';
         window.SERVICE_WATCH_BUILD = '2026.06.12-watch-numpad-only-v16';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
@@ -29231,7 +29231,7 @@ window.clearConvChatInput = function(ev) {
     window.syncConvChatClearBtn();
 };
 
-window.__aiSpeechState = window.__aiSpeechState || { isRecording: false, recognition: null, micStream: null, micPrefix: '' };
+window.__aiSpeechState = window.__aiSpeechState || { isRecording: false, recognition: null, micStream: null, micPrefix: '', micStarted: false, userWantsStop: false };
 
 window.__aiReleaseMicStream = function() {
     var st = window.__aiSpeechState;
@@ -29274,7 +29274,8 @@ window.__aiBuildRecognition = function() {
     var rec = new SR();
     rec.lang = 'it-IT';
     rec.interimResults = true;
-    rec.continuous = true;
+    var isIosPhone = /iPhone|iPod/i.test(navigator.userAgent || '');
+    rec.continuous = !isIosPhone;
 
     rec.onresult = function(e) {
         var inputField = document.getElementById('ai-chat-input');
@@ -29292,6 +29293,7 @@ window.__aiBuildRecognition = function() {
     };
 
     rec.onstart = function() {
+        st.micStarted = true;
         window.__aiSetMicRecordingUi();
         var statusEl = document.getElementById('ai-quick-chat-status');
         if (statusEl) {
@@ -29301,18 +29303,31 @@ window.__aiBuildRecognition = function() {
     };
 
     rec.onend = function() {
+        var wasStarted = st.micStarted;
+        st.micStarted = false;
         window.__aiReleaseMicStream();
-        window.__aiResetMicUi();
+        if (!st.userWantsStop) window.__aiResetMicUi();
+        else window.__aiResetMicUi();
+        st.userWantsStop = false;
         var inputField = document.getElementById('ai-chat-input');
         if (inputField) st.micPrefix = (inputField.value || '').replace(/\s+$/, '');
+        if (!wasStarted && typeof window.isServiceHubStandalone === 'function' && window.isServiceHubStandalone()) {
+            var statusEl = document.getElementById('ai-quick-chat-status');
+            if (statusEl) {
+                statusEl.style.display = 'block';
+                statusEl.textContent = 'Dettatura non attiva in modalità app isolata. Rimuovi l\'icona dalla Home, apri ServiceHub da internet (Safari) e aggiungila di nuovo alla Home.';
+            }
+        }
         try { st.recognition = window.__aiBuildRecognition(); } catch (eRe) {}
     };
 
     rec.onerror = function(ev) {
         var code = ev && ev.error ? ev.error : '';
         if (code === 'aborted' || code === 'no-speech') return;
+        st.micStarted = false;
         window.__aiReleaseMicStream();
         window.__aiResetMicUi();
+        st.userWantsStop = false;
         try { st.recognition = window.__aiBuildRecognition(); } catch (eRe2) {}
     };
 
@@ -29321,11 +29336,13 @@ window.__aiBuildRecognition = function() {
 
 window.__aiQuickSpeechStop = function() {
     var st = window.__aiSpeechState;
+    st.userWantsStop = true;
     if (st.recognition && st.isRecording) {
         try { st.recognition.stop(); } catch (e) {}
     }
     window.__aiReleaseMicStream();
     window.__aiResetMicUi();
+    st.micStarted = false;
 };
 
 window.aiMicTap = function(ev) {
@@ -29343,9 +29360,17 @@ window.aiMicTap = function(ev) {
 
     var inputField = document.getElementById('ai-chat-input');
     st.micPrefix = inputField ? (inputField.value || '').replace(/\s+$/, '') : '';
+    st.userWantsStop = false;
+    st.micStarted = false;
     window.__aiSetMicRecordingUi();
 
     var beginListen = function() {
+        if (!st.recognition) st.recognition = window.__aiBuildRecognition();
+        if (!st.recognition) {
+            window.__aiResetMicUi();
+            alert('Vocale non supportato');
+            return;
+        }
         try {
             st.recognition.start();
         } catch (e5) {
@@ -29355,13 +29380,15 @@ window.aiMicTap = function(ev) {
         }
     };
 
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    var standalone = typeof window.isServiceHubStandalone === 'function' && window.isServiceHubStandalone();
+
+    if (standalone && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
             window.__aiReleaseMicStream();
             st.micStream = stream;
             beginListen();
         }).catch(function() {
-            beginListen();
+            window.__aiResetMicUi();
         });
     } else {
         beginListen();
@@ -29373,7 +29400,7 @@ window.__wireAiMicButton = function() {
     var micBtn = document.getElementById('ai-mic-btn');
     if (!micBtn) return;
     micBtn.onclick = window.aiMicTap;
-    micBtn.setAttribute('data-ai-mic-wired', '104');
+    micBtn.setAttribute('data-ai-mic-wired', '105');
 };
 
 window.__aiSendQuickChat = async function() {
@@ -29408,7 +29435,7 @@ function fixAIPanel() {
 
     var existing = document.getElementById('ai-learning-section');
     var micExisting = document.getElementById('ai-mic-btn');
-    if (existing && existing.dataset.aiSpeechVer === '104' && micExisting && micExisting.getAttribute('data-ai-mic-wired') === '104') {
+    if (existing && existing.dataset.aiSpeechVer === '105' && micExisting && micExisting.getAttribute('data-ai-mic-wired') === '105') {
         if (!window.__aiSpeechState.recognition) {
             window.__aiSpeechState.recognition = window.__aiBuildRecognition();
         }

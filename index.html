@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v162';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v163';
         window.aiSendTap = function (ev) {
             try {
                 if (ev) { ev.preventDefault(); ev.stopPropagation(); }
@@ -663,10 +663,12 @@ window.colorPreviewNumber = function(tankName, value) {
             return false;
         };
         window.aiMicTapFromUi = function (ev) {
-            try {
-                if (ev) { ev.preventDefault(); ev.stopPropagation(); }
-            } catch (e0) {}
+            var iosPhone = typeof window.isServiceHubIOSPhone === 'function' && window.isServiceHubIOSPhone();
+            if (!iosPhone && ev) {
+                try { ev.preventDefault(); ev.stopPropagation(); } catch (e0) {}
+            }
             if (typeof window.__clearPostLongPressShield === 'function') window.__clearPostLongPressShield();
+            if (iosPhone && typeof window.__aiMicTapIOS === 'function') return window.__aiMicTapIOS(ev);
             if (typeof window.__aiMicTap === 'function') return window.__aiMicTap(ev);
             return false;
         };
@@ -883,6 +885,11 @@ window.colorPreviewNumber = function(tankName, value) {
                 return Math.min(window.screen.width, window.screen.height) < 600;
             }
             return false;
+        };
+
+        /** iPhone / iPod — path vocale dedicato (gesto touch sincrono, no preventDefault). */
+        window.isServiceHubIOSPhone = function () {
+            return /iPhone|iPod/i.test(navigator.userAgent || '');
         };
 
         /** App aggiunta a Home (PWA / standalone) — su iOS Apple spesso blocca SpeechRecognition. */
@@ -24157,7 +24164,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=252')
+                navigator.serviceWorker.register('./sw.js?v=253')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();
@@ -29700,7 +29707,7 @@ window.clearConvChatInput = function(ev) {
     window.syncConvChatClearBtn();
 };
 
-window.__aiMicState = { recording: false, rec: null, prefix: '' };
+window.__aiMicState = { recording: false, rec: null, prefix: '', iosRec: null };
 
 window.__aiMicGetEls = function() {
     return {
@@ -29779,13 +29786,90 @@ window.__aiMicEnsureRec = function() {
 
 window.__aiQuickSpeechStop = function() {
     var st = window.__aiMicState;
-    if (st.rec && st.recording) {
+    if (window.isServiceHubIOSPhone && window.isServiceHubIOSPhone()) {
+        if (st.iosRec && st.recording) {
+            try { st.iosRec.stop(); } catch (e) {}
+        }
+    } else if (st.rec && st.recording) {
         try { st.rec.stop(); } catch (e) {}
     }
     window.__aiMicResetUi();
 };
 
+window.__aiMicTapIOS = function(ev) {
+    window.__aiMicIosTouchTs = Date.now();
+    if (typeof window.__clearPostLongPressShield === 'function') window.__clearPostLongPressShield();
+    var els = window.__aiMicGetEls();
+    if (!els.mic || !els.input) return false;
+    var st = window.__aiMicState;
+
+    if (!st.iosRec) {
+        if (!(window.webkitSpeechRecognition || window.SpeechRecognition)) {
+            alert('Riconoscimento vocale non disponibile su questo iPhone.');
+            return false;
+        }
+        var SR = window.webkitSpeechRecognition || window.SpeechRecognition;
+        st.iosRec = new SR();
+        st.iosRec.lang = 'it-IT';
+        st.iosRec.interimResults = true;
+
+        st.iosRec.onresult = function(e) {
+            var transcript = Array.from(e.results).map(function(r) { return r[0].transcript; }).join('');
+            els.input.value = transcript;
+            try { els.input.scrollLeft = els.input.scrollWidth; } catch (e2) {}
+            try { els.input.setSelectionRange(els.input.value.length, els.input.value.length); } catch (e3) {}
+            try { els.input.focus(); } catch (e4) {}
+            window.syncAiChatClearBtn();
+        };
+
+        st.iosRec.onstart = function() {
+            st.recording = true;
+            els.mic.style.background = '#ef4444';
+            els.mic.innerHTML = '<i class="fas fa-stop"></i>';
+            els.mic.style.animation = 'blink 0.5s infinite';
+            if (els.send) els.send.innerHTML = '<i class="fas fa-arrow-right"></i>';
+        };
+
+        st.iosRec.onend = function() {
+            st.recording = false;
+            els.mic.style.background = '#ef4444';
+            els.mic.innerHTML = '<i class="fas fa-microphone"></i>';
+            els.mic.style.animation = '';
+            if (els.send) els.send.innerHTML = '<i class="fas fa-paper-plane"></i>';
+        };
+
+        st.iosRec.onerror = function(errEv) {
+            var code = errEv && errEv.error ? errEv.error : '';
+            if (code === 'aborted' || code === 'no-speech') return;
+            st.recording = false;
+            els.mic.innerHTML = '<i class="fas fa-microphone"></i>';
+            els.mic.style.animation = '';
+        };
+    }
+
+    if (st.recording) {
+        try { st.iosRec.stop(); } catch (eStop) {}
+        return false;
+    }
+
+    try {
+        st.iosRec.start();
+    } catch (e5) {
+        st.iosRec = null;
+        if (!ev || !ev.__iosMicRetried) {
+            var retryEv = ev || {};
+            retryEv.__iosMicRetried = true;
+            return window.__aiMicTapIOS(retryEv);
+        }
+        alert('Microfono: ' + (e5 && e5.message ? e5.message : String(e5)));
+    }
+    return false;
+};
+
 window.__aiMicTap = function(ev) {
+    if (window.isServiceHubIOSPhone && window.isServiceHubIOSPhone()) {
+        return window.__aiMicTapIOS(ev);
+    }
     if (ev) {
         try { ev.preventDefault(); ev.stopPropagation(); } catch (e0) {}
     }
@@ -29870,12 +29954,27 @@ window.wireAiChatControls = function() {
     var els = window.__aiMicGetEls();
     var openConvBtn = document.getElementById('open-conversation-btn');
     var quickStatus = document.getElementById('ai-quick-chat-status');
-    if (typeof window.__aiMicEnsureRec === 'function') window.__aiMicEnsureRec();
+    var iosPhone = window.isServiceHubIOSPhone && window.isServiceHubIOSPhone();
+    var build = window.SERVICEHUB_BUILD || '163';
+    if (!iosPhone && typeof window.__aiMicEnsureRec === 'function') window.__aiMicEnsureRec();
 
     if (els.mic) {
-        els.mic.onclick = function(ev) {
-            return window.aiMicTapFromUi(ev);
-        };
+        if (iosPhone) {
+            if (els.mic.dataset.iosMicWired !== build) {
+                els.mic.dataset.iosMicWired = build;
+                els.mic.addEventListener('touchstart', function(ev) {
+                    window.__aiMicTapIOS(ev);
+                }, { passive: true });
+                els.mic.onclick = function(ev) {
+                    if (window.__aiMicIosTouchTs && Date.now() - window.__aiMicIosTouchTs < 600) return false;
+                    return window.__aiMicTapIOS(ev);
+                };
+            }
+        } else {
+            els.mic.onclick = function(ev) {
+                return window.aiMicTapFromUi(ev);
+            };
+        }
     }
     if (els.send) {
         els.send.onclick = function(ev) {
@@ -29906,18 +30005,31 @@ window.wireAiChatControls = function() {
 window.bindSpeechMicTap = function(btn, handler) {
     if (!btn || typeof handler !== 'function') return;
     var lockUntil = 0;
-    var run = function(ev) {
-        try {
-            if (ev) { ev.preventDefault(); ev.stopPropagation(); }
-        } catch (e0) {}
+    var iosPhone = window.isServiceHubIOSPhone && window.isServiceHubIOSPhone();
+    var touchTs = 0;
+    var run = function(ev, skipPrevent) {
+        if (!skipPrevent && !iosPhone && ev) {
+            try { ev.preventDefault(); ev.stopPropagation(); } catch (e0) {}
+        }
         var now = Date.now();
         if (now < lockUntil) return false;
         lockUntil = now + 500;
         handler(ev);
         return false;
     };
-    btn.addEventListener('touchend', run, { passive: false });
-    btn.addEventListener('click', run, { passive: false });
+    if (iosPhone) {
+        btn.addEventListener('touchstart', function(ev) {
+            touchTs = Date.now();
+            run(ev, true);
+        }, { passive: true });
+        btn.addEventListener('click', function(ev) {
+            if (touchTs && Date.now() - touchTs < 600) return false;
+            run(ev, true);
+        }, { passive: true });
+    } else {
+        btn.addEventListener('touchend', function(ev) { run(ev, false); }, { passive: false });
+        btn.addEventListener('click', function(ev) { run(ev, false); }, { passive: false });
+    }
 };
 
 window.openAiChat = function() {
@@ -29999,8 +30111,8 @@ function fixAIPanel() {
 
     window.wireAiRobotHead();
 
-    if (!chatSection.querySelector('#ai-mic-btn') || chatSection.dataset.aiSpeechVer !== '161') {
-        chatSection.dataset.aiSpeechVer = '161';
+    if (!chatSection.querySelector('#ai-mic-btn') || chatSection.dataset.aiSpeechVer !== '163') {
+        chatSection.dataset.aiSpeechVer = '163';
         chatSection.innerHTML = ''
             + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'
             + '<button type="button" onclick="exportAIMemory()" style="background:#1e293b;border:1px solid #334155;color:#60a5fa;width:32px;height:32px;cursor:pointer;border-radius:6px;font-size:10px;display:flex;align-items:center;justify-content:center;touch-action:manipulation;" title="Esporta memoria AI">↓</button>'
@@ -30024,7 +30136,10 @@ function fixAIPanel() {
     }
 
     window.wireAiChatControls();
-    if (window.__aiMicState) window.__aiMicState.rec = null;
+    if (window.__aiMicState) {
+        window.__aiMicState.rec = null;
+        window.__aiMicState.iosRec = null;
+    }
     if (typeof window.__aiMicEnsureRec === 'function') window.__aiMicEnsureRec();
     if (typeof window.refreshQuickChatStatusFromTranscript === 'function') {
         window.refreshQuickChatStatusFromTranscript();
@@ -30375,6 +30490,8 @@ window.initConversationModal = function(draftUserLine) {
     let recognition = null;
     let convMicPrefix = "";
     let convSpeechStopResolver = null;
+    var convIosPhone = window.isServiceHubIOSPhone && window.isServiceHubIOSPhone();
+    var convMicIosTouchTs = 0;
 
     const resetConvMicUi = function(keepStopFlag) {
         isRecording = false;
@@ -30397,7 +30514,7 @@ window.initConversationModal = function(draftUserLine) {
         const rec = new SpeechRecognition();
         rec.lang = 'it-IT';
         rec.interimResults = true;
-        rec.continuous = true;
+        rec.continuous = convIosPhone ? false : true;
 
         rec.onresult = function(e) {
             var session = '';
@@ -30418,7 +30535,7 @@ window.initConversationModal = function(draftUserLine) {
             micBtn.style.background = '#ef4444';
             micBtn.innerHTML = '<i class="fas fa-stop"></i>';
             micBtn.style.animation = 'blink 0.5s infinite';
-            try { inputField.blur(); } catch (eB) {}
+            if (!convIosPhone) { try { inputField.blur(); } catch (eB) {} }
         };
 
         rec.onend = function() {
@@ -30465,7 +30582,7 @@ window.initConversationModal = function(draftUserLine) {
     };
 
     window.__convMicTap = function(ev) {
-        if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+        if (!convIosPhone && ev) { ev.preventDefault(); ev.stopPropagation(); }
         if (!recognition) {
             alert('Riconoscimento vocale non disponibile in questo browser.');
             return false;
@@ -30488,16 +30605,27 @@ window.initConversationModal = function(draftUserLine) {
         micBtn.style.background = '#ef4444';
         micBtn.innerHTML = '<i class="fas fa-stop"></i>';
         micBtn.style.animation = 'blink 0.5s infinite';
-        try { inputField.blur(); } catch (eB2) {}
+        if (!convIosPhone) { try { inputField.blur(); } catch (eB2) {} }
         return false;
     };
 
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
         recognition = buildConvRecognition();
 
-        micBtn.onclick = function() {
-            window.__convMicTap(null);
-        };
+        if (convIosPhone) {
+            micBtn.addEventListener('touchstart', function(ev) {
+                convMicIosTouchTs = Date.now();
+                window.__convMicTap(ev);
+            }, { passive: true });
+            micBtn.onclick = function(ev) {
+                if (convMicIosTouchTs && Date.now() - convMicIosTouchTs < 600) return false;
+                return window.__convMicTap(ev);
+            };
+        } else {
+            micBtn.onclick = function() {
+                window.__convMicTap(null);
+            };
+        }
     } else {
         micBtn.onclick = function() {
             alert('Riconoscimento vocale non disponibile.');

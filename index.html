@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.13-chat-unified-transcript-v129';
+        window.SERVICEHUB_BUILD = '2026.06.13-chat-unified-transcript-v130';
         window.SERVICE_WATCH_BUILD = '2026.06.12-watch-numpad-only-v16';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
@@ -4892,8 +4892,10 @@ window.updateStoricoButton = async function() {
         // Storico conversazione AI (testo completo, stesso contenuto della finestra chat)
         window.saveAIChatTranscript = async function(transcript) {
             const t = transcript == null ? '' : String(transcript);
+            const ts = String(Date.now());
             try {
                 localStorage.setItem('gemini_chat_transcript', t);
+                localStorage.setItem('gemini_chat_transcript_updated', ts);
             } catch (e) {}
             if (user && user.uid) {
                 try {
@@ -4909,21 +4911,30 @@ window.updateStoricoButton = async function() {
 
         window.loadAIChatTranscript = async function() {
             let cloud = '';
+            let cloudUpdated = 0;
             if (user && user.uid) {
                 try {
                     const docSnap = await getDoc(doc(db, 'artifacts', appId, 'sharedDial', 'aiChat'));
                     if (docSnap.exists()) {
                         cloud = docSnap.data().transcript || '';
+                        cloudUpdated = Date.parse(docSnap.data().lastUpdated || '') || 0;
                     }
                 } catch (e) {
                     console.warn('aiChat Firestore load failed:', e);
                 }
             }
             let local = '';
+            let localUpdated = 0;
             try {
                 local = localStorage.getItem('gemini_chat_transcript') || '';
+                localUpdated = parseInt(localStorage.getItem('gemini_chat_transcript_updated') || '0', 10) || 0;
             } catch (e) {}
+            if (typeof window.mergeAIChatTranscripts === 'function') {
+                return window.mergeAIChatTranscripts(cloud, local, cloudUpdated, localUpdated);
+            }
             if (cloud && local) {
+                if (localUpdated > cloudUpdated) return local;
+                if (cloudUpdated > localUpdated) return cloud;
                 return cloud.length >= local.length ? cloud : local;
             }
             return cloud || local || '';
@@ -29251,7 +29262,7 @@ function fixAIPanel() {
     if (!settingsContent) return;
 
     var existing = document.getElementById('ai-learning-section');
-    if (existing && existing.dataset.aiRestore === 'v128') return;
+    if (existing && existing.dataset.aiRestore === 'v130') return;
 
     if (existing) existing.remove();
     var staleHead = document.getElementById('ai-robot-head');
@@ -29275,7 +29286,7 @@ function fixAIPanel() {
 
     var chatSection = document.createElement('div');
     chatSection.id = 'ai-learning-section';
-    chatSection.dataset.aiRestore = 'v128';
+    chatSection.dataset.aiRestore = 'v130';
     chatSection.style.cssText = 'margin-top:20px;padding:15px;border-top:1px solid #334155;background:rgba(59,130,246,0.05);border-radius:10px;display:none;';
     chatSection.innerHTML = ''
         + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'
@@ -29293,7 +29304,10 @@ function fixAIPanel() {
         + '<div id="ai-chat-clear-row" style="display:none;justify-content:center;align-items:center;margin:4px 0 10px;">'
         + '<button type="button" onclick="window.clearAiChatInput(event)" title="Cancella tutta la dettatura" style="display:inline-flex;align-items:center;gap:8px;background:#1e293b;border:1px solid #ef4444;color:#fca5a5;font-size:12px;font-weight:700;padding:8px 18px;border-radius:999px;cursor:pointer;touch-action:manipulation;">'
         + '<i class="fas fa-times"></i> Cancella dettatura</button></div>'
-        + '<div id="ai-quick-chat-status" style="display:none;margin-top:8px;padding:10px;background:#0f172a;border:1px solid #334155;border-radius:8px;font-size:12px;white-space:pre-wrap;max-height:140px;overflow-y:auto;line-height:1.35;color:#e2e8f0;"></div>'
+        + '<div id="ai-quick-chat-panel" style="display:none;margin-top:8px;padding:10px 10px 10px 12px;background:#0f172a;border:1px solid #334155;border-radius:8px;position:relative;">'
+        + '<button type="button" id="ai-quick-chat-dismiss" onclick="window.clearQuickChatPreview(event)" title="Svuota anteprima (lo storico resta)" style="position:absolute;top:6px;right:6px;width:22px;height:22px;border:none;border-radius:999px;background:#334155;color:#fca5a5;font-size:14px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;touch-action:manipulation;z-index:2;">×</button>'
+        + '<div id="ai-quick-chat-status" onclick="window.openQuickChatFull(event)" title="Tocca per aprire la conversazione completa" style="font-size:12px;white-space:pre-wrap;max-height:140px;overflow-y:auto;line-height:1.35;color:#e2e8f0;padding-right:22px;cursor:pointer;touch-action:manipulation;"></div>'
+        + '</div>'
         + '<div id="gemini-ctx-badge" style="display:none;margin-top:6px;font-size:10px;color:#64748b;line-height:1.3;"></div>';
 
     settingsContent.appendChild(robotHead);
@@ -29400,27 +29414,26 @@ function fixAIPanel() {
         micBtn.style.animation = '';
         sendBtn.innerHTML = '<i class="fas fa-paper-plane"></i>';
         var statusEl = document.getElementById('ai-quick-chat-status');
+        var panelEl = document.getElementById('ai-quick-chat-panel');
         if (statusEl) {
             statusEl.style.display = 'block';
             statusEl.textContent = 'Invio in corso…';
         }
+        if (panelEl) panelEl.style.display = 'block';
+        window.__aiQuickPreviewDismissed = false;
         try {
             var res = await window.callGeminiAPIWithTimeout(val, true, null, 50000);
             var aiText = res;
-            if (statusEl) {
-                statusEl.style.display = 'block';
-                statusEl.textContent = 'Tu: ' + val + '\n\nAI: ' + aiText;
-            }
+            if (statusEl) statusEl.textContent = 'Tu: ' + val + '\n\nAI: ' + aiText;
+            if (panelEl) panelEl.style.display = 'block';
             if (typeof window.appendAIChatExchange === 'function') {
                 await window.appendAIChatExchange(val, aiText);
             }
             window.updateGeminiContextBadgeUI();
         } catch (err) {
             var errText = window.formatGeminiError(err && err.message);
-            if (statusEl) {
-                statusEl.style.display = 'block';
-                statusEl.textContent = 'Tu: ' + val + '\n\nAI: ' + errText;
-            }
+            if (statusEl) statusEl.textContent = 'Tu: ' + val + '\n\nAI: ' + errText;
+            if (panelEl) panelEl.style.display = 'block';
             if (typeof window.appendAIChatExchange === 'function') {
                 await window.appendAIChatExchange(val, errText);
             }
@@ -29561,11 +29574,68 @@ window.persistAIChatTranscriptFromHistoryDiv = async function(historyDiv) {
     } catch (e) {}
 };
 
-window.extractLastChatExchange = function(transcript) {
-    var t = String(transcript || '').trim();
+window.normalizeAIChatTranscript = function(text) {
+    var t = String(text || '').trim();
     if (!t || t.indexOf('Inizia una conversazione') !== -1) return '';
-    var parts = t.split(/\n\n(?=Tu: )/);
-    return (parts[parts.length - 1] || t).trim();
+    return t;
+};
+
+window.splitAIChatExchanges = function(text) {
+    text = window.normalizeAIChatTranscript(text);
+    if (!text) return [];
+    return text.split(/\n\n(?=Tu: )/).map(function(s) { return s.trim(); }).filter(Boolean);
+};
+
+window.mergeAIChatTranscripts = function(cloud, local, cloudUpdated, localUpdated) {
+    cloud = window.normalizeAIChatTranscript(cloud);
+    local = window.normalizeAIChatTranscript(local);
+    if (!cloud) return local;
+    if (!local) return cloud;
+    if (cloud === local) return cloud;
+    if (local.indexOf(cloud) >= 0) return local;
+    if (cloud.indexOf(local) >= 0) return cloud;
+
+    var cloudParts = window.splitAIChatExchanges(cloud);
+    var localParts = window.splitAIChatExchanges(local);
+    var merged = cloudParts.slice();
+    var seen = {};
+    cloudParts.forEach(function(p) { seen[p] = true; });
+
+    localParts.forEach(function(part) {
+        if (!seen[part]) {
+            merged.push(part);
+            seen[part] = true;
+        }
+    });
+
+    if (localUpdated > cloudUpdated && localParts.length > cloudParts.length) {
+        merged = cloudParts.concat(localParts.slice(cloudParts.length));
+    }
+
+    return merged.join('\n\n');
+};
+
+window.renderTranscriptToHistoryHtml = function(text) {
+    text = window.normalizeAIChatTranscript(text);
+    if (!text) {
+        return window._escapeHtmlConv("Inizia una conversazione con l'AI...");
+    }
+    var parts = window.splitAIChatExchanges(text);
+    return parts.map(function(block) {
+        var m = block.match(/^Tu:\s*([\s\S]*?)\n\nAI:\s*([\s\S]*)$/);
+        if (!m) {
+            return '<br><br>' + window._escapeHtmlConv(block).replace(/\n/g, '<br>');
+        }
+        return '<br><br><span style="color:#22c55e;font-weight:500;">'
+            + window._escapeHtmlConv('Tu: ' + m[1]).replace(/\n/g, '<br>')
+            + '</span><br><br>'
+            + window._escapeHtmlConv('AI: ' + m[2]).replace(/\n/g, '<br>');
+    }).join('');
+};
+
+window.extractLastChatExchange = function(transcript) {
+    var parts = window.splitAIChatExchanges(transcript);
+    return parts.length ? parts[parts.length - 1] : '';
 };
 
 window.appendAIChatExchange = async function(userMsg, aiMsg) {
@@ -29576,10 +29646,7 @@ window.appendAIChatExchange = async function(userMsg, aiMsg) {
     if (window.loadAIChatTranscript) {
         try { transcript = await window.loadAIChatTranscript(); } catch (e) {}
     }
-    transcript = String(transcript || '').trim();
-    if (!transcript || transcript.indexOf('Inizia una conversazione') !== -1) {
-        transcript = '';
-    }
+    transcript = window.normalizeAIChatTranscript(transcript);
     var block = 'Tu: ' + userMsg + '\n\nAI: ' + aiMsg;
     transcript = transcript ? (transcript + '\n\n' + block) : block;
     if (window.saveAIChatTranscript) {
@@ -29588,18 +29655,39 @@ window.appendAIChatExchange = async function(userMsg, aiMsg) {
     return transcript;
 };
 
-window.refreshQuickChatStatusFromTranscript = async function() {
+window.clearQuickChatPreview = function(ev) {
+    if (ev) { try { ev.preventDefault(); ev.stopPropagation(); } catch (e0) {} }
+    window.__aiQuickPreviewDismissed = true;
+    var panel = document.getElementById('ai-quick-chat-panel');
     var statusEl = document.getElementById('ai-quick-chat-status');
+    var inp = document.getElementById('ai-chat-input');
+    if (panel) panel.style.display = 'none';
+    if (statusEl) { statusEl.textContent = ''; }
+    if (inp) { inp.value = ''; window.syncAiChatClearBtn(); }
+    if (typeof window.__aiQuickSpeechStop === 'function') window.__aiQuickSpeechStop();
+};
+
+window.openQuickChatFull = async function(ev) {
+    if (ev && ev.target && ev.target.closest && ev.target.closest('#ai-quick-chat-dismiss')) return;
+    if (ev) { try { ev.preventDefault(); ev.stopPropagation(); } catch (e0) {} }
+    if (typeof window.__aiQuickSpeechStop === 'function') window.__aiQuickSpeechStop();
+    await window.showConversationModal('');
+};
+
+window.refreshQuickChatStatusFromTranscript = async function() {
+    if (window.__aiQuickPreviewDismissed) return;
+    var statusEl = document.getElementById('ai-quick-chat-status');
+    var panelEl = document.getElementById('ai-quick-chat-panel');
     if (!statusEl || !window.loadAIChatTranscript) return;
     try {
         var transcript = await window.loadAIChatTranscript();
         var preview = window.extractLastChatExchange(transcript);
         if (preview) {
-            statusEl.style.display = 'block';
             statusEl.textContent = preview;
+            if (panelEl) panelEl.style.display = 'block';
         } else {
-            statusEl.style.display = 'none';
             statusEl.textContent = '';
+            if (panelEl) panelEl.style.display = 'none';
         }
     } catch (e2) {}
 };
@@ -29616,9 +29704,9 @@ window.showConversationModal = async function(draftUserLine) {
     } catch (e) {}
 
     let historyText = (cloudText || '').trim();
-    if (!historyText) {
-        historyText = "Inizia una conversazione con l'AI...";
-    }
+    const historyHtml = window.renderTranscriptToHistoryHtml
+        ? window.renderTranscriptToHistoryHtml(historyText)
+        : window._escapeHtmlConv(historyText || "Inizia una conversazione con l'AI...").replace(/\n/g, '<br>');
 
     const div = document.createElement('div');
     div.id = 'conversation-modal';

@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.13-chat-unified-transcript-v130';
+        window.SERVICEHUB_BUILD = '2026.06.13-chat-ai-set-level-v131';
         window.SERVICE_WATCH_BUILD = '2026.06.12-watch-numpad-only-v16';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
@@ -29078,6 +29078,68 @@ window.trimGeminiContextJson = function(obj, maxChars) {
     return json.slice(0, max) + '\n…[contesto troncato]';
 };
 
+window.resolveGeminiPlantFieldId = function(ref) {
+    if (!ref) return null;
+    var s = String(ref).trim();
+    if (!s) return null;
+    if (/^inp[-_a-z0-9]/i.test(s)) {
+        var norm = window.normalizeTrendFieldId(s);
+        if (document.getElementById(norm)) return norm;
+    }
+    if (typeof window.mapDcsSiglaToFieldId === 'function') {
+        var mapped = window.mapDcsSiglaToFieldId(s);
+        if (mapped) return mapped;
+    }
+    return null;
+};
+
+window.applyGeminiChatActions = function(responseText) {
+    if (!responseText) return { text: responseText || '', applied: [] };
+    var text = String(responseText);
+    var applied = [];
+    var re = /\[IMPOSTA_(?:LIVELLO|CAMPO):\s*([^\]]+)\]/gi;
+    var m;
+    while ((m = re.exec(text)) !== null) {
+        var inner = m[1];
+        var pairs = {};
+        inner.split(/[;,]/).forEach(function(part) {
+            var eqIdx = part.indexOf('=');
+            if (eqIdx < 0) return;
+            var key = part.slice(0, eqIdx).trim().toLowerCase().replace(/\s+/g, '_');
+            var val = part.slice(eqIdx + 1).trim();
+            if (key) pairs[key] = val;
+        });
+        var fieldId = pairs.campo_id || pairs.campo || pairs.field_id || pairs.id;
+        if (!fieldId && (pairs.serbatoio || pairs.tank || pairs.tk)) {
+            fieldId = window.resolveGeminiPlantFieldId(pairs.serbatoio || pairs.tank || pairs.tk);
+        } else if (fieldId) {
+            fieldId = window.resolveGeminiPlantFieldId(fieldId);
+        }
+        var valueRaw = pairs.valore || pairs.livello || pairs.value || pairs.mm;
+        if (!fieldId || valueRaw == null || valueRaw === '') continue;
+        var num = parseFloat(String(valueRaw).replace(',', '.').replace(/[^\d.-]/g, ''));
+        if (!Number.isFinite(num)) continue;
+        var el = document.getElementById(fieldId);
+        if (!el || el.readOnly) continue;
+        if (window.__shouldSkipInputForPlantPayload && window.__shouldSkipInputForPlantPayload(el)) continue;
+        el.value = String(num);
+        try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e1) {}
+        try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (e2) {}
+        if (typeof window.refreshAlarmVisualForField === 'function') window.refreshAlarmVisualForField(el, true);
+        var label = typeof window.formatTrendDisplayLabel === 'function'
+            ? window.formatTrendDisplayLabel(fieldId, false)
+            : (typeof window.getTankName === 'function' ? window.getTankName(fieldId) : fieldId);
+        applied.push({ fieldId: fieldId, label: label, value: num });
+    }
+    text = text.replace(/\[IMPOSTA_(?:LIVELLO|CAMPO):\s*[^\]]+\]/gi, '').replace(/\n{3,}/g, '\n\n').trim();
+    if (applied.length) {
+        if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
+        if (typeof window.saveData === 'function') window.saveData();
+        if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
+    }
+    return { text: text, applied: applied };
+};
+
 window.callGeminiAPI = async function(promptText, isChat = false, imageData = null) {
     if (!window.getGeminiApiKeysList().length) {
         throw new Error('Nessuna chiave Gemini. Impostazioni → inserisci almeno la chiave 1 (aistudio.google.com/apikey).');
@@ -29115,9 +29177,13 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
         "Per scrivere nel report usa: [SCRIVI_NOTE: testo].";
 
     const istruzioneChat = "Sei Jennifer, assistente tecnica integrata in STABILE 2026 (ServiceHub). " +
-        "Hai accesso COMPLETO al JSON sotto: livelliSerbatoiCorrenti, calcoliTonnellate, velocitaStimate (mm/ora pre-calcolate), " +
+        "Hai accesso COMPLETO al JSON sotto: livelliSerbatoiCorrenti, calcoliTonnellate (con campo_id per ogni serbatoio), velocitaStimate (mm/ora pre-calcolate), " +
         "trendSerbatoiTurno, storicoArchivi, inputValues, schede e note. " +
         "NON dire mai 'Nessun dato' se livelliSerbatoiCorrenti o inputValues contengono valori: usa quelli. " +
+        "Quando l'utente chiede di impostare, aggiornare o aggiungere un livello a un serbatoio, DEVI eseguire la modifica con il tag (puoi usarne più di uno): " +
+        "[IMPOSTA_LIVELLO: serbatoio=TK9000; valore=3500] oppure [IMPOSTA_LIVELLO: campo_id=inp-tk9000; valore=3500]. " +
+        "Usa campo_id da calcoliTonnellate nel JSON. Valore sempre in mm. Dopo il tag, conferma brevemente cosa hai impostato. " +
+        "NON dire che non puoi modificare l'impianto se conosci serbatoio e valore numerico. " +
         "Per stime tempo a un livello target (es. 300 mm): usa velocitaStimate.mm_per_ora se direzione=discesa, " +
         "formula tempo_ore = (livello_attuale - target) / |mm_per_ora|. Se velocitaStimate è vuoto ma c'è storicoArchivi, calcola tu. " +
         "Se mancano punti storici, spiega che serve almeno 2 salvataggi. " +

@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.13-robot-chat-restore';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-dock-click-fix';
         window.SERVICE_WATCH_BUILD = '2026.06.12-watch-numpad-only-v16';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
@@ -14517,7 +14517,7 @@ window.updateStoricoButton = async function() {
 
     document.getElementById('settings-modal').classList.add('active');
     if (typeof fixAIPanel === 'function') fixAIPanel();
-    if (typeof window.wireAiRobotButton === 'function') window.wireAiRobotButton();
+    if (typeof window.wireAiRobotButton === 'function') window.wireAiRobotButton(true);
     if (typeof window.refreshQuickChatStatusFromTranscript === 'function') window.refreshQuickChatStatusFromTranscript();
     if (typeof window.checkForAppUpdateFromNetwork === 'function') window.checkForAppUpdateFromNetwork();
     if (typeof window.ensureRapportiniInitialized === 'function') window.ensureRapportiniInitialized();
@@ -21623,18 +21623,17 @@ window.convertToHtml = async () => {
             background: inherit;
         }
         .settings-ai-dock {
-            position: sticky;
-            bottom: 0;
             flex: 0 0 auto;
             width: 100%;
             box-sizing: border-box;
-            margin-top: 12px;
-            padding: 8px 0 max(10px, env(safe-area-inset-bottom, 0px));
+            margin: 0;
+            padding: 8px 16px max(10px, env(safe-area-inset-bottom, 0px));
             background: var(--bg-modal);
             border-top: 2px solid rgba(59, 130, 246, 0.35);
             pointer-events: auto !important;
-            z-index: 20;
+            z-index: 30;
             touch-action: manipulation;
+            position: relative;
         }
         .settings-sheet-body {
             flex: 1 1 0 !important;
@@ -21667,6 +21666,11 @@ window.convertToHtml = async () => {
             touch-action: manipulation;
             pointer-events: auto !important;
             -webkit-tap-highlight-color: transparent;
+            position: relative;
+            z-index: 31;
+        }
+        #ai-robot-head:active .robot-settings-icon {
+            transform: scale(0.92);
         }
         #ai-robot-head .robot-settings-icon {
             font-size: 40px;
@@ -23454,13 +23458,14 @@ window.convertToHtml = async () => {
                     </button>
                 </div>
 
-                <!-- Chat IA: robottino fisso in basso, pannello completo sopra -->
-                <div id="settings-ai-dock" class="settings-ai-dock" aria-label="Assistente IA" onclick="event.stopPropagation()">
-                    <div id="ai-learning-section" style="display:none;"></div>
-                    <button type="button" id="ai-robot-head" aria-label="Apri chat IA" aria-expanded="false">
-                        <span class="robot-settings-icon" aria-hidden="true">🤖</span>
-                    </button>
-                </div>
+            </div>
+            <!-- Chat IA: dock FUORI dallo scroll — sempre visibile e cliccabile in fondo -->
+            <div id="settings-ai-dock" class="settings-ai-dock" aria-label="Assistente IA" onclick="event.stopPropagation()">
+                <div id="ai-learning-section" style="display:none;"></div>
+                <button type="button" id="ai-robot-head" aria-label="Apri chat IA" aria-expanded="false"
+                    onclick="window.toggleChatVisibility(); event.stopPropagation(); return false;">
+                    <span class="robot-settings-icon" aria-hidden="true">🤖</span>
+                </button>
             </div>
         </div>
     </div>
@@ -23952,7 +23957,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=233')
+                navigator.serviceWorker.register('./sw.js?v=234')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();
@@ -29541,19 +29546,24 @@ window.toggleChatVisibility = function() {
     }
 };
 
-window.wireAiRobotButton = function() {
+window.wireAiRobotButton = function(forceRewire) {
     var robotHead = document.getElementById('ai-robot-head');
-    if (!robotHead || robotHead.dataset.aiTapWired === '1') return;
+    if (!robotHead) return;
+    if (!forceRewire && robotHead.dataset.aiTapWired === '1') return;
+    if (forceRewire && robotHead.parentNode) {
+        var clone = robotHead.cloneNode(true);
+        robotHead.parentNode.replaceChild(clone, robotHead);
+        robotHead = clone;
+    }
     robotHead.dataset.aiTapWired = '1';
     var tap = function(ev) {
         try { if (ev) { ev.preventDefault(); ev.stopPropagation(); } } catch (_) {}
-        window.toggleChatVisibility();
+        if (typeof window.toggleChatVisibility === 'function') window.toggleChatVisibility();
         return false;
     };
+    robotHead.onclick = tap;
     if (typeof window.bindSpeechMicTap === 'function') {
         window.bindSpeechMicTap(robotHead, tap);
-    } else {
-        robotHead.onclick = tap;
     }
 };
 
@@ -30071,94 +30081,4 @@ window.initConversationModal = function(draftUserLine) {
     const resetConvMicUi = function(keepStopFlag) {
         isRecording = false;
         if (!keepStopFlag) userWantsStop = false;
-        micBtn.style.background = '#ef4444';
-        micBtn.innerHTML = '<i class="fas fa-microphone"></i>';
-        micBtn.style.animation = '';
-    };
-
-    const finishConvSpeechStop = function() {
-        if (convSpeechStopResolver) {
-            const r = convSpeechStopResolver;
-            convSpeechStopResolver = null;
-            try { r(); } catch (e2) {}
-        }
-    };
-
-    const buildConvRecognition = function() {
-        if (!window.speechRecognitionSupported()) return null;
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        const rec = new SpeechRecognition();
-        rec.lang = 'it-IT';
-        rec.interimResults = true;
-        rec.continuous = true;
-
-        rec.onresult = function(e) {
-            var session = '';
-            for (var i = 0; i < e.results.length; i++) {
-                session += e.results[i][0].transcript;
-            }
-            var sep = convMicPrefix && session ? ' ' : '';
-            inputField.value = convMicPrefix + sep + session;
-            inputField.scrollLeft = inputField.scrollWidth;
-            try { inputField.setSelectionRange(inputField.value.length, inputField.value.length); } catch (e3) {}
-            window.syncConvChatClearBtn();
-        };
-
-        rec.onstart = function() {
-            userWantsStop = false;
-            isRecording = true;
-            convMicPrefix = (inputField.value || '').replace(/\s+$/, '');
-            micBtn.style.background = '#ef4444';
-            micBtn.innerHTML = '<i class="fas fa-stop"></i>';
-            micBtn.style.animation = 'blink 0.5s infinite';
-            try { inputField.blur(); } catch (eB) {}
-        };
-
-        rec.onend = function() {
-            resetConvMicUi(true);
-            finishConvSpeechStop();
-            convMicPrefix = (inputField.value || '').replace(/\s+$/, '');
-            userWantsStop = false;
-            try { recognition = buildConvRecognition(); } catch (eRe) {}
-        };
-
-        rec.onerror = function(ev) {
-            resetConvMicUi(true);
-            finishConvSpeechStop();
-            recognition = buildConvRecognition();
-            userWantsStop = false;
-        };
-
-        return rec;
-    };
-
-    window.__convSpeechStop = function() {
-        userWantsStop = true;
-        if (recognition) {
-            try { recognition.stop(); } catch (e) {}
-        }
-        resetConvMicUi(true);
-        finishConvSpeechStop();
-        try { recognition = buildConvRecognition(); } catch (e2) {}
-    };
-
-    const stopConvRecognitionIfNeeded = function() {
-        return new Promise(function(resolve) {
-            if (!recognition || !isRecording) {
-                resolve();
-                return;
-            }
-            convSpeechStopResolver = resolve;
-            window.__convSpeechStop();
-            setTimeout(function() {
-                finishConvSpeechStop();
-                resolve();
-            }, 400);
-        });
-    };
-
-    window.__convMicTap = function(ev) {
-        if (typeof window.__clearPostLongPressShield === 'function') window.__clearPostLongPressShield();
-        if (!recognition) {
-            alert(window.speechRecognitionSupported()
-          
+       

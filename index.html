@@ -17,6 +17,7 @@
     <meta http-equiv="Expires" content="0">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, shrink-to-fit=no, viewport-fit=cover">
     <meta name="format-detection" content="telephone=no">
+    <meta http-equiv="Permissions-Policy" content="microphone=(self)">
 
     <!-- PWA operatore: installa da /op/ (app separata da /remote/). Nessun manifest qui. -->
     <meta name="theme-color" content="#307eb4">
@@ -653,7 +654,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.13-chat-speech-restore-v97';
+        window.SERVICEHUB_BUILD = '2026.06.13-chat-speech-restore-v98';
         window.SERVICE_WATCH_BUILD = '2026.06.12-watch-numpad-only-v16';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
@@ -23810,7 +23811,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=145')
+                navigator.serviceWorker.register('./sw.js?v=146')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();
@@ -29290,24 +29291,32 @@ function fixAIPanel() {
     var isRecording = false;
     var recognition = null;
 
-    var wireSpeech = function() {
-        if (recognition) return recognition;
-        if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) return null;
-        var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        recognition = new SpeechRecognition();
-        recognition.lang = 'it-IT';
-        recognition.interimResults = true;
+    var resetMicUi = function() {
+        isRecording = false;
+        micBtn.style.background = '#ef4444';
+        micBtn.innerHTML = '<i class="fas fa-microphone"></i>';
+        micBtn.style.animation = '';
+    };
 
-        recognition.onresult = function(e) {
+    var createRecognition = function() {
+        var SR = window.webkitSpeechRecognition || window.SpeechRecognition;
+        if (!SR) return null;
+        var rec = new SR();
+        rec.lang = 'it-IT';
+        rec.interimResults = true;
+
+        rec.onresult = function(e) {
             var transcript = Array.from(e.results).map(function(r) { return r[0].transcript; }).join('');
             inputField.value = transcript;
             inputField.scrollLeft = inputField.scrollWidth;
             try { inputField.setSelectionRange(inputField.value.length, inputField.value.length); } catch (e2) {}
-            try { inputField.focus(); } catch (e3) {}
+            if (typeof window.isServiceHubPhone !== 'function' || !window.isServiceHubPhone()) {
+                try { inputField.focus(); } catch (e3) {}
+            }
             window.syncAiChatClearBtn();
         };
 
-        recognition.onstart = function() {
+        rec.onstart = function() {
             isRecording = true;
             micBtn.style.background = '#ef4444';
             micBtn.innerHTML = '<i class="fas fa-stop"></i>';
@@ -29315,26 +29324,43 @@ function fixAIPanel() {
             sendBtn.innerHTML = '<i class="fas fa-arrow-right"></i>';
         };
 
-        recognition.onend = function() {
-            isRecording = false;
-            micBtn.style.background = '#ef4444';
-            micBtn.innerHTML = '<i class="fas fa-microphone"></i>';
-            micBtn.style.animation = '';
+        rec.onend = function() {
+            resetMicUi();
+            recognition = null;
         };
 
-        return recognition;
+        rec.onerror = function(ev) {
+            if (ev && (ev.error === 'aborted' || ev.error === 'no-speech')) return;
+            resetMicUi();
+            recognition = null;
+        };
+
+        return rec;
     };
 
-    wireSpeech();
+    var beginMic = function() {
+        try { inputField.blur(); } catch (eB) {}
+        recognition = createRecognition();
+        if (!recognition) return;
+        try {
+            recognition.start();
+            isRecording = true;
+            micBtn.style.background = '#ef4444';
+            micBtn.innerHTML = '<i class="fas fa-stop"></i>';
+            micBtn.style.animation = 'blink 0.5s infinite';
+            sendBtn.innerHTML = '<i class="fas fa-arrow-right"></i>';
+        } catch (e5) {
+            recognition = null;
+            resetMicUi();
+        }
+    };
 
     window.__aiQuickSpeechStop = function() {
-        isRecording = false;
         if (recognition) {
             try { recognition.stop(); } catch (e) {}
+            recognition = null;
         }
-        micBtn.style.background = '#ef4444';
-        micBtn.innerHTML = '<i class="fas fa-microphone"></i>';
-        micBtn.style.animation = '';
+        resetMicUi();
     };
 
     var sendAction = async function() {
@@ -29360,26 +29386,23 @@ function fixAIPanel() {
     };
 
     micBtn.onclick = function() {
-        if (!recognition) wireSpeech();
-        if (!recognition) return;
-        if (isRecording) {
+        if (isRecording && recognition) {
             try { recognition.stop(); } catch (e4) {}
-            isRecording = false;
-            micBtn.style.background = '#ef4444';
-            micBtn.innerHTML = '<i class="fas fa-microphone"></i>';
-            micBtn.style.animation = '';
+            recognition = null;
+            resetMicUi();
             return;
         }
-        try {
-            recognition.start();
-            isRecording = true;
-            micBtn.style.background = '#ef4444';
-            micBtn.innerHTML = '<i class="fas fa-stop"></i>';
-            micBtn.style.animation = 'blink 0.5s infinite';
-            sendBtn.innerHTML = '<i class="fas fa-arrow-right"></i>';
-        } catch (e5) {
-            isRecording = false;
+        var standalone = typeof window.isServiceHubStandalone === 'function' && window.isServiceHubStandalone();
+        if (standalone && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+            navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
+                stream.getTracks().forEach(function(t) { try { t.stop(); } catch (e) {} });
+                beginMic();
+            }).catch(function() {
+                beginMic();
+            });
+            return;
         }
+        beginMic();
     };
 
     inputField.addEventListener('keydown', function(e) {

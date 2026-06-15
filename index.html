@@ -662,7 +662,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v196';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v197';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -9817,7 +9817,7 @@ window.updateStoricoButton = async function() {
             const safe = String(t.label || '').replace(/</g, '&lt;');
             const dbKey = t.tankDbKey || '';
             return '<div class="nott-stocc-row" data-field-for="' + t.fieldId + '" data-tank-db="' + dbKey + '">' +
-                '<div class="nott-stocc-sigla-cell" data-field-for="' + t.fieldId + '">' +
+                '<div class="nott-stocc-sigla-cell nott-stocc-sigla-cell--detail" data-field-for="' + t.fieldId + '" role="button" tabindex="0" title="Apri dettaglio serbatoio" onclick="window.openTankDetailPage(\'' + t.fieldId + '\', { backLabel: \'STOCCAGGIO INTERNO\', source: \'notturno-stocc\' })">' +
                 '<span class="nott-stocc-sigla-txt">' + safe + '</span></div>' +
                 '<div class="nott-stocc-inp-cell">' +
                 '<input type="text" class="nott-stocc-inp" id="' + t.fieldId + '" inputmode="decimal" placeholder="mm" ' +
@@ -10365,7 +10365,9 @@ window.updateStoricoButton = async function() {
                 const gauge = window.buildDigitalTankGaugeSVG(pct, r.label || '', { drain: vis.drain, acc: vis.acc });
                 const levelInfo = window.buildStoccLevelInfoHTML(r);
                 const siglaUnder = String(r.label || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-                html += '<div class="digital-stocc-row digital-row">' +
+                const fieldAttr = r.fieldId ? (' data-field-id="' + String(r.fieldId).replace(/"/g, '') + '"') : '';
+                const tankDbAttr = r.tankDbKey ? (' data-tank-db="' + String(r.tankDbKey).replace(/"/g, '') + '"') : '';
+                html += '<div class="digital-stocc-row digital-stocc-row--clickable digital-row"' + fieldAttr + tankDbAttr + ' tabindex="0" role="button" aria-label="Dettaglio ' + siglaUnder + '">' +
                     '<span class="digital-stocc-sigla digital-row-label">' + r.label + '</span>' +
                     '<div class="digital-tank-gauge-wrap">' + gauge + '</div>' +
                     '<div class="digital-stocc-mid">' +
@@ -10390,6 +10392,406 @@ window.updateStoricoButton = async function() {
                 '<div class="digital-card-zoom-cols"><div class="digital-card-title-col">' +
                 '<div class="digital-card-title" style="font-size:17px;font-weight:800;color:#60a5fa;margin-bottom:14px;text-transform:uppercase;letter-spacing:0.08em;border-bottom:1px solid rgba(96,165,250,0.35);padding-bottom:8px;white-space:nowrap;hyphens:none;word-break:keep-all;overflow:visible;">' + cardTitle + '</div>' +
                 '</div><div class="digital-card-body-col" style="font-size:14px;line-height:1.45;color:#e2e8f0;font-weight:500;">' + contentHTML + '</div></div></div></div>';
+        };
+
+        window.__fmtTankDetailMm = function (n) {
+            if (!Number.isFinite(n)) return '—';
+            var s = (Math.round(n * 10) / 10).toFixed(1);
+            return s.replace(/\.0$/, '');
+        };
+        window.__fmtTankDetailTons = function (n) {
+            if (n == null || n === '' || isNaN(Number(n))) return '—';
+            return String(Number(n).toFixed(1)).replace(/\.0$/, '');
+        };
+        window.__escTankDetailHtml = function (s) {
+            return String(s == null ? '' : s)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        };
+
+        window.resolveTankDetailInfo = function (fieldId) {
+            if (!fieldId) return null;
+            var normId = typeof window.normalizeTrendFieldId === 'function'
+                ? window.normalizeTrendFieldId(fieldId) : fieldId;
+            var tankDbKey = typeof window.getTankStatusKeyForFieldId === 'function'
+                ? window.getTankStatusKeyForFieldId(normId) : null;
+            if (!tankDbKey && window.DIGITAL_TANK_FIELD_MAP) {
+                tankDbKey = window.DIGITAL_TANK_FIELD_MAP[normId] || window.DIGITAL_TANK_FIELD_MAP[fieldId];
+            }
+            var stoccTank = (window.STOCCAGGIO_INTERNO_TANKS || []).find(function (t) {
+                return t.fieldId === normId || t.fieldId === fieldId;
+            });
+            var label = (stoccTank && stoccTank.label)
+                || (typeof window.getTankName === 'function' ? window.getTankName(normId) : normId);
+            var dcs = typeof window.getStoccaggioDcsRowByFieldId === 'function'
+                ? window.getStoccaggioDcsRowByFieldId(normId) : null;
+            var description = dcs && dcs.description ? dcs.description : '';
+            var livMax = dcs && dcs.livMax ? Number(dcs.livMax) : null;
+            if (!livMax && tankDbKey && window.TANK_MAX) livMax = Number(window.TANK_MAX[tankDbKey]) || null;
+
+            var inp = document.getElementById(normId) || document.getElementById(fieldId);
+            var raw = inp && inp.value != null ? String(inp.value).trim() : '';
+            if (!raw && typeof window.getStoccaggioInternoFieldRaw === 'function') {
+                raw = window.getStoccaggioInternoFieldRaw(normId) || '';
+            }
+            var levelMm = typeof window.parseTankLevelMm === 'function'
+                ? window.parseTankLevelMm(raw) : parseFloat(String(raw).replace(',', '.'));
+            var fillPct = typeof window.getStoccaggioTankFillPct === 'function'
+                ? window.getStoccaggioTankFillPct(tankDbKey, levelMm) : 0;
+            var currentTons = typeof window.calculateTons === 'function'
+                ? window.calculateTons(tankDbKey, levelMm) : null;
+            var maxTons = livMax && typeof window.calculateTons === 'function'
+                ? window.calculateTons(tankDbKey, livMax) : null;
+            var vis = typeof window.getTankVisualFlagsForDbKey === 'function'
+                ? window.getTankVisualFlagsForDbKey(tankDbKey) : { drain: false, acc: false };
+            var statusRaw = tankDbKey && window.tankStatuses && !Array.isArray(window.tankStatuses)
+                ? window.tankStatuses[tankDbKey] : '';
+            var statusArr = typeof window.__parseTankStatusString === 'function'
+                ? window.__parseTankStatusString(statusRaw) : [];
+
+            var baselineRaw = window.tankLevelCompareBaseline && window.tankLevelCompareBaseline[normId];
+            var baseMm = typeof window.parseTankLevelMm === 'function'
+                ? window.parseTankLevelMm(baselineRaw) : NaN;
+            var trendDelta = null;
+            var trendDir = null;
+            var minDelta = window.TANK_TREND_AUTO_MIN_DELTA_MM != null ? Number(window.TANK_TREND_AUTO_MIN_DELTA_MM) : 5;
+            if (Number.isFinite(levelMm) && Number.isFinite(baseMm)) {
+                trendDelta = levelMm - baseMm;
+                if (Math.abs(trendDelta) > minDelta) trendDir = trendDelta > 0 ? 'up' : 'down';
+            }
+
+            var fillPctOfMax = (livMax && Number.isFinite(levelMm)) ? Math.round((levelMm / livMax) * 1000) / 10 : null;
+
+            return {
+                fieldId: normId,
+                tankDbKey: tankDbKey,
+                label: label,
+                description: description,
+                livMax: livMax,
+                levelMm: Number.isFinite(levelMm) ? levelMm : null,
+                currentTons: currentTons,
+                maxTons: maxTons,
+                fillPct: fillPct,
+                fillPctOfMax: fillPctOfMax,
+                vis: vis,
+                statusArr: statusArr,
+                trendDelta: trendDelta,
+                trendDir: trendDir,
+                baselineMm: Number.isFinite(baseMm) ? baseMm : null
+            };
+        };
+
+        window.collectTankLevelHistorySeries = function (fieldId, opts) {
+            opts = opts || {};
+            var normId = typeof window.normalizeTrendFieldId === 'function'
+                ? window.normalizeTrendFieldId(fieldId) : fieldId;
+            var archives = typeof window.collectRealArchives === 'function' ? window.collectRealArchives() : [];
+            if (opts.shiftOnly) {
+                var curShift = (document.getElementById('current-shift-label')?.innerText || '').trim();
+                archives = archives.filter(function (e) { return (e.shift || '').trim() === curShift; });
+            }
+            var series = [];
+            archives.forEach(function (entry) {
+                var mm = typeof window.archiveSnapshotValue === 'function'
+                    ? window.archiveSnapshotValue(entry, normId) : NaN;
+                if (!Number.isFinite(mm) || mm <= 0) return;
+                var ts = typeof window.getArchiveTimestampMs === 'function'
+                    ? window.getArchiveTimestampMs(entry) : 0;
+                var tons = typeof window.calculateTons === 'function'
+                    ? window.calculateTons(
+                        window.getTankStatusKeyForFieldId ? window.getTankStatusKeyForFieldId(normId) : null,
+                        mm
+                    ) : null;
+                series.push({
+                    ts: ts || (series.length + 1),
+                    label: entry.time || entry.archiveTime || ('#' + (series.length + 1)),
+                    date: entry.date || '',
+                    shift: entry.shift || '',
+                    mm: mm,
+                    tons: tons
+                });
+            });
+            series.sort(function (a, b) { return a.ts - b.ts; });
+            var inp = document.getElementById(normId) || document.getElementById(fieldId);
+            var liveMm = typeof window.parseTankLevelMm === 'function'
+                ? window.parseTankLevelMm(inp ? inp.value : '') : NaN;
+            if (Number.isFinite(liveMm) && liveMm > 0) {
+                var last = series.length ? series[series.length - 1] : null;
+                if (!last || Math.abs(last.mm - liveMm) > 0.05) {
+                    series.push({
+                        ts: Date.now(),
+                        label: 'Adesso',
+                        date: '',
+                        shift: '',
+                        mm: liveMm,
+                        tons: typeof window.calculateTons === 'function'
+                            ? window.calculateTons(
+                                window.getTankStatusKeyForFieldId ? window.getTankStatusKeyForFieldId(normId) : null,
+                                liveMm
+                            ) : null,
+                        live: true
+                    });
+                }
+            }
+            return series;
+        };
+
+        window.buildTankDetailTrendChartSVG = function (series, maxMm) {
+            if (!series || series.length < 2) {
+                return '<div class="tank-detail-chart-empty">Servono almeno 2 punti (salvataggi o livello attuale) per il grafico trend.</div>';
+            }
+            var w = 640, h = 220;
+            var pad = { l: 52, r: 18, t: 18, b: 40 };
+            var plotW = w - pad.l - pad.r;
+            var plotH = h - pad.t - pad.b;
+            var mmVals = series.map(function (p) { return p.mm; });
+            var yMax = maxMm && maxMm > 0 ? maxMm : Math.max.apply(null, mmVals.concat([1])) * 1.08;
+            var tMin = series[0].ts;
+            var tMax = series[series.length - 1].ts;
+            if (tMax <= tMin) tMax = tMin + 3600000;
+            var toX = function (ts) { return pad.l + plotW * ((ts - tMin) / (tMax - tMin)); };
+            var toY = function (mm) { return pad.t + plotH - (plotH * (mm / yMax)); };
+            var pts = series.map(function (p) {
+                return { x: toX(p.ts), y: toY(p.mm), p: p };
+            });
+            var linePath = pts.map(function (pt, i) {
+                return (i === 0 ? 'M' : 'L') + pt.x.toFixed(1) + ',' + pt.y.toFixed(1);
+            }).join(' ');
+            var areaPath = linePath +
+                ' L' + pts[pts.length - 1].x.toFixed(1) + ',' + (pad.t + plotH).toFixed(1) +
+                ' L' + pts[0].x.toFixed(1) + ',' + (pad.t + plotH).toFixed(1) + ' Z';
+            var uid = 'tdc' + Math.random().toString(36).slice(2, 8);
+            var gridLines = '';
+            [0.25, 0.5, 0.75, 1].forEach(function (frac) {
+                var y = pad.t + plotH * (1 - frac);
+                var val = Math.round(yMax * frac);
+                gridLines += '<line x1="' + pad.l + '" y1="' + y.toFixed(1) + '" x2="' + (w - pad.r) + '" y2="' + y.toFixed(1) + '" stroke="rgba(148,163,184,0.22)" stroke-width="1"/>';
+                gridLines += '<text x="' + (pad.l - 8) + '" y="' + (y + 4).toFixed(1) + '" text-anchor="end" font-size="10" fill="#94a3b8">' + val + '</text>';
+            });
+            var maxLine = '';
+            if (maxMm && maxMm > 0 && maxMm <= yMax) {
+                var yMaxLine = toY(maxMm);
+                maxLine = '<line x1="' + pad.l + '" y1="' + yMaxLine.toFixed(1) + '" x2="' + (w - pad.r) + '" y2="' + yMaxLine.toFixed(1) + '" stroke="#f87171" stroke-width="1.5" stroke-dasharray="6 4" opacity="0.85"/>' +
+                    '<text x="' + (w - pad.r) + '" y="' + (yMaxLine - 4).toFixed(1) + '" text-anchor="end" font-size="10" fill="#fca5a5">MAX ' + maxMm + ' mm</text>';
+            }
+            var dots = pts.map(function (pt) {
+                var fill = pt.p.live ? '#fbbf24' : '#38bdf8';
+                return '<circle cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) + '" r="4.5" fill="' + fill + '" stroke="#0f172a" stroke-width="1.2">' +
+                    '<title>' + window.__escTankDetailHtml(pt.p.label) + ': ' + window.__fmtTankDetailMm(pt.p.mm) + ' mm</title></circle>';
+            }).join('');
+            var xLabels = '';
+            if (pts.length <= 8) {
+                pts.forEach(function (pt) {
+                    xLabels += '<text x="' + pt.x.toFixed(1) + '" y="' + (h - 10) + '" text-anchor="middle" font-size="9" fill="#94a3b8">' +
+                        window.__escTankDetailHtml(String(pt.p.label).slice(0, 8)) + '</text>';
+                });
+            }
+            return '<svg class="tank-detail-chart-svg" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="xMidYMid meet" aria-label="Grafico trend livello">' +
+                '<defs><linearGradient id="' + uid + 'g" x1="0" y1="0" x2="0" y2="1">' +
+                '<stop offset="0%" stop-color="rgba(56,189,248,0.35)"/><stop offset="100%" stop-color="rgba(56,189,248,0.02)"/></linearGradient></defs>' +
+                gridLines + maxLine +
+                '<path d="' + areaPath + '" fill="url(#' + uid + 'g)"/>' +
+                '<path d="' + linePath + '" fill="none" stroke="#38bdf8" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>' +
+                dots + xLabels +
+                '</svg>';
+        };
+
+        window.buildTankDetailStatusHTML = function (info) {
+            var html = '';
+            (info.statusArr || []).forEach(function (st) {
+                var cls = st === 'Accumulo' ? 'tank-detail-badge--acc' : st === 'Drenaggio' ? 'tank-detail-badge--dren' : 'tank-detail-badge--par';
+                html += '<span class="tank-detail-badge ' + cls + '">' + window.__escTankDetailHtml(st) + '</span>';
+            });
+            if (!html && (info.vis.acc || info.vis.drain)) {
+                if (info.vis.acc) html += '<span class="tank-detail-badge tank-detail-badge--acc">Accumulo</span>';
+                if (info.vis.drain) html += '<span class="tank-detail-badge tank-detail-badge--dren">Drenaggio</span>';
+            }
+            if (!html) html = '<span class="tank-detail-badge tank-detail-badge--neutral">Nessuno stato A/D/P</span>';
+            return html;
+        };
+
+        window.buildTankDetailTrendSummaryHTML = function (info, series) {
+            var parts = [];
+            if (info.trendDir === 'up') {
+                parts.push('<div class="tank-detail-trend-line tank-detail-trend-line--up">↑ In salita: <b>+' +
+                    window.__fmtTankDetailMm(Math.abs(info.trendDelta)) + ' mm</b> rispetto al baseline turno</div>');
+            } else if (info.trendDir === 'down') {
+                parts.push('<div class="tank-detail-trend-line tank-detail-trend-line--down">↓ In discesa: <b>-' +
+                    window.__fmtTankDetailMm(Math.abs(info.trendDelta)) + ' mm</b> rispetto al baseline turno</div>');
+            } else if (info.baselineMm != null && info.levelMm != null) {
+                parts.push('<div class="tank-detail-trend-line tank-detail-trend-line--flat">→ Stabile (Δ ≤ ' +
+                    (window.TANK_TREND_AUTO_MIN_DELTA_MM || 5) + ' mm vs baseline turno)</div>');
+            } else {
+                parts.push('<div class="tank-detail-trend-line tank-detail-trend-line--flat">Trend turno: baseline non disponibile</div>');
+            }
+            if (series && series.length >= 2) {
+                var first = series[0];
+                var last = series[series.length - 1];
+                var dtH = (last.ts - first.ts) / 3600000;
+                if (dtH > 0.08) {
+                    var rate = (last.mm - first.mm) / dtH;
+                    var rateCls = rate > 0 ? 'up' : rate < 0 ? 'down' : 'flat';
+                    var rateSign = rate > 0 ? '+' : '';
+                    parts.push('<div class="tank-detail-trend-line tank-detail-trend-line--' + rateCls + '">Velocità stimata: <b>' +
+                        rateSign + window.__fmtTankDetailMm(rate) + ' mm/h</b> (' + series.length + ' punti)</div>');
+                }
+            }
+            return parts.join('');
+        };
+
+        window.buildTankDetailHistoryTableHTML = function (series) {
+            if (!series || !series.length) {
+                return '<div class="tank-detail-history-empty">Nessun salvataggio storico per questo serbatoio.</div>';
+            }
+            var rows = series.slice().reverse().map(function (p) {
+                var meta = [p.date, p.shift].filter(Boolean).join(' · ');
+                return '<tr><td>' + window.__escTankDetailHtml(p.label) + '</td><td>' + window.__escTankDetailHtml(meta) +
+                    '</td><td class="tank-detail-num">' + window.__fmtTankDetailMm(p.mm) + ' mm</td><td class="tank-detail-num">' +
+                    window.__fmtTankDetailTons(p.tons) + ' t</td></tr>';
+            }).join('');
+            return '<table class="tank-detail-history-table"><thead><tr><th>Ora</th><th>Turno</th><th>Livello</th><th>Tonn.</th></tr></thead><tbody>' +
+                rows + '</tbody></table>';
+        };
+
+        window.buildTankDetailPageHTML = function (info, series) {
+            if (!info) return '';
+            var gauge = typeof window.buildDigitalTankGaugeSVG === 'function'
+                ? window.buildDigitalTankGaugeSVG(info.fillPct, info.label, info.vis) : '';
+            var chart = window.buildTankDetailTrendChartSVG(series, info.livMax);
+            var descBlock = info.description
+                ? '<div class="tank-detail-desc-chip">' + window.__escTankDetailHtml(info.description) + '</div>'
+                : '';
+            return '<div class="tank-detail-page">' +
+                '<div class="tank-detail-header">' +
+                '<div class="tank-detail-title">' + window.__escTankDetailHtml(info.label) + '</div>' +
+                descBlock +
+                '</div>' +
+                '<div class="tank-detail-layout">' +
+                '<div class="tank-detail-hero">' +
+                '<div class="tank-detail-gauge-wrap">' + gauge + '</div>' +
+                '<div class="tank-detail-status-row">' + window.buildTankDetailStatusHTML(info) + '</div>' +
+                '</div>' +
+                '<div class="tank-detail-stats">' +
+                '<div class="tank-detail-stat"><span class="tank-detail-stat-label">Livello attuale</span><span class="tank-detail-stat-val">' +
+                window.__fmtTankDetailMm(info.levelMm) + ' <small>mm</small></span></div>' +
+                '<div class="tank-detail-stat"><span class="tank-detail-stat-label">Tonnellate attuali</span><span class="tank-detail-stat-val">' +
+                window.__fmtTankDetailTons(info.currentTons) + ' <small>t</small></span></div>' +
+                '<div class="tank-detail-stat"><span class="tank-detail-stat-label">Livello massimo</span><span class="tank-detail-stat-val">' +
+                window.__fmtTankDetailMm(info.livMax) + ' <small>mm</small></span></div>' +
+                '<div class="tank-detail-stat"><span class="tank-detail-stat-label">Tonnellate max</span><span class="tank-detail-stat-val">' +
+                window.__fmtTankDetailTons(info.maxTons) + ' <small>t</small></span></div>' +
+                '<div class="tank-detail-stat"><span class="tank-detail-stat-label">Riempimento</span><span class="tank-detail-stat-val">' +
+                (info.fillPctOfMax != null ? info.fillPctOfMax + ' <small>%</small>' : '—') + '</span></div>' +
+                '</div>' +
+                '</div>' +
+                '<div class="tank-detail-trend-block">' +
+                '<div class="tank-detail-section-title">Trend livello</div>' +
+                window.buildTankDetailTrendSummaryHTML(info, series) +
+                '<div class="tank-detail-chart-wrap">' + chart + '</div>' +
+                '</div>' +
+                '<div class="tank-detail-history-block">' +
+                '<div class="tank-detail-section-title">Storico salvataggi</div>' +
+                window.buildTankDetailHistoryTableHTML(series) +
+                '</div></div>';
+        };
+
+        window.ensureTankDetailStyles = function () {
+            if (document.getElementById('tank-detail-styles')) return;
+            var st = document.createElement('style');
+            st.id = 'tank-detail-styles';
+            st.textContent =
+                '.tank-detail-overlay{position:fixed;inset:0;z-index:100050;background:rgba(2,6,23,0.72);backdrop-filter:blur(8px);display:none;align-items:stretch;justify-content:center;padding:0;overflow:hidden}' +
+                '.tank-detail-overlay.active{display:flex}' +
+                'body.tank-detail-open{overflow:hidden}' +
+                '.tank-detail-shell{width:100%;max-width:980px;margin:0 auto;height:100%;display:flex;flex-direction:column;background:linear-gradient(165deg,#0f172a 0%,#1e293b 45%,#0f172a 100%);box-shadow:0 24px 80px rgba(0,0,0,0.55);overflow:hidden}' +
+                '.tank-detail-back{align-self:flex-start;margin:14px 16px 0;padding:10px 16px;border:none;border-radius:12px;background:rgba(37,99,235,0.22);color:#bfdbfe;font-weight:800;font-size:13px;cursor:pointer;border:1px solid rgba(96,165,250,0.35)}' +
+                '.tank-detail-back:hover{background:rgba(37,99,235,0.38)}' +
+                '#tank-detail-content{flex:1;overflow:auto;padding:8px 16px 28px;-webkit-overflow-scrolling:touch}' +
+                '.tank-detail-page{color:#e2e8f0}' +
+                '.tank-detail-header{margin-bottom:16px}' +
+                '.tank-detail-title{font-size:clamp(24px,4vw,36px);font-weight:900;color:#f8fafc;letter-spacing:0.04em}' +
+                '.tank-detail-desc-chip{display:inline-block;margin-top:8px;padding:6px 14px;border-radius:999px;background:rgba(251,191,36,0.15);border:1px solid rgba(251,191,36,0.45);color:#fde68a;font-weight:800;font-size:12px;letter-spacing:0.08em;text-transform:uppercase}' +
+                '.tank-detail-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr);gap:20px;align-items:start;margin-bottom:20px}' +
+                '@media(max-width:720px){.tank-detail-layout{grid-template-columns:1fr}}' +
+                '.tank-detail-gauge-wrap{max-width:320px;margin:0 auto;transform:scale(1.15);transform-origin:center top}' +
+                '.tank-detail-gauge-wrap .digital-tank-gauge,.tank-detail-gauge-wrap .digital-tank3d{width:100%;max-width:280px;margin:0 auto}' +
+                '.tank-detail-status-row{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:12px}' +
+                '.tank-detail-badge{padding:6px 12px;border-radius:10px;font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:0.06em}' +
+                '.tank-detail-badge--acc{background:rgba(220,38,38,0.22);color:#fecaca;border:1px solid rgba(248,113,113,0.5)}' +
+                '.tank-detail-badge--dren{background:rgba(22,163,74,0.22);color:#bbf7d0;border:1px solid rgba(74,222,128,0.5)}' +
+                '.tank-detail-badge--par{background:rgba(37,99,235,0.22);color:#bfdbfe;border:1px solid rgba(96,165,250,0.5)}' +
+                '.tank-detail-badge--neutral{background:rgba(100,116,139,0.22);color:#cbd5e1;border:1px solid rgba(148,163,184,0.35)}' +
+                '.tank-detail-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}' +
+                '.tank-detail-stat{background:rgba(15,23,42,0.55);border:1px solid rgba(96,165,250,0.22);border-radius:14px;padding:12px 14px}' +
+                '.tank-detail-stat-label{display:block;font-size:10px;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px}' +
+                '.tank-detail-stat-val{font-size:clamp(22px,3vw,30px);font-weight:900;color:#f8fafc;font-variant-numeric:tabular-nums;line-height:1.1}' +
+                '.tank-detail-stat-val small{font-size:0.55em;color:#94a3b8;font-weight:700}' +
+                '.tank-detail-section-title{font-size:13px;font-weight:900;color:#60a5fa;text-transform:uppercase;letter-spacing:0.12em;margin:0 0 10px;padding-bottom:8px;border-bottom:1px solid rgba(96,165,250,0.28)}' +
+                '.tank-detail-trend-block,.tank-detail-history-block{margin-top:18px}' +
+                '.tank-detail-trend-line{font-size:14px;font-weight:700;margin:6px 0 8px;color:#cbd5e1}' +
+                '.tank-detail-trend-line--up{color:#fca5a5}.tank-detail-trend-line--down{color:#93c5fd}.tank-detail-trend-line--flat{color:#94a3b8}' +
+                '.tank-detail-chart-wrap{background:rgba(15,23,42,0.45);border:1px solid rgba(96,165,250,0.18);border-radius:16px;padding:12px;margin-top:8px;overflow:hidden}' +
+                '.tank-detail-chart-svg{width:100%;height:auto;display:block}' +
+                '.tank-detail-chart-empty,.tank-detail-history-empty{padding:16px;color:#94a3b8;font-size:13px;font-weight:600;text-align:center}' +
+                '.tank-detail-history-table{width:100%;border-collapse:collapse;font-size:12px}' +
+                '.tank-detail-history-table th,.tank-detail-history-table td{padding:8px 10px;border-bottom:1px solid rgba(148,163,184,0.15);text-align:left}' +
+                '.tank-detail-history-table th{font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:#64748b}' +
+                '.tank-detail-num{text-align:right;font-weight:800;font-variant-numeric:tabular-nums;color:#e2e8f0}' +
+                '.digital-stocc-row--clickable{cursor:pointer;transition:background 0.15s ease,transform 0.15s ease}' +
+                '.digital-stocc-row--clickable:hover{background:rgba(96,165,250,0.08)}' +
+                '.digital-stocc-row--clickable:focus{outline:2px solid rgba(96,165,250,0.55);outline-offset:2px}' +
+                '.nott-stocc-sigla-cell--detail{cursor:pointer}.nott-stocc-sigla-cell--detail:hover{color:#2563eb}';
+            document.head.appendChild(st);
+        };
+
+        window.ensureTankDetailOverlay = function () {
+            window.ensureTankDetailStyles();
+            var el = document.getElementById('tank-detail-overlay');
+            if (el) return el;
+            el = document.createElement('div');
+            el.id = 'tank-detail-overlay';
+            el.className = 'tank-detail-overlay';
+            el.innerHTML = '<div class="tank-detail-shell">' +
+                '<button type="button" class="tank-detail-back" id="tank-detail-back-btn">← Indietro</button>' +
+                '<div id="tank-detail-content"></div></div>';
+            document.body.appendChild(el);
+            el.querySelector('#tank-detail-back-btn').onclick = function () {
+                window.closeTankDetailPage();
+            };
+            if (!window.__tankDetailEscBound) {
+                window.__tankDetailEscBound = true;
+                document.addEventListener('keydown', function (e) {
+                    if (e.key !== 'Escape') return;
+                    var ov = document.getElementById('tank-detail-overlay');
+                    if (ov && ov.classList.contains('active')) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        window.closeTankDetailPage();
+                    }
+                });
+            }
+            return el;
+        };
+
+        window.openTankDetailPage = function (fieldId, navCtx) {
+            if (!fieldId) return;
+            navCtx = navCtx || {};
+            window.__tankDetailNav = navCtx;
+            var overlay = window.ensureTankDetailOverlay();
+            var info = window.resolveTankDetailInfo(fieldId);
+            if (!info) return;
+            var series = window.collectTankLevelHistorySeries(fieldId, { shiftOnly: false });
+            overlay.querySelector('#tank-detail-content').innerHTML = window.buildTankDetailPageHTML(info, series);
+            var backBtn = overlay.querySelector('#tank-detail-back-btn');
+            if (backBtn) backBtn.textContent = '← ' + (navCtx.backLabel || 'Indietro');
+            overlay.classList.add('active');
+            document.body.classList.add('tank-detail-open');
+        };
+
+        window.closeTankDetailPage = function () {
+            var ov = document.getElementById('tank-detail-overlay');
+            if (ov) ov.classList.remove('active');
+            document.body.classList.remove('tank-detail-open');
+            window.__tankDetailNav = null;
         };
 
         window.buildNotturnoStoccaggioReportRows = function() {
@@ -18310,7 +18712,7 @@ window.buildDigitalCardsHTML = function() {
                                     val = window.formatStoccaggioInternoReportValue(inp);
                                 }
                                 const tankKey = (window.DIGITAL_TANK_FIELD_MAP && window.DIGITAL_TANK_FIELD_MAP[inp.id]) || null;
-                                rows.push({ label: label, val: val, isStatus: false, tankDbKey: tankKey, levelRaw: inp.value }); 
+                                rows.push({ label: label, val: val, isStatus: false, tankDbKey: tankKey, levelRaw: inp.value, fieldId: inp.id }); 
                             }
                         });
                     }
@@ -18350,6 +18752,7 @@ window.buildDigitalCardsHTML = function() {
                             return {
                                 label: row.label,
                                 val: row.val,
+                                fieldId: row.fieldId || null,
                                 tankDbKey: row.tankDbKey,
                                 levelMm: mm,
                                 fillPct: window.getStoccaggioTankFillPct(row.tankDbKey, mm),
@@ -19532,6 +19935,24 @@ window.openDigitalPreview = async function () {
         digitalContainer.addEventListener('click', function (e) {
             const grid = digitalContainer.querySelector('#digital-cards-grid');
             if (!grid || !grid.contains(e.target)) return;
+            const tankRow = e.target.closest('.digital-stocc-row--clickable[data-field-id]');
+            if (tankRow && grid.contains(tankRow)) {
+                e.preventDefault();
+                e.stopPropagation();
+                const fieldId = tankRow.getAttribute('data-field-id');
+                if (!fieldId) return;
+                const card = tankRow.closest('.digital-card');
+                const moduleTitle = card
+                    ? (card.querySelector('.digital-card-title')?.textContent || '').replace(/\s+/g, ' ').trim()
+                    : 'Digital HD';
+                const moduleId = card ? card.getAttribute('data-module-id') : '';
+                window.openTankDetailPage(fieldId, {
+                    backLabel: moduleTitle || 'Digital HD',
+                    source: 'digital',
+                    moduleId: moduleId
+                });
+                return;
+            }
             const card = e.target.closest('.digital-card');
             if (!card || !grid.contains(card)) return;
             if (digitalContainer.classList.contains('digital-focus-active') && card.classList.contains('digital-card--expanded')) return;
@@ -19539,9 +19960,22 @@ window.openDigitalPreview = async function () {
         });
         digitalContainer.addEventListener('keydown', function (e) {
             if (e.key !== 'Escape') return;
+            const tankOv = document.getElementById('tank-detail-overlay');
+            if (tankOv && tankOv.classList.contains('active')) {
+                e.preventDefault();
+                window.closeTankDetailPage();
+                return;
+            }
             if (!digitalContainer.classList.contains('digital-focus-active')) return;
             e.preventDefault();
             window.closeDigitalModuleFocus();
+        });
+        digitalContainer.addEventListener('keydown', function (e) {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            const tankRow = e.target.closest('.digital-stocc-row--clickable[data-field-id]');
+            if (!tankRow) return;
+            e.preventDefault();
+            tankRow.click();
         });
     }
 

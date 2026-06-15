@@ -7,7 +7,7 @@
     var SK = "servicehub_remote_share_k";
     var SA = "servicehub_remote_app_id";
     var FB_ORIGIN = "https://servicehub-18309.web.app";
-    window.SVCREMOTE_BUILD = "2026.06.14-v108";
+    window.SVCREMOTE_BUILD = "2026.06.14-v109";
 
     /** Vecchi link su GitHub → stesso remoto su Firebase. */
     (function redirectGithubToFirebase() {
@@ -2733,8 +2733,43 @@
         rows + "</tbody></table>";
     }
 
-    function resolveRemoteTankDetailInfo(fieldId, payload) {
+    function parseTankLevelMmRemote(raw) {
+      if (raw == null || raw === "") return NaN;
+      var s = String(raw).trim().replace(/\s/g, "").replace(/\s*mm\s*$/i, "");
+      if (!s) return NaN;
+      var itThousands = s.match(/^(\d{1,3})[.,](\d{3})$/);
+      if (itThousands) return parseFloat(itThousands[1] + itThousands[2]);
+      if (/^\d{1,3}(\.\d{3})+$/.test(s)) return parseFloat(s.replace(/\./g, ""));
+      if (/^\d{1,3}(,\d{3})+$/.test(s)) return parseFloat(s.replace(/,/g, ""));
+      if (/^\d+,\d+$/.test(s) && !/,\d{3}$/.test(s)) s = s.replace(",", ".");
+      var n = parseFloat(s.replace(/[^\d.-]/g, ""));
+      return Number.isFinite(n) ? n : NaN;
+    }
+
+    function readRemoteTankRowFromDom(fieldId) {
+      if (!fieldId) return null;
+      var row = rootEl.querySelector('.digital-stocc-row[data-field-id="' + fieldId + '"]');
+      if (!row) return null;
+      var val = String(row.querySelector(".digital-stocc-value")?.textContent || "").trim();
+      var label = String(row.querySelector(".digital-stocc-sigla")?.textContent || "").trim();
+      var tankDbKey = row.getAttribute("data-tank-db") || "";
+      var parsed = parseStoccRowLevels({ val: val, tankDbKey: tankDbKey });
+      if ((!parsed.mm || isNaN(parsed.mm)) && val) {
+        parsed.mm = parseTankLevelMmRemote(val);
+      }
+      return {
+        fieldId: fieldId,
+        label: label,
+        val: val,
+        levelMm: parsed.mm,
+        tons: parsed.tons,
+        tankDbKey: tankDbKey
+      };
+    }
+
+    function resolveRemoteTankDetailInfo(fieldId, payload, navCtx) {
       payload = payload || window.__remoteDigitalPayload || {};
+      navCtx = navCtx || {};
       var meta = (payload.tankDetailMeta && payload.tankDetailMeta[fieldId]) || {};
       var row = (payload.stoccaggioRows || []).find(function (r) { return r.fieldId === fieldId; });
       if (!row && payload.stoccaggioRows) {
@@ -2742,15 +2777,25 @@
           return String(r.tankDbKey || "") === String(meta.tankDbKey || "");
         });
       }
+      if (!row || row.levelMm == null) {
+        var domRow = readRemoteTankRowFromDom(fieldId);
+        if (domRow) row = Object.assign({}, domRow, row || {});
+      }
       var levelMm = row && row.levelMm != null ? Number(row.levelMm) : NaN;
+      if (!Number.isFinite(levelMm) && navCtx.levelRaw) {
+        levelMm = parseTankLevelMmRemote(navCtx.levelRaw);
+      }
       if (!Number.isFinite(levelMm) && row && row.val) {
-        var m = String(row.val).match(/([\d.,]+)\s*mm/i);
-        if (m) levelMm = parseFloat(String(m[1]).replace(",", "."));
+        levelMm = parseTankLevelMmRemote(row.val);
+        if (!Number.isFinite(levelMm)) {
+          var m = String(row.val).match(/([\d.,]+)\s*mm/i);
+          if (m) levelMm = parseFloat(String(m[1]).replace(",", "."));
+        }
       }
       var livMax = meta.livMax != null ? Number(meta.livMax) : null;
       var fillPct = row && row.fillPct != null ? Number(row.fillPct) : null;
       if (fillPct == null && livMax && Number.isFinite(levelMm)) {
-        fillPct = Math.max(0, Math.min(100, (levelMm / livMax) * 100));
+        fillPct = Math.max(0, (levelMm / livMax) * 100);
       }
       var tankDbKey = meta.tankDbKey || (row && row.tankDbKey) || "";
       var vis = rowTankVisualFlags(row || { tankDbKey: tankDbKey }, payload.tankStatuses);
@@ -2831,7 +2876,7 @@
       if (!fieldId) return;
       navCtx = navCtx || {};
       var payload = window.__remoteDigitalPayload || {};
-      var info = resolveRemoteTankDetailInfo(fieldId, payload);
+      var info = resolveRemoteTankDetailInfo(fieldId, payload, navCtx);
       var series = (payload.tankLevelHistory && payload.tankLevelHistory[fieldId]) || [];
       var overlay = ensureRemoteTankDetailOverlay();
       overlay.querySelector("#tank-detail-content").innerHTML = buildRemoteTankDetailPageHTML(info, series);
@@ -2930,7 +2975,13 @@
             const moduleTitle = card
               ? String(card.querySelector(".digital-card-title")?.textContent || "").replace(/\s+/g, " ").trim()
               : "Digital HD";
-            window.openRemoteTankDetailPage(fieldId, { backLabel: moduleTitle || "Digital HD" });
+            var levelRaw = String(tankRow.querySelector(".digital-stocc-value")?.textContent || "").trim();
+            if (!levelRaw) {
+              var lm = String(tankRow.querySelector(".digital-stocc-level-line")?.textContent || "")
+                .match(/([\d.\s,]+)\s*mm/i);
+              if (lm && lm[1]) levelRaw = lm[1].trim();
+            }
+            window.openRemoteTankDetailPage(fieldId, { backLabel: moduleTitle || "Digital HD", levelRaw: levelRaw });
             return;
           }
         }

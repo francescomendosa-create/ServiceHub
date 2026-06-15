@@ -10795,6 +10795,237 @@ window.updateStoricoButton = async function() {
             return parts.join('');
         };
 
+        window.TANK_TIMELINE_PREDICT_HOURS = 24;
+
+        window.computeTankTimelineRateMmH = function (series, info) {
+            if (series && series.length >= 2) {
+                var a = series[series.length - 2];
+                var b = series[series.length - 1];
+                var dtH = (b.ts - a.ts) / 3600000;
+                if (dtH >= 0.08) return (b.mm - a.mm) / dtH;
+                a = series[0];
+                b = series[series.length - 1];
+                dtH = (b.ts - a.ts) / 3600000;
+                if (dtH >= 0.08) return (b.mm - a.mm) / dtH;
+            }
+            if (info && Number.isFinite(info.trendDelta) && typeof window.getCurrentShiftStartMs === 'function') {
+                var shiftStart = window.getCurrentShiftStartMs();
+                var nowTs = series && series.length ? series[series.length - 1].ts : Date.now();
+                if (shiftStart && nowTs > shiftStart) {
+                    var h = (nowTs - shiftStart) / 3600000;
+                    if (h > 0.1) return info.trendDelta / h;
+                }
+            }
+            return 0;
+        };
+
+        window.buildTankTimelineModel = function (series, info) {
+            info = info || {};
+            series = (series || []).filter(function (p) {
+                return p && Number.isFinite(p.ts) && Number.isFinite(p.mm);
+            }).slice().sort(function (a, b) { return a.ts - b.ts; });
+            if (!series.length && Number.isFinite(info.levelMm)) {
+                var liveTs = typeof window.getTankLevelInputTimestampMs === 'function'
+                    ? window.getTankLevelInputTimestampMs(info.fieldId) : null;
+                series = [{ ts: liveTs || Date.now(), mm: info.levelMm, label: 'Adesso', live: true }];
+            }
+            var rate = window.computeTankTimelineRateMmH(series, info);
+            var nowTs = series.length ? series[series.length - 1].ts : Date.now();
+            var nowMm = series.length ? series[series.length - 1].mm : (info.levelMm || 0);
+            var predH = window.TANK_TIMELINE_PREDICT_HOURS || 24;
+            var tStart = series.length > 1 ? series[0].ts : nowTs - 3600000;
+            var tEnd = nowTs + predH * 3600000;
+            if (tEnd <= tStart) tEnd = tStart + predH * 3600000;
+            return {
+                series: series,
+                rateMmH: rate,
+                nowTs: nowTs,
+                nowMm: nowMm,
+                tStart: tStart,
+                tEnd: tEnd,
+                nowX: 0,
+                livMax: info.livMax,
+                tankDbKey: info.tankDbKey
+            };
+        };
+
+        window.predictTankLevelAtTs = function (model, targetTs) {
+            if (!model) return NaN;
+            var lastTs = model.nowTs;
+            var lastMm = model.nowMm;
+            if (!Number.isFinite(lastTs) || !Number.isFinite(lastMm)) return NaN;
+            var dtH = (targetTs - lastTs) / 3600000;
+            var mm = lastMm + (model.rateMmH || 0) * dtH;
+            if (model.livMax && model.livMax > 0) mm = Math.min(mm, model.livMax * 1.15);
+            return Math.max(0, mm);
+        };
+
+        window.formatTankTimelineClock = function (ts) {
+            try {
+                return new Date(ts).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+            } catch (_) {
+                return '--:--';
+            }
+        };
+
+        window.formatTankTimelineHoursAhead = function (h) {
+            if (h <= 0.05) return 'Adesso';
+            if (h < 1) return '+' + Math.round(h * 60) + ' min';
+            var hrs = Math.round(h * 10) / 10;
+            return '+' + String(hrs).replace('.', ',') + ' h';
+        };
+
+        window.buildTankDetailTimelineHTML = function (series, info) {
+            var model = window.buildTankTimelineModel(series, info);
+            var rateSign = model.rateMmH > 0 ? '+' : '';
+            var rateTxt = rateSign + window.__fmtTankDetailMm(model.rateMmH) + ' mm/h';
+            var rateCls = model.rateMmH > 0.05 ? 'up' : model.rateMmH < -0.05 ? 'down' : 'flat';
+            return '<div class="tank-detail-timeline-block" data-tank-timeline="1">' +
+                '<div class="tank-detail-section-title">Timeline livello · previsione</div>' +
+                '<div class="tank-detail-timeline-hint">Trascina la linea fino a <b>24 ore</b> avanti: sotto l\'orario, sopra il livello previsto.</div>' +
+                '<div class="tank-detail-timeline-rate tank-detail-timeline-rate--' + rateCls + '">Velocità trend: <b>' +
+                window.__escTankDetailHtml(rateTxt) + '</b></div>' +
+                '<div class="tank-detail-timeline-scrub-label">' +
+                '<span class="tank-detail-timeline-lvl-above" data-tl-lvl>' + window.__fmtTankDetailMm(model.nowMm) + ' mm</span>' +
+                '<span class="tank-detail-timeline-time-below" data-tl-time>' + window.formatTankTimelineClock(model.nowTs) + '</span>' +
+                '<span class="tank-detail-timeline-ahead" data-tl-ahead>Adesso</span>' +
+                '</div>' +
+                '<div class="tank-detail-timeline-canvas-wrap">' +
+                '<svg class="tank-detail-timeline-svg" data-tl-svg viewBox="0 0 800 160" preserveAspectRatio="none" aria-hidden="true"></svg>' +
+                '</div>' +
+                '<input type="range" class="tank-detail-timeline-slider" data-tl-slider min="0" max="' +
+                (window.TANK_TIMELINE_PREDICT_HOURS || 24) + '" step="0.25" value="0" aria-label="Previsione timeline ore avanti" />' +
+                '<div class="tank-detail-timeline-legend">' +
+                '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--hist">■ Storico / adesso</span>' +
+                '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--pred">■ Previsione</span>' +
+                '</div>' +
+                '<div class="tank-detail-timeline-preview" data-tl-preview>' +
+                'Livello previsto: <b data-tl-prev-mm>' + window.__fmtTankDetailMm(model.nowMm) + ' mm</b>' +
+                (info.tankDbKey && typeof window.calculateTons === 'function'
+                    ? ' · <span data-tl-prev-t>' + window.__fmtTankDetailTons(window.calculateTons(info.tankDbKey, model.nowMm)) + ' t</span>'
+                    : '') +
+                '</div></div>';
+        };
+
+        window.renderTankDetailTimelineSvg = function (svgEl, model) {
+            if (!svgEl || !model) return;
+            var w = 800, h = 160;
+            var pad = { l: 48, r: 24, t: 36, b: 44 };
+            var plotW = w - pad.l - pad.r;
+            var plotH = h - pad.t - pad.b;
+            var tSpan = model.tEnd - model.tStart;
+            if (tSpan <= 0) tSpan = 3600000;
+            var toX = function (ts) { return pad.l + plotW * ((ts - model.tStart) / tSpan); };
+            var mmVals = model.series.map(function (p) { return p.mm; });
+            var predEndMm = window.predictTankLevelAtTs(model, model.tEnd);
+            if (Number.isFinite(predEndMm)) mmVals.push(predEndMm);
+            var yMin = Math.min.apply(null, mmVals.concat([0]));
+            var yMax = Math.max.apply(null, mmVals.concat([1]));
+            if (model.livMax && model.livMax > 0) yMax = Math.max(yMax, model.livMax);
+            var yPad = (yMax - yMin) * 0.12 || 100;
+            yMin = Math.max(0, yMin - yPad);
+            yMax = yMax + yPad;
+            var toY = function (mm) { return pad.t + plotH - (plotH * ((mm - yMin) / (yMax - yMin))); };
+            var nowX = toX(model.nowTs);
+            var histPts = model.series.map(function (p) {
+                return { x: toX(p.ts), y: toY(p.mm), p: p };
+            });
+            var histPath = histPts.map(function (pt, i) {
+                return (i === 0 ? 'M' : 'L') + pt.x.toFixed(1) + ',' + pt.y.toFixed(1);
+            }).join(' ');
+            var predSteps = 24;
+            var predPath = 'M' + nowX.toFixed(1) + ',' + toY(model.nowMm).toFixed(1);
+            for (var i = 1; i <= predSteps; i++) {
+                var ts = model.nowTs + (model.tEnd - model.nowTs) * (i / predSteps);
+                var mm = window.predictTankLevelAtTs(model, ts);
+                predPath += ' L' + toX(ts).toFixed(1) + ',' + toY(mm).toFixed(1);
+            }
+            var dots = histPts.map(function (pt) {
+                var fill = pt.p.live ? '#fbbf24' : '#38bdf8';
+                var lbl = window.__escTankDetailHtml(pt.p.label || window.formatTankTimelineClock(pt.p.ts));
+                var mmLbl = window.__fmtTankDetailMm(pt.p.mm);
+                return '<circle cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) + '" r="5" fill="' + fill + '" stroke="#0f172a" stroke-width="1.2">' +
+                    '<title>' + lbl + ': ' + mmLbl + ' mm</title></circle>' +
+                    '<text x="' + pt.x.toFixed(1) + '" y="' + (pt.y - 10).toFixed(1) + '" text-anchor="middle" font-size="10" font-weight="800" fill="#e2e8f0">' + mmLbl + '</text>' +
+                    '<text x="' + pt.x.toFixed(1) + '" y="' + (h - 12).toFixed(1) + '" text-anchor="middle" font-size="9" fill="#94a3b8">' +
+                    window.__escTankDetailHtml(String(pt.p.label || window.formatTankTimelineClock(pt.p.ts)).slice(0, 8)) + '</text>';
+            }).join('');
+            var zonePred = '<rect x="' + nowX.toFixed(1) + '" y="' + pad.t + '" width="' + (w - pad.r - nowX).toFixed(1) +
+                '" height="' + plotH + '" fill="rgba(167,139,250,0.08)" />';
+            var zoneHist = '<rect x="' + pad.l + '" y="' + pad.t + '" width="' + (nowX - pad.l).toFixed(1) +
+                '" height="' + plotH + '" fill="rgba(56,189,248,0.06)" />';
+            var scrubber = '<line class="tank-detail-timeline-scrub-line" data-tl-scrub x1="' + nowX.toFixed(1) +
+                '" y1="' + pad.t + '" x2="' + nowX.toFixed(1) + '" y2="' + (pad.t + plotH).toFixed(1) +
+                '" stroke="#fbbf24" stroke-width="2.5" stroke-dasharray="4 3"/>' +
+                '<circle class="tank-detail-timeline-scrub-knob" data-tl-knob cx="' + nowX.toFixed(1) +
+                '" cy="' + toY(model.nowMm).toFixed(1) + '" r="7" fill="#fbbf24" stroke="#0f172a" stroke-width="1.5"/>';
+            svgEl.innerHTML = zoneHist + zonePred +
+                '<line x1="' + pad.l + '" y1="' + (pad.t + plotH).toFixed(1) + '" x2="' + (w - pad.r).toFixed(1) +
+                '" y2="' + (pad.t + plotH).toFixed(1) + '" stroke="rgba(148,163,184,0.35)" stroke-width="1"/>' +
+                (histPath ? '<path d="' + histPath + '" fill="none" stroke="#38bdf8" stroke-width="2.5" stroke-linejoin="round"/>' : '') +
+                '<path d="' + predPath + '" fill="none" stroke="#a78bfa" stroke-width="2.5" stroke-dasharray="8 5" stroke-linejoin="round"/>' +
+                dots + scrubber;
+            svgEl.__tlModel = model;
+            svgEl.__tlGeom = { w: w, h: h, pad: pad, plotW: plotW, plotH: plotH, tSpan: tSpan, yMin: yMin, yMax: yMax, nowX: nowX, toX: toX, toY: toY };
+        };
+
+        window.updateTankDetailTimelineScrub = function (root, hoursAhead) {
+            if (!root) return;
+            var svg = root.querySelector('[data-tl-svg]');
+            var model = svg && svg.__tlModel;
+            var geom = svg && svg.__tlGeom;
+            if (!model || !geom) return;
+            hoursAhead = Math.max(0, Math.min(window.TANK_TIMELINE_PREDICT_HOURS || 24, Number(hoursAhead) || 0));
+            var targetTs = model.nowTs + hoursAhead * 3600000;
+            var predMm = window.predictTankLevelAtTs(model, targetTs);
+            var x = geom.toX(targetTs);
+            var y = geom.toY(predMm);
+            var scrub = svg.querySelector('[data-tl-scrub]');
+            var knob = svg.querySelector('[data-tl-knob]');
+            if (scrub) {
+                scrub.setAttribute('x1', x.toFixed(1));
+                scrub.setAttribute('x2', x.toFixed(1));
+            }
+            if (knob) {
+                knob.setAttribute('cx', x.toFixed(1));
+                knob.setAttribute('cy', y.toFixed(1));
+            }
+            var lvlEl = root.querySelector('[data-tl-lvl]');
+            var timeEl = root.querySelector('[data-tl-time]');
+            var aheadEl = root.querySelector('[data-tl-ahead]');
+            var prevMmEl = root.querySelector('[data-tl-prev-mm]');
+            var prevTEl = root.querySelector('[data-tl-prev-t]');
+            var isPred = hoursAhead > 0.05;
+            if (lvlEl) {
+                lvlEl.textContent = window.__fmtTankDetailMm(predMm) + ' mm';
+                lvlEl.classList.toggle('tank-detail-timeline-lvl-above--pred', isPred);
+            }
+            if (timeEl) timeEl.textContent = window.formatTankTimelineClock(targetTs);
+            if (aheadEl) aheadEl.textContent = window.formatTankTimelineHoursAhead(hoursAhead);
+            if (prevMmEl) prevMmEl.textContent = window.__fmtTankDetailMm(predMm) + ' mm';
+            if (prevTEl && model.tankDbKey && typeof window.calculateTons === 'function') {
+                prevTEl.textContent = window.__fmtTankDetailTons(window.calculateTons(model.tankDbKey, predMm)) + ' t';
+            }
+            root.classList.toggle('tank-detail-timeline-block--pred', isPred);
+        };
+
+        window.wireTankDetailTimeline = function (container, series, info) {
+            if (!container) return;
+            var block = container.querySelector('[data-tank-timeline]');
+            if (!block) return;
+            var model = window.buildTankTimelineModel(series, info);
+            var svg = block.querySelector('[data-tl-svg]');
+            window.renderTankDetailTimelineSvg(svg, model);
+            var slider = block.querySelector('[data-tl-slider]');
+            if (!slider) return;
+            var onSlide = function () {
+                window.updateTankDetailTimelineScrub(block, parseFloat(slider.value));
+            };
+            slider.addEventListener('input', onSlide);
+            slider.addEventListener('change', onSlide);
+            onSlide();
+        };
+
         window.buildTankDetailHistoryTableHTML = function (series) {
             if (!series || !series.length) {
                 return '<div class="tank-detail-history-empty">Nessun salvataggio storico per questo serbatoio.</div>';
@@ -10843,6 +11074,7 @@ window.updateStoricoButton = async function() {
                 '</span></div>' +
                 '</div>' +
                 '</div>' +
+                window.buildTankDetailTimelineHTML(series, info) +
                 '<div class="tank-detail-trend-block">' +
                 '<div class="tank-detail-section-title">Trend livello</div>' +
                 window.buildTankDetailTrendSummaryHTML(info, series) +
@@ -10859,20 +11091,20 @@ window.updateStoricoButton = async function() {
             var st = document.createElement('style');
             st.id = 'tank-detail-styles';
             st.textContent =
-                '.tank-detail-overlay{position:fixed;inset:0;z-index:10000000;background:rgba(2,6,23,0.88);backdrop-filter:blur(10px);display:none;align-items:stretch;justify-content:center;padding:0;overflow:hidden}' +
+                '.tank-detail-overlay{position:fixed;inset:0;z-index:10000000;background:#020617;display:none;flex-direction:column;padding:0;overflow:hidden}' +
                 '.tank-detail-overlay.active{display:flex}' +
                 'body.tank-detail-open{overflow:hidden}' +
-                '.tank-detail-shell{width:100%;max-width:980px;margin:0 auto;height:100%;display:flex;flex-direction:column;background:linear-gradient(165deg,#0f172a 0%,#1e293b 45%,#0f172a 100%);box-shadow:0 24px 80px rgba(0,0,0,0.55);overflow:hidden}' +
-                '.tank-detail-back{align-self:flex-start;margin:14px 16px 0;padding:10px 16px;border:none;border-radius:12px;background:rgba(37,99,235,0.22);color:#bfdbfe;font-weight:800;font-size:13px;cursor:pointer;border:1px solid rgba(96,165,250,0.35)}' +
+                '.tank-detail-shell{width:100%;max-width:none;margin:0;height:100%;min-height:100dvh;display:flex;flex-direction:column;background:linear-gradient(165deg,#0f172a 0%,#1e293b 45%,#0f172a 100%);box-shadow:none;overflow:hidden;border-radius:0}' +
+                '.tank-detail-back{align-self:flex-start;margin:14px 20px 0;padding:10px 18px;border:none;border-radius:12px;background:rgba(37,99,235,0.22);color:#bfdbfe;font-weight:800;font-size:13px;cursor:pointer;border:1px solid rgba(96,165,250,0.35);z-index:2}' +
                 '.tank-detail-back:hover{background:rgba(37,99,235,0.38)}' +
-                '#tank-detail-content{flex:1;overflow:auto;padding:8px 16px 28px;-webkit-overflow-scrolling:touch}' +
-                '.tank-detail-page{color:#e2e8f0}' +
+                '#tank-detail-content{flex:1;overflow:auto;padding:8px clamp(16px,3vw,40px) calc(28px + env(safe-area-inset-bottom,0px));-webkit-overflow-scrolling:touch;width:100%;box-sizing:border-box}' +
+                '.tank-detail-page{color:#e2e8f0;max-width:1400px;margin:0 auto;width:100%}' +
                 '.tank-detail-header{margin-bottom:16px}' +
                 '.tank-detail-title{font-size:clamp(24px,4vw,36px);font-weight:900;color:#f8fafc;letter-spacing:0.04em}' +
                 '.tank-detail-desc-chip{display:inline-block;margin-top:8px;padding:6px 14px;border-radius:999px;background:rgba(251,191,36,0.15);border:1px solid rgba(251,191,36,0.45);color:#fde68a;font-weight:800;font-size:12px;letter-spacing:0.08em;text-transform:uppercase}' +
-                '.tank-detail-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr);gap:20px;align-items:start;margin-bottom:20px}' +
-                '@media(max-width:720px){.tank-detail-layout{grid-template-columns:1fr}}' +
-                '.tank-detail-gauge-wrap{max-width:320px;margin:0 auto;transform:scale(1.15);transform-origin:center top}' +
+                '.tank-detail-layout{display:grid;grid-template-columns:minmax(280px,1fr) minmax(320px,1.4fr);gap:clamp(16px,3vw,32px);align-items:start;margin-bottom:20px}' +
+                '@media(max-width:900px){.tank-detail-layout{grid-template-columns:1fr}}' +
+                '.tank-detail-gauge-wrap{max-width:360px;margin:0 auto;transform:scale(1.2);transform-origin:center top}' +
                 '.tank-detail-gauge-wrap .digital-tank-gauge,.tank-detail-gauge-wrap .digital-tank3d{width:100%;max-width:280px;margin:0 auto}' +
                 '.tank-detail-status-row{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:12px}' +
                 '.tank-detail-badge{padding:6px 12px;border-radius:10px;font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:0.06em}' +

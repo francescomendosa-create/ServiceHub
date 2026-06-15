@@ -653,9 +653,9 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v188';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v189';
         window.__aiGeminiMic = { on: false, rec: null, stream: null, chunks: [] };
-        window.__aiSpeechIOS = { rec: null, on: false, prefix: '', uiSince: 0 };
+        window.__aiSpeechIOS = { rec: null, listening: false, prefix: '' };
         (function() {
             var s = document.createElement('style');
             s.textContent = '@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}';
@@ -679,7 +679,7 @@ window.colorPreviewNumber = function(tankName, value) {
             }
             if (send) send.innerHTML = '<i class="fas fa-paper-plane" style="pointer-events:none;"></i>';
             if (window.__aiGeminiMic) window.__aiGeminiMic.on = false;
-            if (window.__aiSpeechIOS) window.__aiSpeechIOS.on = false;
+            if (window.__aiSpeechIOS) window.__aiSpeechIOS.listening = false;
         };
         window.__aiMicUiRec = function() {
             var mic = document.getElementById('ai-mic-btn');
@@ -735,7 +735,9 @@ window.colorPreviewNumber = function(tankName, value) {
         };
         window.__aiGeminiMicTap = function(inputField) {
             var gm = window.__aiGeminiMic;
+            var st = window.__aiSpeechIOS;
             if (gm.on && gm.rec && gm.rec.state !== 'inactive') {
+                st.listening = false;
                 try { gm.rec.stop(); } catch (e0) {}
                 return false;
             }
@@ -745,6 +747,7 @@ window.colorPreviewNumber = function(tankName, value) {
             }
             window.__aiMicUiRec();
             gm.on = true;
+            st.listening = true;
             gm.chunks = [];
             navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
                 gm.stream = stream;
@@ -797,29 +800,25 @@ window.colorPreviewNumber = function(tankName, value) {
                 inputField.value = st.prefix + sep + transcript;
                 inputField.scrollLeft = inputField.scrollWidth;
                 try { inputField.setSelectionRange(inputField.value.length, inputField.value.length); } catch (e2) {}
-                try { inputField.focus(); } catch (e3) {}
                 if (typeof window.syncAiChatClearBtn === 'function') window.syncAiChatClearBtn();
             };
-            recognition.onstart = function() {
-                st.on = true;
-                window.__aiMicUiRec();
-            };
+            recognition.onstart = function() { /* UI già accesa al tap */ };
             recognition.onend = function() {
-                st.on = false;
                 st.rec = null;
-                var minMs = 450;
-                var elapsed = Date.now() - (st.uiSince || 0);
-                var wait = Math.max(0, minMs - elapsed);
-                setTimeout(function() {
-                    if (!window.__aiSpeechIOS.on) window.__aiMicUiIdle();
-                }, wait);
+                if (st.listening) {
+                    setTimeout(function() {
+                        if (!st.listening) return;
+                        try {
+                            var r2 = window.__ensureIosSpeechRec(inputField);
+                            st.rec = r2;
+                            if (r2) r2.start();
+                        } catch (eR) {}
+                    }, 150);
+                }
             };
             recognition.onerror = function(ev) {
                 var code = ev && ev.error ? ev.error : '';
                 if (code === 'aborted' || code === 'no-speech') return;
-                st.on = false;
-                st.rec = null;
-                window.__aiMicUiIdle();
             };
             return recognition;
         };
@@ -832,8 +831,8 @@ window.colorPreviewNumber = function(tankName, value) {
             }
             var st = window.__aiSpeechIOS;
             window.__aiQuickSpeechStop = function() {
+                st.listening = false;
                 if (st.rec) { try { st.rec.stop(); } catch (e) {} }
-                st.on = false;
                 st.rec = null;
                 var g = window.__aiGeminiMic;
                 if (g && g.on && g.rec) { try { g.rec.stop(); } catch (e2) {} }
@@ -844,36 +843,27 @@ window.colorPreviewNumber = function(tankName, value) {
                 alert('Vocale non pronto.');
                 return false;
             }
-            if (st.on) {
-                try { if (st.rec) st.rec.stop(); } catch (e0) {}
-                st.on = false;
+            if (st.listening) {
+                st.listening = false;
+                if (st.rec) { try { st.rec.stop(); } catch (e0) {} }
                 st.rec = null;
                 window.__aiMicUiIdle();
                 return false;
             }
-            if (!(window.webkitSpeechRecognition || window.SpeechRecognition)) {
-                return window.__aiGeminiMicTap(inputField);
-            }
+            st.listening = true;
             st.prefix = (inputField.value || '').replace(/\s+$/, '');
-            st.uiSince = Date.now();
-            st.on = true;
             window.__aiMicUiRec();
-            var recognition = window.__ensureIosSpeechRec(inputField);
-            if (!recognition) {
-                st.on = false;
-                window.__aiMicUiIdle();
-                return window.__aiGeminiMicTap(inputField);
+            if (window.webkitSpeechRecognition || window.SpeechRecognition) {
+                var recognition = window.__ensureIosSpeechRec(inputField);
+                st.rec = recognition;
+                if (recognition) {
+                    try {
+                        recognition.start();
+                        return false;
+                    } catch (err) {}
+                }
             }
-            st.rec = recognition;
-            try {
-                recognition.start();
-            } catch (err) {
-                st.on = false;
-                st.rec = null;
-                window.__aiMicUiIdle();
-                return window.__aiGeminiMicTap(inputField);
-            }
-            return false;
+            return window.__aiGeminiMicTap(inputField);
         };
         window.__aiSpeechBoot = function() {
             if (window.__aiSpeech && window.__aiSpeech.build === window.SERVICEHUB_BUILD) return window.__aiSpeech;
@@ -1195,6 +1185,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 chat.setAttribute('aria-hidden', 'false');
                 chat.dataset.chatOpen = '1';
                 if (dock) dock.classList.add('ai-dock-open');
+                if (typeof window.resetQuickChatSmall === 'function') window.resetQuickChatSmall(true);
             } else {
                 chat.style.display = 'none';
                 chat.classList.remove('ai-chat-visible');
@@ -15154,6 +15145,7 @@ window.updateStoricoButton = async function() {
     if (/iPhone|iPod/i.test(navigator.userAgent || '') && typeof window.__aiOpenQuickChat === 'function') {
         window.__aiOpenQuickChat();
     }
+    if (typeof window.resetQuickChatSmall === 'function') window.resetQuickChatSmall(true);
     if (typeof fixAIPanel === 'function') fixAIPanel();
     if (typeof window.wireAiRobotHead === 'function') window.wireAiRobotHead();
     if (typeof window.onAiRobotTap === 'function') {
@@ -24136,7 +24128,7 @@ window.convertToHtml = async () => {
 
             </div>
             <div id="ai-settings-dock" onclick="event.stopPropagation()">
-                <div id="ai-learning-section" aria-hidden="true" data-ai-speech-ver="188">
+                <div id="ai-learning-section" aria-hidden="true" data-ai-speech-ver="189">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                         <button type="button" onclick="exportAIMemory()" style="background:#1e293b;border:1px solid #334155;color:#60a5fa;width:32px;height:32px;cursor:pointer;border-radius:6px;font-size:10px;display:flex;align-items:center;justify-content:center;touch-action:manipulation;" title="Esporta memoria AI">↓</button>
                         <button type="button" id="open-conversation-btn" onclick="return window.openAiConversationFromSettings(event);" style="background:transparent;border:none;color:#60a5fa;cursor:pointer;font-size:18px;padding:8px;border-radius:5px;touch-action:manipulation;" title="Apri conversazione completa"><i class="fas fa-comments"></i></button>
@@ -30204,7 +30196,7 @@ function fixAIPanel() {
     if (window.__aiSpeechWired === window.SERVICEHUB_BUILD) return;
 
     var chatSection = document.getElementById('ai-learning-section');
-    if (chatSection && chatSection.dataset) chatSection.dataset.aiSpeechVer = '188';
+    if (chatSection && chatSection.dataset) chatSection.dataset.aiSpeechVer = '189';
 
     window.wireAiRobotHead();
 
@@ -30260,41 +30252,42 @@ window.wireAiQuickChatSpeech = window.wireAiQuickChatControls;
 window.wireAiChatControls = window.wireAiQuickChatControls;
 
 window.__aiSendQuickChat = async function() {
-    window.__aiQuickSpeechStop();
+    if (typeof window.__aiQuickSpeechStop === 'function') window.__aiQuickSpeechStop();
     var input = document.getElementById('ai-chat-input');
-    var micBtn = document.getElementById('ai-mic-btn');
-    var sendBtn = document.getElementById('ai-send-btn');
-    if (!input || !input.value) return;
-    var val = input.value;
-    input.value = '';
-    window.syncAiChatClearBtn();
-    if (micBtn) micBtn.style.animation = '';
-    if (sendBtn) sendBtn.innerHTML = '<i class="fas fa-paper-plane"></i>';
-    var statusEl = document.getElementById('ai-quick-chat-status');
-    var panelEl = document.getElementById('ai-quick-chat-panel');
-    if (statusEl) {
-        statusEl.style.display = 'block';
-        statusEl.textContent = 'Invio in corso…';
-    }
-    if (panelEl) panelEl.style.display = 'block';
-    window.__aiQuickPreviewDismissed = false;
+    if (!input || !input.value || !String(input.value).trim()) return;
+    var val = String(input.value).trim();
     try {
         var res = await window.callGeminiAPIWithTimeout(val, true, null, 50000);
-        var aiText = res;
-        if (statusEl) statusEl.textContent = 'Tu: ' + val + '\n\nAI: ' + aiText;
-        if (panelEl) panelEl.style.display = 'block';
         if (typeof window.appendAIChatExchange === 'function') {
-            await window.appendAIChatExchange(val, aiText);
+            await window.appendAIChatExchange(val, res);
         }
         window.updateGeminiContextBadgeUI();
     } catch (err) {
         var errText = window.formatGeminiError(err && err.message);
-        if (statusEl) statusEl.textContent = 'Tu: ' + val + '\n\nAI: ' + errText;
-        if (panelEl) panelEl.style.display = 'block';
         if (typeof window.appendAIChatExchange === 'function') {
             await window.appendAIChatExchange(val, errText);
         }
     }
+    if (typeof window.resetQuickChatSmall === 'function') window.resetQuickChatSmall(true);
+    if (typeof window.showConversationModal === 'function') {
+        await window.showConversationModal('');
+    }
+};
+
+window.resetQuickChatSmall = function(keepDismissFlag) {
+    var input = document.getElementById('ai-chat-input');
+    var micBtn = document.getElementById('ai-mic-btn');
+    var sendBtn = document.getElementById('ai-send-btn');
+    var statusEl = document.getElementById('ai-quick-chat-status');
+    var panelEl = document.getElementById('ai-quick-chat-panel');
+    if (input) input.value = '';
+    if (statusEl) { statusEl.textContent = ''; statusEl.style.display = 'none'; }
+    if (panelEl) panelEl.style.display = 'none';
+    if (micBtn) { micBtn.style.animation = ''; micBtn.style.background = '#ef4444'; }
+    if (sendBtn) sendBtn.innerHTML = '<i class="fas fa-paper-plane" style="pointer-events:none;"></i>';
+    if (keepDismissFlag !== false) window.__aiQuickPreviewDismissed = true;
+    if (typeof window.syncAiChatClearBtn === 'function') window.syncAiChatClearBtn();
+    if (typeof window.__aiMicUiIdle === 'function') window.__aiMicUiIdle();
 };
 
 window.bindSpeechMicTap = function(btn, handler) {
@@ -30600,14 +30593,7 @@ window.appendAIChatExchange = async function(userMsg, aiMsg) {
 
 window.clearQuickChatPreview = function(ev) {
     if (ev) { try { ev.preventDefault(); ev.stopPropagation(); } catch (e0) {} }
-    window.__aiQuickPreviewDismissed = true;
-    var panel = document.getElementById('ai-quick-chat-panel');
-    var statusEl = document.getElementById('ai-quick-chat-status');
-    var inp = document.getElementById('ai-chat-input');
-    if (panel) panel.style.display = 'none';
-    if (statusEl) { statusEl.textContent = ''; }
-    if (inp) { inp.value = ''; window.syncAiChatClearBtn(); }
-    if (typeof window.__aiQuickSpeechStop === 'function') window.__aiQuickSpeechStop();
+    window.resetQuickChatSmall(true);
 };
 
 window.openQuickChatFull = async function(ev) {
@@ -30618,21 +30604,7 @@ window.openQuickChatFull = async function(ev) {
 };
 
 window.refreshQuickChatStatusFromTranscript = async function() {
-    if (window.__aiQuickPreviewDismissed) return;
-    var statusEl = document.getElementById('ai-quick-chat-status');
-    var panelEl = document.getElementById('ai-quick-chat-panel');
-    if (!statusEl || !window.loadAIChatTranscript) return;
-    try {
-        var transcript = await window.loadAIChatTranscript();
-        var preview = window.extractLastChatExchange(transcript);
-        if (preview) {
-            statusEl.textContent = preview;
-            if (panelEl) panelEl.style.display = 'block';
-        } else {
-            statusEl.textContent = '';
-            if (panelEl) panelEl.style.display = 'none';
-        }
-    } catch (e2) {}
+    window.resetQuickChatSmall(true);
 };
 
 window.showConversationModal = async function(draftUserLine) {

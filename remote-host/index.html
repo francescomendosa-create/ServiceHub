@@ -7,7 +7,7 @@
     var SK = "servicehub_remote_share_k";
     var SA = "servicehub_remote_app_id";
     var FB_ORIGIN = "https://servicehub-18309.web.app";
-    window.SVCREMOTE_BUILD = "2026.06.14-v109";
+    window.SVCREMOTE_BUILD = "2026.06.14-v110";
 
     /** Vecchi link su GitHub → stesso remoto su Firebase. */
     (function redirectGithubToFirebase() {
@@ -259,7 +259,7 @@
   <link rel="manifest" href="manifest.json?v=fb5" />
   <link rel="apple-touch-icon" href="sh-remote-touch.png?v=fb3" />
   <link rel="icon" type="image/png" sizes="32x32" href="sh-remote-favicon.png?v=fb3" />
-  <link rel="stylesheet" href="digital-remote.css?v=dig90" />
+  <link rel="stylesheet" href="digital-remote.css?v=dig91" />
   <style>
     html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; overflow: hidden; overflow-x: hidden !important; touch-action: pan-y; overscroll-behavior-x: none; }
     #digital-preview-container {
@@ -2820,6 +2820,143 @@
       };
     }
 
+    var TANK_TIMELINE_PREDICT_H = 24;
+
+    function computeRemoteTimelineRate(series, info) {
+      if (series && series.length >= 2) {
+        var a = series[series.length - 2], b = series[series.length - 1];
+        var dtH = (b.ts - a.ts) / 3600000;
+        if (dtH >= 0.08) return (b.mm - a.mm) / dtH;
+        a = series[0]; b = series[series.length - 1];
+        dtH = (b.ts - a.ts) / 3600000;
+        if (dtH >= 0.08) return (b.mm - a.mm) / dtH;
+      }
+      return 0;
+    }
+
+    function buildRemoteTimelineModel(series, info) {
+      series = (series || []).filter(function (p) { return p && Number.isFinite(p.ts) && Number.isFinite(p.mm); })
+        .slice().sort(function (a, b) { return a.ts - b.ts; });
+      if (!series.length && info && Number.isFinite(info.levelMm)) {
+        series = [{ ts: Date.now(), mm: info.levelMm, label: "Adesso", live: true }];
+      }
+      var rate = computeRemoteTimelineRate(series, info);
+      var nowTs = series.length ? series[series.length - 1].ts : Date.now();
+      var nowMm = series.length ? series[series.length - 1].mm : (info.levelMm || 0);
+      var tStart = series.length > 1 ? series[0].ts : nowTs - 3600000;
+      var tEnd = nowTs + TANK_TIMELINE_PREDICT_H * 3600000;
+      return { series: series, rateMmH: rate, nowTs: nowTs, nowMm: nowMm, tStart: tStart, tEnd: tEnd, livMax: info.livMax, tankDbKey: info.tankDbKey };
+    }
+
+    function predictRemoteLevelAt(model, targetTs) {
+      var dtH = (targetTs - model.nowTs) / 3600000;
+      var mm = model.nowMm + (model.rateMmH || 0) * dtH;
+      if (model.livMax && model.livMax > 0) mm = Math.min(mm, model.livMax * 1.15);
+      return Math.max(0, mm);
+    }
+
+    function fmtTimelineClock(ts) {
+      try { return new Date(ts).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }); }
+      catch (_) { return "--:--"; }
+    }
+
+    function fmtTimelineAhead(h) {
+      if (h <= 0.05) return "Adesso";
+      if (h < 1) return "+" + Math.round(h * 60) + " min";
+      return "+" + String(Math.round(h * 10) / 10).replace(".", ",") + " h";
+    }
+
+    function buildRemoteTimelineHTML(series, info) {
+      var model = buildRemoteTimelineModel(series, info);
+      var rateSign = model.rateMmH > 0 ? "+" : "";
+      var rateCls = model.rateMmH > 0.05 ? "up" : model.rateMmH < -0.05 ? "down" : "flat";
+      return '<div class="tank-detail-timeline-block" data-tank-timeline="1">' +
+        '<div class="tank-detail-section-title">Timeline livello · previsione</div>' +
+        '<div class="tank-detail-timeline-hint">Trascina la linea fino a <b>24 ore</b> avanti: sotto l\'orario, sopra il livello previsto.</div>' +
+        '<div class="tank-detail-timeline-rate tank-detail-timeline-rate--' + rateCls + '">Velocità trend: <b>' +
+        esc(rateSign + fmtTankMm(model.rateMmH) + " mm/h") + "</b></div>" +
+        '<div class="tank-detail-timeline-scrub-label">' +
+        '<span class="tank-detail-timeline-lvl-above" data-tl-lvl>' + fmtTankMm(model.nowMm) + " mm</span>" +
+        '<span class="tank-detail-timeline-time-below" data-tl-time>' + fmtTimelineClock(model.nowTs) + "</span>" +
+        '<span class="tank-detail-timeline-ahead" data-tl-ahead>Adesso</span></div>' +
+        '<div class="tank-detail-timeline-canvas-wrap"><svg class="tank-detail-timeline-svg" data-tl-svg viewBox="0 0 800 160" preserveAspectRatio="none"></svg></div>' +
+        '<input type="range" class="tank-detail-timeline-slider" data-tl-slider min="0" max="' + TANK_TIMELINE_PREDICT_H + '" step="0.25" value="0" />' +
+        '<div class="tank-detail-timeline-legend"><span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--hist">■ Storico / adesso</span>' +
+        '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--pred">■ Previsione</span></div>' +
+        '<div class="tank-detail-timeline-preview">Livello previsto: <b data-tl-prev-mm>' + fmtTankMm(model.nowMm) + " mm</b></div></div>";
+    }
+
+    function renderRemoteTimelineSvg(svgEl, model) {
+      if (!svgEl || !model) return;
+      var w = 800, h = 160, pad = { l: 48, r: 24, t: 36, b: 44 }, plotW = w - pad.l - pad.r, plotH = h - pad.t - pad.b;
+      var tSpan = model.tEnd - model.tStart || 3600000;
+      var toX = function (ts) { return pad.l + plotW * ((ts - model.tStart) / tSpan); };
+      var mmVals = model.series.map(function (p) { return p.mm; });
+      mmVals.push(predictRemoteLevelAt(model, model.tEnd));
+      var yMin = Math.max(0, Math.min.apply(null, mmVals) * 0.95);
+      var yMax = Math.max.apply(null, mmVals.concat([1]));
+      if (model.livMax) yMax = Math.max(yMax, model.livMax);
+      yMax += (yMax - yMin) * 0.12 || 100;
+      var toY = function (mm) { return pad.t + plotH - (plotH * ((mm - yMin) / (yMax - yMin))); };
+      var nowX = toX(model.nowTs);
+      var histPts = model.series.map(function (p) { return { x: toX(p.ts), y: toY(p.mm), p: p }; });
+      var histPath = histPts.map(function (pt, i) { return (i ? "L" : "M") + pt.x.toFixed(1) + "," + pt.y.toFixed(1); }).join(" ");
+      var predPath = "M" + nowX.toFixed(1) + "," + toY(model.nowMm).toFixed(1);
+      for (var i = 1; i <= 24; i++) {
+        var ts = model.nowTs + (model.tEnd - model.nowTs) * (i / 24);
+        predPath += " L" + toX(ts).toFixed(1) + "," + toY(predictRemoteLevelAt(model, ts)).toFixed(1);
+      }
+      var dots = histPts.map(function (pt) {
+        return '<text x="' + pt.x.toFixed(1) + '" y="' + (pt.y - 10).toFixed(1) + '" text-anchor="middle" font-size="10" font-weight="800" fill="#e2e8f0">' + fmtTankMm(pt.p.mm) + "</text>" +
+          '<text x="' + pt.x.toFixed(1) + '" y="' + (h - 12).toFixed(1) + '" text-anchor="middle" font-size="9" fill="#94a3b8">' + esc(String(pt.p.label || fmtTimelineClock(pt.p.ts)).slice(0, 8)) + "</text>";
+      }).join("");
+      svgEl.innerHTML = '<rect x="' + pad.l + '" y="' + pad.t + '" width="' + (nowX - pad.l).toFixed(1) + '" height="' + plotH + '" fill="rgba(56,189,248,0.06)"/>' +
+        '<rect x="' + nowX.toFixed(1) + '" y="' + pad.t + '" width="' + (w - pad.r - nowX).toFixed(1) + '" height="' + plotH + '" fill="rgba(167,139,250,0.08)"/>' +
+        (histPath ? '<path d="' + histPath + '" fill="none" stroke="#38bdf8" stroke-width="2.5"/>' : "") +
+        '<path d="' + predPath + '" fill="none" stroke="#a78bfa" stroke-width="2.5" stroke-dasharray="8 5"/>' + dots +
+        '<line data-tl-scrub x1="' + nowX.toFixed(1) + '" y1="' + pad.t + '" x2="' + nowX.toFixed(1) + '" y2="' + (pad.t + plotH).toFixed(1) + '" stroke="#fbbf24" stroke-width="2.5" stroke-dasharray="4 3"/>' +
+        '<circle data-tl-knob cx="' + nowX.toFixed(1) + '" cy="' + toY(model.nowMm).toFixed(1) + '" r="7" fill="#fbbf24"/>';
+      svgEl.__tlModel = model;
+      svgEl.__tlGeom = { pad: pad, plotH: plotH, tSpan: tSpan, yMin: yMin, yMax: yMax, toX: toX, toY: toY };
+    }
+
+    function updateRemoteTimelineScrub(block, hoursAhead) {
+      var svg = block.querySelector("[data-tl-svg]");
+      var model = svg && svg.__tlModel;
+      var geom = svg && svg.__tlGeom;
+      if (!model || !geom) return;
+      hoursAhead = Math.max(0, Math.min(TANK_TIMELINE_PREDICT_H, Number(hoursAhead) || 0));
+      var targetTs = model.nowTs + hoursAhead * 3600000;
+      var predMm = predictRemoteLevelAt(model, targetTs);
+      var x = geom.toX(targetTs), y = geom.toY(predMm);
+      var scrub = svg.querySelector("[data-tl-scrub]");
+      var knob = svg.querySelector("[data-tl-knob]");
+      if (scrub) { scrub.setAttribute("x1", x); scrub.setAttribute("x2", x); }
+      if (knob) { knob.setAttribute("cx", x); knob.setAttribute("cy", y); }
+      var lvlEl = block.querySelector("[data-tl-lvl]");
+      var timeEl = block.querySelector("[data-tl-time]");
+      var aheadEl = block.querySelector("[data-tl-ahead]");
+      var prevMmEl = block.querySelector("[data-tl-prev-mm]");
+      if (lvlEl) { lvlEl.textContent = fmtTankMm(predMm) + " mm"; lvlEl.classList.toggle("tank-detail-timeline-lvl-above--pred", hoursAhead > 0.05); }
+      if (timeEl) timeEl.textContent = fmtTimelineClock(targetTs);
+      if (aheadEl) aheadEl.textContent = fmtTimelineAhead(hoursAhead);
+      if (prevMmEl) prevMmEl.textContent = fmtTankMm(predMm) + " mm";
+      block.classList.toggle("tank-detail-timeline-block--pred", hoursAhead > 0.05);
+    }
+
+    function wireRemoteTankTimeline(container, series, info) {
+      var block = container && container.querySelector("[data-tank-timeline]");
+      if (!block) return;
+      var model = buildRemoteTimelineModel(series, info);
+      renderRemoteTimelineSvg(block.querySelector("[data-tl-svg]"), model);
+      var slider = block.querySelector("[data-tl-slider]");
+      if (!slider) return;
+      var onSlide = function () { updateRemoteTimelineScrub(block, parseFloat(slider.value)); };
+      slider.addEventListener("input", onSlide);
+      slider.addEventListener("change", onSlide);
+      onSlide();
+    }
+
     function buildRemoteTankDetailPageHTML(info, series) {
       var pct = Math.max(0, Math.min(100, Number(info.fillPct) || 0));
       var gauge = buildDigitalTankGaugeSVG(pct, info.label || "", { drain: info.vis.drain, acc: info.vis.acc });
@@ -2843,6 +2980,7 @@
         fmtTankTons(info.maxTons) + ' <small>t</small></span></div>' +
         '<div class="tank-detail-stat"><span class="tank-detail-stat-label">Riempimento</span><span class="tank-detail-stat-val">' +
         (info.fillPctOfMax != null ? info.fillPctOfMax + " <small>%</small>" : "—") + "</span></div></div></div>" +
+        buildRemoteTimelineHTML(series, info) +
         '<div class="tank-detail-trend-block"><div class="tank-detail-section-title">Trend livello</div>' +
         '<div class="tank-detail-chart-wrap">' + chart + "</div></div>" +
         '<div class="tank-detail-history-block"><div class="tank-detail-section-title">Storico salvataggi</div>' +
@@ -2877,9 +3015,17 @@
       navCtx = navCtx || {};
       var payload = window.__remoteDigitalPayload || {};
       var info = resolveRemoteTankDetailInfo(fieldId, payload, navCtx);
-      var series = (payload.tankLevelHistory && payload.tankLevelHistory[fieldId]) || [];
+      var series = ((payload.tankLevelHistory && payload.tankLevelHistory[fieldId]) || []).slice();
+      if (Number.isFinite(info.levelMm)) {
+        var lastS = series.length ? series[series.length - 1] : null;
+        if (!lastS || Math.abs(lastS.mm - info.levelMm) > 0.05) {
+          series.push({ ts: Date.now(), mm: info.levelMm, label: "Adesso", live: true });
+        }
+      }
       var overlay = ensureRemoteTankDetailOverlay();
-      overlay.querySelector("#tank-detail-content").innerHTML = buildRemoteTankDetailPageHTML(info, series);
+      var content = overlay.querySelector("#tank-detail-content");
+      content.innerHTML = buildRemoteTankDetailPageHTML(info, series);
+      wireRemoteTankTimeline(content, series, info);
       var backBtn = overlay.querySelector("#tank-detail-back-btn");
       if (backBtn) backBtn.textContent = "← " + (navCtx.backLabel || "Indietro");
       overlay.classList.add("active");

@@ -653,9 +653,9 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v187';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v188';
         window.__aiGeminiMic = { on: false, rec: null, stream: null, chunks: [] };
-        window.__aiSpeechIOS = { rec: null, on: false };
+        window.__aiSpeechIOS = { rec: null, on: false, prefix: '', uiSince: 0 };
         (function() {
             var s = document.createElement('style');
             s.textContent = '@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}';
@@ -679,6 +679,7 @@ window.colorPreviewNumber = function(tankName, value) {
             }
             if (send) send.innerHTML = '<i class="fas fa-paper-plane" style="pointer-events:none;"></i>';
             if (window.__aiGeminiMic) window.__aiGeminiMic.on = false;
+            if (window.__aiSpeechIOS) window.__aiSpeechIOS.on = false;
         };
         window.__aiMicUiRec = function() {
             var mic = document.getElementById('ai-mic-btn');
@@ -782,56 +783,45 @@ window.colorPreviewNumber = function(tankName, value) {
             });
             return false;
         };
-        /** iPhone: SpeechRecognition (come prima). Gemini solo se API vocale assente o errore. */
-        window.__aiSpeechIosTap = function(inputField) {
+        window.__ensureIosSpeechRec = function(inputField) {
+            var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) return null;
             var st = window.__aiSpeechIOS;
-            var recognition = st.rec;
-            if (!recognition && (window.webkitSpeechRecognition || window.SpeechRecognition)) {
-                var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-                recognition = st.rec = new SpeechRecognition();
-                recognition.lang = 'it-IT';
-                recognition.interimResults = true;
-                recognition.onresult = function(e) {
-                    if (!e || !e.results) return;
-                    var transcript = Array.from(e.results).map(function(r) { return r[0].transcript; }).join('');
-                    inputField.value = transcript;
-                    inputField.scrollLeft = inputField.scrollWidth;
-                    try { inputField.setSelectionRange(inputField.value.length, inputField.value.length); } catch (e2) {}
-                    try { inputField.focus(); } catch (e3) {}
-                    if (typeof window.syncAiChatClearBtn === 'function') window.syncAiChatClearBtn();
-                };
-                recognition.onstart = function() {
-                    st.on = true;
-                    window.__aiMicUiRec();
-                };
-                recognition.onend = function() {
-                    st.on = false;
-                    window.__aiMicUiIdle();
-                };
-                recognition.onerror = function(ev) {
-                    var code = ev && ev.error ? ev.error : '';
-                    if (code === 'aborted' || code === 'no-speech') return;
-                    st.on = false;
-                    window.__aiMicUiIdle();
-                };
-            }
-            if (!recognition) {
-                return window.__aiGeminiMicTap(inputField);
-            }
-            if (st.on) {
-                try { recognition.stop(); } catch (e0) {}
-                return false;
-            }
-            try {
-                recognition.start();
+            var recognition = new SpeechRecognition();
+            recognition.lang = 'it-IT';
+            recognition.interimResults = true;
+            recognition.onresult = function(e) {
+                if (!e || !e.results) return;
+                var transcript = Array.from(e.results).map(function(r) { return r[0].transcript; }).join('');
+                var sep = st.prefix && transcript ? ' ' : '';
+                inputField.value = st.prefix + sep + transcript;
+                inputField.scrollLeft = inputField.scrollWidth;
+                try { inputField.setSelectionRange(inputField.value.length, inputField.value.length); } catch (e2) {}
+                try { inputField.focus(); } catch (e3) {}
+                if (typeof window.syncAiChatClearBtn === 'function') window.syncAiChatClearBtn();
+            };
+            recognition.onstart = function() {
                 st.on = true;
                 window.__aiMicUiRec();
-            } catch (err) {
+            };
+            recognition.onend = function() {
                 st.on = false;
+                st.rec = null;
+                var minMs = 450;
+                var elapsed = Date.now() - (st.uiSince || 0);
+                var wait = Math.max(0, minMs - elapsed);
+                setTimeout(function() {
+                    if (!window.__aiSpeechIOS.on) window.__aiMicUiIdle();
+                }, wait);
+            };
+            recognition.onerror = function(ev) {
+                var code = ev && ev.error ? ev.error : '';
+                if (code === 'aborted' || code === 'no-speech') return;
+                st.on = false;
+                st.rec = null;
                 window.__aiMicUiIdle();
-                return window.__aiGeminiMicTap(inputField);
-            }
-            return false;
+            };
+            return recognition;
         };
         window.__aiMicTapCore = function(ev) {
             window.__unlockServiceHubUi();
@@ -840,19 +830,49 @@ window.colorPreviewNumber = function(tankName, value) {
                 alert('Tocca il robot in basso per aprire la chat.');
                 return false;
             }
+            var st = window.__aiSpeechIOS;
             window.__aiQuickSpeechStop = function() {
-                var st = window.__aiSpeechIOS;
-                if (st && st.on && st.rec) { try { st.rec.stop(); } catch (e) {} }
-                if (st) st.on = false;
+                if (st.rec) { try { st.rec.stop(); } catch (e) {} }
+                st.on = false;
+                st.rec = null;
                 var g = window.__aiGeminiMic;
                 if (g && g.on && g.rec) { try { g.rec.stop(); } catch (e2) {} }
                 window.__aiMicUiIdle();
             };
-            if (/iPhone|iPod/i.test(navigator.userAgent || '')) {
-                return window.__aiSpeechIosTap(inputField);
+            if (!/iPhone|iPod/i.test(navigator.userAgent || '')) {
+                if (typeof window.__aiMicClick === 'function') return window.__aiMicClick(ev);
+                alert('Vocale non pronto.');
+                return false;
             }
-            if (typeof window.__aiMicClick === 'function') return window.__aiMicClick(ev);
-            alert('Vocale non pronto.');
+            if (st.on) {
+                try { if (st.rec) st.rec.stop(); } catch (e0) {}
+                st.on = false;
+                st.rec = null;
+                window.__aiMicUiIdle();
+                return false;
+            }
+            if (!(window.webkitSpeechRecognition || window.SpeechRecognition)) {
+                return window.__aiGeminiMicTap(inputField);
+            }
+            st.prefix = (inputField.value || '').replace(/\s+$/, '');
+            st.uiSince = Date.now();
+            st.on = true;
+            window.__aiMicUiRec();
+            var recognition = window.__ensureIosSpeechRec(inputField);
+            if (!recognition) {
+                st.on = false;
+                window.__aiMicUiIdle();
+                return window.__aiGeminiMicTap(inputField);
+            }
+            st.rec = recognition;
+            try {
+                recognition.start();
+            } catch (err) {
+                st.on = false;
+                st.rec = null;
+                window.__aiMicUiIdle();
+                return window.__aiGeminiMicTap(inputField);
+            }
             return false;
         };
         window.__aiSpeechBoot = function() {
@@ -24116,7 +24136,7 @@ window.convertToHtml = async () => {
 
             </div>
             <div id="ai-settings-dock" onclick="event.stopPropagation()">
-                <div id="ai-learning-section" aria-hidden="true" data-ai-speech-ver="187">
+                <div id="ai-learning-section" aria-hidden="true" data-ai-speech-ver="188">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                         <button type="button" onclick="exportAIMemory()" style="background:#1e293b;border:1px solid #334155;color:#60a5fa;width:32px;height:32px;cursor:pointer;border-radius:6px;font-size:10px;display:flex;align-items:center;justify-content:center;touch-action:manipulation;" title="Esporta memoria AI">↓</button>
                         <button type="button" id="open-conversation-btn" onclick="return window.openAiConversationFromSettings(event);" style="background:transparent;border:none;color:#60a5fa;cursor:pointer;font-size:18px;padding:8px;border-radius:5px;touch-action:manipulation;" title="Apri conversazione completa"><i class="fas fa-comments"></i></button>
@@ -30184,7 +30204,7 @@ function fixAIPanel() {
     if (window.__aiSpeechWired === window.SERVICEHUB_BUILD) return;
 
     var chatSection = document.getElementById('ai-learning-section');
-    if (chatSection && chatSection.dataset) chatSection.dataset.aiSpeechVer = '187';
+    if (chatSection && chatSection.dataset) chatSection.dataset.aiSpeechVer = '188';
 
     window.wireAiRobotHead();
 

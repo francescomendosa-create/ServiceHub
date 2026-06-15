@@ -662,7 +662,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v198';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v199';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -9824,7 +9824,7 @@ window.updateStoricoButton = async function() {
                 'autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" ' +
                 'data-lpignore="true" data-1p-ignore data-form-type="other" ' +
                 'name="sh-nott-stocc-' + t.fieldId + '" ' +
-                'oninput="window.refreshStoccaggioInternoTons(); window.persistNotturnoStoccaggioToRapportino && window.persistNotturnoStoccaggioToRapportino()" ' +
+                'oninput="window.__plantFieldEditMs=window.__plantFieldEditMs||{};window.__plantFieldEditMs[\'' + t.fieldId + '\']=Date.now();window.refreshStoccaggioInternoTons(); window.persistNotturnoStoccaggioToRapportino && window.persistNotturnoStoccaggioToRapportino()" ' +
                 'onchange="window.saveData(); window.persistNotturnoStoccaggioToRapportino && window.persistNotturnoStoccaggioToRapportino()">' +
                 '</div>' +
                 '<div class="nott-stocc-ton-cell">' +
@@ -9929,8 +9929,10 @@ window.updateStoricoButton = async function() {
                     }
                 });
             }
-            const local = window.loadNotturnoStoccLocalSnapshot();
-            if (local) Object.assign(snap, local);
+            if (!Object.keys(snap).length) {
+                const local = window.loadNotturnoStoccLocalSnapshot();
+                if (local) Object.assign(snap, local);
+            }
             return Object.keys(snap).length ? snap : null;
         };
 
@@ -9940,10 +9942,6 @@ window.updateStoricoButton = async function() {
                 ? window.readStoccaggioLiveInputValue(fieldId)
                 : '';
             if (live) return live;
-            const local = window.loadNotturnoStoccLocalSnapshot && window.loadNotturnoStoccLocalSnapshot();
-            if (local && local[fieldId] != null && String(local[fieldId]).trim() !== '') {
-                return String(local[fieldId]).trim();
-            }
             const snap = window.getNotturnoStoccaggioSnapshot();
             if (snap && snap[fieldId] != null && String(snap[fieldId]).trim() !== '') {
                 return String(snap[fieldId]).trim();
@@ -9955,24 +9953,49 @@ window.updateStoricoButton = async function() {
             return '';
         };
 
-        window.hydrateNotturnoStoccaggioInputsFromStore = function() {
+        window.hydrateNotturnoStoccaggioInputsFromStore = function(opts) {
+            opts = opts || {};
             if (typeof window.renderStoccaggioInternoPanel === 'function') {
                 window.renderStoccaggioInternoPanel();
             }
-            const snap = window.getNotturnoStoccaggioSnapshot();
-            if (!snap) return;
+            const store = window.loadRapportiniStore && window.loadRapportiniStore();
+            const d = store && store.items.notturno && store.items.notturno.data;
+            const snap = {};
+            if (d && d._nottStocc && typeof d._nottStocc === 'object') {
+                Object.assign(snap, d._nottStocc);
+            }
+            if (d) {
+                (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
+                    if (d[t.fieldId] != null && String(d[t.fieldId]).trim() !== '') {
+                        snap[t.fieldId] = String(d[t.fieldId]).trim();
+                    }
+                });
+            }
+            if (!Object.keys(snap).length) return;
+            if (typeof window.saveNotturnoStoccLocalSnapshot === 'function') {
+                window.saveNotturnoStoccLocalSnapshot(snap);
+            }
             const panel = document.getElementById('stoccaggio-panel-notturno');
             (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
                 if (snap[t.fieldId] == null || String(snap[t.fieldId]).trim() === '') return;
                 const el = panel
                     ? panel.querySelector('input.nott-stocc-inp[id="' + t.fieldId + '"]')
                     : document.getElementById(t.fieldId);
-                if (el && String(el.value || '').trim() === '') {
-                    el.value = String(snap[t.fieldId]);
+                if (!el) return;
+                const remoteVal = String(snap[t.fieldId]).trim();
+                const curVal = String(el.value || '').trim();
+                if (curVal === remoteVal) return;
+                if (!opts.force && typeof window.__shouldApplyRemoteValueToInput === 'function' &&
+                    !window.__shouldApplyRemoteValueToInput(el)) {
+                    return;
                 }
+                el.value = remoteVal;
             });
             if (typeof window.refreshStoccaggioInternoTons === 'function') {
                 window.refreshStoccaggioInternoTons();
+            }
+            if (typeof window.refreshAllTankLevelArrows === 'function') {
+                window.refreshAllTankLevelArrows();
             }
         };
 
@@ -10004,7 +10027,8 @@ window.updateStoricoButton = async function() {
             } else {
                 delete store.items.notturno.data._nottStocc;
             }
-            window.saveRapportiniStore(store, { pushCloud: false });
+            store.items.notturno.updatedAt = new Date().toISOString();
+            window.saveRapportiniStore(store);
         };
 
         /** Larghezza colonna sigla nel Report Preview (riferimento: TK 10602 A). */
@@ -12817,6 +12841,22 @@ window.updateStoricoButton = async function() {
                 if (local.schedeConfigUpdatedAt) base.schedeConfigUpdatedAt = local.schedeConfigUpdatedAt;
             }
             if (!base.name && weaker && weaker.name) base.name = weaker.name;
+            if (rapportinoId === 'notturno') {
+                base.data = base.data || {};
+                const lData = local.data || {};
+                const rData = remote.data || {};
+                const lSt = (lData._nottStocc && typeof lData._nottStocc === 'object') ? lData._nottStocc : {};
+                const rSt = (rData._nottStocc && typeof rData._nottStocc === 'object') ? rData._nottStocc : {};
+                const olderSt = lMs >= rMs ? rSt : lSt;
+                const newerSt = lMs >= rMs ? lSt : rSt;
+                const mergedSt = Object.assign({}, olderSt, newerSt);
+                if (Object.keys(mergedSt).length) base.data._nottStocc = mergedSt;
+                else delete base.data._nottStocc;
+                (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
+                    if (mergedSt[t.fieldId]) base.data[t.fieldId] = mergedSt[t.fieldId];
+                    else delete base.data[t.fieldId];
+                });
+            }
             return base;
         };
 
@@ -12908,8 +12948,8 @@ window.updateStoricoButton = async function() {
                     }
                 } catch (_) {}
                 const slimItems = {};
-                Object.keys(store.items || {}).forEach(function (rid) {
-                    const item = JSON.parse(JSON.stringify(store.items[rid]));
+                Object.keys(mergedStore.items || {}).forEach(function (rid) {
+                    const item = JSON.parse(JSON.stringify(mergedStore.items[rid]));
                     item.data = window.extractRapportinoOnlyData(item.data || {});
                     delete item.hiddenModules;
                     slimItems[rid] = item;
@@ -12918,6 +12958,7 @@ window.updateStoricoButton = async function() {
                     items: slimItems,
                     lastUpdate: mergedStore.lastUpdate || new Date().toISOString()
                 };
+                window.__rapportiniStore = mergedStore;
                 if (typeof window.loadServiceWatchConfig === 'function') {
                     payload.serviceWatch = window.loadServiceWatchConfig();
                 }
@@ -12951,6 +12992,11 @@ window.updateStoricoButton = async function() {
             const newUpdated = merged.items && merged.items[deviceActiveId]
                 ? merged.items[deviceActiveId].updatedAt : null;
             const activeItemDataChanged = newUpdated && newUpdated !== prevUpdated;
+            const prevNottUpdated = local && local.items && local.items.notturno
+                ? local.items.notturno.updatedAt : null;
+            const newNottUpdated = merged.items && merged.items.notturno
+                ? merged.items.notturno.updatedAt : null;
+            const notturnoStoccChanged = !!(newNottUpdated && newNottUpdated !== prevNottUpdated);
             if (typeof window.stripHiddenModulesFromRapportinoStore === 'function') {
                 window.stripHiddenModulesFromRapportinoStore(merged);
             }
@@ -12980,6 +13026,11 @@ window.updateStoricoButton = async function() {
                 }
                 if (typeof window.updateRapportinoSettingsButton === 'function') {
                     window.updateRapportinoSettingsButton();
+                }
+            }
+            if (notturnoStoccChanged || remoteWon || opts.force) {
+                if (typeof window.hydrateNotturnoStoccaggioInputsFromStore === 'function') {
+                    window.hydrateNotturnoStoccaggioInputsFromStore();
                 }
             }
             if (typeof window.persistSessionPrefs === 'function') window.persistSessionPrefs();

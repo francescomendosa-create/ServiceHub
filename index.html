@@ -662,7 +662,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v199';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v200';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -10821,6 +10821,83 @@ window.updateStoricoButton = async function() {
             window.__tankDetailNav = null;
         };
 
+        window.buildTankDetailRemotePayload = function () {
+            var meta = {};
+            (window.STOCCAGGIO_DCS_SCREEN_ROWS || []).forEach(function (r) {
+                if (!r.fieldId) return;
+                var dbKey = window.getTankStatusKeyForFieldId
+                    ? window.getTankStatusKeyForFieldId(r.fieldId) : null;
+                var livMax = r.livMax != null ? Number(r.livMax) : null;
+                if (!livMax && dbKey && window.TANK_MAX) livMax = Number(window.TANK_MAX[dbKey]) || null;
+                meta[r.fieldId] = {
+                    fieldId: r.fieldId,
+                    label: r.label || r.dcsLabel || r.fieldId,
+                    description: r.description || '',
+                    livMax: livMax,
+                    tankDbKey: dbKey,
+                    maxTons: livMax && typeof window.calculateTons === 'function'
+                        ? window.calculateTons(dbKey, livMax) : null
+                };
+            });
+            Object.keys(window.DIGITAL_TANK_FIELD_MAP || {}).forEach(function (fid) {
+                if (meta[fid]) return;
+                var dbKey = window.DIGITAL_TANK_FIELD_MAP[fid];
+                var livMax = window.TANK_MAX && dbKey ? Number(window.TANK_MAX[dbKey]) : null;
+                meta[fid] = {
+                    fieldId: fid,
+                    label: typeof window.getTankName === 'function' ? window.getTankName(fid) : fid,
+                    description: '',
+                    livMax: livMax,
+                    tankDbKey: dbKey,
+                    maxTons: livMax && typeof window.calculateTons === 'function'
+                        ? window.calculateTons(dbKey, livMax) : null
+                };
+            });
+            var history = {};
+            var archives = typeof window.collectRealArchives === 'function'
+                ? window.collectRealArchives() : [];
+            Object.keys(meta).forEach(function (fid) {
+                var dbKey = meta[fid].tankDbKey;
+                archives.forEach(function (entry) {
+                    var mm = typeof window.archiveSnapshotValue === 'function'
+                        ? window.archiveSnapshotValue(entry, fid) : NaN;
+                    if (!Number.isFinite(mm) || mm <= 0) return;
+                    if (!history[fid]) history[fid] = [];
+                    history[fid].push({
+                        label: entry.time || entry.archiveTime || ('#' + (history[fid].length + 1)),
+                        date: entry.date || '',
+                        shift: entry.shift || '',
+                        mm: mm,
+                        tons: typeof window.calculateTons === 'function'
+                            ? window.calculateTons(dbKey, mm) : null,
+                        ts: typeof window.getArchiveTimestampMs === 'function'
+                            ? window.getArchiveTimestampMs(entry) : history[fid].length
+                    });
+                });
+                if (history[fid]) history[fid].sort(function (a, b) { return a.ts - b.ts; });
+                var inp = document.getElementById(fid);
+                var liveMm = typeof window.parseTankLevelMm === 'function'
+                    ? window.parseTankLevelMm(inp ? inp.value : '') : NaN;
+                if (Number.isFinite(liveMm) && liveMm > 0) {
+                    if (!history[fid]) history[fid] = [];
+                    var last = history[fid][history[fid].length - 1];
+                    if (!last || Math.abs(last.mm - liveMm) > 0.05) {
+                        history[fid].push({
+                            label: 'Adesso',
+                            date: '',
+                            shift: '',
+                            mm: liveMm,
+                            tons: typeof window.calculateTons === 'function'
+                                ? window.calculateTons(dbKey, liveMm) : null,
+                            ts: Date.now(),
+                            live: true
+                        });
+                    }
+                }
+            });
+            return { tankDetailMeta: meta, tankLevelHistory: history };
+        };
+
         window.buildNotturnoStoccaggioReportRows = function() {
             return window.getNotturnoStoccaggioReportData().rows;
         };
@@ -20438,6 +20515,9 @@ window.pushPublicDigitalSnapshotQuiet = async function (opts) {
     const tankStatusesPayload = window.__ensureTankStatusesObject
         ? window.__ensureTankStatusesObject()
         : (window.tankStatuses || {});
+    const tankDetailRemote = typeof window.buildTankDetailRemotePayload === 'function'
+        ? window.buildTankDetailRemotePayload()
+        : { tankDetailMeta: {}, tankLevelHistory: {} };
     const payload = {
         teamAppId: appId,
         updatedAt: new Date().toISOString(),
@@ -20445,7 +20525,9 @@ window.pushPublicDigitalSnapshotQuiet = async function (opts) {
         cardsHTML,
         stoccaggioTitle: stoccPayload.title || 'STOCCAGGIO INTERNO',
         stoccaggioRows: stoccPayload.rows || [],
-        tankStatuses: tankStatusesPayload
+        tankStatuses: tankStatusesPayload,
+        tankDetailMeta: tankDetailRemote.tankDetailMeta || {},
+        tankLevelHistory: tankDetailRemote.tankLevelHistory || {}
     };
     // Regole Firestore: su update ownerUid non deve cambiare. Non reinviarlo se il doc esiste già
     // (altrimenti ogni tablet con utente diverso riceve permission-denied e il link remoto non si pubblica).

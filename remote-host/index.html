@@ -7,7 +7,7 @@
     var SK = "servicehub_remote_share_k";
     var SA = "servicehub_remote_app_id";
     var FB_ORIGIN = "https://servicehub-18309.web.app";
-    window.SVCREMOTE_BUILD = "2026.06.14-v106";
+    window.SVCREMOTE_BUILD = "2026.06.14-v107";
 
     /** Vecchi link su GitHub → stesso remoto su Firebase. */
     (function redirectGithubToFirebase() {
@@ -2552,8 +2552,10 @@
         const gauge = buildDigitalTankGaugeSVG(pct, r.label || "", { drain: vis.drain, acc: vis.acc });
         const levelInfo = buildStoccLevelInfoHTML(r);
         var siglaUnder = String(r.label || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+        var fieldAttr = r.fieldId ? ' data-field-id="' + esc(String(r.fieldId)) + '"' : "";
+        var tankDbAttr = r.tankDbKey ? ' data-tank-db="' + esc(String(r.tankDbKey)) + '"' : "";
         html +=
-          '<div class="digital-stocc-row digital-row">' +
+          '<div class="digital-stocc-row digital-row"' + fieldAttr + tankDbAttr + ">" +
           '<span class="digital-stocc-sigla digital-row-label">' +
           label +
           '</span><div class="digital-tank-gauge-wrap">' +
@@ -2613,6 +2615,205 @@
       patchStoccaggioInGrid(grid, d);
     }
 
+    function tankDetailMetaSignature(meta) {
+      if (!meta || typeof meta !== "object") return "";
+      return Object.keys(meta).sort().join("|");
+    }
+
+    function fmtTankMm(n) {
+      if (!Number.isFinite(n)) return "—";
+      return String(Math.round(n * 10) / 10).replace(/\.0$/, "");
+    }
+
+    function fmtTankTons(n) {
+      if (n == null || n === "" || isNaN(Number(n))) return "—";
+      return String(Number(n).toFixed(1)).replace(/\.0$/, "");
+    }
+
+    function parseStatusArr(tankStatuses, tankDbKey) {
+      if (!tankDbKey || !tankStatuses) return [];
+      var raw = String(tankStatuses[tankDbKey] || "");
+      if (!raw) return [];
+      return raw.split("+").map(function (s) {
+        s = String(s || "").trim();
+        if (/accumul/i.test(s)) return "Accumulo";
+        if (/drenagg/i.test(s)) return "Drenaggio";
+        if (/parallelo/i.test(s)) return "Parallelo";
+        return s;
+      }).filter(Boolean);
+    }
+
+    function buildTankDetailTrendChartSVG(series, maxMm) {
+      if (!series || series.length < 2) {
+        return '<div class="tank-detail-chart-empty">Servono almeno 2 punti per il grafico trend.</div>';
+      }
+      var w = 640, h = 220, pad = { l: 52, r: 18, t: 18, b: 40 };
+      var plotW = w - pad.l - pad.r, plotH = h - pad.t - pad.b;
+      var mmVals = series.map(function (p) { return p.mm; });
+      var yMax = maxMm && maxMm > 0 ? maxMm : Math.max.apply(null, mmVals.concat([1])) * 1.08;
+      var tMin = series[0].ts, tMax = series[series.length - 1].ts;
+      if (tMax <= tMin) tMax = tMin + 3600000;
+      var toX = function (ts) { return pad.l + plotW * ((ts - tMin) / (tMax - tMin)); };
+      var toY = function (mm) { return pad.t + plotH - (plotH * (mm / yMax)); };
+      var pts = series.map(function (p) { return { x: toX(p.ts), y: toY(p.mm), p: p }; });
+      var linePath = pts.map(function (pt, i) {
+        return (i === 0 ? "M" : "L") + pt.x.toFixed(1) + "," + pt.y.toFixed(1);
+      }).join(" ");
+      var areaPath = linePath + " L" + pts[pts.length - 1].x.toFixed(1) + "," + (pad.t + plotH) +
+        " L" + pts[0].x.toFixed(1) + "," + (pad.t + plotH) + " Z";
+      var uid = "tdc" + Math.random().toString(36).slice(2, 8);
+      var dots = pts.map(function (pt) {
+        var fill = pt.p.live ? "#fbbf24" : "#38bdf8";
+        return '<circle cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) + '" r="4.5" fill="' + fill + '"/>';
+      }).join("");
+      return '<svg class="tank-detail-chart-svg" viewBox="0 0 ' + w + " " + h + '" preserveAspectRatio="xMidYMid meet">' +
+        '<defs><linearGradient id="' + uid + 'g" x1="0" y1="0" x2="0" y2="1">' +
+        '<stop offset="0%" stop-color="rgba(56,189,248,0.35)"/><stop offset="100%" stop-color="rgba(56,189,248,0.02)"/></linearGradient></defs>' +
+        '<path d="' + areaPath + '" fill="url(#' + uid + 'g)"/>' +
+        '<path d="' + linePath + '" fill="none" stroke="#38bdf8" stroke-width="2.5"/>' + dots + "</svg>";
+    }
+
+    function buildTankDetailStatusHTML(info) {
+      var html = "";
+      (info.statusArr || []).forEach(function (st) {
+        var cls = st === "Accumulo" ? "tank-detail-badge--acc" : st === "Drenaggio" ? "tank-detail-badge--dren" : "tank-detail-badge--par";
+        html += '<span class="tank-detail-badge ' + cls + '">' + esc(st) + "</span>";
+      });
+      if (!html && (info.vis.acc || info.vis.drain)) {
+        if (info.vis.acc) html += '<span class="tank-detail-badge tank-detail-badge--acc">Accumulo</span>';
+        if (info.vis.drain) html += '<span class="tank-detail-badge tank-detail-badge--dren">Drenaggio</span>';
+      }
+      if (!html) html = '<span class="tank-detail-badge tank-detail-badge--neutral">Nessuno stato A/D/P</span>';
+      return html;
+    }
+
+    function buildTankDetailHistoryTableHTML(series) {
+      if (!series || !series.length) {
+        return '<div class="tank-detail-history-empty">Nessun salvataggio storico.</div>';
+      }
+      var rows = series.slice().reverse().map(function (p) {
+        var meta = [p.date, p.shift].filter(Boolean).join(" · ");
+        return "<tr><td>" + esc(p.label) + "</td><td>" + esc(meta) + '</td><td class="tank-detail-num">' +
+          fmtTankMm(p.mm) + ' mm</td><td class="tank-detail-num">' + fmtTankTons(p.tons) + " t</td></tr>";
+      }).join("");
+      return '<table class="tank-detail-history-table"><thead><tr><th>Ora</th><th>Turno</th><th>Livello</th><th>Tonn.</th></tr></thead><tbody>' +
+        rows + "</tbody></table>";
+    }
+
+    function resolveRemoteTankDetailInfo(fieldId, payload) {
+      payload = payload || window.__remoteDigitalPayload || {};
+      var meta = (payload.tankDetailMeta && payload.tankDetailMeta[fieldId]) || {};
+      var row = (payload.stoccaggioRows || []).find(function (r) { return r.fieldId === fieldId; });
+      if (!row && payload.stoccaggioRows) {
+        row = payload.stoccaggioRows.find(function (r) {
+          return String(r.tankDbKey || "") === String(meta.tankDbKey || "");
+        });
+      }
+      var levelMm = row && row.levelMm != null ? Number(row.levelMm) : NaN;
+      if (!Number.isFinite(levelMm) && row && row.val) {
+        var m = String(row.val).match(/([\d.,]+)\s*mm/i);
+        if (m) levelMm = parseFloat(String(m[1]).replace(",", "."));
+      }
+      var livMax = meta.livMax != null ? Number(meta.livMax) : null;
+      var fillPct = row && row.fillPct != null ? Number(row.fillPct) : null;
+      if (fillPct == null && livMax && Number.isFinite(levelMm)) {
+        fillPct = Math.max(0, Math.min(100, (levelMm / livMax) * 100));
+      }
+      var tankDbKey = meta.tankDbKey || (row && row.tankDbKey) || "";
+      var vis = rowTankVisualFlags(row || { tankDbKey: tankDbKey }, payload.tankStatuses);
+      var currentTons = row && row.tons != null ? row.tons : null;
+      if (currentTons == null && row && row.val) {
+        var tm = String(row.val).match(/\(([\d.,]+)\s*t\)/i);
+        if (tm) currentTons = parseFloat(String(tm[1]).replace(",", "."));
+      }
+      return {
+        fieldId: fieldId,
+        label: meta.label || (row && row.label) || fieldId,
+        description: meta.description || "",
+        livMax: livMax,
+        levelMm: Number.isFinite(levelMm) ? levelMm : null,
+        currentTons: currentTons,
+        maxTons: meta.maxTons,
+        fillPct: fillPct != null ? fillPct : 0,
+        fillPctOfMax: livMax && Number.isFinite(levelMm) ? Math.round((levelMm / livMax) * 1000) / 10 : null,
+        vis: vis,
+        statusArr: parseStatusArr(payload.tankStatuses, tankDbKey),
+        tankDbKey: tankDbKey
+      };
+    }
+
+    function buildRemoteTankDetailPageHTML(info, series) {
+      var pct = Math.max(0, Math.min(100, Number(info.fillPct) || 0));
+      var gauge = buildDigitalTankGaugeSVG(pct, info.label || "", { drain: info.vis.drain, acc: info.vis.acc });
+      var chart = buildTankDetailTrendChartSVG(series, info.livMax);
+      var desc = info.description
+        ? '<div class="tank-detail-desc-chip">' + esc(info.description) + "</div>"
+        : "";
+      return '<div class="tank-detail-page">' +
+        '<div class="tank-detail-header"><div class="tank-detail-title">' + esc(info.label) + "</div>" + desc + "</div>" +
+        '<div class="tank-detail-layout"><div class="tank-detail-hero">' +
+        '<div class="tank-detail-gauge-wrap">' + gauge + "</div>" +
+        '<div class="tank-detail-status-row">' + buildTankDetailStatusHTML(info) + "</div></div>" +
+        '<div class="tank-detail-stats">' +
+        '<div class="tank-detail-stat"><span class="tank-detail-stat-label">Livello attuale</span><span class="tank-detail-stat-val">' +
+        fmtTankMm(info.levelMm) + ' <small>mm</small></span></div>' +
+        '<div class="tank-detail-stat"><span class="tank-detail-stat-label">Tonnellate attuali</span><span class="tank-detail-stat-val">' +
+        fmtTankTons(info.currentTons) + ' <small>t</small></span></div>' +
+        '<div class="tank-detail-stat"><span class="tank-detail-stat-label">Livello massimo</span><span class="tank-detail-stat-val">' +
+        fmtTankMm(info.livMax) + ' <small>mm</small></span></div>' +
+        '<div class="tank-detail-stat"><span class="tank-detail-stat-label">Tonnellate max</span><span class="tank-detail-stat-val">' +
+        fmtTankTons(info.maxTons) + ' <small>t</small></span></div>' +
+        '<div class="tank-detail-stat"><span class="tank-detail-stat-label">Riempimento</span><span class="tank-detail-stat-val">' +
+        (info.fillPctOfMax != null ? info.fillPctOfMax + " <small>%</small>" : "—") + "</span></div></div></div>" +
+        '<div class="tank-detail-trend-block"><div class="tank-detail-section-title">Trend livello</div>' +
+        '<div class="tank-detail-chart-wrap">' + chart + "</div></div>" +
+        '<div class="tank-detail-history-block"><div class="tank-detail-section-title">Storico salvataggi</div>' +
+        buildTankDetailHistoryTableHTML(series) + "</div></div>";
+    }
+
+    function ensureRemoteTankDetailOverlay() {
+      var el = document.getElementById("tank-detail-overlay");
+      if (el) return el;
+      el = document.createElement("div");
+      el.id = "tank-detail-overlay";
+      el.className = "tank-detail-overlay";
+      el.innerHTML = '<div class="tank-detail-shell"><button type="button" class="tank-detail-back" id="tank-detail-back-btn">← Indietro</button><div id="tank-detail-content"></div></div>';
+      document.body.appendChild(el);
+      el.querySelector("#tank-detail-back-btn").onclick = function () { window.closeRemoteTankDetailPage(); };
+      if (!window.__remoteTankDetailEscBound) {
+        window.__remoteTankDetailEscBound = true;
+        document.addEventListener("keydown", function (e) {
+          if (e.key !== "Escape") return;
+          var ov = document.getElementById("tank-detail-overlay");
+          if (ov && ov.classList.contains("active")) {
+            e.preventDefault();
+            window.closeRemoteTankDetailPage();
+          }
+        });
+      }
+      return el;
+    }
+
+    window.openRemoteTankDetailPage = function (fieldId, navCtx) {
+      if (!fieldId) return;
+      navCtx = navCtx || {};
+      var payload = window.__remoteDigitalPayload || {};
+      var info = resolveRemoteTankDetailInfo(fieldId, payload);
+      var series = (payload.tankLevelHistory && payload.tankLevelHistory[fieldId]) || [];
+      var overlay = ensureRemoteTankDetailOverlay();
+      overlay.querySelector("#tank-detail-content").innerHTML = buildRemoteTankDetailPageHTML(info, series);
+      var backBtn = overlay.querySelector("#tank-detail-back-btn");
+      if (backBtn) backBtn.textContent = "← " + (navCtx.backLabel || "Indietro");
+      overlay.classList.add("active");
+      document.body.classList.add("tank-detail-open");
+    };
+
+    window.closeRemoteTankDetailPage = function () {
+      var ov = document.getElementById("tank-detail-overlay");
+      if (ov) ov.classList.remove("active");
+      document.body.classList.remove("tank-detail-open");
+    };
+
     function digitalRemoteSig(d) {
       return (
         String((d && d.updatedAt) || "") +
@@ -2621,7 +2822,9 @@
         "\u0001" +
         stoccaggioRowsSignature(d && d.stoccaggioRows) +
         "\u0001" +
-        tankStatusesSignature(d && d.tankStatuses)
+        tankStatusesSignature(d && d.tankStatuses) +
+        "\u0001" +
+        tankDetailMetaSignature(d && d.tankDetailMeta)
       );
     }
 
@@ -2681,6 +2884,23 @@
       root.addEventListener("click", function (e) {
         const grid = root.querySelector("#digital-cards-grid");
         if (!grid || !grid.contains(e.target)) return;
+        const tankRow = e.target.closest(".digital-stocc-row[data-field-id]");
+        if (tankRow && grid.contains(tankRow)) {
+          const card = tankRow.closest(".digital-card");
+          const isExpandedFocus = root.classList.contains("digital-focus-active") &&
+            card && card.classList.contains("digital-card--expanded");
+          if (isExpandedFocus) {
+            e.preventDefault();
+            e.stopPropagation();
+            const fieldId = tankRow.getAttribute("data-field-id");
+            if (!fieldId) return;
+            const moduleTitle = card
+              ? String(card.querySelector(".digital-card-title")?.textContent || "").replace(/\s+/g, " ").trim()
+              : "Digital HD";
+            window.openRemoteTankDetailPage(fieldId, { backLabel: moduleTitle || "Digital HD" });
+            return;
+          }
+        }
         const card = e.target.closest(".digital-card");
         if (!card || !grid.contains(card)) return;
         if (root.classList.contains("digital-focus-active") && card.classList.contains("digital-card--expanded")) return;
@@ -2688,6 +2908,12 @@
       });
       root.addEventListener("keydown", function (e) {
         if (e.key !== "Escape") return;
+        const tankOv = document.getElementById("tank-detail-overlay");
+        if (tankOv && tankOv.classList.contains("active")) {
+          e.preventDefault();
+          window.closeRemoteTankDetailPage();
+          return;
+        }
         if (!root.classList.contains("digital-focus-active")) return;
         e.preventDefault();
         window.closeDigitalModuleFocus();
@@ -2812,6 +3038,7 @@
     function renderFromData(d, opts) {
       const o = opts || {};
       const forceFull = o.fullRefresh === true;
+      window.__remoteDigitalPayload = d || {};
       const root = document.getElementById("digital-preview-container");
       const existingGrid = rootEl.querySelector("#digital-cards-grid");
       const canSilent =

@@ -7,7 +7,7 @@
     var SK = "servicehub_remote_share_k";
     var SA = "servicehub_remote_app_id";
     var FB_ORIGIN = "https://servicehub-18309.web.app";
-    window.SVCREMOTE_BUILD = "2026.06.14-v126";
+    window.SVCREMOTE_BUILD = "2026.06.14-v127";
 
     /** Vecchi link su GitHub → stesso remoto su Firebase. */
     (function redirectGithubToFirebase() {
@@ -2863,6 +2863,16 @@
     var TANK_TIMELINE_PREDICT_H = 24;
 
     function computeRemoteTimelineRate(series, info) {
+      info = info || {};
+      series = series || [];
+      var initial = getRemoteTimelineInitialPoint(series);
+      var currentTs = resolveRemoteCurrentLevelTs(info.fieldId, series, info);
+      var currentMm = Number.isFinite(info.levelMm) ? info.levelMm
+        : (series.length ? series[series.length - 1].mm : NaN);
+      if (initial && Number.isFinite(currentTs) && Number.isFinite(currentMm)) {
+        var dtInitH = (currentTs - initial.ts) / 3600000;
+        if (dtInitH >= 0.08) return (currentMm - initial.mm) / dtInitH;
+      }
       if (series && series.length >= 2) {
         var a = series[series.length - 2], b = series[series.length - 1];
         var dtH = (b.ts - a.ts) / 3600000;
@@ -2875,8 +2885,22 @@
     }
 
     function tagRemoteSeriesInitialLevel(series) {
-      if (series && series.length && !series[0].live) series[0].label = "Livello iniziale";
+      if (!series || !series.length) return series;
+      for (var i = 0; i < series.length; i++) {
+        if (!series[i].live) {
+          series[i].label = "Livello iniziale";
+          break;
+        }
+      }
       return series;
+    }
+
+    function getRemoteTimelineInitialPoint(series) {
+      series = series || [];
+      for (var i = 0; i < series.length; i++) {
+        if (series[i] && !series[i].live) return series[i];
+      }
+      return null;
     }
 
     function resolveRemoteCurrentLevelTs(fieldId, series, info) {
@@ -2922,9 +2946,12 @@
       var nowMm = Number.isFinite(info.levelMm) ? info.levelMm : (series.length ? series[series.length - 1].mm : 0);
       var actualTs = resolveRemoteCurrentLevelTs(info.fieldId, series, info);
       var nowTs = actualTs;
-      var tStart = series.length > 1 ? series[0].ts : nowTs - 3600000;
+      var initialPt = getRemoteTimelineInitialPoint(series);
+      var tStart = initialPt ? initialPt.ts
+        : (series.length ? series[0].ts : nowTs - 3600000);
       var tEnd = nowTs + TANK_TIMELINE_PREDICT_H * 3600000;
-      return { series: series, rateMmH: rate, nowTs: nowTs, actualTs: actualTs, nowMm: nowMm, tStart: tStart, tEnd: tEnd, livMax: info.livMax, tankDbKey: info.tankDbKey, fieldId: info.fieldId };
+      if (tEnd <= tStart) tEnd = tStart + TANK_TIMELINE_PREDICT_H * 3600000;
+      return { series: series, rateMmH: rate, nowTs: nowTs, actualTs: actualTs, nowMm: nowMm, initialPt: initialPt, tStart: tStart, tEnd: tEnd, livMax: info.livMax, tankDbKey: info.tankDbKey, fieldId: info.fieldId };
     }
 
     function predictRemoteLevelAt(model, targetTs) {
@@ -2949,7 +2976,8 @@
       var model = buildRemoteTimelineModel(series, info);
       var rateSign = model.rateMmH > 0 ? "+" : "";
       var rateCls = model.rateMmH > 0.05 ? "up" : model.rateMmH < -0.05 ? "down" : "flat";
-      var startPt = model.series.length ? model.series[0] : { ts: model.nowTs, mm: model.nowMm };
+      var startPt = model.initialPt || getRemoteTimelineInitialPoint(model.series)
+        || (model.series.length ? model.series[0] : { ts: model.nowTs, mm: model.nowMm });
       var siglaTxt = info && info.label ? String(info.label).trim() : "";
       var timelineTitle = "Timeline livello · previsione" + (siglaTxt ? " · " + esc(siglaTxt) : "");
       return '<div class="tank-detail-timeline-block" data-tank-timeline="1">' +
@@ -2993,6 +3021,7 @@
       var tSpan = model.tEnd - model.tStart || 3600000;
       var toX = function (ts) { return pad.l + plotW * ((ts - model.tStart) / tSpan); };
       var mmVals = model.series.map(function (p) { return p.mm; });
+      if (Number.isFinite(model.nowMm)) mmVals.push(model.nowMm);
       var predEndMm = predictRemoteLevelAt(model, model.tEnd);
       if (Number.isFinite(predEndMm)) mmVals.push(predEndMm);
       var yMin = Math.min.apply(null, mmVals.concat([0]));
@@ -3003,7 +3032,16 @@
       yMax = yMax + yPad;
       var toY = function (mm) { return pad.t + plotH - (plotH * ((mm - yMin) / (yMax - yMin))); };
       var nowX = toX(model.nowTs);
+      var nowY = toY(model.nowMm);
       var histPts = model.series.map(function (p) { return { x: toX(p.ts), y: toY(p.mm), p: p }; });
+      var lastHist = histPts.length ? histPts[histPts.length - 1] : null;
+      if (!lastHist || Math.abs(lastHist.x - nowX) > 1.5 || Math.abs(lastHist.y - nowY) > 1.5) {
+        histPts.push({
+          x: nowX,
+          y: nowY,
+          p: { ts: model.nowTs, mm: model.nowMm, label: "Livello attuale", live: true }
+        });
+      }
       var histPath = histPts.map(function (pt, i) { return (i ? "L" : "M") + pt.x.toFixed(1) + "," + pt.y.toFixed(1); }).join(" ");
       var predPath = "M" + nowX.toFixed(1) + "," + toY(model.nowMm).toFixed(1);
       for (var i = 1; i <= 24; i++) {
@@ -3017,7 +3055,6 @@
         if (pt.p.live) return dot;
         return dot;
       }).join("");
-      var nowY = toY(model.nowMm);
       var scrubber = '<line class="tank-detail-timeline-scrub-line" data-tl-scrub x1="' + nowX.toFixed(1) +
         '" y1="' + zoneTop.toFixed(1) + '" x2="' + nowX.toFixed(1) + '" y2="' + nowY.toFixed(1) +
         '" stroke="#fbbf24" stroke-width="3" stroke-linecap="round" pointer-events="none"/>' +
@@ -3058,9 +3095,10 @@
     function positionRemoteTimelineMetrics(block, geom, model, scrubX, targetTs, predMm) {
       if (!block || !geom || !model) return;
       var nowX = geom.nowX;
-      var startPt = model.series.length ? model.series[0] : { ts: model.nowTs, mm: model.nowMm };
+      var initialPt = model.initialPt || getRemoteTimelineInitialPoint(model.series);
+      var startPt = initialPt || (model.series.length ? model.series[0] : { ts: model.nowTs, mm: model.nowMm });
       var startX = geom.toX(startPt.ts);
-      var showStart = model.series.length > 1 && Math.abs(startX - nowX) > 14;
+      var showStart = !!initialPt && Math.abs(startX - nowX) > 6;
       function setLeft(sel, svgX) {
         var el = block.querySelector(sel);
         if (el) el.style.left = timelineFloatLeftPct(geom, svgX).toFixed(2) + "%";

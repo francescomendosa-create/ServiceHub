@@ -662,7 +662,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v191';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v192';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -10059,6 +10059,11 @@ window.updateStoricoButton = async function() {
             'inp-tk9201': 'TK9201',
             'tk101': 'TK101'
         };
+        (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
+            if (t.fieldId && t.tankDbKey && !window.DIGITAL_TANK_FIELD_MAP[t.fieldId]) {
+                window.DIGITAL_TANK_FIELD_MAP[t.fieldId] = t.tankDbKey;
+            }
+        });
 
         window.__tankInteriorBubblesHTML = function() {
             var specs = [
@@ -16340,6 +16345,99 @@ window.updateStoricoButton = async function() {
             }
         });
         window.tankLevelCompareBaseline = window.tankLevelCompareBaseline || {};
+        window.TANK_TREND_AUTO_MIN_DELTA_MM = 5;
+
+        window.parseTankLevelMm = function(raw) {
+            if (raw == null || raw === '') return NaN;
+            var n = parseFloat(String(raw).replace(',', '.').replace(/[^\d.-]/g, ''));
+            return Number.isFinite(n) ? n : NaN;
+        };
+
+        window.getTankStatusKeyForFieldId = function(fieldId) {
+            if (!fieldId) return null;
+            if (window.DIGITAL_TANK_FIELD_MAP && window.DIGITAL_TANK_FIELD_MAP[fieldId]) {
+                return window.DIGITAL_TANK_FIELD_MAP[fieldId];
+            }
+            var st = (window.STOCCAGGIO_INTERNO_TANKS || []).find(function (t) { return t.fieldId === fieldId; });
+            return st && st.tankDbKey ? st.tankDbKey : null;
+        };
+
+        window.__mergeTrendAutoTankStatus = function(currentArr, trendMode) {
+            var base = (currentArr || []).filter(function (s) {
+                return s !== 'Accumulo' && s !== 'Drenaggio';
+            });
+            if (trendMode === 'Accumulo' || trendMode === 'Drenaggio') base.push(trendMode);
+            return base;
+        };
+
+        window.__scheduleAutoTrendStatusSave = function() {
+            if (window.__autoTrendStatusSaveTimer) clearTimeout(window.__autoTrendStatusSaveTimer);
+            window.__autoTrendStatusSaveTimer = setTimeout(function () {
+                window.__autoTrendStatusSaveTimer = null;
+                if (typeof window.saveData === 'function') void window.saveData(true);
+            }, 1500);
+        };
+
+        window.autoApplyTankStatusesFromTrend = function(opts) {
+            opts = opts || {};
+            if (window.__autoApplyingTankTrend) return { changed: 0 };
+            if (!window.tankLevelCompareBaseline || !Object.keys(window.tankLevelCompareBaseline).length) {
+                return { changed: 0 };
+            }
+            if (typeof window.__ensureTankStatusesObject === 'function') window.__ensureTankStatusesObject();
+            else if (!window.tankStatuses || typeof window.tankStatuses !== 'object') window.tankStatuses = {};
+
+            var minDelta = window.TANK_TREND_AUTO_MIN_DELTA_MM != null ? Number(window.TANK_TREND_AUTO_MIN_DELTA_MM) : 5;
+            if (!Number.isFinite(minDelta) || minDelta < 0) minDelta = 5;
+            var parseFn = typeof window.__parseTankStatusString === 'function'
+                ? window.__parseTankStatusString
+                : function (raw) { return String(raw || '').split('+').map(function (s) { return s.trim(); }).filter(Boolean); };
+            var serializeFn = typeof window.__serializeTankStatuses === 'function'
+                ? window.__serializeTankStatuses
+                : function (arr) { return (arr || []).join('+'); };
+            var equalFn = typeof window.__tankStatusArraysEqual === 'function'
+                ? window.__tankStatusArraysEqual
+                : function (a, b) { return (a || []).slice().sort().join('|') === (b || []).slice().sort().join('|'); };
+
+            var changed = 0;
+            window.__autoApplyingTankTrend = true;
+            try {
+                (window.TANK_LEVEL_ARROW_INPUT_IDS || []).forEach(function (fieldId) {
+                    var tankKey = window.getTankStatusKeyForFieldId(fieldId);
+                    if (!tankKey) return;
+                    if (window.currentTank && window.currentTank === tankKey) return;
+
+                    var inp = document.getElementById(fieldId);
+                    if (!inp) return;
+                    var baseNum = window.parseTankLevelMm(window.tankLevelCompareBaseline[fieldId]);
+                    var curNum = window.parseTankLevelMm(inp.value);
+                    if (!Number.isFinite(baseNum) || !Number.isFinite(curNum)) return;
+
+                    var diff = curNum - baseNum;
+                    var trendMode = null;
+                    if (Math.abs(diff) > minDelta) trendMode = diff > 0 ? 'Accumulo' : 'Drenaggio';
+
+                    var curArr = parseFn(window.tankStatuses[tankKey]);
+                    var nextArr = window.__mergeTrendAutoTankStatus(curArr, trendMode);
+                    if (equalFn(curArr, nextArr)) return;
+
+                    if (!nextArr.length) delete window.tankStatuses[tankKey];
+                    else window.tankStatuses[tankKey] = serializeFn(nextArr);
+                    changed++;
+                });
+
+                if (changed > 0) {
+                    if (typeof window.repaintTankStatusSquares === 'function') window.repaintTankStatusSquares();
+                    if (opts.save !== false) window.__scheduleAutoTrendStatusSave();
+                    if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
+                        window.schedulePublicDigitalSnapshotSync();
+                    }
+                }
+            } finally {
+                window.__autoApplyingTankTrend = false;
+            }
+            return { changed: changed };
+        };
 
         window.setTankLevelBaselineFromSnapshotData = function(data) {
             if (!data || typeof data !== 'object') return;
@@ -16392,13 +16490,15 @@ window.updateStoricoButton = async function() {
             }
             var baseRaw = (window.tankLevelCompareBaseline && window.tankLevelCompareBaseline[input.id]) || '';
             var curRaw = input.value || '';
-            var baseNum = parseFloat(String(baseRaw).replace(',', '.').replace(/[^\d.-]/g, ''));
-            var curNum = parseFloat(String(curRaw).replace(',', '.').replace(/[^\d.-]/g, ''));
+            var baseNum = window.parseTankLevelMm(baseRaw);
+            var curNum = window.parseTankLevelMm(curRaw);
+            var minDelta = window.TANK_TREND_AUTO_MIN_DELTA_MM != null ? Number(window.TANK_TREND_AUTO_MIN_DELTA_MM) : 5;
+            if (!Number.isFinite(minDelta) || minDelta < 0) minDelta = 5;
             if (!Number.isFinite(baseNum) || !Number.isFinite(curNum)) {
                 span.textContent = '';
                 return;
             }
-            if (Math.abs(curNum - baseNum) < 1e-6) {
+            if (Math.abs(curNum - baseNum) <= minDelta) {
                 span.textContent = '';
                 return;
             }
@@ -16416,6 +16516,9 @@ window.updateStoricoButton = async function() {
                 var el = document.getElementById(id);
                 if (el) window.updateTankLevelArrowForInput(el);
             });
+            if (typeof window.autoApplyTankStatusesFromTrend === 'function') {
+                window.autoApplyTankStatusesFromTrend({ save: true });
+            }
         };
 
         window.getAnalisiPreviewModule = function(previewFont) {
@@ -24200,7 +24303,7 @@ window.convertToHtml = async () => {
 
             </div>
             <div id="ai-settings-dock" onclick="event.stopPropagation()">
-                <div id="ai-learning-section" aria-hidden="true" data-ai-speech-ver="191">
+                <div id="ai-learning-section" aria-hidden="true" data-ai-speech-ver="192">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                         <button type="button" onclick="exportAIMemory()" style="background:#1e293b;border:1px solid #334155;color:#60a5fa;width:32px;height:32px;cursor:pointer;border-radius:6px;font-size:10px;display:flex;align-items:center;justify-content:center;touch-action:manipulation;" title="Esporta memoria AI">↓</button>
                         <button type="button" id="open-conversation-btn" onclick="return window.openAiConversationFromSettings(event);" style="background:transparent;border:none;color:#60a5fa;cursor:pointer;font-size:18px;padding:8px;border-radius:5px;touch-action:manipulation;" title="Apri conversazione completa"><i class="fas fa-comments"></i></button>
@@ -30271,7 +30374,7 @@ function fixAIPanel() {
     if (window.__aiSpeechWired === window.SERVICEHUB_BUILD) return;
 
     var chatSection = document.getElementById('ai-learning-section');
-    if (chatSection && chatSection.dataset) chatSection.dataset.aiSpeechVer = '191';
+    if (chatSection && chatSection.dataset) chatSection.dataset.aiSpeechVer = '192';
 
     if (typeof window.ensureAiQuickChatPlaceholder === 'function') window.ensureAiQuickChatPlaceholder();
 

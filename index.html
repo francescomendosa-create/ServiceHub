@@ -662,7 +662,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v200';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v201';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -3909,7 +3909,8 @@ window.colorPreviewNumber = function(tankName, value) {
         };
 
         // NUOVO SISTEMA DI SYNC AUTOMATICO BACKUP
-        window.syncBackupHistory = async function() {
+        window.syncBackupHistory = async function(opts) {
+            opts = opts || {};
             if (!user || !user.uid || !db) return 0;
 
             console.log('syncBackupHistory: carico archivi cloud (unica fonte trend)...');
@@ -3943,8 +3944,10 @@ window.colorPreviewNumber = function(tankName, value) {
                     window.savedHistory = merged.slice(-50);
                     window.__trendArchivesSource = 'cloud';
                     console.log('syncBackupHistory: ' + window.savedHistory.length + ' archivi cloud');
-                    if (window.refreshTankLevelBaselineFromSavedHistory) window.refreshTankLevelBaselineFromSavedHistory();
-                    if (window.refreshAllTankLevelArrows) window.refreshAllTankLevelArrows();
+                    if (!opts.skipUiRefresh) {
+                        if (window.refreshTankLevelBaselineFromSavedHistory) window.refreshTankLevelBaselineFromSavedHistory();
+                        if (window.refreshAllTankLevelArrows) window.refreshAllTankLevelArrows();
+                    }
                     return window.savedHistory.length;
                 }
 
@@ -3958,8 +3961,10 @@ window.colorPreviewNumber = function(tankName, value) {
                 window.savedHistory = merged.slice(-50);
                 window.__trendArchivesSource = merged.length ? 'local-offline' : 'none';
                 console.log('syncBackupHistory: ' + window.savedHistory.length + ' archivi (solo locale, cloud vuoto)');
-                if (window.refreshTankLevelBaselineFromSavedHistory) window.refreshTankLevelBaselineFromSavedHistory();
-                if (window.refreshAllTankLevelArrows) window.refreshAllTankLevelArrows();
+                if (!opts.skipUiRefresh) {
+                    if (window.refreshTankLevelBaselineFromSavedHistory) window.refreshTankLevelBaselineFromSavedHistory();
+                    if (window.refreshAllTankLevelArrows) window.refreshAllTankLevelArrows();
+                }
                 return window.savedHistory.length;
             } catch (err) {
                 console.log('syncBackupHistory: errore sincronizzazione:', err);
@@ -3968,9 +3973,36 @@ window.colorPreviewNumber = function(tankName, value) {
         };
 
         /** Sincronizza archivi cloud prima di trend/report (tutti i dispositivi uguali). */
-        window.ensureBackupHistory = async function() {
+        window.ensureBackupHistory = async function(opts) {
+            opts = opts || {};
             if (!user || !user.uid || !db) return;
-            await window.syncBackupHistory();
+            await window.syncBackupHistory({ skipUiRefresh: !!opts.skipUiRefresh });
+        };
+
+        /** Sync archivi con timeout — non blocca l'UI oltre maxWait ms. background=true non attende. */
+        window.ensureBackupHistoryFresh = async function(opts) {
+            opts = opts || {};
+            if (!user || !user.uid || !db) {
+                if (typeof opts.onDone === 'function') opts.onDone();
+                return;
+            }
+            var timeoutMs = opts.timeoutMs != null ? Number(opts.timeoutMs) : 2500;
+            if (!Number.isFinite(timeoutMs) || timeoutMs < 0) timeoutMs = 2500;
+            var syncOpts = { skipUiRefresh: !!opts.skipUiRefresh };
+            var syncP = window.syncBackupHistory(syncOpts);
+            if (opts.background) {
+                void syncP.then(function () {
+                    if (typeof opts.onDone === 'function') opts.onDone();
+                }).catch(function () {
+                    if (typeof opts.onDone === 'function') opts.onDone();
+                });
+                return;
+            }
+            await Promise.race([
+                syncP,
+                new Promise(function (resolve) { setTimeout(resolve, timeoutMs); })
+            ]);
+            if (typeof opts.onDone === 'function') opts.onDone();
         };
 
         // Funzione per gestire lo storico dei salvataggi
@@ -15971,20 +16003,44 @@ window.updateStoricoButton = async function() {
             }
         };
         window.refreshReportPreview = async function () {
-            if (typeof window.ensureBackupHistory === 'function') {
-                try { await window.ensureBackupHistory(); } catch (_) {}
+            if (typeof window.ensureBackupHistoryFresh === 'function') {
+                try { await window.ensureBackupHistoryFresh({ timeoutMs: 6000, skipUiRefresh: true }); } catch (_) {}
+            } else if (typeof window.ensureBackupHistory === 'function') {
+                try { await window.ensureBackupHistory({ skipUiRefresh: true }); } catch (_) {}
             }
             buildPreview();
         };
 
         window.openPreview = async function () {
-            if (typeof window.ensureBackupHistory === 'function') {
-                try { await window.ensureBackupHistory(); } catch (_) {}
-            }
-            buildPreview();
+            var previewScreen = document.getElementById('preview-screen');
+            if (!previewScreen) return;
+            var now = Date.now();
+            if (window.__openPreviewInFlight && now - window.__openPreviewInFlight < 600) return;
+            window.__openPreviewInFlight = now;
+
+            if (typeof forceBlur === 'function') forceBlur();
+            var mgmt = document.getElementById('management-modal');
+            if (mgmt && mgmt.classList.contains('active')) mgmt.classList.remove('active');
+
+            previewScreen.classList.add('active');
             if (typeof window.resetPreviewSheetZoom === 'function') window.resetPreviewSheetZoom();
+            buildPreview();
             if (typeof window.initPreviewSheetZoom === 'function') window.initPreviewSheetZoom();
-            document.getElementById('preview-screen').classList.add('active'); 
+
+            void window.ensureBackupHistoryFresh({
+                timeoutMs: 8000,
+                background: true,
+                skipUiRefresh: true,
+                onDone: function () {
+                    if (previewScreen.classList.contains('active')) buildPreview();
+                    if (typeof window.refreshTankLevelBaselineFromSavedHistory === 'function') {
+                        window.refreshTankLevelBaselineFromSavedHistory();
+                    }
+                    if (typeof window.refreshAllTankLevelArrows === 'function') {
+                        window.refreshAllTankLevelArrows();
+                    }
+                }
+            });
             
             // AVVISO LAMPEGGIANTE CON TASTO SALVA PER MODIFICHE NON SALVATE
             if (window.isEditingArchive && window.editingArchiveId) {
@@ -19030,14 +19086,13 @@ window.applyDigitalPhoneLayoutIfNeeded = function (root) {
 
 window.openDigitalPreview = async function () {
     try {
-        if (typeof window.ensureBackupHistory === 'function') {
-            try { await window.ensureBackupHistory(); } catch (_) {}
-        }
-        // CREA elemento SEPARATO per Digital Preview
+        var now = Date.now();
+        if (window.__openDigitalPreviewInFlight && now - window.__openDigitalPreviewInFlight < 600) return;
+        window.__openDigitalPreviewInFlight = now;
+
         let digitalContainer = document.getElementById('digital-preview-container');
         
         if (!digitalContainer) {
-            // Crea container se non esiste
             digitalContainer = document.createElement('div');
             digitalContainer.id = 'digital-preview-container';
             digitalContainer.style.cssText = `
@@ -19054,6 +19109,9 @@ window.openDigitalPreview = async function () {
             `;
             document.body.appendChild(digitalContainer);
         }
+
+        digitalContainer.style.display = 'flex';
+        digitalContainer.classList.add('active');
         
         if (typeof window.saveActiveRapportinoFromUI === 'function') {
             window.saveActiveRapportinoFromUI();
@@ -19061,6 +19119,12 @@ window.openDigitalPreview = async function () {
         if (typeof window.persistNotturnoStoccaggioToRapportino === 'function') {
             window.persistNotturnoStoccaggioToRapportino();
         }
+
+        void window.ensureBackupHistoryFresh({
+            timeoutMs: 2000,
+            skipUiRefresh: true
+        });
+
         const cardsHTML = window.buildDigitalCardsHTML();
 
     // Inserisci contenuto nel container SEPARATO
@@ -20112,12 +20176,25 @@ window.openDigitalPreview = async function () {
         window.applyDigitalPhoneLayoutIfNeeded(digitalContainer);
     }
 
-    // Mostra il container SEPARATO
-    digitalContainer.style.display = 'flex';
-    setTimeout(() => digitalContainer.classList.add('active'), 100);
+    void window.ensureBackupHistoryFresh({
+        timeoutMs: 8000,
+        background: true,
+        skipUiRefresh: true,
+        onDone: function () {
+            if (!digitalContainer || digitalContainer.style.display === 'none') return;
+            if (typeof window.refreshTankLevelBaselineFromSavedHistory === 'function') {
+                window.refreshTankLevelBaselineFromSavedHistory();
+            }
+            if (typeof window.refreshAllTankLevelArrows === 'function') {
+                window.refreshAllTankLevelArrows();
+            }
+        }
+    });
     } catch (error) {
         console.error('Errore in openDigitalPreview:', error);
         alert('Errore nell\'apertura del Digital Preview: ' + error.message);
+    } finally {
+        window.__openDigitalPreviewInFlight = 0;
     }
 };
 

@@ -662,7 +662,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v214';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v215';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -10308,21 +10308,61 @@ window.updateStoricoButton = async function() {
                 '</svg>';
         };
 
+        window.tankGaugeWaterHeightPct = function (fillPct) {
+            var pct = Math.max(0, Math.min(100, Number(fillPct) || 0));
+            return pct > 0 ? Math.max(2, pct * 0.48) : 0;
+        };
+
+        window.buildTankPredWaterLayersHTML = function (currentPct, predPct) {
+            var waterH = window.tankGaugeWaterHeightPct(currentPct);
+            var predH = window.tankGaugeWaterHeightPct(predPct);
+            if (Math.abs(predH - waterH) < 0.35) return '';
+            var baseBottom = '26.8%';
+            if (predH > waterH + 0.35) {
+                var riseH = predH - waterH;
+                return '<div class="digital-tank3d-water digital-tank3d-water--pred digital-tank3d-water--pred-rise" style="height:' +
+                    riseH.toFixed(2) + '%;bottom:calc(' + baseBottom + ' + ' + waterH.toFixed(2) + '%)" aria-hidden="true"></div>';
+            }
+            var fallH = waterH - predH;
+            return '<div class="digital-tank3d-water digital-tank3d-water--pred digital-tank3d-water--pred-fall" style="height:' +
+                fallH.toFixed(2) + '%;bottom:calc(' + baseBottom + ' + ' + predH.toFixed(2) + '%)" aria-hidden="true"></div>';
+        };
+
+        window.updateTankDetailGaugePred = function (pageRoot, info, predMm) {
+            if (!pageRoot || !info) return;
+            var tank = pageRoot.querySelector('.tank-detail-gauge-wrap .digital-tank3d');
+            if (!tank) return;
+            tank.querySelectorAll('.digital-tank3d-water--pred').forEach(function (el) { el.remove(); });
+            var predPct = info.livMax && Number.isFinite(predMm) ? (predMm / info.livMax) * 100 : info.fillPct;
+            var html = window.buildTankPredWaterLayersHTML(info.fillPct, predPct);
+            if (!html) return;
+            var anchor = tank.querySelector('.digital-tank3d-water:not(.digital-tank3d-water--pred)');
+            if (anchor) anchor.insertAdjacentHTML('afterend', html);
+            else {
+                var img = tank.querySelector('.digital-tank3d-img');
+                if (img) img.insertAdjacentHTML('afterend', html);
+            }
+        };
+
         window.buildDigitalTankGaugeSVG = function(fillPct, labelText, opts) {
             const rawPct = Number(fillPct) || 0;
             const pct = Math.max(0, Math.min(100, rawPct));
             const overfill = rawPct > 100.5;
             const drain = !!(opts && opts.drain);
             const acc = !!(opts && opts.acc);
+            const detail = !!(opts && opts.detail);
+            const predPct = opts && opts.predFillPct != null ? Number(opts.predFillPct) : pct;
             const siglaTxt = String(labelText || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-            const waterH = pct > 0 ? Math.max(2, pct * 0.48) : 0;
+            const waterH = window.tankGaugeWaterHeightPct(pct);
+            const predLayers = window.buildTankPredWaterLayersHTML(pct, predPct);
             const siglaSvg = siglaTxt ? window.buildTank3dSiglaSvgHtml(siglaTxt) : '';
             const imgSrc = acc && drain ? 'tank-3d-acc-dren.png?v=2' : acc ? 'tank-3d-acc.png?v=2' : drain ? 'tank-3d-drain.png?v=2' : 'tank-3d.png?v=3';
             const waterActive = drain || acc;
             const bubblesHTML = waterActive ? window.__tankInteriorBubblesHTML() : '';
-            return '<div class="digital-tank-gauge digital-tank3d' + (drain ? ' digital-tank3d--drain' : '') + (acc ? ' digital-tank3d--acc' : '') + (overfill ? ' digital-tank3d--overfill' : '') + '">' +
-                '<img class="digital-tank3d-img" src="' + imgSrc + '" alt="" draggable="false"/>' +
+            return '<div class="digital-tank-gauge digital-tank3d' + (drain ? ' digital-tank3d--drain' : '') + (acc ? ' digital-tank3d--acc' : '') + (overfill ? ' digital-tank3d--overfill' : '') + (detail ? ' digital-tank3d--detail' : '') + '">' +
+                '<img class="digital-tank3d-img" src="' + imgSrc + '" alt="" draggable="false" decoding="sync"/>' +
                 (waterH > 0 ? '<div class="digital-tank3d-water' + (waterActive ? ' digital-tank3d-water--active' : '') + '" style="height:' + waterH.toFixed(2) + '%">' + bubblesHTML + '</div>' : '') +
+                predLayers +
                 (drain && waterH > 0 ? '<div class="digital-tank3d-drain-stream"></div><div class="digital-tank3d-drain-splash"></div>' : '') +
                 (acc ? '<div class="digital-tank3d-acc-flow"></div>' : '') +
                 siglaSvg +
@@ -11082,6 +11122,10 @@ window.updateStoricoButton = async function() {
             }
             var isPred = hoursAhead > 0.05;
             window.positionTankDetailTimelineMetrics(root, geom, model, x, targetTs, predMm);
+            if (root.__tlInfo && typeof window.updateTankDetailGaugePred === 'function') {
+                var page = root.closest('.tank-detail-page');
+                if (page) window.updateTankDetailGaugePred(page, root.__tlInfo, predMm);
+            }
             root.classList.toggle('tank-detail-timeline-block--pred', isPred);
             root.__tlHoursAhead = hoursAhead;
         };
@@ -11095,6 +11139,7 @@ window.updateStoricoButton = async function() {
             var wrap = block.querySelector('[data-tl-interactive]');
             window.renderTankDetailTimelineSvg(svg, model);
             if (!svg || !wrap) return;
+            block.__tlInfo = info;
 
             var dragging = false;
 
@@ -11166,7 +11211,7 @@ window.updateStoricoButton = async function() {
         window.buildTankDetailPageHTML = function (info, series) {
             if (!info) return '';
             var gauge = typeof window.buildDigitalTankGaugeSVG === 'function'
-                ? window.buildDigitalTankGaugeSVG(info.fillPct, info.label, info.vis) : '';
+                ? window.buildDigitalTankGaugeSVG(info.fillPct, info.label, Object.assign({}, info.vis || {}, { detail: true, predFillPct: info.fillPct })) : '';
             var chart = window.buildTankDetailTrendChartSVG(series, info.livMax);
             var descBlock = info.description
                 ? '<div class="tank-detail-desc-chip">' + window.__escTankDetailHtml(info.description) + '</div>'
@@ -11227,8 +11272,16 @@ window.updateStoricoButton = async function() {
                 '.tank-detail-desc-chip{display:inline-block;margin-top:8px;padding:6px 14px;border-radius:999px;background:rgba(251,191,36,0.15);border:1px solid rgba(251,191,36,0.45);color:#fde68a;font-weight:800;font-size:12px;letter-spacing:0.08em;text-transform:uppercase}' +
                 '.tank-detail-layout{display:grid;grid-template-columns:minmax(280px,1fr) minmax(320px,1.4fr);gap:clamp(16px,3vw,32px);align-items:start;margin-bottom:20px}' +
                 '@media(max-width:900px){.tank-detail-layout{grid-template-columns:1fr}}' +
-                '.tank-detail-gauge-wrap{max-width:360px;margin:0 auto;transform:scale(1.2);transform-origin:center top}' +
-                '.tank-detail-gauge-wrap .digital-tank-gauge,.tank-detail-gauge-wrap .digital-tank3d{width:100%;max-width:280px;margin:0 auto}' +
+                '.tank-detail-gauge-wrap{max-width:420px;margin:0 auto;transform:none;transform-origin:center top}' +
+                '.tank-detail-gauge-wrap .digital-tank-gauge,.tank-detail-gauge-wrap .digital-tank3d{width:100%;max-width:340px;margin:0 auto}' +
+                '.tank-detail-gauge-wrap .digital-tank3d-img{filter:drop-shadow(0 8px 18px rgba(0,0,0,0.5)) contrast(1.06) saturate(1.08)}' +
+                '.tank-detail-gauge-wrap .digital-tank3d-sigla-svg{filter:drop-shadow(0 3px 7px rgba(0,0,0,0.48))}' +
+                '.digital-tank3d-water--pred{pointer-events:none;border-bottom-left-radius:50% 16%;border-bottom-right-radius:50% 16%;animation:tlPredGhostPulse 2.6s ease-in-out infinite}' +
+                '.digital-tank3d-water--pred-rise{z-index:2;background:linear-gradient(to top,rgba(76,29,149,0.88) 0%,rgba(124,58,237,0.76) 52%,rgba(196,181,253,0.58) 100%);box-shadow:inset 0 -10px 18px rgba(167,139,250,0.35)}' +
+                '.digital-tank3d-water--pred-rise::before{content:"";position:absolute;left:0;right:0;top:-5cqw;height:10cqw;border-radius:50%;background:radial-gradient(ellipse at 38% 40%,rgba(233,213,255,0.92) 0%,rgba(167,139,250,0.82) 50%,rgba(109,40,217,0.72) 100%)}' +
+                '.digital-tank3d-water--pred-fall{z-index:3;background:linear-gradient(to top,rgba(88,28,135,0.72) 0%,rgba(167,139,250,0.82) 100%);box-shadow:inset 0 0 14px rgba(124,58,237,0.45)}' +
+                '.digital-tank3d-water--pred-fall::before{content:"";position:absolute;left:0;right:0;top:-4cqw;height:8cqw;border-radius:50%;background:radial-gradient(ellipse at 40% 42%,rgba(221,214,254,0.85) 0%,rgba(139,92,246,0.65) 100%)}' +
+                '@keyframes tlPredGhostPulse{0%,100%{opacity:0.76}50%{opacity:0.94}}' +
                 '.tank-detail-status-row{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:12px}' +
                 '.tank-detail-badge{padding:6px 12px;border-radius:10px;font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:0.06em}' +
                 '.tank-detail-badge--acc{background:rgba(220,38,38,0.22);color:#fecaca;border:1px solid rgba(248,113,113,0.5)}' +

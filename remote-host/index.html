@@ -7,7 +7,7 @@
     var SK = "servicehub_remote_share_k";
     var SA = "servicehub_remote_app_id";
     var FB_ORIGIN = "https://servicehub-18309.web.app";
-    window.SVCREMOTE_BUILD = "2026.06.14-v119";
+    window.SVCREMOTE_BUILD = "2026.06.14-v120";
 
     /** Vecchi link su GitHub → stesso remoto su Firebase. */
     (function redirectGithubToFirebase() {
@@ -2406,20 +2406,60 @@
       );
     }
 
+    function tankGaugeWaterHeightPct(fillPct) {
+      var pct = Math.max(0, Math.min(100, Number(fillPct) || 0));
+      return pct > 0 ? Math.max(2, pct * 0.48) : 0;
+    }
+
+    function buildTankPredWaterLayersHTML(currentPct, predPct) {
+      var waterH = tankGaugeWaterHeightPct(currentPct);
+      var predH = tankGaugeWaterHeightPct(predPct);
+      if (Math.abs(predH - waterH) < 0.35) return "";
+      var baseBottom = "26.8%";
+      if (predH > waterH + 0.35) {
+        var riseH = predH - waterH;
+        return '<div class="digital-tank3d-water digital-tank3d-water--pred digital-tank3d-water--pred-rise" style="height:' +
+          riseH.toFixed(2) + "%;bottom:calc(" + baseBottom + " + " + waterH.toFixed(2) + '%)" aria-hidden="true"></div>';
+      }
+      var fallH = waterH - predH;
+      return '<div class="digital-tank3d-water digital-tank3d-water--pred digital-tank3d-water--pred-fall" style="height:' +
+        fallH.toFixed(2) + "%;bottom:calc(" + baseBottom + " + " + predH.toFixed(2) + '%)" aria-hidden="true"></div>';
+    }
+
+    function updateRemoteTankGaugePred(pageRoot, info, predMm) {
+      if (!pageRoot || !info) return;
+      var tank = pageRoot.querySelector(".tank-detail-gauge-wrap .digital-tank3d");
+      if (!tank) return;
+      tank.querySelectorAll(".digital-tank3d-water--pred").forEach(function (el) { el.remove(); });
+      var predPct = info.livMax && Number.isFinite(predMm) ? (predMm / info.livMax) * 100 : info.fillPct;
+      var html = buildTankPredWaterLayersHTML(info.fillPct, predPct);
+      if (!html) return;
+      var anchor = tank.querySelector(".digital-tank3d-water:not(.digital-tank3d-water--pred)");
+      if (anchor) anchor.insertAdjacentHTML("afterend", html);
+      else {
+        var img = tank.querySelector(".digital-tank3d-img");
+        if (img) img.insertAdjacentHTML("afterend", html);
+      }
+    }
+
     function buildDigitalTankGaugeSVG(fillPct, labelText) {
       const pct = Math.max(0, Math.min(100, Number(fillPct) || 0));
       const drain = !!(arguments.length > 2 && arguments[2] && arguments[2].drain);
       const acc = !!(arguments.length > 2 && arguments[2] && arguments[2].acc);
+      const detail = !!(arguments.length > 2 && arguments[2] && arguments[2].detail);
+      const predPct = arguments.length > 2 && arguments[2] && arguments[2].predFillPct != null ? Number(arguments[2].predFillPct) : pct;
       const siglaTxt = String(labelText || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-      const waterH = pct > 0 ? Math.max(2, pct * 0.48) : 0;
+      const waterH = tankGaugeWaterHeightPct(pct);
+      const predLayers = buildTankPredWaterLayersHTML(pct, predPct);
       const siglaSvg = siglaTxt ? buildTank3dSiglaSvgHtml(siglaTxt) : "";
       var imgSrc = acc && drain ? "tank-3d-acc-dren.png?v=2" : acc ? "tank-3d-acc.png?v=2" : drain ? "tank-3d-drain.png?v=2" : "tank-3d.png?v=3";
       var waterActive = drain || acc;
       var bubblesHTML = waterActive ? __tankInteriorBubblesHTML() : "";
       return (
-        '<div class="digital-tank-gauge digital-tank3d' + (drain ? " digital-tank3d--drain" : "") + (acc ? " digital-tank3d--acc" : "") + '">' +
-        '<img class="digital-tank3d-img" src="' + imgSrc + '" alt="" draggable="false"/>' +
+        '<div class="digital-tank-gauge digital-tank3d' + (drain ? " digital-tank3d--drain" : "") + (acc ? " digital-tank3d--acc" : "") + (detail ? " digital-tank3d--detail" : "") + '">' +
+        '<img class="digital-tank3d-img" src="' + imgSrc + '" alt="" draggable="false" decoding="sync"/>' +
         (waterH > 0 ? '<div class="digital-tank3d-water' + (waterActive ? " digital-tank3d-water--active" : "") + '" style="height:' + waterH.toFixed(2) + '%">' + bubblesHTML + "</div>" : "") +
+        predLayers +
         (drain && waterH > 0 ? '<div class="digital-tank3d-drain-stream"></div><div class="digital-tank3d-drain-splash"></div>' : "") +
         (acc ? '<div class="digital-tank3d-acc-flow"></div>' : "") +
         siglaSvg +
@@ -3048,6 +3088,10 @@
       }
       var isPred = hoursAhead > 0.05;
       positionRemoteTimelineMetrics(block, geom, model, x, targetTs, predMm);
+      if (block.__tlInfo) {
+        var page = block.closest(".tank-detail-page");
+        if (page) updateRemoteTankGaugePred(page, block.__tlInfo, predMm);
+      }
       block.classList.toggle("tank-detail-timeline-block--pred", isPred);
       block.__tlHoursAhead = hoursAhead;
     }
@@ -3060,6 +3104,7 @@
       var wrap = block.querySelector("[data-tl-interactive]");
       renderRemoteTimelineSvg(svg, model);
       if (!svg || !wrap) return;
+      block.__tlInfo = info;
 
       var dragging = false;
 
@@ -3111,7 +3156,7 @@
 
     function buildRemoteTankDetailPageHTML(info, series) {
       var pct = Math.max(0, Math.min(100, Number(info.fillPct) || 0));
-      var gauge = buildDigitalTankGaugeSVG(pct, info.label || "", { drain: info.vis.drain, acc: info.vis.acc });
+      var gauge = buildDigitalTankGaugeSVG(pct, info.label || "", { drain: info.vis.drain, acc: info.vis.acc, detail: true, predFillPct: pct });
       var chart = buildTankDetailTrendChartSVG(series, info.livMax);
       var desc = info.description
         ? '<div class="tank-detail-desc-chip">' + esc(info.description) + "</div>"

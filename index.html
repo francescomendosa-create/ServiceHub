@@ -662,7 +662,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v223';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v224';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -10741,7 +10741,33 @@ window.updateStoricoButton = async function() {
             return series;
         };
 
-        window.buildTankDetailTrendChartSVG = function (series, maxMm) {
+        window.buildTankDetailTrendSeries = function (series, info) {
+            series = (series || []).slice();
+            info = info || {};
+            if (series.length >= 2) return series;
+            if (!info.fieldId || !Number.isFinite(info.levelMm)) return series;
+            var arch = typeof window.collectTankLevelArchiveSeries === 'function'
+                ? window.collectTankLevelArchiveSeries(info.fieldId, { shiftOnly: false }) : [];
+            if (!arch.length) return series;
+            var ts = typeof window.resolveTankCurrentLevelTs === 'function'
+                ? window.resolveTankCurrentLevelTs(info.fieldId, series, info) : Date.now();
+            var out = arch.slice();
+            var last = out[out.length - 1];
+            if (!last || Math.abs(last.mm - info.levelMm) > 0.05 || ts > last.ts) {
+                out.push({
+                    ts: ts,
+                    mm: info.levelMm,
+                    label: 'Livello attuale',
+                    live: true
+                });
+            }
+            return out.length >= 2 ? out : series;
+        };
+
+        window.buildTankDetailTrendChartSVG = function (series, maxMm, info) {
+            if (typeof window.buildTankDetailTrendSeries === 'function') {
+                series = window.buildTankDetailTrendSeries(series, info);
+            }
             if (!series || series.length < 2) {
                 return '<div class="tank-detail-chart-empty">Servono almeno 2 punti (salvataggi o livello attuale) per il grafico trend.</div>';
             }
@@ -10817,6 +10843,9 @@ window.updateStoricoButton = async function() {
 
         window.buildTankDetailTrendSummaryHTML = function (info, series) {
             var parts = [];
+            if (typeof window.buildTankDetailTrendSeries === 'function') {
+                series = window.buildTankDetailTrendSeries(series, info);
+            }
             if (info.trendDir === 'up') {
                 parts.push('<div class="tank-detail-trend-line tank-detail-trend-line--up">↑ In salita: <b>+' +
                     window.__fmtTankDetailMm(Math.abs(info.trendDelta)) + ' mm</b> rispetto al baseline turno</div>');
@@ -11268,7 +11297,7 @@ window.updateStoricoButton = async function() {
             if (!info) return '';
             var gauge = typeof window.buildDigitalTankGaugeSVG === 'function'
                 ? window.buildDigitalTankGaugeSVG(info.fillPct, info.label, Object.assign({}, info.vis || {}, { detail: true, predFillPct: info.fillPct })) : '';
-            var chart = window.buildTankDetailTrendChartSVG(series, info.livMax);
+            var chart = window.buildTankDetailTrendChartSVG(series, info.livMax, info);
             var descBlock = info.description
                 ? '<div class="tank-detail-desc-chip">' + window.__escTankDetailHtml(info.description) + '</div>'
                 : '';
@@ -17353,6 +17382,11 @@ window.updateStoricoButton = async function() {
             if (k.startsWith('inp') && k.charAt(3) !== '-' && k.length > 3) {
                 k = 'inp-' + k.slice(3);
             }
+            if (k.indexOf('inp-') !== 0) {
+                if (/^a\d/.test(k)) k = 'inp-' + k;
+                else if (/^s[\d]/.test(k)) k = 'inp-' + k;
+                else if (/^tk\d/.test(k)) k = 'inp-' + k;
+            }
             return k;
         };
 
@@ -17367,6 +17401,10 @@ window.updateStoricoButton = async function() {
                 }
                 var nk = window.normalizeTrendFieldId(key);
                 if (out[nk] === undefined) out[nk] = entry[key];
+                if (nk && nk.indexOf('inp-') === 0) {
+                    var shortKey = nk.slice(4);
+                    if (shortKey && out[shortKey] === undefined) out[shortKey] = entry[key];
+                }
             });
             return out;
         };
@@ -17375,9 +17413,25 @@ window.updateStoricoButton = async function() {
             if (!entry) return NaN;
             var norm = window.normalizeArchiveSnapshot(entry);
             var id = window.normalizeTrendFieldId(fieldId);
-            var raw = norm[id];
-            if (raw === undefined && fieldId !== id) raw = norm[fieldId];
-            return Number(raw);
+            var keys = [id];
+            if (fieldId && fieldId !== id) keys.push(fieldId);
+            if (id && id.indexOf('inp-') === 0) {
+                keys.push(id.slice(4));
+            }
+            var dbKey = typeof window.getTankStatusKeyForFieldId === 'function'
+                ? window.getTankStatusKeyForFieldId(id) : null;
+            if (dbKey) {
+                keys.push(dbKey, String(dbKey).toLowerCase());
+            }
+            for (var i = 0; i < keys.length; i++) {
+                var k = keys[i];
+                if (k == null || k === '') continue;
+                var nk = typeof window.normalizeTrendFieldId === 'function'
+                    ? window.normalizeTrendFieldId(k) : k;
+                if (norm[nk] !== undefined && norm[nk] !== '') return Number(norm[nk]);
+                if (norm[k] !== undefined && norm[k] !== '') return Number(norm[k]);
+            }
+            return NaN;
         };
 
         // Funzione per mappare gli ID dei campi ai nomi dei serbatoi
@@ -17839,8 +17893,10 @@ window.updateStoricoButton = async function() {
             }
         };
 
-        window.buildLiveTankLevelHistoryPoint = function (fieldId, mm, dbKey) {
+        window.buildLiveTankLevelHistoryPoint = function (fieldId, mm, dbKey, opts) {
+            opts = opts || {};
             var ts = window.ensureTankLevelInputTimestampMs(fieldId, mm);
+            if (!ts && opts.nowFallback && Number.isFinite(mm) && mm > 0) ts = Date.now();
             if (!ts) return null;
             var label = window.formatTankLevelInputTimeLabel(fieldId) || window.formatTankTimelineClock(ts);
             var shift = (document.getElementById('current-shift-label')?.innerText || '').trim();
@@ -17857,16 +17913,26 @@ window.updateStoricoButton = async function() {
             };
         };
 
-        window.appendLiveTankLevelToSeries = function (series, fieldId, liveMm, dbKey) {
+        window.appendLiveTankLevelToSeries = function (series, fieldId, liveMm, dbKey, opts) {
+            opts = opts || {};
             series = series || [];
             if (!Number.isFinite(liveMm) || liveMm <= 0) return series;
+            var hasArchive = series.some(function (p) { return p && !p.live; });
             var livePt = typeof window.buildLiveTankLevelHistoryPoint === 'function'
-                ? window.buildLiveTankLevelHistoryPoint(fieldId, liveMm, dbKey)
+                ? window.buildLiveTankLevelHistoryPoint(fieldId, liveMm, dbKey, {
+                    nowFallback: opts.nowFallback !== false && hasArchive
+                })
                 : null;
             if (!livePt) return series;
             while (series.length && series[series.length - 1].live) series.pop();
             var last = series.length ? series[series.length - 1] : null;
-            if (!last || Math.abs(last.mm - liveMm) > 0.05 || livePt.ts > last.ts) {
+            if (!last) {
+                series.push(livePt);
+                return series;
+            }
+            if (Math.abs(last.mm - liveMm) > 0.05 || livePt.ts > last.ts) {
+                series.push(livePt);
+            } else if (hasArchive && !last.live && livePt.ts >= last.ts) {
                 series.push(livePt);
             }
             return series;

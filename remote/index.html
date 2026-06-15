@@ -7,7 +7,7 @@
     var SK = "servicehub_remote_share_k";
     var SA = "servicehub_remote_app_id";
     var FB_ORIGIN = "https://servicehub-18309.web.app";
-    window.SVCREMOTE_BUILD = "2026.06.14-v128";
+    window.SVCREMOTE_BUILD = "2026.06.14-v129";
 
     /** Vecchi link su GitHub → stesso remoto su Firebase. */
     (function redirectGithubToFirebase() {
@@ -2716,7 +2716,24 @@
       }).filter(Boolean);
     }
 
-    function buildTankDetailTrendChartSVG(series, maxMm) {
+    function buildRemoteTrendSeries(series, info) {
+      series = (series || []).slice();
+      info = info || {};
+      if (series.length >= 2) return series;
+      if (!info.fieldId || !Number.isFinite(info.levelMm)) return series;
+      var arch = getRemoteArchiveSeries(series);
+      if (!arch.length) return series;
+      var ts = resolveRemoteCurrentLevelTs(info.fieldId, series, info);
+      var out = arch.slice();
+      var last = out[out.length - 1];
+      if (!last || Math.abs(last.mm - info.levelMm) > 0.05 || ts > last.ts) {
+        out.push({ ts: ts, mm: info.levelMm, label: "Livello attuale", live: true });
+      }
+      return out.length >= 2 ? out : series;
+    }
+
+    function buildTankDetailTrendChartSVG(series, maxMm, info) {
+      series = buildRemoteTrendSeries(series, info);
       if (!series || series.length < 2) {
         return '<div class="tank-detail-chart-empty">Servono almeno 2 punti per il grafico trend.</div>';
       }
@@ -2923,7 +2940,9 @@
       series = series || [];
       if (!Number.isFinite(liveMm) || liveMm <= 0) return series;
       inputAt = inputAt || {};
+      var hasArchive = getRemoteArchiveSeries(series).length > 0;
       var ts = Number(inputAt[fieldId]);
+      if ((!Number.isFinite(ts) || ts <= 0) && hasArchive) ts = Date.now();
       if (!Number.isFinite(ts) || ts <= 0) return series;
       var livePt = {
         ts: ts,
@@ -2933,7 +2952,15 @@
       };
       while (series.length && series[series.length - 1].live) series.pop();
       var last = series.length ? series[series.length - 1] : null;
-      if (!last || Math.abs(last.mm - liveMm) > 0.05 || livePt.ts > last.ts) series.push(livePt);
+      if (!last) {
+        series.push(livePt);
+        return series;
+      }
+      if (Math.abs(last.mm - liveMm) > 0.05 || livePt.ts > last.ts) {
+        series.push(livePt);
+      } else if (hasArchive && !last.live && livePt.ts >= last.ts) {
+        series.push(livePt);
+      }
       return series;
     }
 
@@ -2950,6 +2977,10 @@
       var actualTs = resolveRemoteCurrentLevelTs(info.fieldId, series, info);
       var nowTs = actualTs;
       var initialPt = getRemoteTimelineInitialPoint(series);
+      if (!initialPt && info && info.fieldId) {
+        var archOnly = getRemoteArchiveSeries(series);
+        if (archOnly.length) initialPt = archOnly[0];
+      }
       var tStart = initialPt ? initialPt.ts
         : (series.length ? series[0].ts : nowTs - 3600000);
       var tEnd = nowTs + TANK_TIMELINE_PREDICT_H * 3600000;
@@ -3241,7 +3272,7 @@
     function buildRemoteTankDetailPageHTML(info, series) {
       var pct = Math.max(0, Math.min(100, Number(info.fillPct) || 0));
       var gauge = buildDigitalTankGaugeSVG(pct, info.label || "", { drain: info.vis.drain, acc: info.vis.acc, detail: true, predFillPct: pct });
-      var chart = buildTankDetailTrendChartSVG(series, info.livMax);
+      var chart = buildTankDetailTrendChartSVG(series, info.livMax, info);
       var desc = info.description
         ? '<div class="tank-detail-desc-chip">' + esc(info.description) + "</div>"
         : "";

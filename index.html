@@ -662,7 +662,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v194';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v195';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -15921,10 +15921,56 @@ window.updateStoricoButton = async function() {
             if (shiftLabel) shiftLabel.innerText = manualShift || (now.getHours() >= 6 && now.getHours() < 14 ? "1° TURNO" : (now.getHours() >= 14 && now.getHours() < 22 ? "2° TURNO" : (now.getHours() >= 22 || now.getHours() < 6 ? "3° TURNO" : "4° TURNO")));
         }
 
+        /** Serbatoi ammessi in «Gestione Serbatoi» (solo Ambiente 1 + Ambiente 2). */
+        window.GESTIONE_SERBATOI_TANK_IDS = [
+            'A10605', 'S864', 'S817', 'S818', 'S813', 'S148', 'S854', 'S846',
+            'S819', 'TK8066', 'BACINO-TK8092', 'BACINO-TK8093', 'TK8092',
+            'S852', 'LURGI', 'SF3', 'S829', 'UNITA-DAF'
+        ];
+
+        window.collectGestioneSerbatoiTankIdsFromDom = function() {
+            var ids = [];
+            ['sec-amb', 'sec-ambiente2'].forEach(function(secId) {
+                var sec = document.getElementById(secId);
+                if (!sec) return;
+                sec.querySelectorAll('.tank-status-single[data-tank]').forEach(function(el) {
+                    var id = el.getAttribute('data-tank');
+                    if (id && ids.indexOf(id) < 0) ids.push(id);
+                });
+            });
+            return ids.length ? ids : (window.GESTIONE_SERBATOI_TANK_IDS || []).slice();
+        };
+
+        window.getGestioneSerbatoiTankIdSet = function() {
+            return new Set(window.collectGestioneSerbatoiTankIdsFromDom());
+        };
+
+        window.isGestioneSerbatoioTankId = function(tankId) {
+            return !!(tankId && window.getGestioneSerbatoiTankIdSet().has(tankId));
+        };
+
+        window.formatGestioneSerbatoioTankName = function(tankId, savedCustomName) {
+            if (savedCustomName && tankId !== 'TK8092') {
+                var n = String(savedCustomName);
+                if (n.indexOf('BACINO TK') >= 0) n = n.replace(/BACINO TK/g, 'BACINO<br>TK');
+                return n;
+            }
+            var map = {
+                'A10605': 'A 10605', 'S864': 'S 864', 'S817': 'S 817', 'S818': 'S 818',
+                'S813': 'S 813', 'S148': 'S 148', 'S854': 'S 854', 'S846': 'S 846',
+                'S819': 'S 819', 'TK8066': 'TK 8066', 'TK8092': 'TK 8092',
+                'BACINO-TK8092': 'BACINO<br>TK 8092', 'BACINO-TK8093': 'BACINO<br>TK 8093',
+                'S852': 'S 852', 'LURGI': 'LURGI', 'SF3': 'SF3', 'S829': 'S 829',
+                'UNITA-DAF': 'UNITÀ DAF'
+            };
+            return map[tankId] || String(tankId || '').replace(/-/g, ' ');
+        };
+
         // Funzione per recuperare stati dei serbatoi nel preview
         window.getTankStatusesForPreview = function() {
             const tankStatuses = [];
             const parallelTanks = [];
+            const allowed = window.getGestioneSerbatoiTankIdSet();
 
             // Controlla se esistono dati dei serbatoi, altrimenti ritorna array vuoto
             if (!window.tankStatuses || typeof window.tankStatuses !== 'object') {
@@ -15933,25 +15979,17 @@ window.updateStoricoButton = async function() {
 
             Object.entries(window.tankStatuses).forEach(([tankId, savedStatus]) => {
                 if (!savedStatus || tankId.endsWith('_name')) return;
+                if (!allowed.has(tankId)) return;
 
                 const fullStatuses = savedStatus
                     .split('+')
                     .map(s => s.trim())
                     .filter(Boolean);
 
-                // usa direttamente l'id come nome, ma per TK8092 e TK8093 usa nomi più lunghi
-                // Prima controlla se c'è un nome salvato personalizzato (MA NON PER TK8092!)
-                let tankName = window.tankStatuses[tankId + '_name'];
-                if (!tankName || tankId === 'TK8092') {
-                    tankName = (tankId === 'TK8092' || tankId === 'BACINO-TK8092' || tankId === 'BACINO-TK8093') 
-                        ? (tankId === 'TK8092' ? 'TK 8092' : (tankId === 'BACINO-TK8092' ? 'BACINO<br>TK 8092' : 'BACINO<br>TK 8093'))
-                        : (tankId.startsWith('TK') && tankId !== 'TK8092' ? 'BACINO<br>' + tankId : tankId);
-                } else {
-                    // Se il nome salvato contiene "BACINO TK", convertilo in formato HTML
-                    if (tankName.includes('BACINO TK')) {
-                        tankName = tankName.replace('BACINO TK', 'BACINO<br>TK');
-                    }
-                }
+                let tankName = window.formatGestioneSerbatoioTankName(
+                    tankId,
+                    window.tankStatuses[tankId + '_name']
+                );
 
                 // raggruppa i paralleli
                 if (fullStatuses.includes('Parallelo')) {
@@ -17839,8 +17877,8 @@ window.buildDigitalCardsHTML = function() {
             orderedModules.push('sec-ambiente2');
         }
         
-        // LOGICA POSIZIONE GESTIONE SERBATOI
-        if (hasTankData) {
+        // LOGICA POSIZIONE GESTIONE SERBATOI (solo Ambiente 1 / 2)
+        if (hasTankData && (ambiente1Inviato || ambiente2Inviato)) {
             const insertPosition = (ambiente1Inviato && ambiente2Inviato) ? 2 : 1;
             orderedModules.splice(insertPosition, 0, 'GESTIONE_SERBATOI_SPECIAL');
         }
@@ -17887,10 +17925,6 @@ window.buildDigitalCardsHTML = function() {
             if (orderedModules.includes(id) || otherModules.includes(id)) return;
             if (moduleHasLiveData(id)) otherModules.push(id);
         });
-        
-        if (hasTankData && !orderedModules.includes('GESTIONE_SERBATOI_SPECIAL')) {
-            orderedModules.push('GESTIONE_SERBATOI_SPECIAL');
-        }
         
         orderedModules.push(...otherModules);
 

@@ -653,7 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v168';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v169';
         window.__ensureMicPermissionForSpeech = function(onOk, onFail) {
             if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
                 if (onOk) onOk();
@@ -675,7 +675,8 @@ window.colorPreviewNumber = function(tankName, value) {
             var S = window.__aiSpeech = {
                 build: window.SERVICEHUB_BUILD,
                 recording: false,
-                rec: null
+                rec: null,
+                _askingPerm: false
             };
 
             S.micEl = function() { return document.getElementById('ai-mic-btn'); };
@@ -706,7 +707,8 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (send) send.innerHTML = '<i class="fas fa-arrow-right" style="pointer-events:none;"></i>';
             };
 
-            S.createRec = function() {
+            S.ensureRec = function() {
+                if (S.rec) return S.rec;
                 var SR = window.webkitSpeechRecognition || window.SpeechRecognition;
                 if (!SR) return null;
                 var rec = new SR();
@@ -729,17 +731,34 @@ window.colorPreviewNumber = function(tankName, value) {
                 };
 
                 rec.onend = function() {
-                    S.rec = null;
+                    S.recording = false;
                     S.resetUi();
                 };
 
                 rec.onerror = function(ev) {
-                    S.rec = null;
-                    S.resetUi();
                     var code = ev && ev.error ? ev.error : '';
-                    if (code === 'no-speech' || code === 'aborted') return;
+                    S.recording = false;
+                    if (code === 'no-speech' || code === 'aborted') {
+                        S.resetUi();
+                        return;
+                    }
+                    if ((code === 'not-allowed' || code === 'service-not-allowed') && !S._askingPerm) {
+                        S._askingPerm = true;
+                        S.resetUi();
+                        S.rec = null;
+                        window.__ensureMicPermissionForSpeech(function() {
+                            S._askingPerm = false;
+                            S.beginStart();
+                        }, function() {
+                            S._askingPerm = false;
+                            alert('Permesso microfono necessario. Quando Safari chiede il microfono, tocca Consenti.');
+                        });
+                        return;
+                    }
+                    S.resetUi();
                 };
 
+                S.rec = rec;
                 return rec;
             };
 
@@ -747,8 +766,6 @@ window.colorPreviewNumber = function(tankName, value) {
                 S.recording = false;
                 if (S.rec) {
                     try { S.rec.stop(); } catch (e) {}
-                    try { S.rec.abort(); } catch (e2) {}
-                    S.rec = null;
                 }
                 S.resetUi();
             };
@@ -758,32 +775,21 @@ window.colorPreviewNumber = function(tankName, value) {
                     S.stop();
                     return;
                 }
-                if (S.rec) {
-                    try { S.rec.abort(); } catch (eA) {}
-                    S.rec = null;
+                var rec = S.ensureRec();
+                if (!rec) {
+                    alert('Vocale non supportato in questo browser.');
+                    return;
                 }
+                S.recording = true;
                 S.setRecUi();
-
-                var startSpeech = function() {
-                    S.rec = S.createRec();
-                    if (!S.rec) {
-                        S.resetUi();
-                        alert('Vocale non supportato in questo browser.');
-                        return;
-                    }
-                    try {
-                        S.rec.start();
-                    } catch (err) {
-                        S.rec = null;
-                        S.resetUi();
-                        alert('Microfono: ' + (err && err.message ? err.message : String(err)));
-                    }
-                };
-
-                window.__ensureMicPermissionForSpeech(startSpeech, function() {
+                try {
+                    rec.start();
+                } catch (err) {
+                    S.recording = false;
+                    S.rec = null;
                     S.resetUi();
-                    alert('Permesso microfono necessario. Quando Safari chiede il microfono, tocca Consenti.');
-                });
+                    alert('Microfono: ' + (err && err.message ? err.message : String(err)));
+                }
             };
 
             S.start = function() {
@@ -23798,7 +23804,7 @@ window.convertToHtml = async () => {
 
             </div>
             <div id="ai-settings-dock" onclick="event.stopPropagation()">
-                <div id="ai-learning-section" aria-hidden="true" data-ai-speech-ver="168">
+                <div id="ai-learning-section" aria-hidden="true" data-ai-speech-ver="169">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                         <button type="button" onclick="exportAIMemory()" style="background:#1e293b;border:1px solid #334155;color:#60a5fa;width:32px;height:32px;cursor:pointer;border-radius:6px;font-size:10px;display:flex;align-items:center;justify-content:center;touch-action:manipulation;" title="Esporta memoria AI">↓</button>
                         <button type="button" id="open-conversation-btn" onclick="return window.openAiConversationFromSettings(event);" style="background:transparent;border:none;color:#60a5fa;cursor:pointer;font-size:18px;padding:8px;border-radius:5px;touch-action:manipulation;" title="Apri conversazione completa"><i class="fas fa-comments"></i></button>
@@ -24317,7 +24323,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=258')
+                navigator.serviceWorker.register('./sw.js?v=259')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();
@@ -30053,10 +30059,10 @@ function fixAIPanel() {
 
     window.wireAiRobotHead();
 
-    if (!chatSection.querySelector('#ai-mic-btn') || chatSection.dataset.aiSpeechVer !== '168') {
+    if (!chatSection.querySelector('#ai-mic-btn') || chatSection.dataset.aiSpeechVer !== '169') {
         window.__aiSpeechWired = null;
         window.__aiSpeech = null;
-        chatSection.dataset.aiSpeechVer = '168';
+        chatSection.dataset.aiSpeechVer = '169';
         chatSection.innerHTML = ''
             + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'
             + '<button type="button" onclick="exportAIMemory()" style="background:#1e293b;border:1px solid #334155;color:#60a5fa;width:32px;height:32px;cursor:pointer;border-radius:6px;font-size:10px;display:flex;align-items:center;justify-content:center;touch-action:manipulation;" title="Esporta memoria AI">↓</button>'
@@ -30536,29 +30542,17 @@ window.initConversationModal = function(draftUserLine) {
         }
         convMicPrefix = (inputField.value || '').replace(/\s+$/, '');
         userWantsStop = false;
+        isRecording = true;
         micBtn.style.background = '#ef4444';
         micBtn.innerHTML = '<i class="fas fa-stop"></i>';
         micBtn.style.animation = 'blink 0.5s infinite';
-
-        var startConvRec = function() {
-            try {
-                recognition.start();
-            } catch (e5) {
-                resetConvMicUi(false);
-                try { recognition = buildConvRecognition(); } catch (e6) {}
-                alert('Microfono: ' + (e5.message || String(e5)));
-                return;
-            }
-            isRecording = true;
-        };
-
-        if (typeof window.__ensureMicPermissionForSpeech === 'function') {
-            window.__ensureMicPermissionForSpeech(startConvRec, function() {
-                resetConvMicUi(false);
-                alert('Permesso microfono necessario. Quando Safari chiede il microfono, tocca Consenti.');
-            });
-        } else {
-            startConvRec();
+        try {
+            recognition.start();
+        } catch (e5) {
+            resetConvMicUi(false);
+            try { recognition = buildConvRecognition(); } catch (e6) {}
+            alert('Microfono: ' + (e5.message || String(e5)));
+            return false;
         }
         return false;
     };

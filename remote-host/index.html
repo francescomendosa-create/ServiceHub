@@ -7,7 +7,7 @@
     var SK = "servicehub_remote_share_k";
     var SA = "servicehub_remote_app_id";
     var FB_ORIGIN = "https://servicehub-18309.web.app";
-    window.SVCREMOTE_BUILD = "2026.06.14-v110";
+    window.SVCREMOTE_BUILD = "2026.06.14-v111";
 
     /** Vecchi link su GitHub → stesso remoto su Firebase. */
     (function redirectGithubToFirebase() {
@@ -2872,18 +2872,20 @@
       var rateCls = model.rateMmH > 0.05 ? "up" : model.rateMmH < -0.05 ? "down" : "flat";
       return '<div class="tank-detail-timeline-block" data-tank-timeline="1">' +
         '<div class="tank-detail-section-title">Timeline livello · previsione</div>' +
-        '<div class="tank-detail-timeline-hint">Trascina la linea fino a <b>24 ore</b> avanti: sotto l\'orario, sopra il livello previsto.</div>' +
+        '<div class="tank-detail-timeline-hint">Trascina la <b>barra gialla</b> fino a 24 ore avanti. Sopra: livello attuale · sotto: previsione.</div>' +
         '<div class="tank-detail-timeline-rate tank-detail-timeline-rate--' + rateCls + '">Velocità trend: <b>' +
         esc(rateSign + fmtTankMm(model.rateMmH) + " mm/h") + "</b></div>" +
-        '<div class="tank-detail-timeline-scrub-label">' +
-        '<span class="tank-detail-timeline-lvl-above" data-tl-lvl>' + fmtTankMm(model.nowMm) + " mm</span>" +
-        '<span class="tank-detail-timeline-time-below" data-tl-time>' + fmtTimelineClock(model.nowTs) + "</span>" +
-        '<span class="tank-detail-timeline-ahead" data-tl-ahead>Adesso</span></div>' +
-        '<div class="tank-detail-timeline-canvas-wrap"><svg class="tank-detail-timeline-svg" data-tl-svg viewBox="0 0 800 160" preserveAspectRatio="none"></svg></div>' +
-        '<input type="range" class="tank-detail-timeline-slider" data-tl-slider min="0" max="' + TANK_TIMELINE_PREDICT_H + '" step="0.25" value="0" />' +
+        '<div class="tank-detail-timeline-canvas-wrap" data-tl-interactive="1">' +
+        '<div class="tank-detail-timeline-float" data-tl-float style="left:50%">' +
+        '<div class="tank-detail-timeline-actual-mm" data-tl-actual-mm>' + fmtTankMm(model.nowMm) + " mm</div>" +
+        '<div class="tank-detail-timeline-actual-lbl">Livello attuale</div>' +
+        '<div class="tank-detail-timeline-time" data-tl-time>' + fmtTimelineClock(model.nowTs) + "</div>" +
+        '<div class="tank-detail-timeline-pred-mm" data-tl-pred-mm>' + fmtTankMm(model.nowMm) + " mm</div>" +
+        '<div class="tank-detail-timeline-pred-lbl" data-tl-pred-lbl style="display:none">Previsione</div>' +
+        "</div>" +
+        '<svg class="tank-detail-timeline-svg" data-tl-svg viewBox="0 0 800 160" preserveAspectRatio="none" aria-hidden="true"></svg></div>' +
         '<div class="tank-detail-timeline-legend"><span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--hist">■ Storico / adesso</span>' +
-        '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--pred">■ Previsione</span></div>' +
-        '<div class="tank-detail-timeline-preview">Livello previsto: <b data-tl-prev-mm>' + fmtTankMm(model.nowMm) + " mm</b></div></div>";
+        '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--pred">■ Zona previsione</span></div></div>';
     }
 
     function renderRemoteTimelineSvg(svgEl, model) {
@@ -2892,11 +2894,14 @@
       var tSpan = model.tEnd - model.tStart || 3600000;
       var toX = function (ts) { return pad.l + plotW * ((ts - model.tStart) / tSpan); };
       var mmVals = model.series.map(function (p) { return p.mm; });
-      mmVals.push(predictRemoteLevelAt(model, model.tEnd));
-      var yMin = Math.max(0, Math.min.apply(null, mmVals) * 0.95);
+      var predEndMm = predictRemoteLevelAt(model, model.tEnd);
+      if (Number.isFinite(predEndMm)) mmVals.push(predEndMm);
+      var yMin = Math.min.apply(null, mmVals.concat([0]));
       var yMax = Math.max.apply(null, mmVals.concat([1]));
-      if (model.livMax) yMax = Math.max(yMax, model.livMax);
-      yMax += (yMax - yMin) * 0.12 || 100;
+      if (model.livMax && model.livMax > 0) yMax = Math.max(yMax, model.livMax);
+      var yPad = (yMax - yMin) * 0.12 || 100;
+      yMin = Math.max(0, yMin - yPad);
+      yMax = yMax + yPad;
       var toY = function (mm) { return pad.t + plotH - (plotH * ((mm - yMin) / (yMax - yMin))); };
       var nowX = toX(model.nowTs);
       var histPts = model.series.map(function (p) { return { x: toX(p.ts), y: toY(p.mm), p: p }; });
@@ -2907,17 +2912,33 @@
         predPath += " L" + toX(ts).toFixed(1) + "," + toY(predictRemoteLevelAt(model, ts)).toFixed(1);
       }
       var dots = histPts.map(function (pt) {
-        return '<text x="' + pt.x.toFixed(1) + '" y="' + (pt.y - 10).toFixed(1) + '" text-anchor="middle" font-size="10" font-weight="800" fill="#e2e8f0">' + fmtTankMm(pt.p.mm) + "</text>" +
+        var fill = pt.p.live ? "#fbbf24" : "#38bdf8";
+        return '<circle cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) + '" r="5" fill="' + fill + '" stroke="#0f172a" stroke-width="1.2">' +
+          '<title>' + esc(String(pt.p.label || fmtTimelineClock(pt.p.ts))) + ": " + fmtTankMm(pt.p.mm) + " mm</title></circle>" +
+          '<text x="' + pt.x.toFixed(1) + '" y="' + (pt.y - 10).toFixed(1) + '" text-anchor="middle" font-size="10" font-weight="800" fill="#e2e8f0">' + fmtTankMm(pt.p.mm) + "</text>" +
           '<text x="' + pt.x.toFixed(1) + '" y="' + (h - 12).toFixed(1) + '" text-anchor="middle" font-size="9" fill="#94a3b8">' + esc(String(pt.p.label || fmtTimelineClock(pt.p.ts)).slice(0, 8)) + "</text>";
       }).join("");
+      var scrubber = '<line class="tank-detail-timeline-scrub-line" data-tl-scrub x1="' + nowX.toFixed(1) +
+        '" y1="' + pad.t + '" x2="' + nowX.toFixed(1) + '" y2="' + (pad.t + plotH).toFixed(1) +
+        '" stroke="#fbbf24" stroke-width="3" pointer-events="none"/>' +
+        '<circle class="tank-detail-timeline-scrub-knob" data-tl-knob cx="' + nowX.toFixed(1) +
+        '" cy="' + toY(model.nowMm).toFixed(1) + '" r="9" fill="#fbbf24" stroke="#0f172a" stroke-width="1.5" style="cursor:grab"/>' +
+        '<circle data-tl-drag-hit cx="' + nowX.toFixed(1) + '" cy="' + ((pad.t + plotH) / 2).toFixed(1) +
+        '" r="28" fill="transparent" style="cursor:grab;touch-action:none"/>';
       svgEl.innerHTML = '<rect x="' + pad.l + '" y="' + pad.t + '" width="' + (nowX - pad.l).toFixed(1) + '" height="' + plotH + '" fill="rgba(56,189,248,0.06)"/>' +
         '<rect x="' + nowX.toFixed(1) + '" y="' + pad.t + '" width="' + (w - pad.r - nowX).toFixed(1) + '" height="' + plotH + '" fill="rgba(167,139,250,0.08)"/>' +
-        (histPath ? '<path d="' + histPath + '" fill="none" stroke="#38bdf8" stroke-width="2.5"/>' : "") +
-        '<path d="' + predPath + '" fill="none" stroke="#a78bfa" stroke-width="2.5" stroke-dasharray="8 5"/>' + dots +
-        '<line data-tl-scrub x1="' + nowX.toFixed(1) + '" y1="' + pad.t + '" x2="' + nowX.toFixed(1) + '" y2="' + (pad.t + plotH).toFixed(1) + '" stroke="#fbbf24" stroke-width="2.5" stroke-dasharray="4 3"/>' +
-        '<circle data-tl-knob cx="' + nowX.toFixed(1) + '" cy="' + toY(model.nowMm).toFixed(1) + '" r="7" fill="#fbbf24"/>';
+        (histPath ? '<path d="' + histPath + '" fill="none" stroke="#38bdf8" stroke-width="2.5" stroke-linejoin="round"/>' : "") +
+        '<path d="' + predPath + '" fill="none" stroke="#a78bfa" stroke-width="2.5" stroke-dasharray="8 5" stroke-linejoin="round"/>' + dots + scrubber;
       svgEl.__tlModel = model;
-      svgEl.__tlGeom = { pad: pad, plotH: plotH, tSpan: tSpan, yMin: yMin, yMax: yMax, toX: toX, toY: toY };
+      svgEl.__tlGeom = { w: w, h: h, pad: pad, plotW: plotW, plotH: plotH, tSpan: tSpan, yMin: yMin, yMax: yMax, nowX: nowX, toX: toX, toY: toY, nowTs: model.nowTs, tEnd: model.tEnd };
+    }
+
+    function timelineScrubHoursFromSvgX(geom, model, svgX) {
+      if (!geom || !model) return 0;
+      var ts = model.tStart + ((svgX - geom.pad.l) / geom.plotW) * geom.tSpan;
+      if (ts < model.nowTs) ts = model.nowTs;
+      if (ts > model.tEnd) ts = model.tEnd;
+      return (ts - model.nowTs) / 3600000;
     }
 
     function updateRemoteTimelineScrub(block, hoursAhead) {
@@ -2931,30 +2952,80 @@
       var x = geom.toX(targetTs), y = geom.toY(predMm);
       var scrub = svg.querySelector("[data-tl-scrub]");
       var knob = svg.querySelector("[data-tl-knob]");
-      if (scrub) { scrub.setAttribute("x1", x); scrub.setAttribute("x2", x); }
-      if (knob) { knob.setAttribute("cx", x); knob.setAttribute("cy", y); }
-      var lvlEl = block.querySelector("[data-tl-lvl]");
+      var hit = svg.querySelector("[data-tl-drag-hit]");
+      if (scrub) { scrub.setAttribute("x1", x.toFixed(1)); scrub.setAttribute("x2", x.toFixed(1)); }
+      if (knob) { knob.setAttribute("cx", x.toFixed(1)); knob.setAttribute("cy", y.toFixed(1)); }
+      if (hit) { hit.setAttribute("cx", x.toFixed(1)); hit.setAttribute("cy", ((geom.pad.t + geom.plotH) / 2).toFixed(1)); }
+      var floatEl = block.querySelector("[data-tl-float]");
+      if (floatEl) floatEl.style.left = ((x / geom.w) * 100).toFixed(2) + "%";
+      var actualMmEl = block.querySelector("[data-tl-actual-mm]");
+      var predMmEl = block.querySelector("[data-tl-pred-mm]");
       var timeEl = block.querySelector("[data-tl-time]");
-      var aheadEl = block.querySelector("[data-tl-ahead]");
-      var prevMmEl = block.querySelector("[data-tl-prev-mm]");
-      if (lvlEl) { lvlEl.textContent = fmtTankMm(predMm) + " mm"; lvlEl.classList.toggle("tank-detail-timeline-lvl-above--pred", hoursAhead > 0.05); }
+      var predLbl = block.querySelector("[data-tl-pred-lbl]");
+      var isPred = hoursAhead > 0.05;
+      if (actualMmEl) actualMmEl.textContent = fmtTankMm(model.nowMm) + " mm";
+      if (predMmEl) predMmEl.textContent = fmtTankMm(predMm) + " mm";
       if (timeEl) timeEl.textContent = fmtTimelineClock(targetTs);
-      if (aheadEl) aheadEl.textContent = fmtTimelineAhead(hoursAhead);
-      if (prevMmEl) prevMmEl.textContent = fmtTankMm(predMm) + " mm";
-      block.classList.toggle("tank-detail-timeline-block--pred", hoursAhead > 0.05);
+      if (predLbl) predLbl.style.display = isPred ? "" : "none";
+      block.classList.toggle("tank-detail-timeline-block--pred", isPred);
+      block.__tlHoursAhead = hoursAhead;
     }
 
     function wireRemoteTankTimeline(container, series, info) {
       var block = container && container.querySelector("[data-tank-timeline]");
       if (!block) return;
       var model = buildRemoteTimelineModel(series, info);
-      renderRemoteTimelineSvg(block.querySelector("[data-tl-svg]"), model);
-      var slider = block.querySelector("[data-tl-slider]");
-      if (!slider) return;
-      var onSlide = function () { updateRemoteTimelineScrub(block, parseFloat(slider.value)); };
-      slider.addEventListener("input", onSlide);
-      slider.addEventListener("change", onSlide);
-      onSlide();
+      var svg = block.querySelector("[data-tl-svg]");
+      var wrap = block.querySelector("[data-tl-interactive]");
+      renderRemoteTimelineSvg(svg, model);
+      if (!svg || !wrap) return;
+
+      var dragging = false;
+
+      function svgXFromEvent(ev) {
+        var rect = svg.getBoundingClientRect();
+        var clientX = ev.touches && ev.touches.length ? ev.touches[0].clientX : ev.clientX;
+        return ((clientX - rect.left) / rect.width) * (svg.__tlGeom ? svg.__tlGeom.w : 800);
+      }
+
+      function onPointerMove(ev) {
+        if (!dragging) return;
+        ev.preventDefault();
+        var h = timelineScrubHoursFromSvgX(svg.__tlGeom, svg.__tlModel, svgXFromEvent(ev));
+        updateRemoteTimelineScrub(block, h);
+      }
+
+      function onPointerUp() {
+        dragging = false;
+        var hit = svg.querySelector("[data-tl-drag-hit]");
+        if (hit) hit.style.cursor = "grab";
+      }
+
+      function startDrag(ev) {
+        dragging = true;
+        var hit = svg.querySelector("[data-tl-drag-hit]");
+        if (hit) hit.style.cursor = "grabbing";
+        onPointerMove(ev);
+      }
+
+      svg.addEventListener("mousedown", function (ev) {
+        var geom = svg.__tlGeom;
+        if (!geom) return;
+        var sx = svgXFromEvent(ev);
+        if (sx >= geom.nowX - 8) startDrag(ev);
+      });
+      svg.addEventListener("touchstart", function (ev) {
+        var geom = svg.__tlGeom;
+        if (!geom || !ev.touches.length) return;
+        var sx = svgXFromEvent(ev);
+        if (sx >= geom.nowX - 8) startDrag(ev);
+      }, { passive: false });
+      window.addEventListener("mousemove", onPointerMove);
+      window.addEventListener("mouseup", onPointerUp);
+      window.addEventListener("touchmove", onPointerMove, { passive: false });
+      window.addEventListener("touchend", onPointerUp);
+
+      updateRemoteTimelineScrub(block, 0);
     }
 
     function buildRemoteTankDetailPageHTML(info, series) {

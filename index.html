@@ -653,9 +653,39 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v189';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v190';
         window.__aiGeminiMic = { on: false, rec: null, stream: null, chunks: [] };
-        window.__aiSpeechIOS = { rec: null, listening: false, prefix: '' };
+        window.__aiSpeechIOS = { rec: null, listening: false, prefix: '', micStream: null };
+        window.__aiQuickChatInputEl = function() {
+            var section = document.getElementById('ai-learning-section');
+            if (section) {
+                var inp = section.querySelector('#ai-chat-input');
+                if (inp) return inp;
+            }
+            return document.getElementById('ai-chat-input');
+        };
+        window.__aiReleaseIosMicStream = function() {
+            var st = window.__aiSpeechIOS;
+            if (!st || !st.micStream) return;
+            try {
+                st.micStream.getTracks().forEach(function(t) { try { t.stop(); } catch (e) {} });
+            } catch (e2) {}
+            st.micStream = null;
+        };
+        window.__aiIosMicStopAll = function() {
+            var st = window.__aiSpeechIOS;
+            if (!st) return;
+            st.listening = false;
+            if (st.rec) { try { st.rec.stop(); } catch (e) {} }
+            st.rec = null;
+            var gm = window.__aiGeminiMic;
+            if (gm && gm.on && gm.rec && gm.rec.state !== 'inactive') {
+                try { gm.rec.stop(); } catch (e2) {}
+            } else {
+                window.__aiReleaseIosMicStream();
+            }
+            window.__aiMicUiIdle();
+        };
         (function() {
             var s = document.createElement('style');
             s.textContent = '@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}';
@@ -727,11 +757,52 @@ window.colorPreviewNumber = function(tankName, value) {
             });
             var text = String(out && out.text ? out.text : '').trim();
             if (!text) throw new Error('Nessun testo riconosciuto.');
-            var prefix = String(inputField.value || '').replace(/\s+$/, '');
-            inputField.value = prefix ? (prefix + ' ' + text) : text;
-            try { inputField.dispatchEvent(new Event('input', { bubbles: true })); } catch (eI) {}
+            var inp = window.__aiQuickChatInputEl && window.__aiQuickChatInputEl() || inputField;
+            var prefix = String(inp.value || '').replace(/\s+$/, '');
+            inp.value = prefix ? (prefix + ' ' + text) : text;
+            try { inp.dispatchEvent(new Event('input', { bubbles: true })); } catch (eI) {}
+            try { inp.focus(); } catch (eF) {}
             if (typeof window.syncAiChatClearBtn === 'function') window.syncAiChatClearBtn();
             return text;
+        };
+        window.__aiStartRecorderOnStream = function(inputField, stream) {
+            var gm = window.__aiGeminiMic;
+            var st = window.__aiSpeechIOS;
+            if (!stream || !inputField) return;
+            gm.on = true;
+            gm.stream = stream;
+            st.micStream = stream;
+            gm.chunks = [];
+            var mime = 'audio/mp4';
+            if (window.MediaRecorder) {
+                if (MediaRecorder.isTypeSupported('audio/mp4')) mime = 'audio/mp4';
+                else if (MediaRecorder.isTypeSupported('audio/aac')) mime = 'audio/aac';
+                else if (MediaRecorder.isTypeSupported('audio/webm')) mime = 'audio/webm';
+            }
+            var recorder;
+            try {
+                recorder = new MediaRecorder(stream, { mimeType: mime });
+            } catch (eM) {
+                recorder = new MediaRecorder(stream);
+                mime = recorder.mimeType || 'audio/mp4';
+            }
+            gm.rec = recorder;
+            recorder.ondataavailable = function(e) { if (e.data && e.data.size) gm.chunks.push(e.data); };
+            recorder.onstop = function() {
+                var blob = new Blob(gm.chunks, { type: mime });
+                window.__aiReleaseIosMicStream();
+                gm.stream = null;
+                gm.rec = null;
+                gm.on = false;
+                st.listening = false;
+                window.__aiMicUiIdle();
+                if (!blob.size) return;
+                var inp = window.__aiQuickChatInputEl() || inputField;
+                window.__aiTranscribeGeminiAudio(blob, inp).catch(function(err) {
+                    alert('Dettatura: ' + (err && err.message ? err.message : String(err)));
+                });
+            };
+            recorder.start(300);
         };
         window.__aiGeminiMicTap = function(inputField) {
             var gm = window.__aiGeminiMic;
@@ -748,39 +819,15 @@ window.colorPreviewNumber = function(tankName, value) {
             window.__aiMicUiRec();
             gm.on = true;
             st.listening = true;
-            gm.chunks = [];
             navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
-                gm.stream = stream;
-                var mime = 'audio/mp4';
-                if (window.MediaRecorder) {
-                    if (MediaRecorder.isTypeSupported('audio/mp4')) mime = 'audio/mp4';
-                    else if (MediaRecorder.isTypeSupported('audio/aac')) mime = 'audio/aac';
-                    else if (MediaRecorder.isTypeSupported('audio/webm')) mime = 'audio/webm';
+                if (!st.listening) {
+                    stream.getTracks().forEach(function(t) { try { t.stop(); } catch (e1) {} });
+                    return;
                 }
-                var recorder;
-                try {
-                    recorder = new MediaRecorder(stream, { mimeType: mime });
-                } catch (eM) {
-                    recorder = new MediaRecorder(stream);
-                    mime = recorder.mimeType || 'audio/mp4';
-                }
-                gm.rec = recorder;
-                recorder.ondataavailable = function(e) { if (e.data && e.data.size) gm.chunks.push(e.data); };
-                recorder.onstop = function() {
-                    var blob = new Blob(gm.chunks, { type: mime });
-                    if (gm.stream) {
-                        gm.stream.getTracks().forEach(function(t) { try { t.stop(); } catch (e1) {} });
-                    }
-                    gm.stream = null; gm.rec = null; gm.on = false;
-                    window.__aiMicUiIdle();
-                    if (!blob.size) return;
-                    window.__aiTranscribeGeminiAudio(blob, inputField).catch(function(err) {
-                        alert('Dettatura: ' + (err && err.message ? err.message : String(err)));
-                    });
-                };
-                recorder.start(300);
+                window.__aiStartRecorderOnStream(inputField, stream);
             }).catch(function(err) {
                 gm.on = false;
+                st.listening = false;
                 window.__aiMicUiIdle();
                 alert('Microfono: ' + (err && err.message ? err.message : 'consenti microfono in Impostazioni iPhone'));
             });
@@ -795,11 +842,13 @@ window.colorPreviewNumber = function(tankName, value) {
             recognition.interimResults = true;
             recognition.onresult = function(e) {
                 if (!e || !e.results) return;
+                var inp = window.__aiQuickChatInputEl() || inputField;
                 var transcript = Array.from(e.results).map(function(r) { return r[0].transcript; }).join('');
                 var sep = st.prefix && transcript ? ' ' : '';
-                inputField.value = st.prefix + sep + transcript;
-                inputField.scrollLeft = inputField.scrollWidth;
-                try { inputField.setSelectionRange(inputField.value.length, inputField.value.length); } catch (e2) {}
+                inp.value = st.prefix + sep + transcript;
+                inp.scrollLeft = inp.scrollWidth;
+                try { inp.setSelectionRange(inp.value.length, inp.value.length); } catch (e2) {}
+                try { inp.focus(); } catch (e3) {}
                 if (typeof window.syncAiChatClearBtn === 'function') window.syncAiChatClearBtn();
             };
             recognition.onstart = function() { /* UI già accesa al tap */ };
@@ -824,46 +873,52 @@ window.colorPreviewNumber = function(tankName, value) {
         };
         window.__aiMicTapCore = function(ev) {
             window.__unlockServiceHubUi();
-            var inputField = document.getElementById('ai-chat-input');
+            var inputField = window.__aiQuickChatInputEl();
             if (!inputField) {
                 alert('Tocca il robot in basso per aprire la chat.');
                 return false;
             }
             var st = window.__aiSpeechIOS;
-            window.__aiQuickSpeechStop = function() {
-                st.listening = false;
-                if (st.rec) { try { st.rec.stop(); } catch (e) {} }
-                st.rec = null;
-                var g = window.__aiGeminiMic;
-                if (g && g.on && g.rec) { try { g.rec.stop(); } catch (e2) {} }
-                window.__aiMicUiIdle();
-            };
+            window.__aiQuickSpeechStop = window.__aiIosMicStopAll;
             if (!/iPhone|iPod/i.test(navigator.userAgent || '')) {
                 if (typeof window.__aiMicClick === 'function') return window.__aiMicClick(ev);
                 alert('Vocale non pronto.');
                 return false;
             }
             if (st.listening) {
-                st.listening = false;
-                if (st.rec) { try { st.rec.stop(); } catch (e0) {} }
-                st.rec = null;
-                window.__aiMicUiIdle();
+                window.__aiIosMicStopAll();
+                return false;
+            }
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                alert('Microfono non disponibile.');
                 return false;
             }
             st.listening = true;
             st.prefix = (inputField.value || '').replace(/\s+$/, '');
             window.__aiMicUiRec();
-            if (window.webkitSpeechRecognition || window.SpeechRecognition) {
-                var recognition = window.__ensureIosSpeechRec(inputField);
-                st.rec = recognition;
-                if (recognition) {
-                    try {
-                        recognition.start();
-                        return false;
-                    } catch (err) {}
+            navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
+                if (!st.listening) {
+                    stream.getTracks().forEach(function(t) { try { t.stop(); } catch (e0) {} });
+                    return;
                 }
-            }
-            return window.__aiGeminiMicTap(inputField);
+                st.micStream = stream;
+                if (window.webkitSpeechRecognition || window.SpeechRecognition) {
+                    var recognition = window.__ensureIosSpeechRec(inputField);
+                    st.rec = recognition;
+                    if (recognition) {
+                        try {
+                            recognition.start();
+                            return;
+                        } catch (err) {}
+                    }
+                }
+                window.__aiStartRecorderOnStream(inputField, stream);
+            }).catch(function(err) {
+                st.listening = false;
+                window.__aiMicUiIdle();
+                alert('Microfono: ' + (err && err.message ? err.message : 'consenti microfono in Impostazioni iPhone'));
+            });
+            return false;
         };
         window.__aiSpeechBoot = function() {
             if (window.__aiSpeech && window.__aiSpeech.build === window.SERVICEHUB_BUILD) return window.__aiSpeech;
@@ -24128,7 +24183,7 @@ window.convertToHtml = async () => {
 
             </div>
             <div id="ai-settings-dock" onclick="event.stopPropagation()">
-                <div id="ai-learning-section" aria-hidden="true" data-ai-speech-ver="189">
+                <div id="ai-learning-section" aria-hidden="true" data-ai-speech-ver="190">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                         <button type="button" onclick="exportAIMemory()" style="background:#1e293b;border:1px solid #334155;color:#60a5fa;width:32px;height:32px;cursor:pointer;border-radius:6px;font-size:10px;display:flex;align-items:center;justify-content:center;touch-action:manipulation;" title="Esporta memoria AI">↓</button>
                         <button type="button" id="open-conversation-btn" onclick="return window.openAiConversationFromSettings(event);" style="background:transparent;border:none;color:#60a5fa;cursor:pointer;font-size:18px;padding:8px;border-radius:5px;touch-action:manipulation;" title="Apri conversazione completa"><i class="fas fa-comments"></i></button>
@@ -30196,7 +30251,7 @@ function fixAIPanel() {
     if (window.__aiSpeechWired === window.SERVICEHUB_BUILD) return;
 
     var chatSection = document.getElementById('ai-learning-section');
-    if (chatSection && chatSection.dataset) chatSection.dataset.aiSpeechVer = '189';
+    if (chatSection && chatSection.dataset) chatSection.dataset.aiSpeechVer = '190';
 
     window.wireAiRobotHead();
 

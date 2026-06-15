@@ -653,19 +653,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v169';
-        window.__ensureMicPermissionForSpeech = function(onOk, onFail) {
-            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                if (onOk) onOk();
-                return;
-            }
-            navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
-                stream.getTracks().forEach(function(t) { try { t.stop(); } catch (e) {} });
-                if (onOk) onOk();
-            }).catch(function(err) {
-                if (onFail) onFail(err);
-            });
-        };
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v170';
         window.__aiQuickSpeechStop = function() {
             if (window.__aiSpeech && typeof window.__aiSpeech.stop === 'function') window.__aiSpeech.stop();
         };
@@ -674,9 +662,11 @@ window.colorPreviewNumber = function(tankName, value) {
 
             var S = window.__aiSpeech = {
                 build: window.SERVICEHUB_BUILD,
-                recording: false,
                 rec: null,
-                _askingPerm: false
+                prefix: '',
+                wantListen: false,
+                wantStop: false,
+                listening: false
             };
 
             S.micEl = function() { return document.getElementById('ai-mic-btn'); };
@@ -684,7 +674,6 @@ window.colorPreviewNumber = function(tankName, value) {
             S.sendEl = function() { return document.getElementById('ai-send-btn'); };
 
             S.resetUi = function() {
-                S.recording = false;
                 var mic = S.micEl();
                 var send = S.sendEl();
                 if (mic) {
@@ -696,7 +685,6 @@ window.colorPreviewNumber = function(tankName, value) {
             };
 
             S.setRecUi = function() {
-                S.recording = true;
                 var mic = S.micEl();
                 var send = S.sendEl();
                 if (mic) {
@@ -707,95 +695,126 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (send) send.innerHTML = '<i class="fas fa-arrow-right" style="pointer-events:none;"></i>';
             };
 
-            S.ensureRec = function() {
-                if (S.rec) return S.rec;
+            S.finishListen = function() {
+                S.wantListen = false;
+                S.wantStop = false;
+                S.listening = false;
+                S.resetUi();
+            };
+
+            S.buildRec = function() {
                 var SR = window.webkitSpeechRecognition || window.SpeechRecognition;
                 if (!SR) return null;
                 var rec = new SR();
                 rec.lang = 'it-IT';
                 rec.interimResults = true;
+                rec.continuous = true;
 
                 rec.onresult = function(e) {
                     var inp = S.inpEl();
                     if (!inp) return;
-                    var transcript = Array.from(e.results).map(function(r) { return r[0].transcript; }).join('');
-                    inp.value = transcript;
+                    var session = '';
+                    for (var i = 0; i < e.results.length; i++) {
+                        session += e.results[i][0].transcript;
+                    }
+                    var sep = S.prefix && session ? ' ' : '';
+                    inp.value = S.prefix + sep + session;
                     inp.scrollLeft = inp.scrollWidth;
                     try { inp.setSelectionRange(inp.value.length, inp.value.length); } catch (e2) {}
                     if (typeof window.syncAiChatClearBtn === 'function') window.syncAiChatClearBtn();
                 };
 
                 rec.onstart = function() {
-                    S.recording = true;
+                    S.listening = true;
+                    S.prefix = (S.inpEl() && S.inpEl().value || '').replace(/\s+$/, '');
                     S.setRecUi();
                 };
 
                 rec.onend = function() {
-                    S.recording = false;
-                    S.resetUi();
+                    S.listening = false;
+                    if (S.inpEl()) S.prefix = (S.inpEl().value || '').replace(/\s+$/, '');
+                    if (!S.wantListen || S.wantStop) {
+                        S.finishListen();
+                        return;
+                    }
+                    S.rec = null;
+                    setTimeout(function() {
+                        if (!S.wantListen || S.wantStop) return;
+                        try {
+                            var r = S.buildRec();
+                            if (!r) { S.finishListen(); return; }
+                            S.rec = r;
+                            r.start();
+                        } catch (eR) {
+                            S.finishListen();
+                        }
+                    }, 150);
                 };
 
                 rec.onerror = function(ev) {
                     var code = ev && ev.error ? ev.error : '';
-                    S.recording = false;
-                    if (code === 'no-speech' || code === 'aborted') {
-                        S.resetUi();
-                        return;
+                    if (code === 'aborted' || code === 'no-speech') return;
+                    S.rec = null;
+                    if (S.wantListen && !S.wantStop) {
+                        setTimeout(function() {
+                            if (!S.wantListen || S.wantStop) return;
+                            try {
+                                var r2 = S.buildRec();
+                                if (!r2) { S.finishListen(); return; }
+                                S.rec = r2;
+                                r2.start();
+                            } catch (eR2) {
+                                S.finishListen();
+                            }
+                        }, 150);
+                    } else {
+                        S.finishListen();
                     }
-                    if ((code === 'not-allowed' || code === 'service-not-allowed') && !S._askingPerm) {
-                        S._askingPerm = true;
-                        S.resetUi();
-                        S.rec = null;
-                        window.__ensureMicPermissionForSpeech(function() {
-                            S._askingPerm = false;
-                            S.beginStart();
-                        }, function() {
-                            S._askingPerm = false;
-                            alert('Permesso microfono necessario. Quando Safari chiede il microfono, tocca Consenti.');
-                        });
-                        return;
-                    }
-                    S.resetUi();
                 };
 
-                S.rec = rec;
                 return rec;
             };
 
+            S.ensureRec = function() {
+                if (!S.rec) S.rec = S.buildRec();
+                return S.rec;
+            };
+
             S.stop = function() {
-                S.recording = false;
+                S.wantStop = true;
+                S.wantListen = false;
                 if (S.rec) {
                     try { S.rec.stop(); } catch (e) {}
                 }
-                S.resetUi();
+                S.finishListen();
             };
 
             S.beginStart = function() {
-                if (S.recording) {
+                if (S.wantListen) {
                     S.stop();
                     return;
                 }
+                S.wantStop = false;
+                S.wantListen = true;
+                S.prefix = (S.inpEl() && S.inpEl().value || '').replace(/\s+$/, '');
                 var rec = S.ensureRec();
                 if (!rec) {
+                    S.finishListen();
                     alert('Vocale non supportato in questo browser.');
                     return;
                 }
-                S.recording = true;
                 S.setRecUi();
                 try {
                     rec.start();
                 } catch (err) {
-                    S.recording = false;
                     S.rec = null;
-                    S.resetUi();
+                    S.finishListen();
                     alert('Microfono: ' + (err && err.message ? err.message : String(err)));
                 }
             };
 
             S.start = function() {
                 if (typeof window.__clearPostLongPressShield === 'function') window.__clearPostLongPressShield();
-                var inp = S.inpEl();
-                if (inp) { try { inp.blur(); } catch (eB) {} }
                 S.beginStart();
             };
 
@@ -803,6 +822,9 @@ window.colorPreviewNumber = function(tankName, value) {
             return S;
         };
         window.__aiMicClick = function (ev) {
+            var now = Date.now();
+            if (window.__aiMicTapAt && now - window.__aiMicTapAt < 400) return false;
+            window.__aiMicTapAt = now;
             if (typeof window.__clearPostLongPressShield === 'function') window.__clearPostLongPressShield();
             var S = window.__aiSpeechBoot();
             if (!S || typeof S.start !== 'function') {
@@ -814,12 +836,7 @@ window.colorPreviewNumber = function(tankName, value) {
         };
         window.aiMicTapFromUi = window.__aiMicClick;
         window.wireAiMicButton = function() {
-            var micBtn = document.getElementById('ai-mic-btn');
-            var build = window.SERVICEHUB_BUILD || '';
-            if (!micBtn) return;
-            if (micBtn.getAttribute('data-mic-v') === build) return;
-            micBtn.setAttribute('data-mic-v', build);
-            micBtn.onclick = function(ev) { return window.__aiMicClick(ev); };
+            /* onclick inline su #ai-mic-btn — un solo handler per PC/Android/iPhone */
         };
         window.aiSendTap = function (ev) {
             try {
@@ -23804,7 +23821,7 @@ window.convertToHtml = async () => {
 
             </div>
             <div id="ai-settings-dock" onclick="event.stopPropagation()">
-                <div id="ai-learning-section" aria-hidden="true" data-ai-speech-ver="169">
+                <div id="ai-learning-section" aria-hidden="true" data-ai-speech-ver="170">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                         <button type="button" onclick="exportAIMemory()" style="background:#1e293b;border:1px solid #334155;color:#60a5fa;width:32px;height:32px;cursor:pointer;border-radius:6px;font-size:10px;display:flex;align-items:center;justify-content:center;touch-action:manipulation;" title="Esporta memoria AI">↓</button>
                         <button type="button" id="open-conversation-btn" onclick="return window.openAiConversationFromSettings(event);" style="background:transparent;border:none;color:#60a5fa;cursor:pointer;font-size:18px;padding:8px;border-radius:5px;touch-action:manipulation;" title="Apri conversazione completa"><i class="fas fa-comments"></i></button>
@@ -24323,7 +24340,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=259')
+                navigator.serviceWorker.register('./sw.js?v=260')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();
@@ -30059,10 +30076,10 @@ function fixAIPanel() {
 
     window.wireAiRobotHead();
 
-    if (!chatSection.querySelector('#ai-mic-btn') || chatSection.dataset.aiSpeechVer !== '169') {
+    if (!chatSection.querySelector('#ai-mic-btn') || chatSection.dataset.aiSpeechVer !== '170') {
         window.__aiSpeechWired = null;
         window.__aiSpeech = null;
-        chatSection.dataset.aiSpeechVer = '169';
+        chatSection.dataset.aiSpeechVer = '170';
         chatSection.innerHTML = ''
             + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'
             + '<button type="button" onclick="exportAIMemory()" style="background:#1e293b;border:1px solid #334155;color:#60a5fa;width:32px;height:32px;cursor:pointer;border-radius:6px;font-size:10px;display:flex;align-items:center;justify-content:center;touch-action:manipulation;" title="Esporta memoria AI">↓</button>'
@@ -30092,11 +30109,6 @@ function fixAIPanel() {
     }
 }
 window.fixAIPanel = fixAIPanel;
-
-setInterval(function() {
-    window.wireAiQuickChatControls();
-    if (typeof window.wireAiMicButton === 'function') window.wireAiMicButton();
-}, 1000);
 
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function() {

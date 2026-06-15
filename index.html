@@ -662,7 +662,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v192';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v193';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -10009,6 +10009,7 @@ window.updateStoricoButton = async function() {
                 let raw = window.getStoccaggioInternoFieldRaw(t.fieldId);
                 if (!raw && snap[t.fieldId] != null) raw = String(snap[t.fieldId]).trim();
                 if (!raw) return;
+                const vis = window.getTankVisualFlagsForDbKey ? window.getTankVisualFlagsForDbKey(t.tankDbKey) : { drain: false, acc: false };
                 rows.push({
                     label: t.label,
                     val: window.formatStoccaggioInternoReportValue(raw, t.tankDbKey),
@@ -10016,13 +10017,23 @@ window.updateStoricoButton = async function() {
                     fieldId: t.fieldId,
                     tankDbKey: t.tankDbKey,
                     levelMm: parseFloat(String(raw).replace(',', '.')) || 0,
-                    fillPct: window.getStoccaggioTankFillPct(t.tankDbKey, raw)
+                    fillPct: window.getStoccaggioTankFillPct(t.tankDbKey, raw),
+                    drain: !!vis.drain,
+                    acc: !!vis.acc
                 });
             });
             return {
                 title: (titleEl && titleEl.textContent.trim()) || 'STOCCAGGIO INTERNO',
                 rows: rows
             };
+        };
+
+        window.getTankVisualFlagsForDbKey = function(tankDbKey) {
+            if (!tankDbKey || !window.tankStatuses || Array.isArray(window.tankStatuses)) {
+                return { drain: false, acc: false };
+            }
+            const st = String(window.tankStatuses[tankDbKey] || '').toLowerCase();
+            return { drain: st.includes('drenagg'), acc: st.includes('accumul') };
         };
 
         window.getStoccaggioTankFillPct = function(tankDbKey, levelRaw) {
@@ -10230,7 +10241,10 @@ window.updateStoricoButton = async function() {
                 const tankSt = window.tankStatuses && r.tankDbKey && !Array.isArray(window.tankStatuses)
                     ? String(window.tankStatuses[r.tankDbKey] || '').toLowerCase()
                     : '';
-                const gauge = window.buildDigitalTankGaugeSVG(pct, r.label || '', { drain: tankSt.includes('drenagg'), acc: tankSt.includes('accumul') });
+                const vis = (r.drain != null || r.acc != null)
+                    ? { drain: !!r.drain, acc: !!r.acc }
+                    : { drain: tankSt.includes('drenagg'), acc: tankSt.includes('accumul') };
+                const gauge = window.buildDigitalTankGaugeSVG(pct, r.label || '', { drain: vis.drain, acc: vis.acc });
                 const levelInfo = window.buildStoccLevelInfoHTML(r);
                 const siglaUnder = String(r.label || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
                 html += '<div class="digital-stocc-row digital-row">' +
@@ -16429,8 +16443,8 @@ window.updateStoricoButton = async function() {
                 if (changed > 0) {
                     if (typeof window.repaintTankStatusSquares === 'function') window.repaintTankStatusSquares();
                     if (opts.save !== false) window.__scheduleAutoTrendStatusSave();
-                    if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
-                        window.schedulePublicDigitalSnapshotSync();
+                    if (typeof window.__schedulePublicDigitalRemotePush === 'function') {
+                        window.__schedulePublicDigitalRemotePush();
                     }
                 }
             } finally {
@@ -18168,13 +18182,16 @@ window.buildDigitalCardsHTML = function() {
                     if (tankRows.length && window.buildStoccaggioDigitalRowsHTML) {
                         contentHTML += window.buildStoccaggioDigitalRowsHTML(tankRows.map(row => {
                             const mm = parseFloat(String(row.levelRaw).replace(',', '.'));
+                            const vis = window.getTankVisualFlagsForDbKey ? window.getTankVisualFlagsForDbKey(row.tankDbKey) : { drain: false, acc: false };
                             return {
                                 label: row.label,
                                 val: row.val,
                                 tankDbKey: row.tankDbKey,
                                 levelMm: mm,
                                 fillPct: window.getStoccaggioTankFillPct(row.tankDbKey, mm),
-                                tons: window.calculateTons ? window.calculateTons(row.tankDbKey, mm) : null
+                                tons: window.calculateTons ? window.calculateTons(row.tankDbKey, mm) : null,
+                                drain: vis.drain,
+                                acc: vis.acc
                             };
                         }));
                     }
@@ -19582,6 +19599,40 @@ window.closeDigitalPreview = () => {
 };
 
     window.__publicDigitalSyncTimer = null;
+    window.__publicDigitalRemotePushTimer = null;
+
+window.__hasDigitalShareKey = function () {
+    try {
+        return !!(
+            window.__cachedDigitalShareKey ||
+            sessionStorage.getItem('servicehub_digital_share_key') ||
+            localStorage.getItem('servicehub_digital_share_key')
+        );
+    } catch (_) {
+        return !!window.__cachedDigitalShareKey;
+    }
+};
+
+/** Pubblica sul remoto (debounce) quando esiste già un link remoto attivo. */
+window.__schedulePublicDigitalRemotePush = function () {
+    if (!db || !user || !user.uid) return;
+    if (!window.__hasDigitalShareKey || !window.__hasDigitalShareKey()) return;
+    if (window.__publicDigitalRemotePushTimer) clearTimeout(window.__publicDigitalRemotePushTimer);
+    window.__publicDigitalRemotePushTimer = setTimeout(function () {
+        window.__publicDigitalRemotePushTimer = null;
+        void (async function () {
+            try {
+                if (typeof window.__flushLiveStateBeforeDigitalPush === 'function') {
+                    window.__flushLiveStateBeforeDigitalPush();
+                }
+                await Promise.resolve(window.pushPublicDigitalSnapshotQuiet({ force: true }));
+            } catch (e) {
+                console.warn('[ServiceHub] __schedulePublicDigitalRemotePush:', e && e.message);
+            }
+        })();
+    }, 900);
+};
+
 /** Esegue subito (dopo 2 frame) la pubblicazione su publicDigital — usato dopo saveData così il client remoto non aspetta il debounce. */
 window.flushPublicDigitalSnapshotNow = function () {
     if (!db || !user || !user.uid) return;
@@ -19591,12 +19642,17 @@ window.flushPublicDigitalSnapshotNow = function () {
     }
     var run = async function () {
         try {
-            const allowed =
+            var hasKey = typeof window.__hasDigitalShareKey === 'function' && window.__hasDigitalShareKey();
+            const allowed = hasKey || (
                 typeof window.__ensurePublicDigitalPushAllowed === 'function'
                     ? await window.__ensurePublicDigitalPushAllowed()
-                    : window.__publicDigitalAutoSyncEnabled;
+                    : window.__publicDigitalAutoSyncEnabled
+            );
             if (!allowed) return;
-            const ok = await Promise.resolve(window.pushPublicDigitalSnapshotQuiet());
+            if (typeof window.__flushLiveStateBeforeDigitalPush === 'function') {
+                window.__flushLiveStateBeforeDigitalPush();
+            }
+            const ok = await Promise.resolve(window.pushPublicDigitalSnapshotQuiet({ force: hasKey }));
             if (!ok) {
                 console.warn(
                     "[ServiceHub] flushPublicDigitalSnapshotNow: publicDigital non aggiornato (controlla console per permission-denied)."
@@ -19615,6 +19671,10 @@ window.flushPublicDigitalSnapshotNow = function () {
 /** Dopo ricezione plant da altro tablet (onSnapshot), debounce leggero per non spammare Firestore. */
 window.schedulePublicDigitalSnapshotSync = function () {
     if (!db || !user || !user.uid) return;
+    if (typeof window.__hasDigitalShareKey === 'function' && window.__hasDigitalShareKey()) {
+        window.__schedulePublicDigitalRemotePush();
+        return;
+    }
     if (window.__publicDigitalSyncTimer) clearTimeout(window.__publicDigitalSyncTimer);
     window.__publicDigitalSyncTimer = setTimeout(function () {
         window.__publicDigitalSyncTimer = null;
@@ -19625,6 +19685,9 @@ window.schedulePublicDigitalSnapshotSync = function () {
                         ? await window.__ensurePublicDigitalPushAllowed()
                         : window.__publicDigitalAutoSyncEnabled;
                 if (!allowed) return;
+                if (typeof window.__flushLiveStateBeforeDigitalPush === 'function') {
+                    window.__flushLiveStateBeforeDigitalPush();
+                }
                 const ok = await Promise.resolve(window.pushPublicDigitalSnapshotQuiet());
                 if (!ok) {
                     console.warn("[ServiceHub] schedulePublicDigitalSnapshotSync: push non riuscito.");
@@ -19716,13 +19779,17 @@ window.pushPublicDigitalSnapshotQuiet = async function (opts) {
     const stoccPayload = window.getNotturnoStoccaggioReportData
         ? window.getNotturnoStoccaggioReportData()
         : { title: 'STOCCAGGIO INTERNO', rows: [] };
+    const tankStatusesPayload = window.__ensureTankStatusesObject
+        ? window.__ensureTankStatusesObject()
+        : (window.tankStatuses || {});
     const payload = {
         teamAppId: appId,
         updatedAt: new Date().toISOString(),
         shiftLabel,
         cardsHTML,
         stoccaggioTitle: stoccPayload.title || 'STOCCAGGIO INTERNO',
-        stoccaggioRows: stoccPayload.rows || []
+        stoccaggioRows: stoccPayload.rows || [],
+        tankStatuses: tankStatusesPayload
     };
     // Regole Firestore: su update ownerUid non deve cambiare. Non reinviarlo se il doc esiste già
     // (altrimenti ogni tablet con utente diverso riceve permission-denied e il link remoto non si pubblica).

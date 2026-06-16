@@ -662,7 +662,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v228';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v229';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -2052,6 +2052,36 @@ window.colorPreviewNumber = function(tankName, value) {
         window.editingCreatedAt = null;
         window.originalInterfaceDate = '';
         window.__editingArchiveMeta = null;
+
+        window.__getShiftStartHourLabel = function (shiftLabel) {
+            shiftLabel = String(shiftLabel || '').trim();
+            if (shiftLabel.indexOf('2') !== -1) return '14:00';
+            if (shiftLabel.indexOf('3') !== -1) return '22:00';
+            if (shiftLabel.indexOf('5') !== -1) return '18:00';
+            if (shiftLabel.indexOf('4') !== -1) return '06:00';
+            return '06:00';
+        };
+
+        window.__buildArchiveEditMetaFromShiftStart = function (snap) {
+            snap = snap || {};
+            var base = window.__parseArchiveSnapshotTime(snap);
+            var shiftLabel = String(
+                snap.shift ||
+                document.getElementById('current-shift-label')?.innerText ||
+                ''
+            ).trim();
+            var startHour = window.__getShiftStartHourLabel(shiftLabel);
+            var parts = startHour.split(':');
+            var d = new Date(base.date.getTime());
+            d.setHours(parseInt(parts[0], 10), parseInt(parts[1], 10), 0, 0);
+            return window.__parseArchiveSnapshotTime({
+                archiveTime: d.toLocaleString('it-IT', {
+                    day: '2-digit', month: '2-digit', year: '2-digit',
+                    hour: '2-digit', minute: '2-digit'
+                }),
+                createdAt: d.getTime()
+            });
+        };
 
         window.__parseArchiveSnapshotTime = function (snap) {
             snap = snap || {};
@@ -4342,7 +4372,9 @@ window.colorPreviewNumber = function(tankName, value) {
                     hour:'2-digit',
                     minute:'2-digit'
                 })),
-                createdAt: window.editingCreatedAt || now.getTime()
+                createdAt: (editMeta && editMeta.date)
+                    ? editMeta.date.getTime()
+                    : (window.editingCreatedAt || now.getTime())
             };
 
             document.querySelectorAll('input').forEach(input => {
@@ -4390,34 +4422,36 @@ window.colorPreviewNumber = function(tankName, value) {
                         'salva modifica archivio'
                     );
 
-                    schedulePublicDigitalAfterArchive('archiveCurrentData edit publicDigital');
-
-                    // ✅ AGGIUNGI STORICO DEI SALVATAGGI PER TREND (anche per modifiche)
-                    window.addToHistory(data);
-
-                    // ✅ RIMUOVI IL VECCHIO VALORE DALLO STORICO E RICALCOLA TREND
                     if (window.savedHistory && Array.isArray(window.savedHistory) && window.editingCreatedAt) {
-                        // Rimuovi le voci corrispondenti al vecchio backup modificato
-                        window.savedHistory = window.savedHistory.filter(entry => {
+                        window.savedHistory = window.savedHistory.filter(function (entry) {
                             return entry.createdAt !== window.editingCreatedAt;
                         });
-                        
-                        // PULISCI DEBUG DATI
-                        window.trendDebugData = [];
-                        
-                        // FORZA RICALCOLO TREND DOPO MODIFICA (solo cloud)
-                        setTimeout(() => {
-                            if (user && user.uid && typeof window.syncBackupHistory === 'function') {
-                                window.syncBackupHistory().then(function () {
-                                    setTimeout(function () {
-                                        window.checkInstantTrend();
-                                    }, 200);
-                                }).catch(function (err) {
-                                    console.log('Errore ricaricamento trend dopo modifica:', err);
-                                });
-                            }
-                        }, 500);
                     }
+                    window.addToHistory(data);
+                    window.trendDebugData = [];
+
+                    if (user && user.uid && typeof window.syncBackupHistory === 'function') {
+                        try {
+                            await window.syncBackupHistory({ skipUiRefresh: true });
+                        } catch (syncErr) {
+                            console.log('Errore syncBackupHistory dopo modifica:', syncErr && syncErr.message);
+                        }
+                    }
+
+                    if (typeof window.__pushDigitalRemoteImmediate === 'function') {
+                        try {
+                            await window.__pushDigitalRemoteImmediate();
+                        } catch (pushErr) {
+                            console.warn('[ServiceHub] push remote dopo modifica storico:', pushErr && pushErr.message);
+                            schedulePublicDigitalAfterArchive('archiveCurrentData edit publicDigital fallback');
+                        }
+                    } else {
+                        schedulePublicDigitalAfterArchive('archiveCurrentData edit publicDigital');
+                    }
+
+                    setTimeout(function () {
+                        if (typeof window.checkInstantTrend === 'function') window.checkInstantTrend();
+                    }, 200);
 
                     window.isEditingArchive = false;
 
@@ -5168,8 +5202,8 @@ window.updateStoricoButton = async function() {
         window.editingArchiveId = snap.id;
         window.editingCreatedAt = snap.createdAt || Date.now();
 
-        var archiveMeta = typeof window.__parseArchiveSnapshotTime === 'function'
-            ? window.__parseArchiveSnapshotTime(snap)
+        var archiveMeta = typeof window.__buildArchiveEditMetaFromShiftStart === 'function'
+            ? window.__buildArchiveEditMetaFromShiftStart(snap)
             : null;
         if (archiveMeta && typeof window.__applyArchiveEditDisplay === 'function') {
             window.__applyArchiveEditDisplay(archiveMeta);
@@ -17458,17 +17492,28 @@ window.updateStoricoButton = async function() {
 
         window.getArchiveTimestampMs = function(entry) {
             if (!entry) return 0;
+            var raw = String(entry.archiveTime || entry.time || '').trim();
+            if (raw) {
+                var mIt = raw.match(/(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})(?:[,\s·]+(\d{1,2}):(\d{2}))?/);
+                if (mIt) {
+                    var day = parseInt(mIt[1], 10);
+                    var mon = parseInt(mIt[2], 10) - 1;
+                    var yr = parseInt(mIt[3], 10);
+                    if (yr < 100) yr += 2000;
+                    var hh = mIt[4] != null ? parseInt(mIt[4], 10) : 0;
+                    var mm = mIt[5] != null ? parseInt(mIt[5], 10) : 0;
+                    return new Date(yr, mon, day, hh, mm, 0, 0).getTime();
+                }
+                var parsed = Date.parse(raw);
+                if (Number.isFinite(parsed)) return parsed;
+                var m = raw.match(/(\d{1,2}):(\d{2})/);
+                if (m) {
+                    var now = new Date();
+                    return new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(m[1], 10), parseInt(m[2], 10), 0, 0).getTime();
+                }
+            }
             if (entry.createdAt && Number.isFinite(Number(entry.createdAt))) {
                 return Number(entry.createdAt);
-            }
-            var raw = String(entry.archiveTime || entry.time || '').trim();
-            if (!raw) return 0;
-            var now = new Date();
-            var parsed = Date.parse(raw);
-            if (Number.isFinite(parsed)) return parsed;
-            var m = raw.match(/(\d{1,2}):(\d{2})/);
-            if (m) {
-                return new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(m[1], 10), parseInt(m[2], 10), 0, 0).getTime();
             }
             return 0;
         };

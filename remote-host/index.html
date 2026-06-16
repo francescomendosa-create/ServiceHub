@@ -7,7 +7,7 @@
     var SK = "servicehub_remote_share_k";
     var SA = "servicehub_remote_app_id";
     var FB_ORIGIN = "https://servicehub-18309.web.app";
-    window.SVCREMOTE_BUILD = "2026.06.14-v141";
+    window.SVCREMOTE_BUILD = "2026.06.14-v142";
 
     /** Vecchi link su GitHub → stesso remoto su Firebase. */
     (function redirectGithubToFirebase() {
@@ -2880,7 +2880,24 @@
       };
     }
 
-    var TANK_TIMELINE_PREDICT_H = 12;
+    var TANK_TIMELINE_PREDICT_H_DEFAULT = 12;
+    var TANK_TIMELINE_PREDICT_OPTIONS = [8, 12, 24];
+    var TANK_TIMELINE_PREDICT_H = TANK_TIMELINE_PREDICT_H_DEFAULT;
+
+    function buildRemoteTimelineHorizonHeadHTML(siglaTxt, activeH) {
+      activeH = activeH || TANK_TIMELINE_PREDICT_H_DEFAULT;
+      var btns = TANK_TIMELINE_PREDICT_OPTIONS.map(function (h) {
+        return '<button type="button" class="tank-detail-timeline-h-btn' +
+          (h === activeH ? " is-active" : "") +
+          '" data-tl-h="' + h + '">Per ' + h + "</button>";
+      }).join("");
+      return '<div class="tank-detail-timeline-head">' +
+        '<div class="tank-detail-section-title tank-detail-timeline-title">Timeline livello · previsione</div>' +
+        '<div class="tank-detail-timeline-head-right">' +
+        (siglaTxt ? '<span class="tank-detail-timeline-sigla">' + esc(siglaTxt) + "</span>" : "") +
+        '<div class="tank-detail-timeline-horizon-btns" data-tl-horizon-btns>' + btns + "</div>" +
+        "</div></div>";
+    }
 
     function getRemoteArchiveSeries(series) {
       return (series || []).filter(function (p) { return p && !p.live; })
@@ -2991,7 +3008,7 @@
       return series;
     }
 
-    function buildRemoteTimelineModel(series, info) {
+    function buildRemoteTimelineModel(series, info, predictH) {
       series = (series || []).filter(function (p) { return p && Number.isFinite(p.ts) && Number.isFinite(p.mm); })
         .slice().sort(function (a, b) { return a.ts - b.ts; });
       tagRemoteSeriesInitialLevel(series);
@@ -3010,9 +3027,11 @@
       }
       var tStart = initialPt ? initialPt.ts
         : (series.length ? series[0].ts : nowTs - 3600000);
-      var tEnd = nowTs + TANK_TIMELINE_PREDICT_H * 3600000;
-      if (tEnd <= tStart) tEnd = tStart + TANK_TIMELINE_PREDICT_H * 3600000;
-      return { series: series, rateMmH: rate, nowTs: nowTs, actualTs: actualTs, nowMm: nowMm, initialPt: initialPt, tStart: tStart, tEnd: tEnd, livMax: info.livMax, tankDbKey: info.tankDbKey, fieldId: info.fieldId };
+      var predH = predictH || TANK_TIMELINE_PREDICT_H_DEFAULT;
+      if (TANK_TIMELINE_PREDICT_OPTIONS.indexOf(predH) < 0) predH = TANK_TIMELINE_PREDICT_H_DEFAULT;
+      var tEnd = nowTs + predH * 3600000;
+      if (tEnd <= tStart) tEnd = tStart + predH * 3600000;
+      return { series: series, rateMmH: rate, nowTs: nowTs, actualTs: actualTs, nowMm: nowMm, initialPt: initialPt, tStart: tStart, tEnd: tEnd, predictH: predH, livMax: info.livMax, tankDbKey: info.tankDbKey, fieldId: info.fieldId };
     }
 
     function predictRemoteLevelAt(model, targetTs) {
@@ -3040,9 +3059,8 @@
       var startPt = model.initialPt
         || (model.series.length ? model.series[0] : { ts: model.nowTs, mm: model.nowMm });
       var siglaTxt = info && info.label ? String(info.label).trim() : "";
-      var timelineTitle = "Timeline livello · previsione" + (siglaTxt ? " · " + esc(siglaTxt) : "");
       return '<div class="tank-detail-timeline-block" data-tank-timeline="1">' +
-        '<div class="tank-detail-section-title">' + timelineTitle + "</div>" +
+        buildRemoteTimelineHorizonHeadHTML(siglaTxt, TANK_TIMELINE_PREDICT_H_DEFAULT) +
         '<div class="tank-detail-timeline-rate tank-detail-timeline-rate--' + rateCls + '">Velocità trend: <b>' +
         esc(rateSign + fmtTankMm(model.rateMmH) + " mm/h") + "</b></div>" +
         '<div class="tank-detail-timeline-canvas-wrap" data-tl-interactive="1">' +
@@ -3211,7 +3229,10 @@
       var model = svg && svg.__tlModel;
       var geom = svg && svg.__tlGeom;
       if (!model || !geom) return;
-      hoursAhead = Math.max(0, Math.min(TANK_TIMELINE_PREDICT_H, Number(hoursAhead) || 0));
+      hoursAhead = Math.max(0, Math.min(
+        model.predictH || block.__tlPredictH || TANK_TIMELINE_PREDICT_H_DEFAULT,
+        Number(hoursAhead) || 0
+      ));
       var targetTs = model.nowTs + hoursAhead * 3600000;
       var predMm = predictRemoteLevelAt(model, targetTs);
       var x = geom.toX(targetTs);
@@ -3274,12 +3295,34 @@
     function wireRemoteTankTimeline(container, series, info) {
       var block = container && container.querySelector("[data-tank-timeline]");
       if (!block) return;
-      var model = buildRemoteTimelineModel(series, info);
       var svg = block.querySelector("[data-tl-svg]");
       var wrap = block.querySelector("[data-tl-interactive]");
-      renderRemoteTimelineSvg(svg, model);
       if (!svg || !wrap) return;
+      block.__tlSeries = series;
       block.__tlInfo = info;
+      if (!block.__tlPredictH) block.__tlPredictH = TANK_TIMELINE_PREDICT_H_DEFAULT;
+
+      function applyPredictH(h) {
+        if (TANK_TIMELINE_PREDICT_OPTIONS.indexOf(h) < 0) h = TANK_TIMELINE_PREDICT_H_DEFAULT;
+        block.__tlPredictH = h;
+        var prevH = block.__tlHoursAhead || 0;
+        var model = buildRemoteTimelineModel(block.__tlSeries, block.__tlInfo, h);
+        renderRemoteTimelineSvg(svg, model);
+        block.querySelectorAll("[data-tl-h]").forEach(function (btn) {
+          btn.classList.toggle("is-active", parseInt(btn.getAttribute("data-tl-h"), 10) === h);
+        });
+        updateRemoteTimelineScrub(block, Math.min(prevH, h));
+      }
+
+      if (!block.__tlHorizonWired) {
+        block.__tlHorizonWired = true;
+        block.addEventListener("click", function (ev) {
+          var btn = ev.target && ev.target.closest ? ev.target.closest("[data-tl-h]") : null;
+          if (!btn || !block.contains(btn)) return;
+          ev.preventDefault();
+          applyPredictH(parseInt(btn.getAttribute("data-tl-h"), 10));
+        });
+      }
 
       var dragging = false;
 
@@ -3309,26 +3352,29 @@
         onPointerMove(ev);
       }
 
-      svg.addEventListener("mousedown", function (ev) {
-        var geom = svg.__tlGeom;
-        if (!geom) return;
-        var sx = svgXFromEvent(ev);
-        var maxX = geom.endX != null ? geom.endX : geom.w;
-        if (sx >= geom.nowX - 8 && sx <= maxX + 4) startDrag(ev);
-      });
-      svg.addEventListener("touchstart", function (ev) {
-        var geom = svg.__tlGeom;
-        if (!geom || !ev.touches.length) return;
-        var sx = svgXFromEvent(ev);
-        var maxX = geom.endX != null ? geom.endX : geom.w;
-        if (sx >= geom.nowX - 8 && sx <= maxX + 4) startDrag(ev);
-      }, { passive: false });
-      window.addEventListener("mousemove", onPointerMove);
-      window.addEventListener("mouseup", onPointerUp);
-      window.addEventListener("touchmove", onPointerMove, { passive: false });
-      window.addEventListener("touchend", onPointerUp);
+      if (!block.__tlDragWired) {
+        block.__tlDragWired = true;
+        svg.addEventListener("mousedown", function (ev) {
+          var geom = svg.__tlGeom;
+          if (!geom) return;
+          var sx = svgXFromEvent(ev);
+          var maxX = geom.endX != null ? geom.endX : geom.w;
+          if (sx >= geom.nowX - 8 && sx <= maxX + 4) startDrag(ev);
+        });
+        svg.addEventListener("touchstart", function (ev) {
+          var geom = svg.__tlGeom;
+          if (!geom || !ev.touches.length) return;
+          var sx = svgXFromEvent(ev);
+          var maxX = geom.endX != null ? geom.endX : geom.w;
+          if (sx >= geom.nowX - 8 && sx <= maxX + 4) startDrag(ev);
+        }, { passive: false });
+        window.addEventListener("mousemove", onPointerMove);
+        window.addEventListener("mouseup", onPointerUp);
+        window.addEventListener("touchmove", onPointerMove, { passive: false });
+        window.addEventListener("touchend", onPointerUp);
+      }
 
-      updateRemoteTimelineScrub(block, 0);
+      applyPredictH(block.__tlPredictH);
     }
 
     function buildRemoteTankDetailPageHTML(info, series) {

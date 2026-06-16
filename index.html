@@ -662,7 +662,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v225';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v228';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -2051,6 +2051,101 @@ window.colorPreviewNumber = function(tankName, value) {
         window.editingArchiveId = null;
         window.editingCreatedAt = null;
         window.originalInterfaceDate = '';
+        window.__editingArchiveMeta = null;
+
+        window.__parseArchiveSnapshotTime = function (snap) {
+            snap = snap || {};
+            var raw = String(snap.archiveTime || snap.time || '').trim();
+            var ts = Number(snap.createdAt);
+            var d = (!isNaN(ts) && ts > 0) ? new Date(ts) : new Date();
+            var m = raw.match(/(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})(?:[,\s]+(\d{1,2}):(\d{2}))?/);
+            if (m) {
+                var day = parseInt(m[1], 10);
+                var mon = parseInt(m[2], 10) - 1;
+                var yr = parseInt(m[3], 10);
+                if (yr < 100) yr += 2000;
+                var hh = m[4] != null ? parseInt(m[4], 10) : d.getHours();
+                var mm = m[5] != null ? parseInt(m[5], 10) : d.getMinutes();
+                d = new Date(yr, mon, day, hh, mm, 0, 0);
+            } else if (/^\d{1,2}:\d{2}$/.test(raw)) {
+                var parts = raw.split(':');
+                d.setHours(parseInt(parts[0], 10), parseInt(parts[1], 10), 0, 0);
+            }
+            var time = d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+            var archiveTime = d.toLocaleString('it-IT', {
+                day: '2-digit', month: '2-digit', year: '2-digit',
+                hour: '2-digit', minute: '2-digit'
+            });
+            return {
+                date: d,
+                time: time,
+                archiveTime: archiveTime,
+                displayLabel: archiveTime.replace(',', ' ·')
+            };
+        };
+
+        window.__applyArchiveEditDisplay = function (meta) {
+            if (!meta) return;
+            window.__editingArchiveMeta = meta;
+            var el = document.getElementById('display-date');
+            if (!el) return;
+            el.innerText = meta.displayLabel;
+            el.classList.add('sh-archive-edit-date');
+            el.style.color = '#eab308';
+            el.style.fontWeight = '900';
+            el.style.cursor = 'pointer';
+            el.style.animation = 'pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite';
+            el.onclick = function () {
+                window.showDateTimePicker(meta.time);
+            };
+        };
+
+        window.__getArchiveEditMeta = function () {
+            return window.__editingArchiveMeta || null;
+        };
+
+        window.__exitArchiveEditMode = function (opts) {
+            opts = opts || {};
+            window.isEditingArchive = false;
+            window.editingArchiveId = null;
+            window.editingCreatedAt = null;
+            window.__editingArchiveMeta = null;
+            window.preModificationValues = null;
+            window.preModificationActiveModules = null;
+
+            var displayDateEl = document.getElementById('display-date');
+            if (displayDateEl) {
+                displayDateEl.style.animation = '';
+                displayDateEl.style.color = '';
+                displayDateEl.style.fontWeight = '';
+                displayDateEl.style.cursor = '';
+                displayDateEl.style.backgroundColor = '';
+                displayDateEl.style.padding = '';
+                displayDateEl.style.borderRadius = '';
+                displayDateEl.classList.remove('sh-archive-edit-date');
+                displayDateEl.onclick = null;
+                if (opts.displayText) {
+                    displayDateEl.innerText = opts.displayText;
+                } else if (opts.restoreLiveDate !== false && window.originalInterfaceDate) {
+                    displayDateEl.innerText = window.originalInterfaceDate;
+                }
+            }
+
+            var backupBtn = document.getElementById('btn-archive-now');
+            if (backupBtn) {
+                backupBtn.style.animation = '';
+                backupBtn.style.backgroundColor = '';
+                backupBtn.style.borderColor = '';
+                backupBtn.classList.remove('bg-yellow-500', 'border-yellow-700');
+                if (!backupBtn.classList.contains('bg-blue-600')) {
+                    backupBtn.classList.add('bg-blue-600', 'border-blue-900');
+                }
+            }
+
+            var warning = document.getElementById('modification-warning');
+            if (warning) warning.remove();
+            if (typeof window.hideAllGuides === 'function') window.hideAllGuides();
+        };
 
         const MOVE_THRESHOLD = 15; 
         const LONG_PRESS_DURATION = 500; 
@@ -3714,109 +3809,8 @@ window.colorPreviewNumber = function(tankName, value) {
                 return;
             }
             
-            // SE SIAMO IN MODALITÀ MODIFICA, GESTISCE IL SALVATAGGIO DEL BACKUP
+            // In modifica storico: NON scrivere sullo snapshot ad ogni input (solo con Salva).
             if (window.isEditingArchive && window.editingArchiveId) {
-                console.log('saveData in modalità modifica backup');
-                
-                // ✅ USA IL TURNO REALE, NON QUELLO MANUALE
-            const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
-            const data = { 
-                shift: currentShift,
-                lastUpdate: new Date().toISOString() 
-            };
-
-                document.querySelectorAll('input').forEach(input => {
-                    if (input.id) data[input.id] = input.value;
-                });
-
-                document.querySelectorAll('.status-cell-btn, .status-header, .vwt-label-dynamic, .osmosi-label-dynamic').forEach(btn => {
-                    if (btn.id && btn.id !== 'numpad-tank-btn') {
-                        data[btn.id] = {
-                            text: btn.innerHTML,
-                            class: btn.className,
-                            style: btn.getAttribute('style') || ""
-                        };
-                    }
-                });
-
-                data.tankStatuses = window.__ensureTankStatusesObject ? window.__ensureTankStatusesObject() : (window.tankStatuses || {});
-                data.tankStatusManualAD = window.__ensureTankStatusManualADObject ? window.__ensureTankStatusManualADObject() : (window.tankStatusManualAD || {});
-
-                // ✅ SALVA L'ID PRIMA DI RESETTARLO
-                const savedArchiveId = window.editingArchiveId;
-
-                await setDoc(
-                    doc(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots', window.editingArchiveId),
-                    data
-                );
-
-                // ✅ APPLICA GIALLO SUBITO DOPO IL SALVATAGGIO
-                const displayDateEl = document.getElementById('display-date');
-                if (displayDateEl) {
-                    displayDateEl.style.backgroundColor = '#fef3c7';
-                    displayDateEl.style.setProperty('background-color', '#fef3c7', 'important');
-                    displayDateEl.style.padding = '2px 8px';
-                    displayDateEl.style.borderRadius = '4px';
-                }
-
-                // uscita modalità modifica
-                window.isEditingArchive = false;
-                window.editingArchiveId = null;
-                window.editingCreatedAt = null;
-
-                const displayDateEl2 = document.getElementById('display-date');
-                if (displayDateEl2 && window.originalInterfaceDate) {
-                    displayDateEl2.innerText = window.originalInterfaceDate;
-                    displayDateEl2.style.color = '';
-                    displayDateEl2.style.fontWeight = '';
-                    displayDateEl2.style.cursor = '';
-                    displayDateEl2.onclick = null;
-                }
-
-                // ✅ RICARICA I BACKUP PER IL TREND DOPO AVER SALVATO LA MODIFICA
-                setTimeout(() => {
-                    if (user && user.uid && typeof window.syncBackupHistory === 'function') {
-                        window.syncBackupHistory().then(function () {
-                            // ✅ AGGIORNA IL TASTO STORICO DOPO SALVATAGGIO MODIFICA
-                            setTimeout(() => {
-                                window.updateStoricoButton();
-                            }, 100);
-                            
-                            // ✅ RENDI GIALLO L'OROLOGIO DEL BACKUP MODIFICATO
-                            const displayDateEl = document.getElementById('display-date');
-                            if (displayDateEl) {
-                                displayDateEl.style.backgroundColor = '#fef3c7';
-                                displayDateEl.style.setProperty('background-color', '#fef3c7', 'important');
-                                displayDateEl.style.padding = '2px 8px';
-                                displayDateEl.style.borderRadius = '4px';
-                            }
-                            
-                            // ✅ RENDI GIALLO IL BACKUP APPENA SALVATO
-                            setTimeout(() => {
-                                const allCards = document.querySelectorAll('.archive-card');
-                                allCards.forEach(card => {
-                                    card.style.backgroundColor = '';
-                                });
-                                
-                                // Trova la card del backup appena salvato e rendila gialla
-                                const editingCard = Array.from(allCards).find(card => {
-                                    const editBtn = card.querySelector('button.archive-edit-btn[data-archive-id]');
-                                    return editBtn && editBtn.getAttribute('data-archive-id') === savedArchiveId;
-                                });
-                                
-                                if (editingCard) {
-                                    editingCard.style.backgroundColor = '#fef3c7';
-                                    editingCard.style.setProperty('background-color', '#fef3c7', 'important');
-                                }
-                            }, 100);
-                            
-                            console.log('Backup ricaricati dopo modifica, trend aggiornato');
-                        }).catch(err => {
-                            console.log('Errore ricaricamento backup dopo modifica:', err);
-                        });
-                    }
-                }, 500);
-
                 return;
             }
             
@@ -4323,23 +4317,31 @@ window.colorPreviewNumber = function(tankName, value) {
             const now = new Date();
 
             const displayDateEl = document.getElementById('display-date');
-            const displayValue = displayDateEl ? displayDateEl.innerText : '';
-            
-            // ✅ IN MODIFICA: USA L'ORARIO DEL DISPLAY (INIZIO TURNO)
-            const timeToSave = window.isEditingArchive ? displayValue : now.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+            const editMeta = window.isEditingArchive && typeof window.__getArchiveEditMeta === 'function'
+                ? window.__getArchiveEditMeta()
+                : null;
+            const displayValue = editMeta
+                ? editMeta.displayLabel
+                : (displayDateEl ? displayDateEl.innerText : '');
+
+            const timeToSave = window.isEditingArchive
+                ? (editMeta ? editMeta.time : displayValue)
+                : now.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
 
             const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
             const data = {
                 manualShift,
                 shift: currentShift,
-                time: timeToSave, // ✅ USA L'ORARIO CORRETTO
-                archiveTime: displayValue || now.toLocaleString('it-IT', {
+                time: timeToSave,
+                archiveTime: window.isEditingArchive
+                    ? (editMeta ? editMeta.archiveTime : displayValue)
+                    : (displayValue || now.toLocaleString('it-IT', {
                     day:'2-digit',
                     month:'2-digit',
                     year:'2-digit',
                     hour:'2-digit',
                     minute:'2-digit'
-                }),
+                })),
                 createdAt: window.editingCreatedAt || now.getTime()
             };
 
@@ -4418,42 +4420,14 @@ window.colorPreviewNumber = function(tankName, value) {
                     }
 
                     window.isEditingArchive = false;
-                    // ✅ MANTIENI L'ID PER L'INDICATORE GIALLO
-                    // window.editingArchiveId = null;
-                    // ✅ AGGIORNA I VALORI ORIGINALI CON QUELLI CORRENTI
-                    const currentDisplayDate = document.getElementById('display-date')?.innerText || '';
-                    if (displayDateEl && window.originalInterfaceDate) {
-                        displayDateEl.innerText = currentDisplayDate;
-                        displayDateEl.style.color = '';
-                        displayDateEl.style.fontWeight = '';
-                        displayDateEl.onclick = null;
-                        
-                        // ✅ FERMA IL LAMPEGGIO QUANDO ESCI DALLA MODIFICA
-                        displayDateEl.style.animation = '';
+
+                    if (typeof window.__exitArchiveEditMode === 'function') {
+                        window.__exitArchiveEditMode({ restoreLiveDate: true });
                     }
-                    
-                    // ✅ RIPRISTINA I VALORI CORRENTI PRE-MODIFICA
-                    if (window.preModificationValues) {
-                        // Ripristina tutti gli input
-                        Object.keys(window.preModificationValues).forEach(inputId => {
-                            const inputEl = document.getElementById(inputId);
-                            if (inputEl) {
-                                inputEl.value = window.preModificationValues[inputId];
-                            }
-                        });
-                        
-                        // Ripristina tutti i pulsanti e stati
-                        Object.keys(window.preModificationValues).forEach(elementId => {
-                            const element = document.getElementById(elementId);
-                            if (element && window.preModificationValues[elementId].text) {
-                                element.innerHTML = window.preModificationValues[elementId].text;
-                                element.className = window.preModificationValues[elementId].class;
-                                if (window.preModificationValues[elementId].style) {
-                                    element.setAttribute('style', window.preModificationValues[elementId].style);
-                                }
-                            }
-                        });
+                    if (typeof window.updateStoricoButton === 'function') {
+                        window.updateStoricoButton();
                     }
+
                     btn.classList.add('bg-yellow-500');
 
                     btn.innerHTML = "SALVATO!";
@@ -4712,10 +4686,15 @@ window.colorPreviewNumber = function(tankName, value) {
             let currentMinute = now.getMinutes();
             let currentDate = now;
             
-            if (currentValue && currentValue.includes(':')) {
+            if (currentValue && typeof window.__parseArchiveSnapshotTime === 'function') {
+                var parsed = window.__parseArchiveSnapshotTime({ archiveTime: String(currentValue).replace(' ·', ',') });
+                currentDate = parsed.date;
+                currentHour = parsed.date.getHours();
+                currentMinute = parsed.date.getMinutes();
+            } else if (currentValue && currentValue.includes(':')) {
                 const [hours, minutes] = currentValue.split(':');
-                currentHour = parseInt(hours);
-                currentMinute = parseInt(minutes);
+                currentHour = parseInt(hours, 10);
+                currentMinute = parseInt(minutes, 10);
             }
             
             // Imposta valori iniziali
@@ -4776,27 +4755,31 @@ window.colorPreviewNumber = function(tankName, value) {
             saveBtn.className = 'flex-1 px-4 py-3 rounded-xl bg-blue-600 text-white font-black text-lg hover:bg-blue-700 transition-colors';
             saveBtn.innerText = 'Salva';
             saveBtn.onclick = function() {
-                // Prende i valori dagli input (hanno priorità)
                 const selectedDate = new Date(dateInput.value + 'T' + timeInput.value);
-                const formattedTime = selectedDate.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
-                const formattedDateTime = selectedDate.toLocaleString('it-IT', {
-                    day: '2-digit',
-                    month: '2-digit',
-                    year: '2-digit',
-                    hour: '2-digit',
-                    minute: '2-digit'
-                });
-                
-                // Aggiorna l'elemento display-date con solo l'ora
+                const meta = typeof window.__parseArchiveSnapshotTime === 'function'
+                    ? window.__parseArchiveSnapshotTime({
+                        archiveTime: selectedDate.toLocaleString('it-IT', {
+                            day: '2-digit',
+                            month: '2-digit',
+                            year: '2-digit',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                        }),
+                        createdAt: selectedDate.getTime()
+                    })
+                    : null;
+
                 const displayDateEl = document.getElementById('display-date');
-                if (displayDateEl) {
-                    displayDateEl.innerText = formattedTime;
+                if (window.isEditingArchive && meta && typeof window.__applyArchiveEditDisplay === 'function') {
+                    window.__applyArchiveEditDisplay(meta);
+                } else if (displayDateEl && meta) {
+                    displayDateEl.innerText = meta.time;
+                } else if (displayDateEl) {
+                    displayDateEl.innerText = selectedDate.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
                 }
                 
-                // Rimuovi il modal
                 document.body.removeChild(modalOverlay);
                 
-                // Feedback visivo
                 if (displayDateEl) {
                     displayDateEl.style.transform = 'scale(1.1)';
                     setTimeout(() => {
@@ -5096,11 +5079,16 @@ window.updateStoricoButton = async function() {
         const leftDiv = document.createElement('div');
         leftDiv.className = 'flex flex-col';
         leftDiv.innerHTML = `
-            <span class="font-black text-slate-900 dark:text-white uppercase text-[13px] tracking-tight">
-                ${snap.archiveTime || 'DATA N.D.'}
+            <span class="font-black text-slate-900 dark:text-white uppercase text-[13px] tracking-tight leading-snug">
+                ${(function () {
+                    var meta = typeof window.__parseArchiveSnapshotTime === 'function'
+                        ? window.__parseArchiveSnapshotTime(snap)
+                        : null;
+                    return meta ? meta.displayLabel : (snap.archiveTime || 'DATA N.D.');
+                })()}
             </span>
             <span class="text-[9px] font-bold ${isOffline ? 'text-yellow-600' : 'text-slate-400'} uppercase">
-                ${snap.shift || 'TURNO AUTO'} - ${isOffline ? 'LOCALE' : snap.time || 'DATA N.D.'}
+                ${snap.shift || 'TURNO AUTO'} - ${isOffline ? 'LOCALE' : (snap.time || 'ORA N.D.')}
             </span>
         `;
 
@@ -5175,49 +5163,18 @@ window.updateStoricoButton = async function() {
     // 1) carica prima i dati
     applyData(snap);
 
-    // ✅ RIPRISTINA ORARIO REALE DEL BACKUP IN MODIFICA
-    const displayDateElEdit = document.getElementById('display-date');
-    if (displayDateElEdit) {
-        displayDateElEdit.innerText = snap.time || snap.archiveTime || '';
-    }
-
     setTimeout(() => {
-        // entra in modalità modifica SOLO DOPO applyData
         window.isEditingArchive = true;
         window.editingArchiveId = snap.id;
         window.editingCreatedAt = snap.createdAt || Date.now();
-        
-        // ✅ RIMUOVO AGGIORNAMENTO IMMEDIATO - LASCIARE CHE L'ETICHETTA DIVENTI GIALLA PRIMA
 
-        const displayDateEl = document.getElementById('display-date');
-        const archiveCards = document.querySelectorAll('#archive-list-content > div');
-
-        window.originalInterfaceDate = displayDateEl?.innerText || '';
-
-        // 3) imposta ora turno
-        const shiftLabel = document.getElementById('current-shift-label')?.innerText || '';
-        let startHour = '06:00';
-        if (shiftLabel.includes('2')) startHour = '14:00';
-        if (shiftLabel.includes('3')) startHour = '22:00';
-        if (shiftLabel.includes('4')) startHour = '06:00';  // Quarto turno: 06-18
-        if (shiftLabel.includes('5')) startHour = '18:00';  // Quinto turno: 18-06
-
-        if (displayDateEl) {
-            displayDateEl.innerText = startHour;
-            displayDateEl.style.color = '#eab308';
-            displayDateEl.style.fontWeight = '900';
-            displayDateEl.style.cursor = 'pointer';
-            
-            // ✅ AGGIUNGI LAMPEGGIO IN MODIFICA
-            displayDateEl.style.animation = 'pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite';
-
-            // 🔥 click sempre attivo con pop-up stile iPhone
-            displayDateEl.onclick = function() {
-                window.showDateTimePicker(displayDateEl.innerText);
-            };
+        var archiveMeta = typeof window.__parseArchiveSnapshotTime === 'function'
+            ? window.__parseArchiveSnapshotTime(snap)
+            : null;
+        if (archiveMeta && typeof window.__applyArchiveEditDisplay === 'function') {
+            window.__applyArchiveEditDisplay(archiveMeta);
         }
-        
-        // ✅ RENDI GIALLO IL TASTO BACKUP IN MODIFICA
+
         const backupBtn = document.getElementById('btn-archive-now');
         if (backupBtn) {
             backupBtn.classList.remove('bg-blue-600', 'border-blue-900');
@@ -16721,100 +16678,32 @@ window.updateStoricoButton = async function() {
                 saveBtn.innerHTML = 'SALVA';
                 saveBtn.onclick = async function(e) {
                     e.stopPropagation();
-                    
-                    // Salva le modifiche
                     await window.archiveCurrentData();
-                    
-                    // Rimuovi l'avviso dopo il salvataggio
-                    const warningDiv = document.getElementById('modification-warning');
-                    if (warningDiv) {
-                        warningDiv.remove();
+                    if (typeof window.updateStoricoButton === 'function') {
+                        setTimeout(function () { window.updateStoricoButton(); }, 100);
                     }
-                    
-                    // RESETTA L'INTERFACCIA DOPO SALVATAGGIO - FA SPARIRE LA MANO/IMPOSTAZIONI
-                    window.isEditingArchive = false;
-                    window.editingArchiveId = null;
-                    window.editingCreatedAt = null;
-                    
-                    // NASCONDI LA MANO/GUIDA DOPO SALVATAGGIO
-                    window.hideAllGuides();
-                    
-                    // Resetta l'orologio
-                    const displayDateEl = document.getElementById('display-date');
-                    if (displayDateEl && window.originalInterfaceDate) {
-                        displayDateEl.innerText = window.originalInterfaceDate;
-                        displayDateEl.style.color = '';
-                        displayDateEl.style.fontWeight = '';
-                        displayDateEl.style.cursor = '';
-                        displayDateEl.onclick = null;
-                    }
-                    
-                    // Resetta il tasto storico
-                    setTimeout(() => {
-                        window.updateStoricoButton();
-                    }, 100);
-                    
-                    // AGGIORNA ISTANTANEAMENTE IL REPORT PREVIEW DOPO SALVATAGGIO
-                    setTimeout(() => {
-                        // AGGIORNA SOLO IL CONTENUTO SENZA CHIUDERE IL PREVIEW
+                    setTimeout(function () {
                         const container = document.getElementById('preview-sheet');
-                        if (container) {
-                            // Mostra indicatore di caricamento
-                            container.innerHTML = '<div style="text-align: center; padding: 50px; color: #666; font-weight: 600;">AGGIORNAMENTO IN CORSO...</div>';
-                            
-                            // Ricostruisci il preview con nuovi dati (archivi cloud per trend)
-                            setTimeout(function () {
-                                void (async function () {
-                                    if (typeof window.refreshReportPreview === 'function') {
-                                        await window.refreshReportPreview();
-                                    } else {
-                                        buildPreview();
-                                    }
-                                })();
-                            }, 500);
-                        }
-                    }, 500);
-                    
-                    // Feedback visivo
+                        if (!container) return;
+                        container.innerHTML = '<div style="text-align: center; padding: 50px; color: #666; font-weight: 600;">AGGIORNAMENTO IN CORSO...</div>';
+                        setTimeout(function () {
+                            void (async function () {
+                                if (typeof window.refreshReportPreview === 'function') {
+                                    await window.refreshReportPreview();
+                                } else if (typeof buildPreview === 'function') {
+                                    buildPreview();
+                                }
+                            })();
+                        }, 500);
+                    }, 200);
+
                     const successDiv = document.createElement('div');
                     successDiv.className = 'fixed bottom-4 left-1/2 transform -translate-x-1/2 bg-green-600 text-white px-6 py-3 rounded-2xl font-black text-sm shadow-2xl z-50 flex items-center gap-4';
-                    // ✅ NESSUN LAMPEGGIO - MESSAGGIO FISSO
-                    
-                    // ✅ APPLICA STESSI STILI DELL'AVVISO INIZIALE
-                    if (window.innerWidth <= 768) {
-                        successDiv.style.left = '50%';
-                        successDiv.style.transform = 'translateX(-50%)';
-                        successDiv.style.right = 'auto';
-                        successDiv.style.margin = '0 auto';
-                        successDiv.style.width = 'auto';
-                        successDiv.style.maxWidth = '95vw'; 
-                        successDiv.style.minWidth = '320px'; 
-                        successDiv.style.height = 'auto';
-                        successDiv.style.padding = '8px 12px'; 
-                        successDiv.style.justifyContent = 'center';
-                        successDiv.style.textAlign = 'center';
-                        successDiv.style.opacity = '0.85'; 
-                        
-                        // ✅ STESSI STILI SPECIFICI PER IPHONE
-                        if (/iPhone/i.test(navigator.userAgent)) {
-                            successDiv.style.maxWidth = '90vw'; 
-                            successDiv.style.minWidth = '340px'; 
-                            successDiv.style.padding = '6px 14px'; 
-                            successDiv.style.opacity = '0.80'; 
-                            successDiv.style.fontSize = '11px'; 
-                            successDiv.style.borderRadius = '16px'; 
-                        }
-                    }
-                    
                     successDiv.innerHTML = ' MODIFICA SALVATA!';
-                    
-                    document.getElementById('preview-screen').appendChild(successDiv);
-                    
-                    // Rimuovi il feedback dopo 2 secondi
-                    setTimeout(() => {
-                        if (successDiv.parentNode) {
-                            successDiv.remove();
-                        }
+                    const previewScreen = document.getElementById('preview-screen');
+                    if (previewScreen) previewScreen.appendChild(successDiv);
+                    setTimeout(function () {
+                        if (successDiv.parentNode) successDiv.remove();
                     }, 2000);
                 };
                 
@@ -23108,6 +22997,31 @@ window.convertToHtml = async () => {
             body.notturno-filtra-active .notturno-filtra-tendina { flex: 0 0 auto; }
         }
         .main-header { background-color: #000; color: white; padding: 0 12px; display: flex; justify-content: space-between; align-items: center; height: 60px; }
+        #display-date {
+            font-variant-numeric: tabular-nums;
+            letter-spacing: 0.02em;
+            white-space: nowrap;
+            text-align: center;
+            line-height: 1.2;
+        }
+        #display-date.sh-archive-edit-date {
+            font-size: clamp(10px, 2.6vw, 13px);
+            font-weight: 900;
+            color: #fbbf24 !important;
+            padding: 2px 8px;
+            border-radius: 8px;
+            background: rgba(251, 191, 36, 0.12);
+            max-width: min(52vw, 220px);
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        @media (min-width: 768px) {
+            #display-date { font-size: 13px; }
+            #display-date.sh-archive-edit-date {
+                font-size: 14px;
+                max-width: 240px;
+            }
+        }
         input { width: 100%; height: 100%; border: none; text-align: center; font-weight: 800; background: transparent; outline: none; color: var(--text-main); }
         table { width: 100%; border-collapse: collapse; table-layout: fixed; height: 100%; }
         td { border: 1px solid var(--border-main); padding: 0; font-size: 10px; vertical-align: middle; }

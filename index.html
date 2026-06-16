@@ -664,7 +664,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v245';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v246';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -12675,16 +12675,62 @@ window.updateStoricoButton = async function() {
             }
         };
 
-        window.syncFuochistaPhoneLayout = function() {
+        window.syncFuochistaPhoneLayout = function(opts) {
+            opts = opts || {};
             window.syncFuochistaPhoneBodyClass();
             if (!window.isFuochistaPhoneLayoutActive()) {
                 window.resetFuochistaPhoneLayoutOverrides();
+                window.__fuochistaPhoneVerticalWarmed = false;
                 return;
             }
             window.normalizeFuochistaPhoneSectionsVisibility();
-            if (typeof window.__applyPhoneSectionsLayout === 'function') {
+            const recentTap = window.__fuochistaPhoneSectionTapTs &&
+                (Date.now() - window.__fuochistaPhoneSectionTapTs < 450);
+            if (!opts.skipApplySections && !recentTap &&
+                typeof window.__applyPhoneSectionsLayout === 'function') {
                 window.__applyPhoneSectionsLayout(null);
             }
+            if (!opts.skipWarm && typeof window.warmFuochistaPhoneVerticalSections === 'function') {
+                window.warmFuochistaPhoneVerticalSections();
+            }
+        };
+
+        /** iPhone Fuochista: forza layout/paint del contenuto schede verticali (evita caricamento al tap). */
+        window.warmFuochistaPhoneVerticalSections = function() {
+            if (!window.isFuochistaPhoneLayoutActive()) return;
+            if (window.__fuochistaPhoneVerticalWarming) return;
+            window.__fuochistaPhoneVerticalWarming = true;
+            const groups = window.buildFuochistaPhoneGroups ? window.buildFuochistaPhoneGroups() : [];
+            const seen = {};
+            const ids = [];
+            groups.forEach(function (group) {
+                group.forEach(function (sid) {
+                    if (!seen[sid]) {
+                        seen[sid] = true;
+                        ids.push(sid);
+                    }
+                });
+            });
+            document.body.classList.add('sh-instant-layout');
+            ids.forEach(function (sid) {
+                const el = document.getElementById(sid);
+                if (!el || el.style.display === 'none') return;
+                const wasExpanded = el.classList.contains('col-expanded');
+                el.classList.remove('col-collapsed');
+                el.classList.add('col-expanded');
+                el.style.setProperty('display', 'flex', 'important');
+                void el.offsetHeight;
+                el.querySelectorAll('table, input, button, .nott-chem-watch-wrap, .nott-chem-grid, .flex').forEach(function (node) {
+                    void node.offsetHeight;
+                });
+                if (!wasExpanded) {
+                    el.classList.remove('col-expanded');
+                    el.classList.add('col-collapsed');
+                }
+            });
+            document.body.classList.remove('sh-instant-layout');
+            window.__fuochistaPhoneVerticalWarmed = true;
+            window.__fuochistaPhoneVerticalWarming = false;
         };
 
         window.isActiveRapportinoNotturno = function() {
@@ -13192,8 +13238,12 @@ window.updateStoricoButton = async function() {
             }
             if (!opts.skipFuochistaPhoneResync && window.isFuochistaPhoneLayoutActive && window.isFuochistaPhoneLayoutActive()) {
                 if (typeof window.syncFuochistaPhoneLayout === 'function') {
-                    window.syncFuochistaPhoneLayout();
+                    window.syncFuochistaPhoneLayout({
+                        skipWarm: !!window.__fuochistaPhoneVerticalWarmed
+                    });
                 }
+            } else if (rid !== 'fuochista') {
+                window.__fuochistaPhoneVerticalWarmed = false;
             }
         };
 
@@ -13230,6 +13280,9 @@ window.updateStoricoButton = async function() {
             vert.innerHTML = window.buildChemicalsVerticalSectionHtml(title);
             vert.style.display = 'flex';
             window.updateNotturnoChemCounterUI(counts.pass, counts.hp);
+            if (window.isFuochistaPhoneLayoutActive && window.isFuochistaPhoneLayoutActive()) {
+                window.__fuochistaPhoneVerticalWarmed = false;
+            }
         };
 
         window.buildContatoriVerticalSectionHtml = function(title, fields) {
@@ -13288,6 +13341,9 @@ window.updateStoricoButton = async function() {
             }
             vert.innerHTML = window.buildContatoriVerticalSectionHtml(title, fields);
             vert.style.display = 'flex';
+            if (window.isFuochistaPhoneLayoutActive && window.isFuochistaPhoneLayoutActive()) {
+                window.__fuochistaPhoneVerticalWarmed = false;
+            }
         };
 
         window.isRapportinoModuleEnabled = function(secId, schedeConfig) {
@@ -16521,7 +16577,12 @@ window.updateStoricoButton = async function() {
                 const prevIdx = (idx - 1 + visible.length) % visible.length;
                 targetDomId = visible[prevIdx];
             }
-            requestAnimationFrame(() => {
+            const isFuochistaPhone = window.isFuochistaPhoneLayoutActive && window.isFuochistaPhoneLayoutActive();
+            const applyToggle = function () {
+                if (isFuochistaPhone) {
+                    window.__fuochistaPhoneSectionTapTs = Date.now();
+                    document.body.classList.add('sh-instant-layout');
+                }
                 group.forEach(function (sid) {
                     const target = document.getElementById(sid);
                     if (target) {
@@ -16532,13 +16593,25 @@ window.updateStoricoButton = async function() {
                             target.classList.remove('col-expanded');
                             target.classList.add('col-collapsed');
                         }
-                        if (window.isFuochistaPhoneLayoutActive && window.isFuochistaPhoneLayoutActive()) {
+                        if (isFuochistaPhone) {
                             target.style.setProperty('display', 'flex', 'important');
                         }
                     }
                 });
-                if (typeof window.persistPhoneSectionsLayout === 'function') window.persistPhoneSectionsLayout();
-            });
+                if (typeof window.persistPhoneSectionsLayout === 'function') {
+                    window.persistPhoneSectionsLayout();
+                }
+                if (isFuochistaPhone) {
+                    requestAnimationFrame(function () {
+                        document.body.classList.remove('sh-instant-layout');
+                    });
+                }
+            };
+            if (isFuochistaPhone) {
+                applyToggle();
+            } else {
+                requestAnimationFrame(applyToggle);
+            }
         };
 
         window.toggleStatus = (id) => {
@@ -23089,7 +23162,11 @@ window.convertToHtml = async () => {
         body.fuochista-phone-active #row-block-3 { order: 3; }
         body.fuochista-phone-active #row-block-1 { order: 4; }
         body.fuochista-phone-active #row-block-2 { order: 5; }
-        body.fuochista-phone-active .col-section { transition: flex 0.18s ease; }
+        body.fuochista-phone-active .col-section { transition: none !important; }
+        body.fuochista-phone-active .col-section > *:not(.v-label-container) {
+            transform: translateZ(0);
+            -webkit-transform: translateZ(0);
+        }
         body.fuochista-phone-active .row-block {
             overflow: visible !important;
             height: auto !important;

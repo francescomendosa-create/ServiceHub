@@ -662,7 +662,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v236';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v237';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -29010,9 +29010,21 @@ window.extractGeminiCaptureReadings = function(raw, fields) {
     if (!raw || window.isLikelyGeminiFailureRaw(raw)) return [];
     const json = window.parseSmartCaptureJson(raw);
     const isOverview = window.isDcsOverviewScreen(raw, json);
-    let readings = window.extractDcsAcquaReadings(raw, fields, { allowTextFallback: false, skipTrustedFilter: true });
-    readings = window.mergeOcrReadingLists(readings, window.parseGeminiTankPairsJson(json, fields));
-    readings = window.mergeOcrReadingLists(readings, window.extractTankReadingsFromGeminiRaw(raw, fields));
+    const isStocc = window.isDcsStoccaggioInternoScreen(raw, json);
+    const isDcsTable = window.isDcsAcquaTableText(raw);
+    const tankMode = !!window._smartCaptureTankMode;
+    let readings = [];
+
+    if (isOverview || isStocc || isDcsTable) {
+        readings = window.extractDcsAcquaReadings(raw, fields, { allowTextFallback: false, skipTrustedFilter: true });
+    } else if (tankMode) {
+        readings = window.extractTankReadingsFromGeminiRaw(raw, fields);
+        readings = window.mergeOcrReadingLists(readings, window.parseGeminiTankPairsJson(json, fields));
+    } else {
+        readings = window.extractDcsAcquaReadings(raw, fields, { allowTextFallback: false, skipTrustedFilter: true });
+        readings = window.mergeOcrReadingLists(readings, window.parseGeminiTankPairsJson(json, fields));
+        readings = window.mergeOcrReadingLists(readings, window.extractTankReadingsFromGeminiRaw(raw, fields));
+    }
     readings = window.applyOverviewStrumentiRules(readings, raw, json, isOverview);
     return window.filterGeminiCaptureReadings(readings);
 };
@@ -29870,6 +29882,7 @@ window.sortTankFieldsForDisplay = function(fields) {
 
 window.callGeminiTankOcr = async function(promptText, imageData) {
     if (!window.getGeminiApiKeysList().length) throw new Error('Nessuna chiave Gemini.');
+    imageData = await window.normalizeSmartCaptureImageForGemini(imageData);
     const raw = imageData && imageData.data ? imageData.data : (typeof imageData === 'string' ? imageData : '');
     const base64 = raw.indexOf(',') >= 0 ? raw.split(',')[1] : raw;
     const mimeType = (imageData && imageData.type) || 'image/jpeg';
@@ -29944,6 +29957,56 @@ window.runGeminiSmartCaptureOcr = async function(imageData, fields) {
         rawTextPreview: String(raw).slice(0, 300),
         notes: notes
     };
+};
+
+window.normalizeSmartCaptureImageForGemini = async function(imageData) {
+    if (!imageData) return imageData;
+    const raw = imageData.data || (typeof imageData === 'string' ? imageData : '');
+    if (!raw) return imageData;
+    const dataUrl = raw.indexOf(',') >= 0 ? raw : 'data:image/jpeg;base64,' + raw;
+    const mime = String(imageData.type || '').toLowerCase();
+    const isMobile = window.isIosDevice && window.isIosDevice();
+    const maxW = isMobile ? 1800 : 2200;
+
+    return new Promise(function(resolve, reject) {
+        const img = new Image();
+        img.onload = function() {
+            try {
+                let w = img.naturalWidth || img.width;
+                let h = img.naturalHeight || img.height;
+                if (!w || !h) {
+                    reject(new Error('Immagine vuota.'));
+                    return;
+                }
+                if (w > maxW) {
+                    h = Math.round(h * maxW / w);
+                    w = maxW;
+                }
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext('2d');
+                ctx.imageSmoothingEnabled = true;
+                ctx.imageSmoothingQuality = 'high';
+                ctx.drawImage(img, 0, 0, w, h);
+                resolve({
+                    data: canvas.toDataURL('image/jpeg', 0.9),
+                    type: 'image/jpeg',
+                    name: String(imageData.name || 'foto.jpg').replace(/\.(heic|heif|png|webp)$/i, '.jpg')
+                });
+            } catch (err) {
+                reject(err);
+            }
+        };
+        img.onerror = function() {
+            if (/heic|heif/i.test(mime)) {
+                reject(new Error('Foto HEIC non supportata. iPhone: Impostazioni → Fotocamera → Massima compatibilità (JPG), oppure invia la foto a te stesso e reimporta.'));
+            } else {
+                reject(new Error('Impossibile leggere la foto. Riprova con JPG o PNG.'));
+            }
+        };
+        img.src = dataUrl;
+    });
 };
 
 window.preprocessImageForOcr = function(dataUrl, maxW, mode) {
@@ -30281,7 +30344,9 @@ window.runSmartCaptureAnalysis = async function(imageData) {
             if (tankMode && typeof window.runStoccaggioInternoCapture === 'function') {
                 window.setSmartCaptureLoadingMessage('Gemini: STOCCAGGIO INTERNO (riga per riga)…');
                 var stoccResult = await window.runStoccaggioInternoCapture(imageData);
-                if (stoccResult.readings && stoccResult.readings.length >= 2) {
+                var stoccJson = window.parseSmartCaptureJson(stoccResult.rawGemini || stoccResult.rawTextPreview || '');
+                var isStoccScreen = window.isDcsStoccaggioInternoScreen(stoccResult.rawGemini || '', stoccJson);
+                if (isStoccScreen && stoccResult.readings && stoccResult.readings.length >= 2) {
                     return stoccResult;
                 }
             }
@@ -30460,10 +30525,18 @@ window.smartCaptureFromFile = window.smartCaptureFromGallery;
 window.fileToSmartCaptureData = function(file) {
     return new Promise(function(resolve, reject) {
         const reader = new FileReader();
-        reader.onload = function() {
-            const dataUrl = reader.result;
-            const mime = file.type || (String(file.name || '').toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/jpeg');
-            resolve({ data: dataUrl, type: mime, name: file.name || 'foto' });
+        reader.onload = async function() {
+            try {
+                const dataUrl = reader.result;
+                const mime = file.type || (String(file.name || '').toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/jpeg');
+                let imageData = { data: dataUrl, type: mime, name: file.name || 'foto' };
+                if (mime.indexOf('image/') === 0 && typeof window.normalizeSmartCaptureImageForGemini === 'function') {
+                    imageData = await window.normalizeSmartCaptureImageForGemini(imageData);
+                }
+                resolve(imageData);
+            } catch (err) {
+                reject(err);
+            }
         };
         reader.onerror = function() { reject(new Error('Lettura file non riuscita.')); };
         reader.readAsDataURL(file);
@@ -32073,6 +32146,10 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
     let contentParts = [];
     
     if (imageData) {
+        if (imageData.type && imageData.type.indexOf('image/') === 0 &&
+            typeof window.normalizeSmartCaptureImageForGemini === 'function') {
+            imageData = await window.normalizeSmartCaptureImageForGemini(imageData);
+        }
         const raw = imageData.data || "";
         const base64 = raw.indexOf(",") >= 0 ? raw.split(",")[1] : raw;
         const mimeType = imageData.type || "image/jpeg";

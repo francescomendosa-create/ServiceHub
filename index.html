@@ -662,7 +662,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v230';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v231';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -2134,6 +2134,55 @@ window.colorPreviewNumber = function(tankName, value) {
             return window.__editingArchiveMeta || null;
         };
 
+        window.__restorePreModificationLiveUI = function () {
+            var pm = window.preModificationValues;
+            if (pm) {
+                Object.keys(pm).forEach(function (id) {
+                    var el = document.getElementById(id);
+                    if (!el) return;
+                    var v = pm[id];
+                    if (v && typeof v === 'object' && Object.prototype.hasOwnProperty.call(v, 'text')) {
+                        el.innerHTML = v.text;
+                        if (v.class) el.className = v.class;
+                        if (v.style) el.setAttribute('style', v.style);
+                        else el.removeAttribute('style');
+                    } else if ('value' in el) {
+                        el.value = v;
+                    }
+                });
+            }
+            if (window.preModificationTankStatuses) {
+                window.tankStatuses = JSON.parse(JSON.stringify(window.preModificationTankStatuses));
+            }
+            if (window.preModificationTankStatusManualAD) {
+                window.tankStatusManualAD = JSON.parse(JSON.stringify(window.preModificationTankStatusManualAD));
+            }
+            if (typeof window.repaintTankStatusSquares === 'function') window.repaintTankStatusSquares();
+            if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
+            if (window.preModificationManualShift != null && String(window.preModificationManualShift).trim()) {
+                manualShift = window.preModificationManualShift;
+                if (typeof updateDeviceInfo === 'function') updateDeviceInfo();
+            }
+        };
+
+        window.__scheduleArchiveEditBackgroundSync = function () {
+            void (async function () {
+                try {
+                    if (user && user.uid && typeof window.syncBackupHistory === 'function') {
+                        await window.syncBackupHistory({ skipUiRefresh: true });
+                    }
+                    if (typeof window.__pushDigitalRemoteImmediate === 'function') {
+                        await window.__pushDigitalRemoteImmediate();
+                    } else if (typeof window.pushPublicDigitalSnapshotQuiet === 'function') {
+                        await window.pushPublicDigitalSnapshotQuiet({ force: true });
+                    }
+                    if (typeof window.checkInstantTrend === 'function') window.checkInstantTrend();
+                } catch (bgErr) {
+                    console.warn('[ServiceHub] archive edit background sync:', bgErr && bgErr.message);
+                }
+            })();
+        };
+
         window.__exitArchiveEditMode = function (opts) {
             opts = opts || {};
             window.isEditingArchive = false;
@@ -2142,6 +2191,9 @@ window.colorPreviewNumber = function(tankName, value) {
             window.__editingArchiveMeta = null;
             window.preModificationValues = null;
             window.preModificationActiveModules = null;
+            window.preModificationTankStatuses = null;
+            window.preModificationTankStatusManualAD = null;
+            window.preModificationManualShift = null;
 
             var displayDateEl = document.getElementById('display-date');
             if (displayDateEl) {
@@ -4419,7 +4471,8 @@ window.colorPreviewNumber = function(tankName, value) {
                             doc(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots', window.editingArchiveId),
                             data
                         ),
-                        'salva modifica archivio'
+                        'salva modifica archivio',
+                        8000
                     );
 
                     if (window.savedHistory && Array.isArray(window.savedHistory) && window.editingCreatedAt) {
@@ -4430,31 +4483,10 @@ window.colorPreviewNumber = function(tankName, value) {
                     window.addToHistory(data);
                     window.trendDebugData = [];
 
-                    if (user && user.uid && typeof window.syncBackupHistory === 'function') {
-                        try {
-                            await window.syncBackupHistory({ skipUiRefresh: true });
-                        } catch (syncErr) {
-                            console.log('Errore syncBackupHistory dopo modifica:', syncErr && syncErr.message);
-                        }
-                    }
-
-                    if (typeof window.__pushDigitalRemoteImmediate === 'function') {
-                        try {
-                            await window.__pushDigitalRemoteImmediate();
-                        } catch (pushErr) {
-                            console.warn('[ServiceHub] push remote dopo modifica storico:', pushErr && pushErr.message);
-                            schedulePublicDigitalAfterArchive('archiveCurrentData edit publicDigital fallback');
-                        }
-                    } else {
-                        schedulePublicDigitalAfterArchive('archiveCurrentData edit publicDigital');
-                    }
-
-                    setTimeout(function () {
-                        if (typeof window.checkInstantTrend === 'function') window.checkInstantTrend();
-                    }, 200);
-
                     window.isEditingArchive = false;
-
+                    if (typeof window.__restorePreModificationLiveUI === 'function') {
+                        window.__restorePreModificationLiveUI();
+                    }
                     if (typeof window.__exitArchiveEditMode === 'function') {
                         window.__exitArchiveEditMode({ restoreLiveDate: true });
                     }
@@ -4462,12 +4494,14 @@ window.colorPreviewNumber = function(tankName, value) {
                         window.updateStoricoButton();
                     }
 
-                    btn.classList.add('bg-yellow-500');
-
-                    btn.innerHTML = "SALVATO!";
+                    btn.innerHTML = 'SALVATO!';
                     btn.classList.add('bg-emerald-600');
-                    await sleep(1200);
+                    await sleep(400);
                     updateDeviceInfo();
+
+                    if (typeof window.__scheduleArchiveEditBackgroundSync === 'function') {
+                        window.__scheduleArchiveEditBackgroundSync();
+                    }
                     return;
                 }
 
@@ -5181,9 +5215,13 @@ window.updateStoricoButton = async function() {
             window.preModificationActiveModules.push(expandedEl.id);
         }
     });
-
-    // ✅ CREA UN BACKUP MOMENTANEO PRIMA DI ENTRARE IN MODIFICA
-    window.saveCurrentData(); // Salva i valori correnti nel backup momentaneo
+    window.preModificationTankStatuses = JSON.parse(JSON.stringify(
+        window.__ensureTankStatusesObject ? window.__ensureTankStatusesObject() : (window.tankStatuses || {})
+    ));
+    window.preModificationTankStatusManualAD = JSON.parse(JSON.stringify(
+        window.__ensureTankStatusManualADObject ? window.__ensureTankStatusManualADObject() : (window.tankStatusManualAD || {})
+    ));
+    window.preModificationManualShift = typeof manualShift !== 'undefined' ? manualShift : '';
 
     // ✅ SALVA L'ID DEL BACKUP IN MODIFICA PER RENDER GIALLO DOPO
     window.editingArchiveId = snap.id;

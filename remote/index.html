@@ -7,7 +7,7 @@
     var SK = "servicehub_remote_share_k";
     var SA = "servicehub_remote_app_id";
     var FB_ORIGIN = "https://servicehub-18309.web.app";
-    window.SVCREMOTE_BUILD = "2026.06.14-v129";
+    window.SVCREMOTE_BUILD = "2026.06.14-v130";
 
     /** Vecchi link su GitHub → stesso remoto su Firebase. */
     (function redirectGithubToFirebase() {
@@ -3299,30 +3299,7 @@
         buildTankDetailHistoryTableHTML(series) + "</div></div>";
     }
 
-    function ensureRemoteTankDetailOverlay() {
-      var el = document.getElementById("tank-detail-overlay");
-      if (el) return el;
-      el = document.createElement("div");
-      el.id = "tank-detail-overlay";
-      el.className = "tank-detail-overlay";
-      el.innerHTML = '<div class="tank-detail-shell"><button type="button" class="tank-detail-back" id="tank-detail-back-btn">← Indietro</button><div id="tank-detail-content"></div></div>';
-      document.body.appendChild(el);
-      el.querySelector("#tank-detail-back-btn").onclick = function () { window.closeRemoteTankDetailPage(); };
-      if (!window.__remoteTankDetailEscBound) {
-        window.__remoteTankDetailEscBound = true;
-        document.addEventListener("keydown", function (e) {
-          if (e.key !== "Escape") return;
-          var ov = document.getElementById("tank-detail-overlay");
-          if (ov && ov.classList.contains("active")) {
-            e.preventDefault();
-            window.closeRemoteTankDetailPage();
-          }
-        });
-      }
-      return el;
-    }
-
-    window.openRemoteTankDetailPage = function (fieldId, navCtx) {
+    function renderRemoteTankDetailBody(fieldId, navCtx) {
       if (!fieldId) return;
       navCtx = navCtx || {};
       var payload = window.__remoteDigitalPayload || {};
@@ -3339,6 +3316,97 @@
       wireRemoteTankTimeline(content, series, info);
       var backBtn = overlay.querySelector("#tank-detail-back-btn");
       if (backBtn) backBtn.textContent = "← " + (navCtx.backLabel || "Indietro");
+      return overlay;
+    }
+
+    function ensureRemoteTankDetailOverlay() {
+      var el = document.getElementById("tank-detail-overlay");
+      if (el) {
+        wireRemoteTankDetailToolbar(el);
+        return el;
+      }
+      el = document.createElement("div");
+      el.id = "tank-detail-overlay";
+      el.className = "tank-detail-overlay";
+      el.innerHTML =
+        '<div class="tank-detail-shell">' +
+        '<div class="tank-detail-topbar">' +
+        '<button type="button" class="tank-detail-back" id="tank-detail-back-btn">← Indietro</button>' +
+        '<button type="button" class="tank-detail-refresh" id="tank-detail-refresh-btn">AGGIORNA</button>' +
+        "</div>" +
+        '<div id="tank-detail-content"></div></div>';
+      document.body.appendChild(el);
+      wireRemoteTankDetailToolbar(el);
+      if (!window.__remoteTankDetailEscBound) {
+        window.__remoteTankDetailEscBound = true;
+        document.addEventListener("keydown", function (e) {
+          if (e.key !== "Escape") return;
+          var ov = document.getElementById("tank-detail-overlay");
+          if (ov && ov.classList.contains("active")) {
+            e.preventDefault();
+            window.closeRemoteTankDetailPage();
+          }
+        });
+      }
+      return el;
+    }
+
+    function wireRemoteTankDetailToolbar(overlay) {
+      if (!overlay || overlay.getAttribute("data-tl-toolbar-wired") === "1") return;
+      overlay.setAttribute("data-tl-toolbar-wired", "1");
+      var backBtn = overlay.querySelector("#tank-detail-back-btn");
+      if (backBtn) backBtn.onclick = function () { window.closeRemoteTankDetailPage(); };
+      var refBtn = overlay.querySelector("#tank-detail-refresh-btn");
+      if (refBtn) refBtn.onclick = function () { window.refreshRemoteTankDetailPage(); };
+    }
+
+    window.__rerenderRemoteTankDetailIfOpen = function () {
+      var ctx = window.__remoteTankDetailCtx;
+      if (!ctx || !ctx.fieldId) return;
+      var ov = document.getElementById("tank-detail-overlay");
+      if (!ov || !ov.classList.contains("active")) return;
+      renderRemoteTankDetailBody(ctx.fieldId, ctx.navCtx || {});
+    };
+
+    window.refreshRemoteTankDetailPage = async function () {
+      if (window.__remoteTankDetailRefreshInFlight) return;
+      var btn = document.getElementById("tank-detail-refresh-btn");
+      var prev = btn ? btn.textContent : "";
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "…";
+      }
+      window.__remoteTankDetailRefreshInFlight = true;
+      try {
+        if (typeof window.__remoteRefreshHandler === "function") {
+          await window.__remoteRefreshHandler();
+        }
+        if (typeof window.__rerenderRemoteTankDetailIfOpen === "function") {
+          window.__rerenderRemoteTankDetailIfOpen();
+        }
+        if (btn) {
+          btn.textContent = "OK ✓";
+          setTimeout(function () {
+            if (btn) btn.textContent = prev || "AGGIORNA";
+          }, 900);
+        }
+      } catch (err) {
+        console.warn("[SvcRemote] refreshRemoteTankDetailPage:", err && err.message);
+        if (btn) btn.textContent = "!";
+        setTimeout(function () {
+          if (btn) btn.textContent = prev || "AGGIORNA";
+        }, 1200);
+      } finally {
+        window.__remoteTankDetailRefreshInFlight = false;
+        if (btn) btn.disabled = false;
+      }
+    };
+
+    window.openRemoteTankDetailPage = function (fieldId, navCtx) {
+      if (!fieldId) return;
+      navCtx = navCtx || {};
+      window.__remoteTankDetailCtx = { fieldId: fieldId, navCtx: navCtx };
+      var overlay = renderRemoteTankDetailBody(fieldId, navCtx);
       overlay.classList.add("active");
       document.body.classList.add("tank-detail-open");
     };
@@ -3347,6 +3415,7 @@
       var ov = document.getElementById("tank-detail-overlay");
       if (ov) ov.classList.remove("active");
       document.body.classList.remove("tank-detail-open");
+      window.__remoteTankDetailCtx = null;
     };
 
     function digitalRemoteSig(d) {
@@ -3642,6 +3711,9 @@
         applyRemoteLayoutPrefs(root);
         restoreRemoteFocusState(root, existingGrid, focusState);
         markRemotePayloadRendered(d);
+        if (typeof window.__rerenderRemoteTankDetailIfOpen === "function") {
+          window.__rerenderRemoteTankDetailIfOpen();
+        }
         return;
       }
 
@@ -3922,10 +3994,15 @@
           try {
             const root = document.getElementById("digital-preview-container");
             const inFocus = !!(root && root.classList.contains("digital-focus-active"));
+            const tankDetailOpen = !!(document.getElementById("tank-detail-overlay") &&
+              document.getElementById("tank-detail-overlay").classList.contains("active"));
             const result = await pullLatestFromCloud({
-              fullRefresh: !inFocus,
+              fullRefresh: !inFocus && !tankDetailOpen,
               userInitiated: true
             });
+            if (typeof window.__rerenderRemoteTankDetailIfOpen === "function") {
+              window.__rerenderRemoteTankDetailIfOpen();
+            }
             if (btn && result && result.ok) {
               btn.textContent = result.reason === "unchanged" ? "OK ✓" : "OK";
               setTimeout(function () {
@@ -3956,6 +4033,8 @@
           }
         };
 
+        window.__remoteRefreshHandler = refreshHandler;
+
         function countDigitalCards(html) {
           return (String(html || "").match(/data-module-id="/g) || []).length;
         }
@@ -3974,6 +4053,9 @@
           wireButtons();
           bindCardZoomOnce();
           applyDigitalPhoneLayoutIfNeeded(root);
+          if (typeof window.__rerenderRemoteTankDetailIfOpen === "function") {
+            window.__rerenderRemoteTankDetailIfOpen();
+          }
         }
 
         function bindCloudPushListener() {

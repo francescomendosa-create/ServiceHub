@@ -662,7 +662,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v224';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v225';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -18076,7 +18076,9 @@ window.updateStoricoButton = async function() {
                 if (changed > 0) {
                     if (typeof window.repaintTankStatusSquares === 'function') window.repaintTankStatusSquares();
                     if (opts.save !== false) window.__scheduleAutoTrendStatusSave();
-                    if (typeof window.__schedulePublicDigitalRemotePush === 'function') {
+                    if (typeof window.__pushDigitalRemoteImmediate === 'function') {
+                        void window.__pushDigitalRemoteImmediate();
+                    } else if (typeof window.__schedulePublicDigitalRemotePush === 'function') {
                         window.__schedulePublicDigitalRemotePush();
                     }
                 }
@@ -21095,14 +21097,15 @@ window.__enablePublicDigitalAutoSyncIfShareKeyExists = function () {
     return hasKey;
 };
 
-/** Legge i valori live dall'interfaccia e pubblica su publicDigital (push manuale). */
-window.pushDigitalSnapshotFromLiveUI = async function () {
+/** Push immediato su publicDigital (dopo flush plant) se il link remoto è attivo. */
+window.__pushDigitalRemoteImmediate = async function () {
     if (!db || !user || !user.uid) return false;
+    if (typeof window.__hasDigitalShareKey !== 'function' || !window.__hasDigitalShareKey()) return false;
     if (typeof window.__flushLiveStateBeforeDigitalPush === 'function') {
         window.__flushLiveStateBeforeDigitalPush();
     }
-    if (typeof window.saveData === 'function') {
-        try { await window.saveData(true); } catch (_) {}
+    if (typeof window.__flushPlantCloudSaveNow === 'function') {
+        try { await window.__flushPlantCloudSaveNow(true); } catch (_) {}
     }
     if (typeof window.saveActiveRapportinoFromUI === 'function') {
         window.saveActiveRapportinoFromUI();
@@ -21112,6 +21115,12 @@ window.pushDigitalSnapshotFromLiveUI = async function () {
     }
     if (typeof window.pushPublicDigitalSnapshotQuiet !== 'function') return false;
     return !!(await window.pushPublicDigitalSnapshotQuiet({ force: true }));
+};
+
+/** Legge i valori live dall'interfaccia e pubblica su publicDigital (push manuale). */
+window.pushDigitalSnapshotFromLiveUI = async function () {
+    if (!db || !user || !user.uid) return false;
+    return !!(await window.__pushDigitalRemoteImmediate());
 };
 
 /** Pubblica Digital Report sul cloud solo quando premi Aggiorna remoto (nessun auto-sync). */
@@ -21312,24 +21321,17 @@ window.__hasDigitalShareKey = function () {
     }
 };
 
-/** Pubblica sul remoto (debounce) quando esiste già un link remoto attivo. */
+/** Pubblica sul remoto (debounce breve) quando esiste già un link remoto attivo. */
 window.__schedulePublicDigitalRemotePush = function () {
     if (!db || !user || !user.uid) return;
     if (!window.__hasDigitalShareKey || !window.__hasDigitalShareKey()) return;
     if (window.__publicDigitalRemotePushTimer) clearTimeout(window.__publicDigitalRemotePushTimer);
     window.__publicDigitalRemotePushTimer = setTimeout(function () {
         window.__publicDigitalRemotePushTimer = null;
-        void (async function () {
-            try {
-                if (typeof window.__flushLiveStateBeforeDigitalPush === 'function') {
-                    window.__flushLiveStateBeforeDigitalPush();
-                }
-                await Promise.resolve(window.pushPublicDigitalSnapshotQuiet({ force: true }));
-            } catch (e) {
-                console.warn('[ServiceHub] __schedulePublicDigitalRemotePush:', e && e.message);
-            }
-        })();
-    }, 900);
+        void Promise.resolve(window.__pushDigitalRemoteImmediate && window.__pushDigitalRemoteImmediate()).catch(function (e) {
+            console.warn('[ServiceHub] __schedulePublicDigitalRemotePush:', e && e.message);
+        });
+    }, 180);
 };
 
 /** Esegue subito (dopo 2 frame) la pubblicazione su publicDigital — usato dopo saveData così il client remoto non aspetta il debounce. */
@@ -21371,7 +21373,11 @@ window.flushPublicDigitalSnapshotNow = function () {
 window.schedulePublicDigitalSnapshotSync = function () {
     if (!db || !user || !user.uid) return;
     if (typeof window.__hasDigitalShareKey === 'function' && window.__hasDigitalShareKey()) {
-        window.__schedulePublicDigitalRemotePush();
+        if (typeof window.flushPublicDigitalSnapshotNow === 'function') {
+            window.flushPublicDigitalSnapshotNow();
+        } else {
+            window.__schedulePublicDigitalRemotePush();
+        }
         return;
     }
     if (window.__publicDigitalSyncTimer) clearTimeout(window.__publicDigitalSyncTimer);
@@ -22186,7 +22192,14 @@ window.convertToHtml = async () => {
             }
             window.__applyTankStatusToMemoryAndUI(window.currentTank, next);
             window.__tankPopupBaseline = next.length ? window.__serializeTankStatuses(next) : null;
-            window.saveData();
+            void (async function () {
+                try {
+                    if (typeof window.saveData === 'function') await window.saveData(true);
+                    if (typeof window.__pushDigitalRemoteImmediate === 'function') {
+                        await window.__pushDigitalRemoteImmediate();
+                    }
+                } catch (_) {}
+            })();
         };
         window.__cancelTankPopupDraft = function (closeModal) {
             if (!window.currentTank) {

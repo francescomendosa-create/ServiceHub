@@ -664,7 +664,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v242';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v243';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -1589,9 +1589,16 @@ window.colorPreviewNumber = function(tankName, value) {
             document.body.classList.add('all-sections-open');
         };
 
+        window.getPhoneSectionsLayoutStorageKey = function () {
+            if (window.isFuochistaPhoneLayoutActive && window.isFuochistaPhoneLayoutActive()) {
+                return window.SERVICEHUB_PHONE_SECTIONS_KEY + '_fuochista';
+            }
+            return window.SERVICEHUB_PHONE_SECTIONS_KEY;
+        };
+
         window.readPhoneSectionsLayout = function () {
             try {
-                const raw = localStorage.getItem(window.SERVICEHUB_PHONE_SECTIONS_KEY);
+                const raw = localStorage.getItem(window.getPhoneSectionsLayoutStorageKey());
                 if (!raw) return null;
                 const parsed = JSON.parse(raw);
                 return parsed && typeof parsed === 'object' ? parsed : null;
@@ -1603,10 +1610,18 @@ window.colorPreviewNumber = function(tankName, value) {
         window.persistPhoneSectionsLayout = function () {
             if (!window.isServiceHubPhone || !window.isServiceHubPhone()) return;
             const prefs = {};
+            const store = window.loadRapportiniStore && window.loadRapportiniStore();
+            const rid = store && store.activeId;
+            const cfg = rid && store.items[rid] && store.items[rid].schedeConfig;
+            const hid = window.hiddenModules || hiddenModules || [];
             (window.getPhoneSectionGroups() || []).forEach(function (group, groupIndex) {
                 const visible = group.filter(function (mid) {
                     const checkId = window.getPhoneSectionCheckId(mid);
-                    return !(window.hiddenModules || hiddenModules || []).includes(checkId);
+                    if (hid.indexOf(checkId) >= 0) return false;
+                    if (cfg && rid) {
+                        return window.shouldShowPlantSchedaInDashboard(checkId, cfg, rid, hid);
+                    }
+                    return true;
                 });
                 for (let i = 0; i < visible.length; i++) {
                     const el = document.getElementById(visible[i]);
@@ -1617,7 +1632,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 }
             });
             try {
-                localStorage.setItem(window.SERVICEHUB_PHONE_SECTIONS_KEY, JSON.stringify(prefs));
+                localStorage.setItem(window.getPhoneSectionsLayoutStorageKey(), JSON.stringify(prefs));
             } catch (_) {}
         };
 
@@ -2367,18 +2382,20 @@ window.colorPreviewNumber = function(tankName, value) {
             const cfg = store && store.items.fuochista && store.items.fuochista.schedeConfig;
             const hid = window.hiddenModules || hiddenModules || [];
             const rid = 'fuochista';
-            const rb3Order = ['sec-aria', 'sec-chemicals-vertical', 'sec-contatori-vertical'];
-            const rb3 = rb3Order.filter(function (domId) {
+            const isVisible = function (domId) {
                 const checkId = window.getPhoneSectionCheckId(domId);
                 if (hid.indexOf(checkId) >= 0) return false;
                 return window.shouldShowPlantSchedaInDashboard(checkId, cfg, rid, hid);
-            });
-            const rb1 = [];
-            if (hid.indexOf('sec-well') < 0 && window.shouldShowPlantSchedaInDashboard('sec-well', cfg, rid, hid)) {
-                rb1.push('sec-well');
-            }
+            };
+            const rb3Order = ['sec-bluedown', 'sec-aria', 'sec-azoto', 'sec-chemicals-vertical', 'sec-contatori-vertical'];
+            const rb2Order = ['sec-acqua', 'sec-scam', 'sec-filtra'];
+            const rb1Order = ['sec-chpp', 'sec-well', 'sec-amb', 'sec-ambiente2'];
+            const rb3 = rb3Order.filter(isVisible);
+            const rb2 = rb2Order.filter(isVisible);
+            const rb1 = rb1Order.filter(isVisible);
             const groups = [];
             if (rb3.length) groups.push(rb3);
+            if (rb2.length) groups.push(rb2);
             if (rb1.length) groups.push(rb1);
             return groups;
         };
@@ -13189,9 +13206,8 @@ window.updateStoricoButton = async function() {
                 window.updateRapportiniRowBlocksVisibility();
             }
             if (!opts.skipFuochistaPhoneResync && window.isFuochistaPhoneLayoutActive && window.isFuochistaPhoneLayoutActive()) {
-                window.normalizeFuochistaPhoneSectionsVisibility();
-                if (typeof window.__applyPhoneSectionsLayout === 'function') {
-                    window.__applyPhoneSectionsLayout(null);
+                if (typeof window.syncFuochistaPhoneLayout === 'function') {
+                    window.syncFuochistaPhoneLayout();
                 }
             }
         };
@@ -15155,7 +15171,11 @@ window.updateStoricoButton = async function() {
             } else {
                 if (tendina) {
                     tendina.style.display = 'block';
-                    if (!tendina.dataset.userExpanded) {
+                    const fuochistaPhone = window.isFuochistaPhoneLayoutActive && window.isFuochistaPhoneLayoutActive();
+                    if (fuochistaPhone && !tendina.dataset.userExpanded) {
+                        tendina.classList.remove('notturno-filtra-tendina-collapsed');
+                        tendina.dataset.userExpanded = '1';
+                    } else if (!tendina.dataset.userExpanded) {
                         tendina.classList.add('notturno-filtra-tendina-collapsed');
                     }
                     const ch = document.getElementById('nott-filtra-tendina-chevron');
@@ -15166,6 +15186,9 @@ window.updateStoricoButton = async function() {
                 }
                 if (tendinaTitle) tendinaTitle.textContent = (cfMod && cfMod.title) || 'CONTATORE FILTRA';
                 window.renderNotturnoFiltraPanel();
+                if (window.isFuochistaPhoneLayoutActive && window.isFuochistaPhoneLayoutActive()) {
+                    window.syncFuochistaPhoneLayout();
+                }
             }
             if (typeof window.syncNotturnoStoccaggioPanel === 'function') {
                 window.syncNotturnoStoccaggioPanel();
@@ -16506,17 +16529,41 @@ window.updateStoricoButton = async function() {
             if (!group) return;
             const el = document.getElementById(domId);
             if (!el) return;
+            const store = window.loadRapportiniStore && window.loadRapportiniStore();
+            const rid = store && store.activeId;
+            const cfg = rid && store.items[rid] && store.items[rid].schedeConfig;
+            const hid = window.hiddenModules || hiddenModules || [];
+            const filterVisible = function (mid) {
+                const checkId = window.getPhoneSectionCheckId(mid);
+                if (hid.indexOf(checkId) >= 0) return false;
+                if (cfg && rid) {
+                    return window.shouldShowPlantSchedaInDashboard(checkId, cfg, rid, hid);
+                }
+                return true;
+            };
             let targetDomId = domId;
             if (!force && el.classList.contains('col-expanded')) {
-                const visible = group.filter(function (mid) {
-                    const checkId = window.getPhoneSectionCheckId(mid);
-                    return !(window.hiddenModules || hiddenModules || []).includes(checkId);
-                });
+                const visible = group.filter(filterVisible);
                 const idx = visible.indexOf(domId);
+                if (idx < 0) return;
                 const prevIdx = (idx - 1 + visible.length) % visible.length;
                 targetDomId = visible[prevIdx];
             }
             requestAnimationFrame(() => {
+                if (window.isServiceHubPhone && window.isServiceHubPhone()) {
+                    document.body.classList.add('sh-instant-layout');
+                    const layout = {};
+                    group.forEach(function (sid) {
+                        layout[sid] = sid === targetDomId ? 'expanded' : 'collapsed';
+                    });
+                    if (typeof window.__applyPhoneSectionsLayout === 'function') {
+                        window.__applyPhoneSectionsLayout(layout);
+                    }
+                    requestAnimationFrame(function () {
+                        document.body.classList.remove('sh-instant-layout');
+                    });
+                    return;
+                }
                 group.forEach(function (sid) {
                     const target = document.getElementById(sid);
                     if (target) {
@@ -16526,9 +16573,6 @@ window.updateStoricoButton = async function() {
                         } else {
                             target.classList.remove('col-expanded');
                             target.classList.add('col-collapsed');
-                        }
-                        if (window.isFuochistaPhoneLayoutActive && window.isFuochistaPhoneLayoutActive()) {
-                            target.style.setProperty('display', 'flex', 'important');
                         }
                     }
                 });
@@ -23080,9 +23124,11 @@ window.convertToHtml = async () => {
             height: auto !important;
         }
         body.fuochista-phone-active #rapportino-conducibilita-tendina { order: 1; flex: none; }
-        body.fuochista-phone-active #row-block-3 { order: 2; }
-        body.fuochista-phone-active #row-block-1 { order: 3; }
-        body.fuochista-phone-active #row-block-2 { order: 4; }
+        body.fuochista-phone-active #notturno-filtra-tendina { order: 2; flex: none; width: 100%; }
+        body.fuochista-phone-active #row-block-3 { order: 3; }
+        body.fuochista-phone-active #row-block-1 { order: 4; }
+        body.fuochista-phone-active #row-block-2 { order: 5; }
+        body.fuochista-phone-active .col-section { transition: flex 0.18s ease; }
         body.fuochista-phone-active .row-block {
             overflow: visible !important;
             height: auto !important;
@@ -23107,6 +23153,16 @@ window.convertToHtml = async () => {
         body.fuochista-phone-active .rapportino-conducibilita-tendina-collapsed .cond-tendina-body {
             max-height: 0 !important;
             padding: 0 !important;
+            overflow: hidden !important;
+        }
+        body.fuochista-phone-active .notturno-filtra-tendina:not(.notturno-filtra-tendina-collapsed) .nott-filtra-tendina-body {
+            max-height: none !important;
+            overflow: visible !important;
+        }
+        body.fuochista-phone-active .notturno-filtra-tendina-collapsed .nott-filtra-tendina-body {
+            max-height: 0 !important;
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
             overflow: hidden !important;
         }
         body.fuochista-phone-active #sec-chemicals-vertical.col-expanded .nott-chem-watch-wrap {

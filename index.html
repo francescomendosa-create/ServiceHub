@@ -527,8 +527,10 @@ window.lookupTankDatabaseEntry = function(tankKey) {
 };
 
 window.calculateTons = function(tankName, level) {
-    const lvl = parseFloat(String(level == null ? '' : level).replace(',', '.'));
-    if (isNaN(lvl)) return null;
+    const lvl = typeof window.parseTankLevelMm === 'function'
+        ? window.parseTankLevelMm(level)
+        : parseFloat(String(level == null ? '' : level).replace(',', '.'));
+    if (!Number.isFinite(lvl)) return null;
     const tankData = window.lookupTankDatabaseEntry(tankName);
     if (!tankData) return null;
     return ((lvl / 1000) * tankData.coeff).toFixed(1);
@@ -662,7 +664,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v238';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v239';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -10152,10 +10154,15 @@ window.updateStoricoButton = async function() {
                 }
             }
             if (!raw) return '';
-            let val = raw + ' mm';
+            const mm = typeof window.parseTankLevelMm === 'function'
+                ? window.parseTankLevelMm(raw)
+                : parseFloat(String(raw).replace(',', '.'));
+            let val = (Number.isFinite(mm) && typeof window.__fmtTankDetailMm === 'function'
+                ? window.__fmtTankDetailMm(mm)
+                : raw) + ' mm';
             let tons = null;
             if (dbKey && typeof window.calculateTons === 'function') {
-                tons = window.calculateTons(dbKey, raw);
+                tons = window.calculateTons(dbKey, mm);
             }
             if (tons == null && inp && inp.id) {
                 const tonEl = document.getElementById(inp.id + '-ton');
@@ -10188,7 +10195,9 @@ window.updateStoricoButton = async function() {
                     isStatus: false,
                     fieldId: t.fieldId,
                     tankDbKey: t.tankDbKey,
-                    levelMm: parseFloat(String(raw).replace(',', '.')) || 0,
+                    levelMm: (typeof window.parseTankLevelMm === 'function'
+                        ? window.parseTankLevelMm(raw)
+                        : parseFloat(String(raw).replace(',', '.'))) || 0,
                     fillPct: window.getStoccaggioTankFillPct(t.tankDbKey, raw),
                     drain: !!vis.drain,
                     acc: !!vis.acc
@@ -10580,15 +10589,16 @@ window.updateStoricoButton = async function() {
                 );
             }
             if (!row) return '';
-            var valEl = row.querySelector('.digital-stocc-value');
-            if (valEl) {
-                var t = String(valEl.textContent || '').replace(/\s+/g, ' ').trim();
-                if (t) return t;
-            }
             var lvl = row.querySelector('.digital-stocc-level-line');
             if (lvl) {
                 var m = String(lvl.textContent || '').match(/([\d.\s,]+)\s*mm/i);
                 if (m && m[1]) return m[1].trim();
+            }
+            var valEl = row.querySelector('.digital-stocc-value');
+            if (valEl) {
+                var t = String(valEl.textContent || '').replace(/\s+/g, ' ').trim();
+                var mmLead = t.match(/^([\d.,\s]+)\s*mm\b/i);
+                if (mmLead && mmLead[1]) return mmLead[1].trim();
             }
             return '';
         };
@@ -10599,15 +10609,9 @@ window.updateStoricoButton = async function() {
             if (!fieldId) return '';
             var normId = typeof window.normalizeTrendFieldId === 'function'
                 ? window.normalizeTrendFieldId(fieldId) : fieldId;
-            var raw = opts.levelRaw != null ? String(opts.levelRaw).trim() : '';
+            var raw = '';
 
-            if (!raw) {
-                raw = window.readTankFieldLiveRawFromDigitalRow(normId)
-                    || (fieldId !== normId ? window.readTankFieldLiveRawFromDigitalRow(fieldId) : '')
-                    || '';
-            }
-
-            if (!raw && typeof window.isNotturnoStoccaggioFieldKey === 'function'
+            if (typeof window.isNotturnoStoccaggioFieldKey === 'function'
                 && window.isNotturnoStoccaggioFieldKey(normId)
                 && typeof window.getStoccaggioInternoFieldRaw === 'function') {
                 raw = window.getStoccaggioInternoFieldRaw(normId) || '';
@@ -10637,6 +10641,18 @@ window.updateStoricoButton = async function() {
             if (!raw && window.__cloudPlantCache && window.__cloudPlantCache[normId] != null
                 && String(window.__cloudPlantCache[normId]).trim() !== '') {
                 raw = String(window.__cloudPlantCache[normId]).trim();
+            }
+
+            if (!raw && opts.levelRaw != null) {
+                var lr = String(opts.levelRaw).trim();
+                var mmLead = lr.match(/^([\d.,\s]+)\s*mm\b/i);
+                raw = mmLead && mmLead[1] ? mmLead[1].trim() : lr;
+            }
+
+            if (!raw) {
+                raw = window.readTankFieldLiveRawFromDigitalRow(normId)
+                    || (fieldId !== normId ? window.readTankFieldLiveRawFromDigitalRow(fieldId) : '')
+                    || '';
             }
 
             return raw || '';
@@ -17968,7 +17984,10 @@ window.updateStoricoButton = async function() {
 
         window.parseTankLevelMm = function(raw) {
             if (raw == null || raw === '') return NaN;
-            var s = String(raw).trim().replace(/\s/g, '').replace(/\s*mm\s*$/i, '');
+            var s = String(raw).trim();
+            var mmLead = s.match(/^([\d.,\s]+)\s*mm\b/i);
+            if (mmLead) s = mmLead[1].trim();
+            s = s.replace(/\s/g, '').replace(/\s*mm\s*$/i, '');
             if (!s) return NaN;
             var itThousands = s.match(/^(\d{1,3})[.,](\d{3})$/);
             if (itThousands) return parseFloat(itThousands[1] + itThousands[2]);
@@ -21015,21 +21034,10 @@ window.openDigitalPreview = async function () {
                         ? (card.querySelector('.digital-card-title')?.textContent || '').replace(/\s+/g, ' ').trim()
                         : 'Digital HD';
                     const moduleId = card ? card.getAttribute('data-module-id') : '';
-                    var levelRaw = '';
-                    var valEl = tankRow.querySelector('.digital-stocc-value');
-                    if (valEl) levelRaw = String(valEl.textContent || '').trim();
-                    if (!levelRaw) {
-                        var lvlEl = tankRow.querySelector('.digital-stocc-level-line');
-                        if (lvlEl) {
-                            var lm = String(lvlEl.textContent || '').match(/([\d.\s,]+)\s*mm/i);
-                            if (lm && lm[1]) levelRaw = lm[1].trim();
-                        }
-                    }
                     window.openTankDetailPage(fieldId, {
                         backLabel: moduleTitle || 'Digital HD',
                         source: 'digital',
-                        moduleId: moduleId,
-                        levelRaw: levelRaw
+                        moduleId: moduleId
                     });
                     return;
                 }

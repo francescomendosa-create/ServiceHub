@@ -664,7 +664,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v277';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v278';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -16813,6 +16813,68 @@ window.updateStoricoButton = async function() {
             }
         };
 
+        window.rigenPresetLimitSec = function (side, idx) {
+            const steps = window.rigenGetSteps(side);
+            const step = steps[idx];
+            const preset = window.rigenGetPreset(side, idx);
+            if (!step) return 0;
+            if (step.unit === 'sec') return Math.max(0, Math.round(preset));
+            return Math.max(0, Math.round(preset * 60));
+        };
+
+        window.rigenCapAttualeForStep = function (side, idx, elapsedSec) {
+            const steps = window.rigenGetSteps(side);
+            const step = steps[idx];
+            if (!step) return;
+            const preset = window.rigenGetPreset(side, idx);
+            const limitSec = window.rigenPresetLimitSec(side, idx);
+            const elapsed = Math.max(0, Math.floor(window.rigenParseNum(elapsedSec)));
+            if (step.unit === 'sec') {
+                window.rigenSetAttuale(side, idx, Math.min(elapsed, limitSec));
+                return;
+            }
+            const mins = Math.floor(elapsed / 60);
+            const capMins = Math.max(0, Math.floor(preset));
+            window.rigenSetAttuale(side, idx, Math.min(mins, capMins));
+        };
+
+        window.rigenFreezePastSteps = function (side) {
+            const idx = window.rigenGetStepIndex(side);
+            for (let i = 0; i < idx; i++) {
+                if (window.rigenShouldSkipStep(side, i) || window.rigenIsReferenceStep(side, i)) continue;
+                const step = window.rigenGetSteps(side)[i];
+                const preset = window.rigenGetPreset(side, i);
+                if (step.unit === 'sec') window.rigenSetAttuale(side, i, Math.round(preset));
+                else window.rigenSetAttuale(side, i, Math.floor(preset));
+            }
+        };
+
+        /** Chiude la fase al preset, passa alla successiva e riavvia l'orologio (con eventuale overflow). */
+        window.rigenCompleteStepAndAdvance = function (side, completedIdx, overflowSec) {
+            window.__ensureRigenState();
+            const steps = window.rigenGetSteps(side);
+            const step = steps[completedIdx];
+            if (step && !window.rigenShouldSkipStep(side, completedIdx) && !window.rigenIsReferenceStep(side, completedIdx)) {
+                const preset = window.rigenGetPreset(side, completedIdx);
+                if (step.unit === 'sec') window.rigenSetAttuale(side, completedIdx, Math.round(preset));
+                else window.rigenSetAttuale(side, completedIdx, Math.floor(preset));
+            }
+            let nextIdx = completedIdx + 1;
+            while (nextIdx < steps.length &&
+                (window.rigenShouldSkipStep(side, nextIdx) || window.rigenIsReferenceStep(side, nextIdx))) {
+                window.rigenSetAttuale(side, nextIdx, 0);
+                nextIdx++;
+            }
+            if (nextIdx >= steps.length) {
+                window.__rigenState.done[side] = true;
+                window.rigenSetStepIndex(side, steps.length - 1);
+                return;
+            }
+            window.rigenSetStepIndex(side, nextIdx);
+            window.rigenSetAttuale(side, nextIdx, 0);
+            window.rigenApplyStepOverflow(side, overflowSec);
+        };
+
         window.rigenSyncSideFromWallClock = function (side) {
             window.__ensureRigenState();
             const st = window.__rigenState;
@@ -16821,40 +16883,24 @@ window.updateStoricoButton = async function() {
             while (guard++ < 24) {
                 const steps = window.rigenGetSteps(side);
                 let idx = window.rigenGetStepIndex(side);
-                if (window.rigenShouldSkipStep(side, idx)) {
+                if (window.rigenShouldSkipStep(side, idx) || window.rigenIsReferenceStep(side, idx)) {
                     window.rigenSetAttuale(side, idx, 0);
-                    window.rigenAdvanceStep(side);
+                    window.rigenCompleteStepAndAdvance(side, idx, 0);
                     continue;
                 }
                 const step = steps[idx];
                 if (!step) break;
-                if (window.rigenIsReferenceStep(side, idx)) {
-                    window.rigenAdvanceStep(side);
+                const presetLimitSec = window.rigenPresetLimitSec(side, idx);
+                const elapsed = window.rigenGetStepElapsedSec(side);
+                if (elapsed >= presetLimitSec && presetLimitSec > 0) {
+                    const overflowSec = elapsed - presetLimitSec;
+                    window.rigenCompleteStepAndAdvance(side, idx, overflowSec);
                     continue;
                 }
-                const preset = window.rigenGetPreset(side, idx);
-                const elapsed = window.rigenGetStepElapsedSec(side);
-                if (step.unit === 'sec') {
-                    window.rigenSetAttuale(side, idx, elapsed);
-                    if (elapsed >= preset) {
-                        const overflowSec = elapsed - preset;
-                        window.rigenAdvanceStep(side);
-                        window.rigenApplyStepOverflow(side, overflowSec);
-                        continue;
-                    }
-                } else {
-                    const mins = Math.floor(elapsed / 60);
-                    window.rigenSetAttuale(side, idx, mins);
-                    const presetSec = preset * 60;
-                    if (elapsed >= presetSec) {
-                        const overflowSec = elapsed - presetSec;
-                        window.rigenAdvanceStep(side);
-                        window.rigenApplyStepOverflow(side, overflowSec);
-                        continue;
-                    }
-                }
+                window.rigenCapAttualeForStep(side, idx, elapsed);
                 break;
             }
+            window.rigenFreezePastSteps(side);
         };
 
         window.rigenSyncFromWallClock = function () {
@@ -17025,10 +17071,11 @@ window.updateStoricoButton = async function() {
             window.rigenUpdateSecRef('cat');
         };
 
-        window.rigenSkipZeroSteps = function (side) {
+        window.rigenSeekFirstTimedStep = function (side) {
             const steps = window.rigenGetSteps(side);
-            let idx = window.rigenGetStepIndex(side);
-            while (idx < steps.length && window.rigenShouldSkipStep(side, idx)) {
+            let idx = 0;
+            while (idx < steps.length &&
+                (window.rigenShouldSkipStep(side, idx) || window.rigenIsReferenceStep(side, idx))) {
                 window.rigenSetAttuale(side, idx, 0);
                 idx++;
             }
@@ -17039,23 +17086,17 @@ window.updateStoricoButton = async function() {
             }
             window.rigenSetStepIndex(side, idx);
             window.rigenSetAttuale(side, idx, 0);
-            if (!window.__rigenState.stepStartedAt[side]) {
-                window.rigenResetStepClock(side);
-            }
+            window.rigenResetStepClock(side);
             return true;
         };
 
+        window.rigenSkipZeroSteps = function (side) {
+            return window.rigenSeekFirstTimedStep(side);
+        };
+
         window.rigenAdvanceStep = function (side) {
-            const steps = window.rigenGetSteps(side);
-            let idx = window.rigenGetStepIndex(side) + 1;
-            if (idx >= steps.length) {
-                window.__rigenState.done[side] = true;
-                window.rigenSetStepIndex(side, steps.length - 1);
-                return;
-            }
-            window.rigenSetStepIndex(side, idx);
-            window.rigenSetAttuale(side, idx, 0);
-            window.rigenSkipZeroSteps(side);
+            const idx = window.rigenGetStepIndex(side);
+            window.rigenCompleteStepAndAdvance(side, idx, 0);
         };
 
         window.rigenStopTimers = function () {
@@ -17098,10 +17139,12 @@ window.updateStoricoButton = async function() {
             window.__rigenState.pausedMs = { an: 0, cat: 0 };
             window.__rigenState.pauseStartedAt = 0;
             ['an', 'cat'].forEach(function (side) {
+                const steps = window.rigenGetSteps(side);
                 window.rigenSetStepIndex(side, 0);
-                window.rigenSetAttuale(side, 0, 0);
-                window.rigenResetStepClock(side);
-                window.rigenSkipZeroSteps(side);
+                for (let i = 0; i < steps.length; i++) {
+                    window.rigenSetAttuale(side, i, 0);
+                }
+                window.rigenSeekFirstTimedStep(side);
             });
             if (window.__rigenState.done.an && window.__rigenState.done.cat) {
                 window.rigenUpdateRowHighlight();

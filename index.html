@@ -664,7 +664,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v295';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v296';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -32979,7 +32979,7 @@ window.applyDcsReadingsToAllRapportini = async function(readings) {
 
     window.__lastLocalPlantEditMs = Date.now();
     if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
-    if (typeof window.saveData === 'function') await window.saveData(true);
+    if (typeof window.saveData === 'function') void window.saveData(true);
 
     window._lastDcsRapportiniCount = rapportinoCount;
     return applied;
@@ -34595,6 +34595,7 @@ window.showSmartCaptureConfirm = function(parsed) {
 window.closeSmartCaptureConfirm = function(reopenSettings) {
     const modal = document.getElementById('smart-capture-confirm-modal');
     if (modal) modal.classList.remove('active');
+    if (typeof window.setSmartCaptureLoading === 'function') window.setSmartCaptureLoading(false);
     window._smartCapturePending = null;
     window._smartCapturePhotoData = null;
     if (reopenSettings !== false) {
@@ -34623,44 +34624,62 @@ window.applySmartCaptureResults = async function() {
         return;
     }
 
-    const pending = window._smartCapturePending || {};
+    /* Chiudi subito il riquadro — i numeri vanno applicati sotto, non bloccare su Firestore. */
+    window.closeSmartCaptureConfirm(false);
+    const settings = document.getElementById('settings-modal');
+    if (settings) settings.classList.remove('active');
+
+    const pending = window._smartCapturePending || parsed;
     const isOverview = pending.profile === 'dcs-overview-strumenti';
     const isDcs = pending.profile === 'dcs-acqua' || window.readingsIncludeDcsStoccaggio(readings);
     let applied = 0;
 
-    if (isDcs) {
-        applied = await window.applyDcsReadingsToAllRapportini(readings);
-    } else if (isOverview) {
-        readings.forEach(function(r) {
-            if (!r || !r.id) return;
-            if (r.kind === 'status' || String(r.id).indexOf('stat-') === 0) {
-                if (window.applyStatusReadingToUI(r.id, r.value)) applied++;
-            } else {
-                applied += window.setAllPlantInputsById(r.id, r.value) || 0;
-            }
-        });
-        window.__lastLocalPlantEditMs = Date.now();
-        if (typeof window.saveData === 'function') await window.saveData(true);
-    } else {
-        const fieldIds = new Set(
-            (window._smartCaptureTankMode ? window.buildTankCaptureFieldMap() : window.buildSmartCaptureFieldMap())
-                .map(function(f) { return f.id; })
-        );
-        readings.forEach(function(r) {
-            if (!r || !r.id || !fieldIds.has(r.id)) return;
-            const el = document.getElementById(r.id);
-            if (!el || el.readOnly) return;
-            el.value = String(r.value).trim();
-            applied++;
-            try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
-        });
-        window.__lastLocalPlantEditMs = Date.now();
-        if (typeof window.saveData === 'function') await window.saveData(true);
-        if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
+    try {
+        if (isDcs) {
+            applied = await window.applyDcsReadingsToAllRapportini(readings);
+        } else if (isOverview) {
+            readings.forEach(function(r) {
+                if (!r || !r.id) return;
+                if (r.kind === 'status' || String(r.id).indexOf('stat-') === 0) {
+                    if (window.applyStatusReadingToUI(r.id, r.value)) applied++;
+                } else {
+                    applied += window.setAllPlantInputsById(r.id, r.value) || 0;
+                }
+            });
+            window.__lastLocalPlantEditMs = Date.now();
+            if (typeof window.saveData === 'function') void window.saveData(true);
+        } else {
+            const fieldIds = new Set(
+                (window._smartCaptureTankMode ? window.buildTankCaptureFieldMap() : window.buildSmartCaptureFieldMap())
+                    .map(function(f) { return f.id; })
+            );
+            readings.forEach(function(r) {
+                if (!r || !r.id || !fieldIds.has(r.id)) return;
+                const el = document.getElementById(r.id);
+                if (!el || el.readOnly) return;
+                el.value = String(r.value).trim();
+                applied++;
+                try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+            });
+            window.__lastLocalPlantEditMs = Date.now();
+            if (typeof window.saveData === 'function') void window.saveData(true);
+            if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
+            if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
+        }
+    } catch (e) {
+        console.warn('[ServiceHub] applySmartCaptureResults:', e && e.message);
     }
 
-    window.closeSmartCaptureConfirm();
-    if (isDcs && applied) {
+    if (typeof window.__serviceHubFlashToast === 'function') {
+        if (isDcs && applied) {
+            const n = window._lastDcsRapportiniCount || 1;
+            window.__serviceHubFlashToast('Applicati ' + applied + ' livelli DCS (' + n + ' rapportini).', false, 'ok');
+        } else if (applied) {
+            window.__serviceHubFlashToast('Applicati ' + applied + ' livelli serbatoi.', false, 'ok');
+        } else {
+            window.__serviceHubFlashToast('Nessun campo aggiornato.', false, 'warn');
+        }
+    } else if (isDcs && applied) {
         const n = window._lastDcsRapportiniCount || 1;
         alert('Applicati ' + applied + ' livelli DCS · Stoccaggio su Notturno, TK 9000/9201 su tutti i rapportini (' + n + ').');
     } else {

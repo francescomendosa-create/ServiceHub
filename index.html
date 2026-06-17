@@ -664,7 +664,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v287';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v288';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -9702,6 +9702,16 @@ window.updateStoricoButton = async function() {
                         fields: window.collectFieldsForContatoriSection()
                     };
                     changed = true;
+                } else {
+                    const cnt = store.items.fuochista.schedeConfig.modules['sec-contatori'];
+                    const before = JSON.stringify(cnt);
+                    if (typeof window.normalizeContatoriSchedaModule === 'function') {
+                        window.normalizeContatoriSchedaModule(cnt);
+                    }
+                    if (cnt.enabled !== false && (!cnt.fields || !cnt.fields.length)) {
+                        cnt.fields = window.collectFieldsForContatoriSection();
+                    }
+                    if (JSON.stringify(cnt) !== before) changed = true;
                 }
                 if (!store.items.fuochista.schedeConfig.modules['sec-conteggio-filtra']) {
                     store.items.fuochista.schedeConfig.modules['sec-conteggio-filtra'] = {
@@ -13091,6 +13101,9 @@ window.updateStoricoButton = async function() {
                 if (typeof window.enforceRapportinoPlantVisibility === 'function') {
                     window.enforceRapportinoPlantVisibility(cfg, rid, hid);
                 }
+                if (rid === 'fuochista' && typeof window.syncContatoriLayout === 'function') {
+                    window.syncContatoriLayout(cfg, rid, hid);
+                }
                 if (typeof window.updateRapportiniRowBlocksVisibility === 'function') {
                     window.updateRapportiniRowBlocksVisibility();
                 }
@@ -13972,13 +13985,13 @@ window.updateStoricoButton = async function() {
             return !!(mod && mod.enabled !== false);
         };
 
-        /** Rimuove schede disattivate dal config salvato (solo moduli presenti e attivi restano). */
+        /** Rimuove moduli nulli dal config salvato (mantiene stub enabled:false). */
         window.pruneRapportinoSchedeConfig = function(schedeConfig) {
             const cfg = schedeConfig || { modules: {} };
             if (!cfg.modules) cfg.modules = {};
             Object.keys(cfg.modules).forEach(function(secId) {
                 const mod = cfg.modules[secId];
-                if (!mod || mod.enabled === false) delete cfg.modules[secId];
+                if (!mod) delete cfg.modules[secId];
             });
             return cfg;
         };
@@ -13988,7 +14001,7 @@ window.updateStoricoButton = async function() {
             secEl.style.setProperty('display', show ? 'flex' : 'none', 'important');
         };
 
-        /** Config salvato: solo moduli ancora presenti e attivi nel draft. */
+        /** Config salvato: moduli attivi + schede disattivate (enabled:false) per ricordare nome/orientamento. */
         window.buildSavedSchedeConfigFromDraft = function(rapportinoId, draft) {
             const d = window.cloneRapportinoConfig(draft || { modules: {} });
             if (!d.modules) d.modules = {};
@@ -13998,7 +14011,18 @@ window.updateStoricoButton = async function() {
             const out = { modules: {} };
             Object.keys(d.modules).forEach(function(k) {
                 const mod = d.modules[k];
-                if (mod && mod.enabled !== false) out.modules[k] = mod;
+                if (!mod) return;
+                if (mod.enabled === false) {
+                    const stub = { enabled: false };
+                    if (mod.title) stub.title = mod.title;
+                    if (mod.orientation) stub.orientation = mod.orientation;
+                    if (mod.layout) stub.layout = mod.layout;
+                    if (mod.fields && mod.fields.length) stub.fields = mod.fields;
+                    if (mod.stepCount != null) stub.stepCount = mod.stepCount;
+                    out.modules[k] = stub;
+                    return;
+                }
+                if (mod.enabled !== false) out.modules[k] = mod;
             });
             return out;
         };
@@ -14079,11 +14103,8 @@ window.updateStoricoButton = async function() {
                         window.syncContatoriPanel({ schedeConfig: cfg, rapportinoId: rid });
                     }
                     if (enabled && mod) {
-                        const title = mod.title || tab.name;
-                        const tendinaLbl = document.getElementById('lbl-sec-contatori-tendina');
-                        if (tendinaLbl) tendinaLbl.textContent = title;
-                        const vLbl = document.getElementById('lbl-sec-contatori-vertical');
-                        if (vLbl) vLbl.textContent = title;
+                        const title = window.getContatoriSchedaTitle(mod);
+                        window.applyContatoriSchedaLabels(mod);
                         (mod.fields || []).forEach(function(f) {
                             if (f.enabled !== false) {
                                 window.applyFieldLabelInDom(f.id, window.normalizePlantFieldLabel(f.id, f.label));
@@ -14359,9 +14380,12 @@ window.updateStoricoButton = async function() {
                 }
                 if (rid !== 'generale' && rid !== 'notturno' && item.schedeConfig && item.schedeConfig.modules) {
                     Object.keys(item.schedeConfig.modules).forEach(function(k) {
-                        if (item.schedeConfig.modules[k] && item.schedeConfig.modules[k].enabled === false) {
-                            delete item.schedeConfig.modules[k];
-                            changed = true;
+                        const mod = item.schedeConfig.modules[k];
+                        if (mod && mod.enabled === false && typeof window.normalizeRapportinoSchedaOrientation === 'function') {
+                            window.normalizeRapportinoSchedaOrientation(mod, k);
+                        }
+                        if (mod && mod.enabled === false && k === 'sec-contatori' && typeof window.normalizeContatoriSchedaModule === 'function') {
+                            window.normalizeContatoriSchedaModule(mod);
                         }
                     });
                 }
@@ -15425,10 +15449,26 @@ window.updateStoricoButton = async function() {
                     };
                 }
             } else {
-                if (window._rapportiniModificaId === 'generale') {
-                    draft.modules[secId].enabled = draft.modules[secId].enabled === false;
+                const mod = draft.modules[secId];
+                if (mod.enabled === false) {
+                    mod.enabled = true;
+                    if (secId === 'sec-contatori' && (!mod.fields || !mod.fields.length)) {
+                        mod.fields = window.collectFieldsForContatoriSection();
+                    }
+                    if (secId === 'sec-conducibilita' && (!mod.fields || !mod.fields.length)) {
+                        mod.fields = window.collectFieldsForConducibilitaSection();
+                    }
+                    if (secId === 'sec-conteggio-filtra' && (!mod.fields || !mod.fields.length)) {
+                        mod.fields = window.collectFieldsForConteggioFiltraSection();
+                    }
+                    if (typeof window.normalizeRapportinoSchedaOrientation === 'function') {
+                        window.normalizeRapportinoSchedaOrientation(mod, secId);
+                    }
+                    if (secId === 'sec-contatori' && typeof window.normalizeContatoriSchedaModule === 'function') {
+                        window.normalizeContatoriSchedaModule(mod);
+                    }
                 } else {
-                    delete draft.modules[secId];
+                    mod.enabled = false;
                 }
             }
             window.renderRapportinoModificaList();
@@ -15588,7 +15628,9 @@ window.updateStoricoButton = async function() {
                 const mod = draft.modules[secId];
                 const inDraft = !!mod;
                 const enabled = mod && mod.enabled !== false;
-                const title = (mod && mod.title) || (tabMeta && tabMeta.name) || secId;
+                const title = secId === 'sec-contatori'
+                    ? window.getContatoriSchedaTitle(mod || {})
+                    : ((mod && mod.title) || (tabMeta && tabMeta.name) || secId);
                 const isCustom = window.isCustomRapportinoScheda(secId);
                 const fields = (mod && mod.fields && mod.fields.length) ? mod.fields : [];
                 const safeSec = secId.replace(/'/g, "\\'");
@@ -15641,6 +15683,9 @@ window.updateStoricoButton = async function() {
                 const secId = inp.getAttribute('data-sec');
                 if (!secId || !draft.modules[secId]) return;
                 draft.modules[secId].title = inp.value.trim() || secId;
+                if (secId === 'sec-contatori' && typeof window.normalizeContatoriSchedaModule === 'function') {
+                    window.normalizeContatoriSchedaModule(draft.modules[secId]);
+                }
             });
             list.querySelectorAll('.rapportino-field-label').forEach(function(inp) {
                 const secId = inp.getAttribute('data-sec');

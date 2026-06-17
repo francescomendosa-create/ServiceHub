@@ -664,7 +664,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v293';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v294';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -2059,12 +2059,44 @@ window.colorPreviewNumber = function(tankName, value) {
         window.originalInterfaceDate = '';
         window.__editingArchiveMeta = null;
 
+        /** Turni impianto: 06–14 = 1°, 14–22 = 2°, 22–06 = 3°. */
+        window.getShiftLabelForClock = function (h, m) {
+            h = Number(h);
+            m = Number(m);
+            if (isNaN(h)) h = 0;
+            if (isNaN(m)) m = 0;
+            var t = h * 60 + m;
+            if (t >= 6 * 60 && t < 14 * 60) return '1° TURNO';
+            if (t >= 14 * 60 && t < 22 * 60) return '2° TURNO';
+            return '3° TURNO';
+        };
+
+        window.getShiftLabelForDate = function (d) {
+            if (!d || isNaN(d.getTime())) d = new Date();
+            return window.getShiftLabelForClock(d.getHours(), d.getMinutes());
+        };
+
+        window.getShiftLabelForArchiveEntry = function (entry) {
+            if (!entry) return '';
+            var ms = typeof window.getArchiveTimestampMs === 'function' ? window.getArchiveTimestampMs(entry) : 0;
+            if (ms > 0) return window.getShiftLabelForDate(new Date(ms));
+            var raw = String(entry.time || entry.archiveTime || '').trim();
+            var tm = raw.match(/(\d{1,2}):(\d{2})/);
+            if (tm) return window.getShiftLabelForClock(parseInt(tm[1], 10), parseInt(tm[2], 10));
+            return String(entry.shift || '').trim();
+        };
+
+        window.__parseShiftTurnNumber = function (shiftLabel) {
+            var m = String(shiftLabel || '').match(/(\d)\s*°?\s*TURNO/i);
+            return m ? parseInt(m[1], 10) : 1;
+        };
+
         window.__getShiftStartHourLabel = function (shiftLabel) {
-            shiftLabel = String(shiftLabel || '').trim();
-            if (shiftLabel.indexOf('2') !== -1) return '14:00';
-            if (shiftLabel.indexOf('3') !== -1) return '22:00';
-            if (shiftLabel.indexOf('5') !== -1) return '18:00';
-            if (shiftLabel.indexOf('4') !== -1) return '06:00';
+            var n = window.__parseShiftTurnNumber(shiftLabel);
+            if (n === 2) return '14:00';
+            if (n === 3) return '22:00';
+            if (n === 5) return '18:00';
+            if (n === 4) return '06:00';
             return '06:00';
         };
 
@@ -4281,11 +4313,14 @@ window.colorPreviewNumber = function(tankName, value) {
             });
             
             const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
+            const refDate = cleanedData.createdAt ? new Date(Number(cleanedData.createdAt)) : new Date();
             const historyEntry = {
                 ...cleanedData,
                 time: cleanedData.time || new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }),
                 date: cleanedData.createdAt ? undefined : (cleanedData.date || new Date().toLocaleDateString('it-IT')),
-                shift: cleanedData.shift || currentShift
+                shift: cleanedData.shift || (typeof window.getShiftLabelForDate === 'function'
+                    ? window.getShiftLabelForDate(refDate)
+                    : currentShift)
             };
             
             window.savedHistory.push(historyEntry);
@@ -4540,7 +4575,9 @@ window.colorPreviewNumber = function(tankName, value) {
             const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
             const data = {
                 manualShift: manualShift,
-                shift: currentShift,
+                shift: typeof window.getShiftLabelForDate === 'function'
+                    ? window.getShiftLabelForDate(new Date((editMeta && editMeta.date) ? editMeta.date.getTime() : (window.editingCreatedAt || Date.now())))
+                    : currentShift,
                 time: timeToSave,
                 archiveTime: window.isEditingArchive
                     ? (editMeta ? editMeta.archiveTime : displayValue)
@@ -11255,8 +11292,15 @@ window.updateStoricoButton = async function() {
                 ? window.normalizeTrendFieldId(fieldId) : fieldId;
             var archives = typeof window.collectRealArchives === 'function' ? window.collectRealArchives() : [];
             if (opts.shiftOnly) {
-                var curShift = (document.getElementById('current-shift-label')?.innerText || '').trim();
-                archives = archives.filter(function (e) { return (e.shift || '').trim() === curShift; });
+                var curShift = typeof window.getShiftLabelForDate === 'function'
+                    ? window.getShiftLabelForDate(new Date())
+                    : (document.getElementById('current-shift-label')?.innerText || '').trim();
+                archives = archives.filter(function (e) {
+                    var entryShift = typeof window.getShiftLabelForArchiveEntry === 'function'
+                        ? window.getShiftLabelForArchiveEntry(e)
+                        : (e.shift || '').trim();
+                    return entryShift === curShift;
+                });
             }
             var series = [];
             archives.forEach(function (entry) {
@@ -20032,7 +20076,11 @@ window.updateStoricoButton = async function() {
             const dateEl = document.getElementById('display-date');
             if (dateEl) dateEl.innerText = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getFullYear()).slice(-2)}`;
             const shiftLabel = document.getElementById('current-shift-label');
-            if (shiftLabel) shiftLabel.innerText = manualShift || (now.getHours() >= 6 && now.getHours() < 14 ? "1° TURNO" : (now.getHours() >= 14 && now.getHours() < 22 ? "2° TURNO" : (now.getHours() >= 22 || now.getHours() < 6 ? "3° TURNO" : "4° TURNO")));
+            if (shiftLabel) {
+                shiftLabel.innerText = manualShift || (typeof window.getShiftLabelForDate === 'function'
+                    ? window.getShiftLabelForDate(now)
+                    : (now.getHours() >= 6 && now.getHours() < 14 ? '1° TURNO' : (now.getHours() >= 14 && now.getHours() < 22 ? '2° TURNO' : '3° TURNO')));
+            }
         }
 
         /** Serbatoi ammessi in «Gestione Serbatoi» (solo Ambiente 1 + Ambiente 2). */
@@ -20403,31 +20451,39 @@ window.updateStoricoButton = async function() {
             return 0;
         };
 
-        window.getCurrentShiftStartMs = function() {
-            var shiftLabel = (document.getElementById('current-shift-label')?.innerText || '').trim();
-            var now = new Date();
-            var y = now.getFullYear(), mo = now.getMonth(), d = now.getDate(), h = now.getHours();
-            var hour = 6;
-            if (shiftLabel.indexOf('2') !== -1) hour = 14;
-            else if (shiftLabel.indexOf('3') !== -1) hour = 22;
-            else if (shiftLabel.indexOf('4') !== -1) hour = 6;
-            else if (shiftLabel.indexOf('5') !== -1) hour = 18;
-            if (shiftLabel.indexOf('3') !== -1 && h < 6) {
+        window.getCurrentShiftStartMs = function(refDate) {
+            refDate = refDate || new Date();
+            var shiftLabel = typeof window.getShiftLabelForDate === 'function'
+                ? window.getShiftLabelForDate(refDate)
+                : (document.getElementById('current-shift-label')?.innerText || '').trim();
+            var y = refDate.getFullYear(), mo = refDate.getMonth(), d = refDate.getDate();
+            var h = refDate.getHours();
+            var n = window.__parseShiftTurnNumber(shiftLabel);
+            if (n === 3) {
+                if (h < 6) return new Date(y, mo, d - 1, 22, 0, 0, 0).getTime();
+                if (h >= 22) return new Date(y, mo, d, 22, 0, 0, 0).getTime();
                 return new Date(y, mo, d - 1, 22, 0, 0, 0).getTime();
             }
-            if (shiftLabel.indexOf('5') !== -1) {
+            if (n === 5) {
                 if (h < 6) return new Date(y, mo, d - 1, 18, 0, 0, 0).getTime();
                 if (h >= 18) return new Date(y, mo, d, 18, 0, 0, 0).getTime();
                 return new Date(y, mo, d - 1, 18, 0, 0, 0).getTime();
             }
-            return new Date(y, mo, d, hour, 0, 0, 0).getTime();
+            var startHour = window.__getShiftStartHourLabel(shiftLabel);
+            var parts = startHour.split(':');
+            return new Date(y, mo, d, parseInt(parts[0], 10), parseInt(parts[1], 10) || 0, 0, 0).getTime();
         };
 
         window.getShiftBaselineArchiveForTrend = function() {
-            var currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
+            var currentShift = typeof window.getShiftLabelForDate === 'function'
+                ? window.getShiftLabelForDate(new Date())
+                : (document.getElementById('current-shift-label')?.innerText?.trim() || '');
             if (!currentShift) return null;
             var archives = window.collectRealArchives().filter(function(entry) {
-                return (entry.shift || '').trim() === currentShift;
+                var entryShift = typeof window.getShiftLabelForArchiveEntry === 'function'
+                    ? window.getShiftLabelForArchiveEntry(entry)
+                    : (entry.shift || '').trim();
+                return entryShift === currentShift;
             });
             if (!archives.length) return null;
             var shiftStart = window.getCurrentShiftStartMs();

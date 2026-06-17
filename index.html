@@ -664,7 +664,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v273';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v275';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -6036,6 +6036,7 @@ window.updateStoricoButton = async function() {
             });
             document.addEventListener('visibilitychange', function () {
                 if (document.visibilityState === 'hidden') {
+                    if (typeof window.rigenOnVisibilityChange === 'function') window.rigenOnVisibilityChange();
                     if (typeof window.saveUiScrollRestore === 'function') window.saveUiScrollRestore();
                     if (__plantPersistTimer) {
                         clearTimeout(__plantPersistTimer);
@@ -6057,6 +6058,7 @@ window.updateStoricoButton = async function() {
                         void window.saveData(true);
                     }
                 } else if (document.visibilityState === 'visible') {
+                    if (typeof window.rigenOnVisibilityChange === 'function') window.rigenOnVisibilityChange();
                     if (typeof window.__pullAllCloudStateNow === 'function') {
                         void window.__pullAllCloudStateNow();
                     }
@@ -6076,12 +6078,21 @@ window.updateStoricoButton = async function() {
                     if (typeof window.saveUiScrollRestore === 'function') window.saveUiScrollRestore();
                 }, 200);
             }, { passive: true });
+            window.addEventListener('focus', function () {
+                if (typeof window.rigenOnVisibilityChange === 'function') {
+                    window.rigenOnVisibilityChange();
+                }
+            });
             window.addEventListener('pagehide', function () {
+                if (typeof window.rigenOnVisibilityChange === 'function') window.rigenOnVisibilityChange();
                 if (typeof window.saveUiScrollRestore === 'function') window.saveUiScrollRestore();
             });
             window.addEventListener('pageshow', function (ev) {
                 if (ev.persisted && typeof window.restoreUiScrollIfNeeded === 'function') {
                     setTimeout(window.restoreUiScrollIfNeeded, 80);
+                }
+                if (typeof window.rigenOnVisibilityChange === 'function') {
+                    window.rigenOnVisibilityChange();
                 }
             });
 
@@ -16688,7 +16699,198 @@ window.updateStoricoButton = async function() {
             { label: 'TEMPO LAVAGGIO IN RICICLO', unit: 'min', preset: 60 }
         ];
         window.__rigenTimer = null;
-        window.__rigenState = { running: false, paused: false, minAccum: { an: 0, cat: 0 }, done: { an: false, cat: false } };
+        window.__rigenWakeLock = null;
+        window.__rigenState = {
+            running: false,
+            paused: false,
+            done: { an: false, cat: false },
+            stepStartedAt: { an: 0, cat: 0 },
+            pausedMs: { an: 0, cat: 0 },
+            pauseStartedAt: 0
+        };
+
+        window.__ensureRigenState = function () {
+            const st = window.__rigenState;
+            if (!st.stepStartedAt) st.stepStartedAt = { an: 0, cat: 0 };
+            if (!st.pausedMs) st.pausedMs = { an: 0, cat: 0 };
+            if (!st.done) st.done = { an: false, cat: false };
+        };
+
+        window.rigenResetStepClock = function (side) {
+            window.__ensureRigenState();
+            window.__rigenState.stepStartedAt[side] = Date.now();
+            window.__rigenState.pausedMs[side] = 0;
+        };
+
+        window.rigenGetStepElapsedSec = function (side) {
+            window.__ensureRigenState();
+            const st = window.__rigenState;
+            const started = st.stepStartedAt[side] || 0;
+            if (!started) return 0;
+            const endMs = st.paused && st.pauseStartedAt ? st.pauseStartedAt : Date.now();
+            return Math.max(0, Math.floor((endMs - started - (st.pausedMs[side] || 0)) / 1000));
+        };
+
+        window.rigenPersistClockToDom = function () {
+            window.__ensureRigenState();
+            const st = window.__rigenState;
+            const set = function (id, val) {
+                const el = document.getElementById(id);
+                if (el) el.value = String(val);
+            };
+            set('rigen-running', st.running ? '1' : '0');
+            set('rigen-paused', st.paused ? '1' : '0');
+            set('rigen-pause-at', st.pauseStartedAt || 0);
+            set('rigen-step-started-an', st.stepStartedAt.an || 0);
+            set('rigen-step-started-cat', st.stepStartedAt.cat || 0);
+            set('rigen-paused-ms-an', st.pausedMs.an || 0);
+            set('rigen-paused-ms-cat', st.pausedMs.cat || 0);
+            set('rigen-done-an', st.done.an ? '1' : '0');
+            set('rigen-done-cat', st.done.cat ? '1' : '0');
+        };
+
+        window.rigenRestoreClockFromDom = function () {
+            window.__ensureRigenState();
+            const st = window.__rigenState;
+            const get = function (id) {
+                const el = document.getElementById(id);
+                return el ? el.value : '';
+            };
+            st.running = get('rigen-running') === '1';
+            st.paused = get('rigen-paused') === '1';
+            st.pauseStartedAt = parseInt(get('rigen-pause-at'), 10) || 0;
+            st.stepStartedAt.an = parseInt(get('rigen-step-started-an'), 10) || 0;
+            st.stepStartedAt.cat = parseInt(get('rigen-step-started-cat'), 10) || 0;
+            st.pausedMs.an = parseInt(get('rigen-paused-ms-an'), 10) || 0;
+            st.pausedMs.cat = parseInt(get('rigen-paused-ms-cat'), 10) || 0;
+            st.done.an = get('rigen-done-an') === '1';
+            st.done.cat = get('rigen-done-cat') === '1';
+            if (st.running && !st.paused) {
+                window.rigenEnsureTimerRunning();
+                window.rigenRequestWakeLock();
+                window.rigenSyncFromWallClock();
+            } else {
+                window.rigenReleaseWakeLock();
+            }
+            window.rigenUpdateToolbarState();
+            window.rigenUpdateRowHighlight();
+            window.rigenUpdateFaseLabels();
+        };
+
+        window.rigenRequestWakeLock = async function () {
+            try {
+                if (navigator.wakeLock && !window.__rigenWakeLock) {
+                    window.__rigenWakeLock = await navigator.wakeLock.request('screen');
+                }
+            } catch (_) {}
+        };
+
+        window.rigenReleaseWakeLock = function () {
+            if (window.__rigenWakeLock) {
+                try { window.__rigenWakeLock.release(); } catch (_) {}
+                window.__rigenWakeLock = null;
+            }
+        };
+
+        window.rigenEnsureTimerRunning = function () {
+            window.__ensureRigenState();
+            const st = window.__rigenState;
+            if (!st.running || st.paused) return;
+            if (!window.__rigenTimer) {
+                window.__rigenTimer = setInterval(function () {
+                    window.rigenSyncFromWallClock();
+                }, 1000);
+            }
+        };
+
+        window.rigenApplyStepOverflow = function (side, overflowSec) {
+            window.__ensureRigenState();
+            const overflow = Math.max(0, Math.floor(window.rigenParseNum(overflowSec)));
+            if (overflow > 0) {
+                window.__rigenState.stepStartedAt[side] = Date.now() - (overflow * 1000);
+            } else {
+                window.rigenResetStepClock(side);
+            }
+        };
+
+        window.rigenSyncSideFromWallClock = function (side) {
+            window.__ensureRigenState();
+            const st = window.__rigenState;
+            if (!st.running || st.done[side]) return;
+            let guard = 0;
+            while (guard++ < 24) {
+                const steps = window.rigenGetSteps(side);
+                let idx = window.rigenGetStepIndex(side);
+                if (window.rigenShouldSkipStep(side, idx)) {
+                    window.rigenSetAttuale(side, idx, 0);
+                    window.rigenAdvanceStep(side);
+                    continue;
+                }
+                const step = steps[idx];
+                if (!step) break;
+                if (window.rigenIsReferenceStep(side, idx)) {
+                    window.rigenAdvanceStep(side);
+                    continue;
+                }
+                const preset = window.rigenGetPreset(side, idx);
+                const elapsed = window.rigenGetStepElapsedSec(side);
+                if (step.unit === 'sec') {
+                    window.rigenSetAttuale(side, idx, elapsed);
+                    if (elapsed >= preset) {
+                        const overflowSec = elapsed - preset;
+                        window.rigenAdvanceStep(side);
+                        window.rigenApplyStepOverflow(side, overflowSec);
+                        continue;
+                    }
+                } else {
+                    const mins = Math.floor(elapsed / 60);
+                    window.rigenSetAttuale(side, idx, mins);
+                    const presetSec = preset * 60;
+                    if (elapsed >= presetSec) {
+                        const overflowSec = elapsed - presetSec;
+                        window.rigenAdvanceStep(side);
+                        window.rigenApplyStepOverflow(side, overflowSec);
+                        continue;
+                    }
+                }
+                break;
+            }
+        };
+
+        window.rigenSyncFromWallClock = function () {
+            window.__ensureRigenState();
+            const st = window.__rigenState;
+            if (!st.running || st.paused) return;
+            let allDone = true;
+            ['an', 'cat'].forEach(function (side) {
+                if (st.done[side]) return;
+                allDone = false;
+                window.rigenSyncSideFromWallClock(side);
+            });
+            window.rigenUpdateRowHighlight();
+            window.rigenUpdateFaseLabels();
+            window.rigenPersistClockToDom();
+            if (allDone || (st.done.an && st.done.cat)) {
+                window.rigenStopTimers();
+            } else if (typeof window.saveActiveRapportinoFromUI === 'function') {
+                window.saveActiveRapportinoFromUI();
+            }
+        };
+
+        window.rigenOnVisibilityChange = function () {
+            if (!window.__rigenState || !window.__rigenState.running) return;
+            if (document.visibilityState === 'hidden') {
+                window.rigenSyncFromWallClock();
+                window.rigenPersistClockToDom();
+                if (typeof window.saveActiveRapportinoFromUI === 'function') {
+                    try { window.saveActiveRapportinoFromUI(); } catch (_) {}
+                }
+            } else {
+                window.rigenEnsureTimerRunning();
+                window.rigenRequestWakeLock();
+                window.rigenSyncFromWallClock();
+            }
+        };
 
         window.rigenGetSteps = function (side) {
             return side === 'cat' ? (window.RIGENERAZIONE_CAT_STEPS || []) : (window.RIGENERAZIONE_AN_STEPS || []);
@@ -16806,14 +17008,15 @@ window.updateStoricoButton = async function() {
             }
             window.rigenSetStepIndex(side, idx);
             window.rigenSetAttuale(side, idx, 0);
-            window.__rigenState.minAccum[side] = 0;
+            if (!window.__rigenState.stepStartedAt[side]) {
+                window.rigenResetStepClock(side);
+            }
             return true;
         };
 
         window.rigenAdvanceStep = function (side) {
             const steps = window.rigenGetSteps(side);
             let idx = window.rigenGetStepIndex(side) + 1;
-            window.__rigenState.minAccum[side] = 0;
             if (idx >= steps.length) {
                 window.__rigenState.done[side] = true;
                 window.rigenSetStepIndex(side, steps.length - 1);
@@ -16824,53 +17027,16 @@ window.updateStoricoButton = async function() {
             window.rigenSkipZeroSteps(side);
         };
 
-        window.rigenTickOnce = function () {
-            if (!window.__rigenState.running || window.__rigenState.paused) return;
-            let allDone = true;
-            ['an', 'cat'].forEach(function (side) {
-                if (window.__rigenState.done[side]) return;
-                allDone = false;
-                const steps = window.rigenGetSteps(side);
-                const idx = window.rigenGetStepIndex(side);
-                const step = steps[idx];
-                if (!step) return;
-                if (window.rigenIsReferenceStep(side, idx)) {
-                    window.rigenAdvanceStep(side);
-                    return;
-                }
-                const preset = window.rigenGetPreset(side, idx);
-                let att = window.rigenGetAttuale(side, idx);
-                if (step.unit === 'sec') {
-                    att += 1;
-                    window.rigenSetAttuale(side, idx, att);
-                    if (att >= preset) window.rigenAdvanceStep(side);
-                } else {
-                    window.__rigenState.minAccum[side] += 1;
-                    if (window.__rigenState.minAccum[side] >= 60) {
-                        window.__rigenState.minAccum[side] = 0;
-                        att += 1;
-                        window.rigenSetAttuale(side, idx, att);
-                        if (att >= preset) window.rigenAdvanceStep(side);
-                    }
-                }
-            });
-            window.rigenUpdateRowHighlight();
-            window.rigenUpdateFaseLabels();
-            if (allDone || (window.__rigenState.done.an && window.__rigenState.done.cat)) {
-                window.rigenStopTimers();
-            }
-            if (typeof window.saveActiveRapportinoFromUI === 'function') {
-                window.saveActiveRapportinoFromUI();
-            }
-        };
-
         window.rigenStopTimers = function () {
             window.__rigenState.running = false;
             window.__rigenState.paused = false;
+            window.__rigenState.pauseStartedAt = 0;
             if (window.__rigenTimer) {
                 clearInterval(window.__rigenTimer);
                 window.__rigenTimer = null;
             }
+            window.rigenReleaseWakeLock();
+            window.rigenPersistClockToDom();
             window.rigenUpdateToolbarState();
             if (typeof window.rigenUpdateFaseLabels === 'function') window.rigenUpdateFaseLabels();
         };
@@ -16885,15 +17051,25 @@ window.updateStoricoButton = async function() {
         window.rigenStart = function () {
             if (window.__rigenState.running && !window.__rigenState.paused) return;
             if (window.__rigenState.paused) {
+                const pauseDur = Date.now() - (window.__rigenState.pauseStartedAt || Date.now());
+                ['an', 'cat'].forEach(function (side) {
+                    window.__rigenState.pausedMs[side] = (window.__rigenState.pausedMs[side] || 0) + pauseDur;
+                });
                 window.__rigenState.paused = false;
+                window.__rigenState.pauseStartedAt = 0;
+                window.rigenEnsureTimerRunning();
+                window.rigenRequestWakeLock();
+                window.rigenSyncFromWallClock();
                 window.rigenUpdateToolbarState();
                 return;
             }
             window.__rigenState.done = { an: false, cat: false };
-            window.__rigenState.minAccum = { an: 0, cat: 0 };
+            window.__rigenState.pausedMs = { an: 0, cat: 0 };
+            window.__rigenState.pauseStartedAt = 0;
             ['an', 'cat'].forEach(function (side) {
                 window.rigenSetStepIndex(side, 0);
                 window.rigenSetAttuale(side, 0, 0);
+                window.rigenResetStepClock(side);
                 window.rigenSkipZeroSteps(side);
             });
             if (window.__rigenState.done.an && window.__rigenState.done.cat) {
@@ -16904,22 +17080,37 @@ window.updateStoricoButton = async function() {
             window.__rigenState.running = true;
             window.__rigenState.paused = false;
             if (window.__rigenTimer) clearInterval(window.__rigenTimer);
-            window.__rigenTimer = setInterval(window.rigenTickOnce, 1000);
+            window.__rigenTimer = null;
+            window.rigenEnsureTimerRunning();
+            window.rigenRequestWakeLock();
+            window.rigenPersistClockToDom();
+            window.rigenSyncFromWallClock();
             window.rigenUpdateRowHighlight();
             window.rigenUpdateFaseLabels();
             window.rigenUpdateToolbarState();
         };
 
         window.rigenStop = function () {
-            if (!window.__rigenState.running) return;
+            if (!window.__rigenState.running || window.__rigenState.paused) return;
+            window.rigenSyncFromWallClock();
             window.__rigenState.paused = true;
+            window.__rigenState.pauseStartedAt = Date.now();
+            if (window.__rigenTimer) {
+                clearInterval(window.__rigenTimer);
+                window.__rigenTimer = null;
+            }
+            window.rigenReleaseWakeLock();
+            window.rigenPersistClockToDom();
             window.rigenUpdateToolbarState();
+            if (typeof window.saveActiveRapportinoFromUI === 'function') window.saveActiveRapportinoFromUI();
         };
 
         window.rigenReset = function () {
             window.rigenStopTimers();
             window.__rigenState.done = { an: false, cat: false };
-            window.__rigenState.minAccum = { an: 0, cat: 0 };
+            window.__rigenState.pausedMs = { an: 0, cat: 0 };
+            window.__rigenState.stepStartedAt = { an: 0, cat: 0 };
+            window.__rigenState.pauseStartedAt = 0;
             ['an', 'cat'].forEach(function (side) {
                 const steps = window.rigenGetSteps(side);
                 window.rigenSetStepIndex(side, 0);
@@ -16930,6 +17121,7 @@ window.updateStoricoButton = async function() {
             window.rigenUpdateRowHighlight();
             window.rigenUpdateFaseLabels();
             window.rigenUpdateToolbarState();
+            window.rigenPersistClockToDom();
             if (typeof window.saveActiveRapportinoFromUI === 'function') window.saveActiveRapportinoFromUI();
         };
 
@@ -16969,6 +17161,15 @@ window.updateStoricoButton = async function() {
 
         window.buildRigenerazionePanelHtml = function () {
             return '<div class="rigen-hmi">' +
+                '<input type="hidden" id="rigen-running" value="0">' +
+                '<input type="hidden" id="rigen-paused" value="0">' +
+                '<input type="hidden" id="rigen-pause-at" value="0">' +
+                '<input type="hidden" id="rigen-step-started-an" value="0">' +
+                '<input type="hidden" id="rigen-step-started-cat" value="0">' +
+                '<input type="hidden" id="rigen-paused-ms-an" value="0">' +
+                '<input type="hidden" id="rigen-paused-ms-cat" value="0">' +
+                '<input type="hidden" id="rigen-done-an" value="0">' +
+                '<input type="hidden" id="rigen-done-cat" value="0">' +
                 '<div class="rigen-toolbar">' +
                 '<button type="button" id="rigen-btn-start" class="rigen-btn rigen-btn-start" onclick="window.rigenStart()">START</button>' +
                 '<button type="button" id="rigen-btn-stop" class="rigen-btn rigen-btn-stop" onclick="window.rigenStop()" disabled>STOP</button>' +
@@ -17012,6 +17213,7 @@ window.updateStoricoButton = async function() {
                 if (el) el.value = data[k] != null ? String(data[k]) : '';
             });
             window.initRigenerazioneDefaults();
+            window.rigenRestoreClockFromDom();
             window.rigenUpdateRowHighlight();
             window.rigenUpdateFaseLabels();
             window.rigenUpdateToolbarState();
@@ -17020,12 +17222,13 @@ window.updateStoricoButton = async function() {
         window.renderRigenerazionePanel = function () {
             const panel = document.getElementById('rigenerazione-panel');
             if (!panel) return;
-            const ver = 'v2-rigen-ref';
+            const ver = 'v3-rigen-clock';
             if (panel.dataset.rendered !== ver) {
                 panel.innerHTML = window.buildRigenerazionePanelHtml();
                 panel.dataset.rendered = ver;
             }
             window.initRigenerazioneDefaults();
+            window.rigenRestoreClockFromDom();
             window.rigenUpdateRowHighlight();
             window.rigenUpdateFaseLabels();
             window.rigenUpdateToolbarState();

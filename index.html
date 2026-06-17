@@ -664,7 +664,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v294';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v295';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -1691,6 +1691,17 @@ window.colorPreviewNumber = function(tankName, value) {
             window.__applyPhoneSectionsLayout(null);
         };
         let manualShift = null;
+        /** true solo se l'operatore ha scelto manualmente un turno (popup); mai da sync cloud. */
+        window.__manualShiftUserPinned = false;
+
+        window.getDisplayShiftLabel = function (d) {
+            if (window.__manualShiftUserPinned && manualShift && String(manualShift).trim()) {
+                return String(manualShift).trim();
+            }
+            return typeof window.getShiftLabelForDate === 'function'
+                ? window.getShiftLabelForDate(d || new Date())
+                : '1° TURNO';
+        };
 
         // Esponi hiddenModules come proprietà di window per accessibilità globale
         window.hiddenModules = hiddenModules;
@@ -2865,8 +2876,10 @@ window.colorPreviewNumber = function(tankName, value) {
                 }
             }
             const data = {
-                manualShift: manualShift || null,
-                shift: currentShift,
+                manualShift: window.__manualShiftUserPinned ? (manualShift || null) : null,
+                shift: typeof window.getShiftLabelForDate === 'function'
+                    ? window.getShiftLabelForDate(new Date())
+                    : currentShift,
                 lastUpdate: lastUpdate,
                 syncRevision: syncRevision
             };
@@ -4675,7 +4688,8 @@ window.colorPreviewNumber = function(tankName, value) {
         };
 
         window.__archiveFirestoreTimeoutMs = function () {
-            return (typeof window.isServiceHubPhone === 'function' && window.isServiceHubPhone()) ? 22000 : 14000;
+            if (window.__firestoreQuotaBlocked) return 2500;
+            return (typeof window.isServiceHubPhone === 'function' && window.isServiceHubPhone()) ? 10000 : 8000;
         };
 
         window.__archiveFirestoreOp = function (promise, label) {
@@ -4696,7 +4710,7 @@ window.colorPreviewNumber = function(tankName, value) {
             if (window.__firestoreQuotaBlocked) throw new Error('quota');
             const payload = window.__prepareArchivePayloadForFirestore(data);
             const editId = opts.editingArchiveId || null;
-            const attempts = opts.maxAttempts != null ? opts.maxAttempts : 3;
+            const attempts = opts.maxAttempts != null ? opts.maxAttempts : (window.__firestoreQuotaBlocked ? 1 : 2);
             let lastErr = null;
             for (let i = 0; i < attempts; i++) {
                 try {
@@ -9718,11 +9732,12 @@ window.updateStoricoButton = async function() {
             if (!data) return;
             const forcePlant =
                 opts && opts.forceRemotePlant === true;
-            if (data.manualShift !== undefined) {
-                manualShift = data.manualShift;
-            }
-            if (data.shift !== undefined && String(data.shift).trim()) {
-                manualShift = String(data.shift).trim();
+            /* Turno UI = orologio. Il campo shift nel cloud è storico, non va bloccato come manualShift. */
+            if (opts && opts.forceRemotePlant === true) {
+                manualShift = null;
+                window.__manualShiftUserPinned = false;
+            } else if (window.__manualShiftUserPinned && data.manualShift != null && String(data.manualShift).trim()) {
+                manualShift = String(data.manualShift).trim();
             }
             updateDeviceInfo();
             // Ripristina gli stati dei serbatoi (normalizza: dal cloud può arrivare un array vuoto)
@@ -19474,7 +19489,13 @@ window.updateStoricoButton = async function() {
             if (modal) modal.classList.add('active');
         };
         window.closeShiftPopup = () => { document.getElementById('shift-modal').classList.remove('active'); };
-        window.selectShift = (shiftName) => { manualShift = shiftName; updateDeviceInfo(); window.saveData(); window.closeShiftPopup(); };
+        window.selectShift = (shiftName) => {
+            manualShift = shiftName;
+            window.__manualShiftUserPinned = !!(shiftName && String(shiftName).trim());
+            updateDeviceInfo();
+            window.saveData();
+            window.closeShiftPopup();
+        };
         window.openSettings = () => { 
     forceBlur(); 
     window.setSmartCaptureLoading && window.setSmartCaptureLoading(false);
@@ -20087,9 +20108,11 @@ window.updateStoricoButton = async function() {
             if (dateEl) dateEl.innerText = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getFullYear()).slice(-2)}`;
             const shiftLabel = document.getElementById('current-shift-label');
             if (shiftLabel) {
-                shiftLabel.innerText = manualShift || (typeof window.getShiftLabelForDate === 'function'
-                    ? window.getShiftLabelForDate(now)
-                    : (now.getHours() >= 6 && now.getHours() < 14 ? '1° TURNO' : (now.getHours() >= 14 && now.getHours() < 22 ? '2° TURNO' : '3° TURNO')));
+                shiftLabel.innerText = typeof window.getDisplayShiftLabel === 'function'
+                    ? window.getDisplayShiftLabel(now)
+                    : (typeof window.getShiftLabelForDate === 'function'
+                        ? window.getShiftLabelForDate(now)
+                        : '3° TURNO');
             }
         }
 

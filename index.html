@@ -664,7 +664,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v271';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v273';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -16674,7 +16674,7 @@ window.updateStoricoButton = async function() {
             { label: 'TEMPO RITARDO START RIGENERAZIONE', unit: 'sec', preset: 0 },
             { label: 'TEMPO PASSAGGIO SODA 1° FASE', unit: 'min', preset: 20 },
             { label: 'TEMPO PASSAGGIO SODA 2° FASE', unit: 'min', preset: 20 },
-            { label: 'TEMPO RITARDO LETTURA MIS. PORTATA', unit: 'sec', preset: 1000 },
+            { label: 'TEMPO RITARDO LETTURA MIS. PORTATA', unit: 'sec', preset: 1000, referenceOnly: true },
             { label: 'TEMPO SPOSTAMENTO', unit: 'min', preset: 40 },
             { label: 'TEMPO LAVAGGIO IN RICICLO', unit: 'min', preset: 60 },
             { label: 'TEMPO CONTROLLO IN RICICLO', unit: 'min', preset: 60 }
@@ -16683,7 +16683,7 @@ window.updateStoricoButton = async function() {
             { label: 'TEMPO RITARDO START RIGENERAZIONE', unit: 'sec', preset: 0 },
             { label: 'TEMPO PASSAGGIO ACIDO 1° FASE', unit: 'min', preset: 30 },
             { label: 'TEMPO PASSAGGIO ACIDO 2° FASE', unit: 'min', preset: 30 },
-            { label: 'TEMPO RITARDO LETTURA MIS. PORTATA', unit: 'sec', preset: 1000 },
+            { label: 'TEMPO RITARDO LETTURA MIS. PORTATA', unit: 'sec', preset: 1000, referenceOnly: true },
             { label: 'TEMPO SPOSTAMENTO', unit: 'min', preset: 40 },
             { label: 'TEMPO LAVAGGIO IN RICICLO', unit: 'min', preset: 60 }
         ];
@@ -16692,6 +16692,18 @@ window.updateStoricoButton = async function() {
 
         window.rigenGetSteps = function (side) {
             return side === 'cat' ? (window.RIGENERAZIONE_CAT_STEPS || []) : (window.RIGENERAZIONE_AN_STEPS || []);
+        };
+
+        /** Solo riferimento: non entra nella sequenza timer (es. ritardo lettura portata). */
+        window.rigenIsReferenceStep = function (side, idx) {
+            const steps = window.rigenGetSteps(side);
+            const step = steps[idx];
+            return !!(step && step.referenceOnly);
+        };
+
+        window.rigenShouldSkipStep = function (side, idx) {
+            if (window.rigenIsReferenceStep(side, idx)) return true;
+            return window.rigenGetPreset(side, idx) <= 0.0001;
         };
 
         window.rigenParseNum = function (v) {
@@ -16751,33 +16763,39 @@ window.updateStoricoButton = async function() {
             ['an', 'cat'].forEach(function (side) {
                 if (window.__rigenState.done[side]) return;
                 const idx = window.rigenGetStepIndex(side);
+                if (window.rigenIsReferenceStep(side, idx)) return;
                 const row = document.querySelector('.rigen-row[data-rigen-side="' + side + '"][data-rigen-idx="' + idx + '"]');
                 if (row) row.classList.add('rigen-row-active');
             });
         };
 
+        window.rigenIsFiltraInMarcia = function () {
+            const el = document.getElementById('stat-f');
+            if (!el) return false;
+            return String(el.innerText || '').trim().toUpperCase().indexOf('MARCIA') >= 0;
+        };
+
+        /** Testo riga sotto FASE ATTUALE (legato a scheda FILTRA + timer rigenerazione). */
+        window.rigenGetLineaFaseTesto = function () {
+            if (window.__rigenState && window.__rigenState.running) {
+                return 'LINEA IN RIGENERAZIONE';
+            }
+            if (window.rigenIsFiltraInMarcia()) return 'LINEA IN MARCIA';
+            return 'LINEA FERMA';
+        };
+
         window.rigenUpdateFaseLabels = function () {
+            const txt = window.rigenGetLineaFaseTesto();
             ['an', 'cat'].forEach(function (side) {
                 const el = document.getElementById('rigen-' + side + '-fase');
-                if (!el) return;
-                const steps = window.rigenGetSteps(side);
-                if (window.__rigenState.done[side]) {
-                    el.textContent = 'RIGENERAZIONE COMPLETATA';
-                    return;
-                }
-                const idx = window.rigenGetStepIndex(side);
-                if (!window.__rigenState.running && idx === 0 && window.rigenGetAttuale(side, 0) === 0) {
-                    el.textContent = 'LINEA IN MARCIA';
-                    return;
-                }
-                el.textContent = (steps[idx] && steps[idx].label) || 'LINEA IN MARCIA';
+                if (el) el.textContent = txt;
             });
         };
 
         window.rigenSkipZeroSteps = function (side) {
             const steps = window.rigenGetSteps(side);
             let idx = window.rigenGetStepIndex(side);
-            while (idx < steps.length && window.rigenGetPreset(side, idx) <= 0.0001) {
+            while (idx < steps.length && window.rigenShouldSkipStep(side, idx)) {
                 window.rigenSetAttuale(side, idx, 0);
                 idx++;
             }
@@ -16816,6 +16834,10 @@ window.updateStoricoButton = async function() {
                 const idx = window.rigenGetStepIndex(side);
                 const step = steps[idx];
                 if (!step) return;
+                if (window.rigenIsReferenceStep(side, idx)) {
+                    window.rigenAdvanceStep(side);
+                    return;
+                }
                 const preset = window.rigenGetPreset(side, idx);
                 let att = window.rigenGetAttuale(side, idx);
                 if (step.unit === 'sec') {
@@ -16914,17 +16936,20 @@ window.updateStoricoButton = async function() {
             return steps.map(function (step, idx) {
                 const unitLbl = step.unit === 'sec' ? 'sec.' : 'min.';
                 const preset = window.rigenFormatPreset(step.preset);
-                return '<tr class="rigen-row" data-rigen-side="' + side + '" data-rigen-idx="' + idx + '">' +
-                    '<td class="rigen-lbl">' + window.escRapportinoHtml(step.label) + '</td>' +
+                const ref = step.referenceOnly ? ' rigen-row-reference' : '';
+                const attualeHtml = step.referenceOnly
+                    ? '<span class="rigen-ref-dash" title="Solo riferimento">—</span>'
+                    : '<input type="tel" class="rigen-inp rigen-inp-attuale" id="rigen-' + side + '-a' + idx + '" ' +
+                        'inputmode="numeric" value="0" readonly tabindex="-1">';
+                return '<tr class="rigen-row' + ref + '" data-rigen-side="' + side + '" data-rigen-idx="' + idx + '">' +
+                    '<td class="rigen-lbl">' + window.escRapportinoHtml(step.label) +
+                    (step.referenceOnly ? ' <span class="rigen-ref-tag">(rif.)</span>' : '') + '</td>' +
                     '<td class="rigen-unit">' + unitLbl + '</td>' +
                     '<td class="rigen-val rigen-preset-cell">' +
                     '<input type="tel" class="rigen-inp rigen-inp-preset" id="rigen-' + side + '-p' + idx + '" ' +
                     'inputmode="decimal" value="' + preset + '" onchange="window.rigenOnPresetChange(\'' + side + '\',' + idx + ')">' +
                     '</td>' +
-                    '<td class="rigen-val rigen-attuale-cell">' +
-                    '<input type="tel" class="rigen-inp rigen-inp-attuale" id="rigen-' + side + '-a' + idx + '" ' +
-                    'inputmode="numeric" value="0" readonly tabindex="-1">' +
-                    '</td></tr>';
+                    '<td class="rigen-val rigen-attuale-cell">' + attualeHtml + '</td></tr>';
             }).join('');
         };
 
@@ -16994,7 +17019,7 @@ window.updateStoricoButton = async function() {
         window.renderRigenerazionePanel = function () {
             const panel = document.getElementById('rigenerazione-panel');
             if (!panel) return;
-            const ver = 'v1-rigen-hmi';
+            const ver = 'v2-rigen-ref';
             if (panel.dataset.rendered !== ver) {
                 panel.innerHTML = window.buildRigenerazionePanelHtml();
                 panel.dataset.rendered = ver;
@@ -24939,6 +24964,10 @@ window.convertToHtml = async () => {
         .rigen-row-active .rigen-lbl,
         .rigen-row-active .rigen-unit { background: #fde047; }
         .rigen-row-active .rigen-inp { background: #fef08a; border-color: #ca8a04; }
+        .rigen-row-reference .rigen-lbl { opacity: 0.88; font-style: italic; }
+        .rigen-ref-tag { font-size: 9px; font-weight: 700; opacity: 0.75; }
+        .rigen-ref-dash { display: block; text-align: center; font-size: 16px; font-weight: 900; color: #334155; line-height: 1.6; }
+        .rigen-row-reference .rigen-inp-preset { background: #dbeafe; border-style: dashed; }
         .rigen-fase-line {
             margin-top: 8px;
             text-align: center;

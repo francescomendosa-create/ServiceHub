@@ -4828,10 +4828,11 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (typeof window.saveActiveRapportinoFromUI === 'function') {
                     try { window.saveActiveRapportinoFromUI(); } catch (_) {}
                 }
+                /* Plant cloud in background — non bloccare il tasto Salva (evita attese da syncBackupHistory). */
                 if (typeof window.__flushPlantCloudSaveNow === 'function') {
-                    try { await window.__flushPlantCloudSaveNow(true); } catch (_) {}
+                    void window.__flushPlantCloudSaveNow(true).catch(function () {});
                 } else if (typeof window.saveData === 'function') {
-                    try { await window.saveData(true); } catch (_) {}
+                    void window.saveData(true).catch(function () {});
                 }
 
                 const editMeta = window.isEditingArchive && typeof window.__getArchiveEditMeta === 'function'
@@ -4840,56 +4841,20 @@ window.colorPreviewNumber = function(tankName, value) {
                 const data = window.buildArchiveSnapshotFromDOM(editMeta);
                 const localOk = window.persistArchiveSnapshotLocal(data);
 
-                if (!user || !user.uid || !db) {
-                    btn.innerHTML = localOk ? 'SALVATO!' : 'OFFLINE';
-                    btn.classList.add(localOk ? 'bg-yellow-500' : 'bg-red-600');
-                    if (localOk) showArchiveToast('Salvato in locale. Cloud non disponibile: si riprova quando torni online.', 'warn');
-                    await sleep(1400);
-                    if (localOk && typeof window.updateStoricoButton === 'function') window.updateStoricoButton();
-                    return;
-                }
-                if (window.__firestoreQuotaBlocked) {
-                    btn.innerHTML = localOk ? 'LOCALE OK' : 'QUOTA';
-                    btn.classList.add(localOk ? 'bg-yellow-500' : 'bg-red-600');
-                    if (typeof window.__showPlantCloudSyncBanner === 'function') {
-                        window.__showPlantCloudSyncBanner('Quota Firestore superata: storico salvato in locale su questo dispositivo.');
-                    }
-                    await sleep(1400);
-                    if (localOk && typeof window.updateStoricoButton === 'function') window.updateStoricoButton();
+                if (!localOk) {
+                    btn.innerHTML = 'ERRORE';
+                    btn.classList.add('bg-red-600');
+                    await sleep(1200);
                     return;
                 }
 
-                let cloudOk = false;
-                let cloudErr = null;
-                try {
-                    const uploadOpts = {
-                        editingArchiveId: (window.isEditingArchive && window.editingArchiveId) ? window.editingArchiveId : null
-                    };
-                    await window.__uploadArchiveSnapshotToCloud(data, uploadOpts);
-                    cloudOk = true;
-                    window.__removePendingArchiveUpload(data.createdAt);
-                } catch (e) {
-                    cloudErr = e;
-                    console.error('[ServiceHub] archiveCurrentData cloud:', e && e.code, e && e.message);
-                    if (window.__isFirestoreQuotaError && window.__isFirestoreQuotaError(e)) {
-                        window.__onFirestoreQuotaExceeded();
-                    }
-                    if (localOk) {
-                        window.__queuePendingArchiveUpload({
-                            createdAt: data.createdAt,
-                            payload: data,
-                            editingArchiveId: (window.isEditingArchive && window.editingArchiveId) ? window.editingArchiveId : null
-                        });
-                        void window.__flushPendingArchiveCloudUploads();
-                    }
-                    if (window.__isFirestorePermissionError && window.__isFirestorePermissionError(e)) {
-                        showArchiveToast('Cloud rifiutato (regole Firestore). Dati salvati in locale.', 'warn');
-                    } else if (localOk) {
-                        showArchiveToast('Salvato in locale. Invio cloud in sospeso — si riprova automaticamente.', 'warn');
-                    }
+                if (!window.isEditingArchive) {
+                    if (window.setTankLevelBaselineFromSnapshotData) window.setTankLevelBaselineFromSnapshotData(data);
+                    if (window.refreshAllTankLevelArrows) window.refreshAllTankLevelArrows();
                 }
 
-                if (window.isEditingArchive && window.editingArchiveId && (cloudOk || localOk)) {
+                var finishEditMode = function () {
+                    if (!window.isEditingArchive || !window.editingArchiveId) return;
                     if (window.savedHistory && Array.isArray(window.savedHistory) && window.editingCreatedAt) {
                         window.savedHistory = window.savedHistory.filter(function (entry) {
                             return entry.createdAt !== window.editingCreatedAt;
@@ -4903,37 +4868,63 @@ window.colorPreviewNumber = function(tankName, value) {
                     if (typeof window.__exitArchiveEditMode === 'function') {
                         window.__exitArchiveEditMode({ restoreLiveDate: true });
                     }
-                    if (typeof window.updateStoricoButton === 'function') {
-                        window.updateStoricoButton();
-                    }
+                    if (typeof window.updateStoricoButton === 'function') window.updateStoricoButton();
                     if (typeof window.__scheduleArchiveEditBackgroundSync === 'function') {
                         window.__scheduleArchiveEditBackgroundSync();
                     }
                     if (typeof updateDeviceInfo === 'function') updateDeviceInfo();
-                }
+                };
 
-                if (!window.isEditingArchive && (cloudOk || localOk)) {
-                    if (window.setTankLevelBaselineFromSnapshotData) window.setTankLevelBaselineFromSnapshotData(data);
-                    if (window.refreshAllTankLevelArrows) window.refreshAllTankLevelArrows();
-                    if (cloudOk) schedulePublicDigitalAfterArchive('archiveCurrentData nuovo backup publicDigital');
+                var canCloud = user && user.uid && db && !window.__firestoreQuotaBlocked;
+                if (!canCloud) {
+                    if (window.__firestoreQuotaBlocked && typeof window.__showPlantCloudSyncBanner === 'function') {
+                        window.__showPlantCloudSyncBanner('Quota Firestore superata: storico salvato in locale su questo dispositivo.');
+                    } else if (localOk) {
+                        showArchiveToast('Salvato in locale. Cloud non disponibile.', 'warn');
+                    }
+                    finishEditMode();
+                    btn.innerHTML = window.__firestoreQuotaBlocked ? 'LOCALE OK' : (user && user.uid ? 'LOCALE OK' : 'SALVATO!');
+                    btn.classList.add(window.__firestoreQuotaBlocked ? 'bg-yellow-500' : 'bg-emerald-600');
                     if (typeof window.updateStoricoButton === 'function') window.updateStoricoButton();
+                    await sleep(800);
+                    return;
                 }
 
-                if (cloudOk) {
-                    btn.innerHTML = 'SALVATO!';
-                    btn.classList.add('bg-emerald-600');
-                    await sleep(1200);
-                } else if (localOk) {
-                    btn.innerHTML = 'LOCALE OK';
-                    btn.classList.add('bg-yellow-500');
-                    await sleep(1400);
-                } else {
-                    const errLabel = (cloudErr && String(cloudErr.message || '').indexOf('timeout') >= 0) ? 'TIMEOUT'
-                        : (cloudErr && window.__isFirestorePermissionError && window.__isFirestorePermissionError(cloudErr)) ? 'REGOLE'
-                        : 'ERRORE';
-                    btn.innerHTML = errLabel;
-                    btn.classList.add('bg-red-600');
-                    await sleep(1400);
+                /* Feedback immediato: locale ok, cloud in background. */
+                btn.innerHTML = 'SALVATO!';
+                btn.classList.add('bg-emerald-600');
+                finishEditMode();
+                if (typeof window.updateStoricoButton === 'function') window.updateStoricoButton();
+                await sleep(600);
+
+                var uploadOpts = {
+                    editingArchiveId: (window.isEditingArchive && window.editingArchiveId) ? window.editingArchiveId : null,
+                    maxAttempts: 2
+                };
+                try {
+                    await window.__uploadArchiveSnapshotToCloud(data, uploadOpts);
+                    window.__removePendingArchiveUpload(data.createdAt);
+                    if (!window.isEditingArchive) {
+                        schedulePublicDigitalAfterArchive('archiveCurrentData nuovo backup publicDigital');
+                    }
+                } catch (e) {
+                    console.error('[ServiceHub] archiveCurrentData cloud:', e && e.code, e && e.message);
+                    if (window.__isFirestoreQuotaError && window.__isFirestoreQuotaError(e)) {
+                        window.__onFirestoreQuotaExceeded();
+                    }
+                    window.__queuePendingArchiveUpload({
+                        createdAt: data.createdAt,
+                        payload: data,
+                        editingArchiveId: uploadOpts.editingArchiveId || null
+                    });
+                    void window.__flushPendingArchiveCloudUploads();
+                    if (window.__isFirestorePermissionError && window.__isFirestorePermissionError(e)) {
+                        showArchiveToast('Cloud rifiutato (regole Firestore). Dati già salvati in locale.', 'warn');
+                    } else if (String(e && e.message || '').indexOf('timeout') >= 0) {
+                        showArchiveToast('Cloud lento — dati salvati in locale, invio in sospeso.', 'warn');
+                    } else {
+                        showArchiveToast('Salvato in locale. Invio cloud in sospeso.', 'warn');
+                    }
                 }
             };
 

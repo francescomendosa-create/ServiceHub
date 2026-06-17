@@ -16198,14 +16198,16 @@ window.updateStoricoButton = async function() {
 
         window.initConteggioFiltraDefaults = function() {
             if (!window.getCfilFieldValue('cfil-fine-ciclo')) {
-                window.setCfilFieldValue('cfil-fine-ciclo', window.CONTEGGIO_FILTRA_DEFAULT_FINE_CICLO || '15:00');
+                window.setCfilFieldValue('cfil-fine-ciclo', window.CONTEGGIO_FILTRA_DEFAULT_FINE_CICLO || '1500');
             }
         };
 
-        window.normalizeCfilTimeFieldValue = function(raw) {
+        window.normalizeCfilFineCicloValue = function(raw) {
             if (raw == null || raw === '') return '';
-            const min = window.parseCfilTimeValue(raw);
-            return min != null ? window.formatCfilClockTime(min) : String(raw);
+            const s = String(raw).trim();
+            if (s.indexOf(':') >= 0) return window.CONTEGGIO_FILTRA_DEFAULT_FINE_CICLO || '1500';
+            const n = window.parseCfilNumber(s);
+            return isNaN(n) ? s : window.formatCfilNumber(n, 0);
         };
 
         window.applyConteggioFiltraFieldValues = function(data) {
@@ -16218,10 +16220,11 @@ window.updateStoricoButton = async function() {
                 if (legacyMin != null) d['cfil-orario-fine'] = window.formatCfilClockTime(legacyMin);
             }
             if (d['cfil-fine-ciclo']) {
-                d['cfil-fine-ciclo'] = window.normalizeCfilTimeFieldValue(d['cfil-fine-ciclo']);
+                d['cfil-fine-ciclo'] = window.normalizeCfilFineCicloValue(d['cfil-fine-ciclo']);
             }
             if (d['cfil-orario-fine']) {
-                d['cfil-orario-fine'] = window.normalizeCfilTimeFieldValue(d['cfil-orario-fine']);
+                const om = window.parseCfilTimeValue(d['cfil-orario-fine']);
+                if (om != null) d['cfil-orario-fine'] = window.formatCfilClockTime(om);
             }
             if (!data || typeof data !== 'object') {
                 window.initConteggioFiltraDefaults();
@@ -16235,10 +16238,13 @@ window.updateStoricoButton = async function() {
             window.hydrateConteggioFiltraInputsFromDom();
             const prod = window.parseCfilNumber(window.getCfilFieldValue('cfil-produzione'));
             const portata = window.parseCfilNumber(window.getCfilFieldValue('cfil-portata'));
+            const fineCiclo = window.parseCfilNumber(window.getCfilFieldValue('cfil-fine-ciclo'));
             const ore = window.getCfilFieldValue('cfil-ore-fine');
             const orario = window.getCfilFieldValue('cfil-orario-fine');
             if (!isNaN(prod) && prod > 0 && !isNaN(portata) && portata > 0) {
                 window.syncConteggioFiltraCalc('cfil-produzione');
+            } else if (!isNaN(portata) && portata > 0 && !isNaN(fineCiclo) && fineCiclo > 0) {
+                window.syncConteggioFiltraCalc('cfil-fine-ciclo');
             } else if (orario && !ore) {
                 window.syncConteggioFiltraCalc('cfil-orario-fine');
             } else if (ore && !orario) {
@@ -16252,63 +16258,45 @@ window.updateStoricoButton = async function() {
             try {
                 window.initConteggioFiltraDefaults();
                 const src = sourceFieldId || '';
-                const prod = window.parseCfilNumber(window.getCfilFieldValue('cfil-produzione'));
+                let prod = window.parseCfilNumber(window.getCfilFieldValue('cfil-produzione'));
                 const portata = window.parseCfilNumber(window.getCfilFieldValue('cfil-portata'));
-                const fineCicloMin = window.parseCfilTimeValue(window.getCfilFieldValue('cfil-fine-ciclo'));
+                const fineCiclo = window.parseCfilNumber(window.getCfilFieldValue('cfil-fine-ciclo'));
                 const oreFine = window.parseCfilNumber(window.getCfilFieldValue('cfil-ore-fine'));
                 const orarioMin = window.parseCfilTimeValue(window.getCfilFieldValue('cfil-orario-fine'));
 
                 if (src === 'cfil-orario-fine' && orarioMin != null) {
-                    let hours = window.cfilMinutesUntilFromNow(orarioMin) / 60;
-                    hours = window.cfilCapHoursWithFineCiclo(hours, fineCicloMin);
+                    const hours = window.cfilMinutesUntilFromNow(orarioMin) / 60;
                     if (hours > 0) {
                         window.setCfilFineResult(hours, orarioMin, src);
                         if (!isNaN(portata) && portata > 0) {
-                            window.setCfilFieldValue('cfil-produzione', window.formatCfilNumber(portata * hours, 1), src);
+                            const newProd = window.cfilCapProduzioneToFineCiclo(portata * hours, fineCiclo);
+                            window.setCfilFieldValue('cfil-produzione', window.formatCfilNumber(newProd, 1), src);
                         } else if (!isNaN(prod) && prod > 0) {
                             window.setCfilFieldValue('cfil-portata', window.formatCfilNumber(prod / hours, 2), src);
                         }
                     }
                 } else if (src === 'cfil-ore-fine' && !isNaN(oreFine) && oreFine > 0) {
-                    let hours = window.cfilCapHoursWithFineCiclo(oreFine, fineCicloMin);
-                    let endMin = window.cfilAddHoursToNowMinutes(hours);
-                    endMin = window.cfilCapEndMinWithFineCiclo(endMin, fineCicloMin);
-                    hours = window.cfilMinutesUntilFromNow(endMin) / 60;
-                    window.setCfilFineResult(hours, endMin, src);
+                    const endMin = window.cfilAddHoursToNowMinutes(oreFine);
+                    window.setCfilFineResult(oreFine, endMin, src);
                     if (!isNaN(portata) && portata > 0) {
-                        window.setCfilFieldValue('cfil-produzione', window.formatCfilNumber(portata * hours, 1), src);
+                        const newProd = window.cfilCapProduzioneToFineCiclo(portata * oreFine, fineCiclo);
+                        window.setCfilFieldValue('cfil-produzione', window.formatCfilNumber(newProd, 1), src);
                     } else if (!isNaN(prod) && prod > 0) {
-                        window.setCfilFieldValue('cfil-portata', window.formatCfilNumber(prod / hours, 2), src);
+                        window.setCfilFieldValue('cfil-portata', window.formatCfilNumber(prod / oreFine, 2), src);
                     }
-                } else if (src === 'cfil-fine-ciclo' && fineCicloMin != null) {
-                    if (!isNaN(prod) && prod > 0 && !isNaN(portata) && portata > 0) {
-                        let hours = prod / portata;
-                        hours = window.cfilCapHoursWithFineCiclo(hours, fineCicloMin);
-                        let endMin = window.cfilAddHoursToNowMinutes(hours);
-                        endMin = window.cfilCapEndMinWithFineCiclo(endMin, fineCicloMin);
-                        hours = window.cfilMinutesUntilFromNow(endMin) / 60;
-                        window.setCfilFineResult(hours, endMin, src);
-                    } else if (orarioMin != null) {
-                        let hours = window.cfilMinutesUntilFromNow(orarioMin) / 60;
-                        hours = window.cfilCapHoursWithFineCiclo(hours, fineCicloMin);
-                        if (hours > 0) window.setCfilFineResult(hours, orarioMin, src);
-                    } else if (!isNaN(oreFine) && oreFine > 0) {
-                        let hours = window.cfilCapHoursWithFineCiclo(oreFine, fineCicloMin);
-                        let endMin = window.cfilAddHoursToNowMinutes(hours);
-                        endMin = window.cfilCapEndMinWithFineCiclo(endMin, fineCicloMin);
-                        hours = window.cfilMinutesUntilFromNow(endMin) / 60;
-                        window.setCfilFineResult(hours, endMin, src);
+                } else if (src === 'cfil-fine-ciclo' && !isNaN(fineCiclo) && fineCiclo > 0 && !isNaN(portata) && portata > 0) {
+                    window.setCfilFieldValue('cfil-produzione', window.formatCfilNumber(fineCiclo, 1), src);
+                    window.cfilApplyForwardCalc(fineCiclo, portata, src);
+                } else {
+                    const calcProd = window.cfilResolveCalcProduzione(prod, fineCiclo, src);
+                    if (!isNaN(calcProd) && calcProd > 0 && !isNaN(portata) && portata > 0) {
+                        if (src === 'cfil-fine-ciclo' || src === 'cfil-portata' || isNaN(prod) || prod <= 0) {
+                            window.setCfilFieldValue('cfil-produzione', window.formatCfilNumber(calcProd, 1), src);
+                        } else if (!isNaN(fineCiclo) && fineCiclo > 0 && prod > fineCiclo) {
+                            window.setCfilFieldValue('cfil-produzione', window.formatCfilNumber(fineCiclo, 1), src);
+                        }
+                        window.cfilApplyForwardCalc(calcProd, portata, src);
                     }
-                } else if (!isNaN(prod) && prod > 0 && !isNaN(portata) && portata > 0) {
-                    let hours = prod / portata;
-                    hours = window.cfilCapHoursWithFineCiclo(hours, fineCicloMin);
-                    let endMin = window.cfilAddHoursToNowMinutes(hours);
-                    endMin = window.cfilCapEndMinWithFineCiclo(endMin, fineCicloMin);
-                    hours = window.cfilMinutesUntilFromNow(endMin) / 60;
-                    window.setCfilFineResult(hours, endMin, src);
-                }
-                if (src === 'cfil-fine-ciclo' && fineCicloMin != null) {
-                    window.setCfilFieldValue('cfil-fine-ciclo', window.formatCfilClockTime(fineCicloMin), src);
                 }
                 if (src === 'cfil-orario-fine' && orarioMin != null) {
                     window.setCfilFieldValue('cfil-orario-fine', window.formatCfilClockTime(orarioMin), src);
@@ -16337,9 +16325,8 @@ window.updateStoricoButton = async function() {
 
         window.buildConteggioFiltraFieldInputHtml = function(f) {
             const ph = window.escRapportinoHtml(f.placeholder || '');
-            const isTime = f.id === 'cfil-fine-ciclo';
             return '<input type="tel" class="cond-tendina-inp cfil-tendina-inp" data-cfil-field="' + f.id + '" id="' + f.id + '" ' +
-                'inputmode="' + (isTime ? 'numeric' : 'decimal') + '" maxlength="' + (isTime ? '5' : '12') + '" ' +
+                'inputmode="decimal" maxlength="12" ' +
                 'placeholder="' + ph + '" autocomplete="off" ' +
                 'oninput="window.syncConteggioFiltraCalc(\'' + f.id + '\')" onchange="window.saveData()">';
         };

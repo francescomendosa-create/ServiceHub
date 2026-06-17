@@ -664,7 +664,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v281';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v282';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -2392,6 +2392,50 @@ window.colorPreviewNumber = function(tankName, value) {
                 return window.buildFuochistaPhoneGroups();
             }
             return GROUPS;
+        };
+
+        /** Moduli inviabili (long-press) per il rapportino/layout corrente — per calamita «tutti inviati». */
+        window.getDashboardSendableModuleIds = function () {
+            const store = window.loadRapportiniStore && window.loadRapportiniStore();
+            const rid = (store && store.activeId) || 'generale';
+            const cfg = store && store.items[rid] && store.items[rid].schedeConfig;
+            if (window.isFuochistaPhoneLayoutActive && window.isFuochistaPhoneLayoutActive()) {
+                const out = [];
+                (window.FUOCHISTA_PHONE_MODULE_ORDER || []).forEach(function (id) {
+                    if (window.isRapportinoModuleEnabled(id, cfg)) out.push(id);
+                });
+                if (window.isRapportinoModuleEnabled('sec-rigenerazione', cfg)) {
+                    const rMod = cfg && cfg.modules && cfg.modules['sec-rigenerazione'];
+                    if (window.getRapportinoSchedaOrientation(rMod, 'sec-rigenerazione') === 'horizontal') {
+                        out.push('sec-rigenerazione');
+                    }
+                }
+                ['sec-acqua', 'sec-scam', 'sec-filtra'].forEach(function (id) {
+                    if (out.indexOf(id) >= 0) return;
+                    if (window.isRapportinoModuleEnabled(id, cfg) &&
+                        window.shouldShowPlantSchedaInDashboard(id, cfg, 'fuochista', [])) {
+                        out.push(id);
+                    }
+                });
+                return out;
+            }
+            if (window.isNotturnoFiltraLayoutActive && window.isNotturnoFiltraLayoutActive()) {
+                const out = [];
+                ['sec-contatore-filtra', 'sec-filtra', 'sec-stoccaggio-interno', 'sec-chemicals'].forEach(function (id) {
+                    if (window.isRapportinoModuleEnabled(id, cfg)) out.push(id);
+                });
+                return out;
+            }
+            return GROUPS.flat().slice();
+        };
+
+        window.areAllDashboardModulesSent = function () {
+            const sendable = typeof window.getDashboardSendableModuleIds === 'function'
+                ? window.getDashboardSendableModuleIds()
+                : GROUPS.flat();
+            const hid = window.hiddenModules || hiddenModules || [];
+            if (!sendable.length) return false;
+            return sendable.every(function (id) { return hid.indexOf(id) >= 0; });
         };
 
         window.normalizeFuochistaPhoneSectionsVisibility = function () {
@@ -18126,25 +18170,13 @@ window.updateStoricoButton = async function() {
             }, 520);
         };
 
-        /** Calamita nel layer robot (tablet/iPhone/PC); su smartphone con moduli parziali resta in basso cliccabile. */
+        /** Calamita nel layer robot (sotto le schede); su smartphone/tablet visibile solo a tutti i moduli inviati. */
         window.syncRobotMagnetPlacement = function () {
             const wrap = document.getElementById('robot-hand-magnet-wrap');
             const robotBg = document.getElementById('robot-background');
             if (!wrap || !robotBg) return;
-            const isPhone = typeof window.isServiceHubPhone === 'function' && window.isServiceHubPhone();
-            const partialPhone = isPhone && document.body.classList.contains('sh-has-sent-modules') &&
-                !document.body.classList.contains('sh-all-modules-sent');
-            if (partialPhone) {
-                if (wrap.parentElement !== document.body) {
-                    const anchor = document.querySelector('.main-container');
-                    if (anchor) document.body.insertBefore(wrap, anchor);
-                    else document.body.appendChild(wrap);
-                }
-                wrap.classList.add('robot-hand-magnet-anchor--floating');
-            } else {
-                wrap.classList.remove('robot-hand-magnet-anchor--floating');
-                if (wrap.parentElement !== robotBg) robotBg.appendChild(wrap);
-            }
+            wrap.classList.remove('robot-hand-magnet-anchor--floating');
+            if (wrap.parentElement !== robotBg) robotBg.appendChild(wrap);
         };
 
         window.updateModulesVisibility = () => {
@@ -18250,22 +18282,26 @@ window.updateStoricoButton = async function() {
 
             window.syncNotturnoModulesAfterVisibility();
             document.body.classList.toggle('sh-has-sent-modules', count > 0);
-            const robotMagnetWrap = document.getElementById('robot-hand-magnet-wrap');
-            const robotBg = document.getElementById('robot-background');
-            if (robotMagnetWrap) {
-                robotMagnetWrap.classList.toggle('robot-hand-magnet-anchor--visible', count > 0);
-                robotMagnetWrap.setAttribute('aria-hidden', count > 0 ? 'false' : 'true');
-            }
-            if (robotMagnetWrap && robotBg && typeof window.syncRobotMagnetPlacement === 'function') {
-                window.syncRobotMagnetPlacement();
-            }
-            var allModuleIds = GROUPS.flat();
-            var allSent = count > 0 && count >= allModuleIds.length;
+            const allSent = typeof window.areAllDashboardModulesSent === 'function'
+                ? window.areAllDashboardModulesSent()
+                : (count > 0 && count >= GROUPS.flat().length);
             document.body.classList.toggle('sh-all-modules-sent', allSent);
-            if (typeof window.isServiceHubPhone === 'function' && window.isServiceHubPhone()) {
+            const isPhone = typeof window.isServiceHubPhone === 'function' && window.isServiceHubPhone();
+            const isTablet = document.body.classList.contains('sh-device-tablet');
+            if (isPhone) {
                 document.body.classList.toggle('sh-phone-all-modules-sent', allSent);
             } else {
                 document.body.classList.remove('sh-phone-all-modules-sent');
+            }
+            const robotMagnetWrap = document.getElementById('robot-hand-magnet-wrap');
+            const robotBg = document.getElementById('robot-background');
+            const showMagnet = (isPhone || isTablet) ? allSent : (count > 0);
+            if (robotMagnetWrap) {
+                robotMagnetWrap.classList.toggle('robot-hand-magnet-anchor--visible', showMagnet);
+                robotMagnetWrap.setAttribute('aria-hidden', showMagnet ? 'false' : 'true');
+            }
+            if (robotMagnetWrap && robotBg && typeof window.syncRobotMagnetPlacement === 'function') {
+                window.syncRobotMagnetPlacement();
             }
             if (typeof window.expandAllSectionsLayout === 'function' && window.shouldKeepAllSectionsExpanded()) {
                 window.expandAllSectionsLayout();
@@ -26644,15 +26680,11 @@ window.convertToHtml = async () => {
                 margin-top: 28px;
                 margin-left: 18px;
             }
-            .robot-hand-magnet-anchor--floating {
-                position: fixed !important;
-                left: 56% !important;
-                top: auto !important;
-                bottom: calc(108px + env(safe-area-inset-bottom, 0px)) !important;
-                transform: translateX(-50%) !important;
-                margin-top: 0 !important;
-                margin-left: 0 !important;
-                z-index: 500 !important;
+            body.sh-device-phone:not(.sh-all-modules-sent) .robot-hand-magnet-anchor--visible,
+            body:not(.sh-all-modules-sent) .robot-hand-magnet-anchor--visible {
+                opacity: 0 !important;
+                visibility: hidden !important;
+                pointer-events: none !important;
             }
             body.sh-all-modules-sent .main-container {
                 pointer-events: none !important;

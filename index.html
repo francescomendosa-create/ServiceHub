@@ -664,7 +664,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v268';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v269';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -17139,7 +17139,7 @@ window.updateStoricoButton = async function() {
             return Promise.all([p1, p2]);
         };
 
-        /** Impostazioni: forza invio + ricezione Firestore (plant + rapportini). */
+        /** Impostazioni: sync Firestore — scarica dal cloud se indietro, invia solo se locale più recente. */
         window.forceFirestoreSyncNow = async function () {
             const btn = document.getElementById('btn-force-firestore-sync');
             if (window.__forceFirestoreSyncBusy) return;
@@ -17149,30 +17149,20 @@ window.updateStoricoButton = async function() {
                 btn.disabled = true;
                 btn.classList.add('settings-force-sync-btn--busy');
             }
-            const finish = function (ok, msg) {
+            const finish = function (ok) {
                 window.__forceFirestoreSyncBusy = false;
                 window.__forceSyncInProgress = false;
                 if (btn) {
                     btn.disabled = false;
                     btn.classList.remove('settings-force-sync-btn--busy');
                 }
-                if (msg && typeof window.__showPlantCloudSyncBanner === 'function') {
-                    window.__showPlantCloudSyncBanner(msg);
-                    if (ok && typeof window.__hidePlantCloudSyncBanner === 'function') {
-                        setTimeout(function () { window.__hidePlantCloudSyncBanner(); }, 2800);
-                    }
-                }
                 if (ok && navigator.vibrate) {
                     try { navigator.vibrate(30); } catch (_) {}
                 }
             };
             try {
-                if (window.__firestoreQuotaBlocked) {
-                    finish(false, 'Sync sospesa: quota Firestore superata. Riprova più tardi.');
-                    return;
-                }
-                if (!user || !user.uid || !db) {
-                    finish(false, 'Accedi per sincronizzare con Firestore.');
+                if (window.__firestoreQuotaBlocked || !user || !user.uid || !db) {
+                    finish(false);
                     return;
                 }
 
@@ -17192,11 +17182,8 @@ window.updateStoricoButton = async function() {
                 if (typeof window.persistNotturnoStoccaggioToRapportino === 'function') window.persistNotturnoStoccaggioToRapportino();
                 if (typeof window.flushRapportiniBackupNow === 'function') window.flushRapportiniBackupNow();
 
-                const domSnapshot = typeof window.__capturePlantDomSnapshot === 'function'
-                    ? window.__capturePlantDomSnapshot() : null;
                 const plantRef = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
                 const rapportiniRef = doc(db, 'artifacts', appId, 'sharedDial', 'rapportini');
-
                 const fetchFromServer = function (ref) {
                     return getDocFromServer(ref).catch(function () { return getDoc(ref); });
                 };
@@ -17207,71 +17194,88 @@ window.updateStoricoButton = async function() {
                 ]);
 
                 let pulledPlant = false;
+                let pushedPlant = false;
+
                 if (plantSnap && plantSnap.exists()) {
                     let serverStripped = window.__stripRapportinoKeysFromPlantPayload(plantSnap.data());
                     const serverRev = __plantPayloadRevision(serverStripped);
-                    const appliedRev = window.__appliedPlantSyncRevision || 0;
                     const serverMs = __plantLastUpdateMs(serverStripped.lastUpdate);
+                    const localPayload = typeof window.buildPlantPayloadFromDOM === 'function'
+                        ? window.buildPlantPayloadFromDOM({ bumpRevision: false }) : {};
+                    const localRev = __plantPayloadRevision(localPayload);
                     const localBackup = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
-                    const localMs = localBackup ? __plantLastUpdateMs(localBackup.lastUpdate) : null;
-                    const serverIsNewer = serverRev > appliedRev
-                        || (serverMs != null && localMs != null && serverMs > localMs + 300);
-                    if (serverIsNewer) {
+                    const localMs = __plantLastUpdateMs(localPayload.lastUpdate)
+                        || (localBackup ? __plantLastUpdateMs(localBackup.lastUpdate) : null);
+
+                    const serverIsNewer = serverRev > localRev
+                        || (serverMs != null && localMs != null && serverMs > localMs + 200);
+                    const localIsNewer = localRev > serverRev
+                        || (localMs != null && serverMs != null && localMs > serverMs + 200);
+
+                    if (localIsNewer && !serverIsNewer) {
+                        if (typeof window.__forcePushPlantToCloudNow === 'function') {
+                            await window.__forcePushPlantToCloudNow();
+                            pushedPlant = true;
+                        }
+                    } else {
                         if (typeof window.__mergeOsmosiFieldsFromSources === 'function') {
                             serverStripped = window.__mergeOsmosiFieldsFromSources(serverStripped);
                         }
                         __applyRemotePlantPayload(serverStripped, { force: true, quick: true });
-                        if (typeof window.__restoreLocalPlantEditsAfterPull === 'function') {
-                            window.__restoreLocalPlantEditsAfterPull(domSnapshot);
-                        }
                         pulledPlant = true;
                     }
                 }
 
-                if (rappSnap && rappSnap.exists() && typeof window.applyRapportiniStoreFromCloud === 'function') {
-                    window.applyRapportiniStoreFromCloud(rappSnap.data(), { force: true });
-                    if (window.__rapportiniStore && typeof window.saveRapportiniStore === 'function') {
-                        window.saveRapportiniStore(window.__rapportiniStore, { pushCloud: false });
+                if (rappSnap && rappSnap.exists()) {
+                    const serverStore = rappSnap.data();
+                    const localStore = typeof window.loadRapportiniStore === 'function'
+                        ? window.loadRapportiniStore() : null;
+                    const serverMs = typeof window.parseRapportinoUpdatedMs === 'function'
+                        ? window.parseRapportinoUpdatedMs(serverStore.lastUpdate) : 0;
+                    const localMs = localStore && typeof window.parseRapportinoUpdatedMs === 'function'
+                        ? window.parseRapportinoUpdatedMs(localStore.lastUpdate) : 0;
+
+                    if (localMs > serverMs + 200) {
+                        if (typeof window.flushRapportiniPushToCloudNow === 'function') {
+                            await window.flushRapportiniPushToCloudNow();
+                        }
+                    } else if (typeof window.applyRapportiniStoreFromCloud === 'function') {
+                        window.applyRapportiniStoreFromCloud(serverStore, { force: true });
+                        if (window.__rapportiniStore && typeof window.saveRapportiniStore === 'function') {
+                            window.saveRapportiniStore(window.__rapportiniStore, { pushCloud: false });
+                        }
                     }
                 }
 
-                const pushTasks = [];
-                if (typeof window.__forcePushPlantToCloudNow === 'function') {
-                    pushTasks.push(window.__forcePushPlantToCloudNow());
-                }
-                if (typeof window.flushRapportiniPushToCloudNow === 'function') {
-                    pushTasks.push(window.flushRapportiniPushToCloudNow());
-                }
-                await Promise.all(pushTasks);
-
-                if (typeof window.__verifyRemotePlantFieldsApplied === 'function' && typeof window.buildPlantPayloadFromDOM === 'function') {
-                    window.__verifyRemotePlantFieldsApplied(window.buildPlantPayloadFromDOM({ bumpRevision: false }), true);
+                if (pulledPlant && typeof window.__verifyRemotePlantFieldsApplied === 'function'
+                    && typeof window.buildPlantPayloadFromDOM === 'function') {
+                    window.__verifyRemotePlantFieldsApplied(
+                        window.buildPlantPayloadFromDOM({ bumpRevision: false }), true
+                    );
                 }
                 if (typeof window.__refreshPlantBaselineFromDOM === 'function') {
                     window.__refreshPlantBaselineFromDOM();
                 }
-                if (typeof window.__hidePlantCloudSyncBanner === 'function') {
-                    window.__hidePlantCloudSyncBanner();
-                }
                 if (typeof window.syncChemCountsFromFirestore === 'function') {
                     setTimeout(function () { window.syncChemCountsFromFirestore({ pushCloud: false }); }, 0);
                 }
-                if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
+                if (pushedPlant && typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                     window.schedulePublicDigitalSnapshotSync();
                 }
                 if (pulledPlant) {
                     requestAnimationFrame(function () {
                         if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
                         if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
-                        if (typeof window.syncFiltraPanelForActiveRapportino === 'function') window.syncFiltraPanelForActiveRapportino();
+                        if (typeof window.syncFiltraPanelForActiveRapportino === 'function') {
+                            window.syncFiltraPanelForActiveRapportino();
+                        }
                     });
                 }
 
-                const detail = pulledPlant ? 'Dati aggiornati dal cloud e reinviati.' : 'Dati reinviati e allineati al cloud.';
-                finish(true, 'Sync Firestore OK. ' + detail);
+                finish(true);
             } catch (e) {
                 console.warn('[ServiceHub] forceFirestoreSyncNow:', e && e.message);
-                finish(false, 'Sync non riuscita: ' + ((e && e.message) || 'rete o Firestore'));
+                finish(false);
             }
         };
 
@@ -27739,7 +27743,7 @@ window.convertToHtml = async () => {
                     <p id="app-build-tag" class="text-[9px] font-bold text-emerald-600 dark:text-emerald-400 uppercase mt-1" onclick="window.applyAppUpdate()" title="Tocca per aggiornare all'ultima versione" style="cursor:pointer;text-decoration:underline;text-underline-offset:2px;">Build …</p>
                 </div>
                 <div class="settings-header-actions flex items-center gap-2 shrink-0">
-                    <button type="button" id="btn-force-firestore-sync" class="settings-force-sync-btn" onclick="window.forceFirestoreSyncNow()" aria-label="Forza sincronizzazione Firestore" title="Forza invio e ricezione dati su Firestore">
+                    <button type="button" id="btn-force-firestore-sync" class="settings-force-sync-btn" onclick="window.forceFirestoreSyncNow()" aria-label="Allinea con Firestore" title="Scarica gli ultimi dati da Firestore; invia solo se questo dispositivo ha dati più recenti">
                         <svg class="settings-force-sync-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
                             <path d="M4.5 14A7.5 7.5 0 0 1 12 4.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"></path>
                             <path d="M4.5 14V9h5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"></path>

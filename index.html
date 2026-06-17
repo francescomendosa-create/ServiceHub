@@ -664,7 +664,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v266';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v267';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -5890,6 +5890,19 @@ window.updateStoricoButton = async function() {
                     e.preventDefault();
                     e.stopPropagation();
                     if (typeof window.closeSettings === 'function') window.closeSettings();
+                });
+            }
+            const btnForceFirestoreSync = document.getElementById('btn-force-firestore-sync');
+            if (btnForceFirestoreSync) {
+                btnForceFirestoreSync.addEventListener('touchend', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (typeof window.forceFirestoreSyncNow === 'function') window.forceFirestoreSyncNow();
+                }, { passive: false });
+                btnForceFirestoreSync.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (typeof window.forceFirestoreSyncNow === 'function') window.forceFirestoreSyncNow();
                 });
             }
             const settingsModal = document.getElementById('settings-modal');
@@ -17061,6 +17074,99 @@ window.updateStoricoButton = async function() {
             return Promise.all([p1, p2]);
         };
 
+        /** Impostazioni: forza invio + ricezione Firestore (plant + rapportini). */
+        window.forceFirestoreSyncNow = async function () {
+            const btn = document.getElementById('btn-force-firestore-sync');
+            if (window.__forceFirestoreSyncBusy) return;
+            window.__forceFirestoreSyncBusy = true;
+            if (btn) {
+                btn.disabled = true;
+                btn.classList.add('settings-force-sync-btn--busy');
+            }
+            const finish = function (ok, msg) {
+                window.__forceFirestoreSyncBusy = false;
+                if (btn) {
+                    btn.disabled = false;
+                    btn.classList.remove('settings-force-sync-btn--busy');
+                }
+                if (msg && typeof window.__showPlantCloudSyncBanner === 'function') {
+                    window.__showPlantCloudSyncBanner(msg);
+                    if (ok && typeof window.__hidePlantCloudSyncBanner === 'function') {
+                        setTimeout(function () { window.__hidePlantCloudSyncBanner(); }, 3200);
+                    }
+                }
+            };
+            try {
+                if (window.__firestoreQuotaBlocked) {
+                    finish(false, 'Sync sospesa: quota Firestore superata. Riprova più tardi.');
+                    return;
+                }
+                if (!user || !user.uid || !db) {
+                    finish(false, 'Accedi per sincronizzare con Firestore.');
+                    return;
+                }
+                if (typeof window.saveActiveRapportinoFromUI === 'function') window.saveActiveRapportinoFromUI();
+                if (typeof window.persistNotturnoStoccaggioToRapportino === 'function') window.persistNotturnoStoccaggioToRapportino();
+                if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
+
+                if (typeof window.__flushPlantCloudSaveNow === 'function') {
+                    await window.__flushPlantCloudSaveNow(true);
+                }
+                if (typeof window.flushRapportiniPushToCloudNow === 'function') {
+                    await window.flushRapportiniPushToCloudNow();
+                }
+
+                const plantRef = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
+                const rapportiniRef = doc(db, 'artifacts', appId, 'sharedDial', 'rapportini');
+                let plantSnap;
+                let rappSnap;
+                try {
+                    plantSnap = await getDocFromServer(plantRef);
+                } catch (_) {
+                    plantSnap = await getDoc(plantRef);
+                }
+                try {
+                    rappSnap = await getDocFromServer(rapportiniRef);
+                } catch (_) {
+                    rappSnap = await getDoc(rapportiniRef);
+                }
+
+                if (plantSnap && plantSnap.exists()) {
+                    let serverStripped = window.__stripRapportinoKeysFromPlantPayload(plantSnap.data());
+                    const backup = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
+                    const backupStripped = backup ? window.__stripRapportinoKeysFromPlantPayload(backup) : null;
+                    const picked = window.__pickNewestPlantPayload(serverStripped, backupStripped);
+                    if (picked) {
+                        let merged = picked;
+                        if (typeof window.__mergeOsmosiFieldsFromSources === 'function') {
+                            merged = window.__mergeOsmosiFieldsFromSources(picked);
+                        }
+                        __applyRemotePlantPayload(merged, { force: true });
+                    }
+                }
+
+                if (rappSnap && rappSnap.exists() && typeof window.applyRapportiniStoreFromCloud === 'function') {
+                    window.applyRapportiniStoreFromCloud(rappSnap.data(), { force: true });
+                } else if (typeof window.__pullRapportiniFromServerNow === 'function') {
+                    await window.__pullRapportiniFromServerNow();
+                }
+
+                if (typeof window.syncChemCountsFromFirestore === 'function') {
+                    window.syncChemCountsFromFirestore({ pushCloud: false });
+                }
+                if (typeof window.__refreshPlantBaselineFromDOM === 'function') {
+                    window.__refreshPlantBaselineFromDOM();
+                }
+                if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
+                    window.schedulePublicDigitalSnapshotSync();
+                }
+                finish(true, 'Sincronizzazione Firestore completata (invio + ricezione).');
+            } catch (e) {
+                console.warn('[ServiceHub] forceFirestoreSyncNow:', e && e.message);
+                finish(false, 'Sincronizzazione non riuscita. Controlla rete e regole Firestore.');
+            }
+        };
+
         window.toggleDarkMode = () => {
             isDarkMode = !isDarkMode;
             updateThemeUI();
@@ -26051,6 +26157,38 @@ window.convertToHtml = async () => {
             position: relative;
             z-index: 10090;
         }
+        .settings-header-actions { flex-shrink: 0; }
+        .settings-force-sync-btn {
+            width: 48px;
+            height: 48px;
+            min-width: 48px;
+            min-height: 48px;
+            border-radius: 16px;
+            background: linear-gradient(180deg, #10b981, #059669);
+            color: #fff;
+            border: 2px solid #047857;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
+            cursor: pointer;
+            position: relative;
+            z-index: 10090;
+            box-shadow: 0 2px 8px rgba(5, 150, 105, 0.35);
+        }
+        .settings-force-sync-btn:active { transform: scale(0.96); }
+        .settings-force-sync-btn:disabled { opacity: 0.65; cursor: wait; }
+        .settings-force-sync-btn--busy .settings-force-sync-icon {
+            animation: settings-force-sync-spin 0.85s linear infinite;
+        }
+        @keyframes settings-force-sync-spin {
+            to { transform: rotate(360deg); }
+        }
+        .dark .settings-force-sync-btn {
+            background: linear-gradient(180deg, #059669, #047857);
+            border-color: #065f46;
+        }
         #smart-capture-menu { max-height: 0; overflow: hidden; opacity: 0; transition: max-height 0.25s ease, opacity 0.2s ease, margin 0.25s ease; margin-top: 0; }
         #smart-capture-menu.open { max-height: 180px; opacity: 1; margin-top: 8px; }
         #smart-capture-camera-modal { z-index: 10050; }
@@ -27492,7 +27630,17 @@ window.convertToHtml = async () => {
                     <h2 class="font-black uppercase text-3xl italic tracking-tighter text-slate-900 dark:text-white">Impostazioni</h2>
                     <p id="app-build-tag" class="text-[9px] font-bold text-emerald-600 dark:text-emerald-400 uppercase mt-1" onclick="window.applyAppUpdate()" title="Tocca per aggiornare all'ultima versione" style="cursor:pointer;text-decoration:underline;text-underline-offset:2px;">Build …</p>
                 </div>
-                <button type="button" id="btn-close-settings" class="bg-black text-white rounded-2xl w-12 h-12 flex items-center justify-center font-black" aria-label="Chiudi impostazioni">X</button>
+                <div class="settings-header-actions flex items-center gap-2 shrink-0">
+                    <button type="button" id="btn-force-firestore-sync" class="settings-force-sync-btn" onclick="window.forceFirestoreSyncNow()" aria-label="Forza sincronizzazione Firestore" title="Forza invio e ricezione dati su Firestore">
+                        <svg class="settings-force-sync-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
+                            <path d="M4.5 14A7.5 7.5 0 0 1 12 4.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"></path>
+                            <path d="M4.5 14V9h5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"></path>
+                            <path d="M19.5 10A7.5 7.5 0 0 1 12 19.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"></path>
+                            <path d="M19.5 10v5h-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"></path>
+                        </svg>
+                    </button>
+                    <button type="button" id="btn-close-settings" class="bg-black text-white rounded-2xl w-12 h-12 flex items-center justify-center font-black" aria-label="Chiudi impostazioni">X</button>
+                </div>
             </div>
             <div class="settings-sheet-body p-8 flex flex-col gap-4 grow bg-white dark:bg-slate-950 overflow-y-auto" onclick="event.stopPropagation()">
                 <div>

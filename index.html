@@ -664,7 +664,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v286';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v287';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -9757,6 +9757,56 @@ window.updateStoricoButton = async function() {
                 return { id: f.id, label: f.label, enabled: true, kind: 'rapportino-only' };
             });
         };
+        window.isLegacyContatoriSchedaTitle = function(title) {
+            const t = String(title || '').trim().toLowerCase();
+            return !t || t === 'contatori' || t === 'contatori acqua' || t === 'contatori h2o';
+        };
+        window.getContatoriSchedaTitle = function(cntMod) {
+            const canonical = window.CONTATORI_SCHEDA_TITLE || 'Contatori H2O';
+            if (!cntMod) return canonical;
+            const raw = (cntMod.title || '').trim();
+            if (window.isLegacyContatoriSchedaTitle(raw)) return canonical;
+            return raw || canonical;
+        };
+        window.normalizeContatoriSchedaModule = function(mod) {
+            if (!mod) return;
+            if (typeof window.normalizeRapportinoSchedaOrientation === 'function') {
+                window.normalizeRapportinoSchedaOrientation(mod, 'sec-contatori');
+            }
+            if (window.isLegacyContatoriSchedaTitle(mod.title)) {
+                mod.title = window.CONTATORI_SCHEDA_TITLE || 'Contatori H2O';
+            }
+        };
+        window.applyContatoriSchedaLabels = function(cntMod) {
+            const title = window.getContatoriSchedaTitle(cntMod);
+            ['lbl-sec-contatori-tendina', 'lbl-sec-contatori-vertical'].forEach(function(lblId) {
+                const el = document.getElementById(lblId);
+                if (el) el.textContent = title;
+            });
+            return title;
+        };
+        window.syncContatoriLayout = function(schedeConfig, rapportinoId, hiddenList) {
+            const rid = rapportinoId || (window.loadRapportiniStore && window.loadRapportiniStore().activeId) || 'generale';
+            if (rid !== 'fuochista') {
+                const t = document.getElementById('rapportino-contatori-tendina');
+                const v = document.getElementById('sec-contatori-vertical');
+                if (t) t.style.setProperty('display', 'none', 'important');
+                if (v) v.style.setProperty('display', 'none', 'important');
+                return;
+            }
+            const cfg = schedeConfig || { modules: {} };
+            const cntMod = cfg.modules && cfg.modules['sec-contatori'];
+            if (cntMod && typeof window.normalizeContatoriSchedaModule === 'function') {
+                window.normalizeContatoriSchedaModule(cntMod);
+            }
+            const hid = Array.isArray(hiddenList) ? hiddenList : (window.hiddenModules || hiddenModules || []);
+            if (typeof window.syncContatoriPanel === 'function') {
+                window.syncContatoriPanel({ schedeConfig: cfg, rapportinoId: rid });
+            }
+            if (typeof window.syncContatoriVerticalSection === 'function') {
+                window.syncContatoriVerticalSection(cfg, rid, hid);
+            }
+        };
         window.CONTEGGIO_FILTRA_DEFAULT_FINE_CICLO = '1500';
         window.CONTEGGIO_FILTRA_FIELDS_META = [
             { id: 'cfil-produzione', label: 'PROD. ATTUALE', placeholder: '0', unit: 'mc' },
@@ -13463,18 +13513,22 @@ window.updateStoricoButton = async function() {
         };
 
         window.getContatoriReportData = function() {
-            if (typeof window.syncContatoriPanel === 'function') window.syncContatoriPanel();
-            if (typeof window.syncContatoriVerticalSection === 'function') window.syncContatoriVerticalSection();
+            if (typeof window.syncContatoriLayout === 'function') {
+                const store = window.loadRapportiniStore && window.loadRapportiniStore();
+                const rid = store && store.activeId;
+                const cfg = rid && store.items[rid] && store.items[rid].schedeConfig;
+                window.syncContatoriLayout(cfg, rid, window.hiddenModules || hiddenModules || []);
+            } else {
+                if (typeof window.syncContatoriPanel === 'function') window.syncContatoriPanel();
+                if (typeof window.syncContatoriVerticalSection === 'function') window.syncContatoriVerticalSection();
+            }
             if (typeof window.hydrateContatoriInputsFromDom === 'function') window.hydrateContatoriInputsFromDom();
             const store = window.loadRapportiniStore && window.loadRapportiniStore();
             const item = store && store.activeId && store.items[store.activeId];
             const cntMod = item && item.schedeConfig && item.schedeConfig.modules && item.schedeConfig.modules['sec-contatori'];
             const tendinaLbl = document.getElementById('lbl-sec-contatori-tendina');
             const vertLbl = document.getElementById('lbl-sec-contatori-vertical');
-            const title = (cntMod && cntMod.title) ||
-                (tendinaLbl && tendinaLbl.textContent.trim()) ||
-                (vertLbl && vertLbl.textContent.trim()) ||
-                (window.CONTATORI_SCHEDA_TITLE || 'Contatori H2O');
+            const title = window.getContatoriSchedaTitle(cntMod);
             const metaById = {};
             (window.CONTATORI_FIELDS_META || []).forEach(function(f) {
                 if (f && f.id) metaById[f.id] = f;
@@ -13640,6 +13694,9 @@ window.updateStoricoButton = async function() {
                     rapportinoId: window._rapportiniModificaId,
                     hiddenModules: hid
                 });
+                if (secId === 'sec-contatori' && typeof window.syncContatoriLayout === 'function') {
+                    window.syncContatoriLayout(previewCfg, window._rapportiniModificaId, hid);
+                }
             }
         };
 
@@ -13757,11 +13814,15 @@ window.updateStoricoButton = async function() {
             if (typeof window.syncConducibilitaVerticalSection === 'function') {
                 window.syncConducibilitaVerticalSection(cfg, rid, hid);
             }
-            if (typeof window.syncContatoriPanel === 'function') {
-                window.syncContatoriPanel({ schedeConfig: cfg, rapportinoId: rid });
-            }
-            if (typeof window.syncContatoriVerticalSection === 'function') {
-                window.syncContatoriVerticalSection(cfg, rid, hid);
+            if (typeof window.syncContatoriLayout === 'function') {
+                window.syncContatoriLayout(cfg, rid, hid);
+            } else {
+                if (typeof window.syncContatoriPanel === 'function') {
+                    window.syncContatoriPanel({ schedeConfig: cfg, rapportinoId: rid });
+                }
+                if (typeof window.syncContatoriVerticalSection === 'function') {
+                    window.syncContatoriVerticalSection(cfg, rid, hid);
+                }
             }
             if (typeof window.syncConteggioFiltraPanel === 'function') {
                 window.syncConteggioFiltraPanel({ schedeConfig: cfg, rapportinoId: rid });
@@ -13832,7 +13893,7 @@ window.updateStoricoButton = async function() {
         };
 
         window.buildContatoriVerticalSectionHtml = function(title, fields) {
-            const t = window.escRapportinoHtml(title || (window.CONTATORI_SCHEDA_TITLE || 'Contatori H2O'));
+            const t = window.escRapportinoHtml(window.getContatoriSchedaTitle({ title: title }));
             const list = (fields && fields.length) ? fields : window.collectFieldsForContatoriSection();
             const rows = list.filter(function(f) { return f.enabled !== false; }).map(function(f) {
                 const lab = window.escRapportinoHtml(f.label || f.id);
@@ -13853,7 +13914,7 @@ window.updateStoricoButton = async function() {
             const rid = rapportinoId || (window.loadRapportiniStore && window.loadRapportiniStore().activeId) || 'generale';
             if (rid !== 'fuochista') {
                 const vertOff = document.getElementById('sec-contatori-vertical');
-                if (vertOff) vertOff.style.display = 'none';
+                if (vertOff) vertOff.style.setProperty('display', 'none', 'important');
                 return;
             }
             const cntMod = cfg.modules && cfg.modules['sec-contatori'];
@@ -13861,27 +13922,29 @@ window.updateStoricoButton = async function() {
             const orient = window.getRapportinoSchedaOrientation(cntMod, 'sec-contatori');
             let vert = document.getElementById('sec-contatori-vertical');
             if (!enabled || orient !== 'vertical') {
-                if (vert) vert.style.display = 'none';
+                if (vert) vert.style.setProperty('display', 'none', 'important');
                 return;
             }
             const rb3 = document.getElementById('row-block-3');
             if (!rb3) return;
             const tendina = document.getElementById('rapportino-contatori-tendina');
-            if (tendina) tendina.style.display = 'none';
+            if (tendina) tendina.style.setProperty('display', 'none', 'important');
             if (!vert) {
                 vert = document.createElement('div');
                 vert.id = 'sec-contatori-vertical';
                 vert.className = 'col-section col-expanded rapportino-contatori-vertical-section';
                 rb3.appendChild(vert);
             }
-            const title = (cntMod && cntMod.title) || (window.CONTATORI_SCHEDA_TITLE || 'Contatori H2O');
+            const title = window.getContatoriSchedaTitle(cntMod);
             const fields = (cntMod && cntMod.fields && cntMod.fields.length)
                 ? cntMod.fields
                 : window.collectFieldsForContatoriSection();
+            const titleSig = title + '|' + fields.map(function(f) {
+                return f.id + ':' + (f.label || '') + ':' + (f.enabled !== false ? '1' : '0');
+            }).join(';');
             const existing = vert.querySelector('input[id^="cnt-"]');
-            if (existing) {
-                const lbl = document.getElementById('lbl-sec-contatori-vertical');
-                if (lbl) lbl.textContent = title;
+            if (existing && vert.dataset.cntRenderSig === titleSig) {
+                window.applyContatoriSchedaLabels(cntMod);
                 fields.forEach(function(f) {
                     if (f.enabled === false) return;
                     const inp = document.getElementById(f.id);
@@ -13890,12 +13953,13 @@ window.updateStoricoButton = async function() {
                     const labCell = row && row.querySelector('.cell-label-main');
                     if (labCell && f.label) labCell.textContent = f.label;
                 });
-                vert.style.display = 'flex';
+                vert.style.setProperty('display', 'flex', 'important');
                 window.hydrateContatoriInputsFromDom();
                 return;
             }
+            vert.dataset.cntRenderSig = titleSig;
             vert.innerHTML = window.buildContatoriVerticalSectionHtml(title, fields);
-            vert.style.display = 'flex';
+            vert.style.setProperty('display', 'flex', 'important');
             window.hydrateContatoriInputsFromDom();
             if (window.isFuochistaPhoneLayoutActive && window.isFuochistaPhoneLayoutActive()) {
                 window.__fuochistaPhoneVerticalWarmed = false;
@@ -14007,13 +14071,12 @@ window.updateStoricoButton = async function() {
                     return;
                 }
                 if (tab.id === 'sec-contatori') {
-                    if (typeof window.syncContatoriPanel === 'function') {
-                        window.syncContatoriPanel({ schedeConfig: cfg });
-                    }
-                    if (typeof window.syncContatoriVerticalSection === 'function') {
-                        const store = window.loadRapportiniStore && window.loadRapportiniStore();
-                        const rid = store && store.activeId;
-                        window.syncContatoriVerticalSection(cfg, rid, window.hiddenModules || hiddenModules || []);
+                    const store = window.loadRapportiniStore && window.loadRapportiniStore();
+                    const rid = store && store.activeId;
+                    if (typeof window.syncContatoriLayout === 'function') {
+                        window.syncContatoriLayout(cfg, rid, window.hiddenModules || hiddenModules || []);
+                    } else if (typeof window.syncContatoriPanel === 'function') {
+                        window.syncContatoriPanel({ schedeConfig: cfg, rapportinoId: rid });
                     }
                     if (enabled && mod) {
                         const title = mod.title || tab.name;
@@ -14288,9 +14351,10 @@ window.updateStoricoButton = async function() {
                     }
                     item.schedeConfig = window.compactRapportinoSchedeConfig('fuochista', item.schedeConfig);
                     const cntFix = item.schedeConfig.modules && item.schedeConfig.modules['sec-contatori'];
-                    if (cntFix && (cntFix.title === 'CONTATORI' || cntFix.title === 'Contatori acqua' || !cntFix.title)) {
-                        cntFix.title = window.CONTATORI_SCHEDA_TITLE || 'Contatori H2O';
-                        changed = true;
+                    if (cntFix && typeof window.normalizeContatoriSchedaModule === 'function') {
+                        const before = JSON.stringify(cntFix);
+                        window.normalizeContatoriSchedaModule(cntFix);
+                        if (JSON.stringify(cntFix) !== before) changed = true;
                     }
                 }
                 if (rid !== 'generale' && rid !== 'notturno' && item.schedeConfig && item.schedeConfig.modules) {
@@ -15128,6 +15192,9 @@ window.updateStoricoButton = async function() {
                 if (mod && typeof window.normalizeRapportinoSchedaOrientation === 'function') {
                     window.normalizeRapportinoSchedaOrientation(mod, secId);
                 }
+                if (secId === 'sec-contatori' && mod && typeof window.normalizeContatoriSchedaModule === 'function') {
+                    window.normalizeContatoriSchedaModule(mod);
+                }
             });
             return draft;
         };
@@ -15365,28 +15432,34 @@ window.updateStoricoButton = async function() {
                 }
             }
             window.renderRapportinoModificaList();
-            const store = window.loadRapportiniStore && window.loadRapportiniStore();
-            if (store && store.activeId === window._rapportiniModificaId && typeof window.applyRapportinoDashboardVisibility === 'function') {
+            if (typeof window.applyRapportinoDashboardVisibility === 'function' && window._rapportiniModificaId) {
                 const previewCfg = window.buildSavedSchedeConfigFromDraft(window._rapportiniModificaId, draft);
+                const hid = typeof window.getDeviceHiddenModulesForRapportino === 'function'
+                    ? (window.getDeviceHiddenModulesForRapportino(window._rapportiniModificaId) || [])
+                    : (window.hiddenModules || hiddenModules || []);
                 window.applyRapportinoDashboardVisibility(previewCfg, {
                     rapportinoId: window._rapportiniModificaId,
-                    hiddenModules: window.hiddenModules || hiddenModules || []
+                    hiddenModules: hid
                 });
                 if (typeof window.syncConducibilitaPanel === 'function') {
                     window.syncConducibilitaPanel({ schedeConfig: previewCfg, rapportinoId: window._rapportiniModificaId });
                 }
                 if (typeof window.syncNotturnoChemicalsPanel === 'function') window.syncNotturnoChemicalsPanel();
                 if (typeof window.syncChemicalsVerticalSection === 'function') {
-                    window.syncChemicalsVerticalSection(previewCfg, window._rapportiniModificaId, window.hiddenModules || hiddenModules || []);
+                    window.syncChemicalsVerticalSection(previewCfg, window._rapportiniModificaId, hid);
                 }
                 if (typeof window.syncConducibilitaVerticalSection === 'function') {
-                    window.syncConducibilitaVerticalSection(previewCfg, window._rapportiniModificaId, window.hiddenModules || hiddenModules || []);
+                    window.syncConducibilitaVerticalSection(previewCfg, window._rapportiniModificaId, hid);
                 }
-                if (typeof window.syncContatoriVerticalSection === 'function') {
-                    window.syncContatoriVerticalSection(previewCfg, window._rapportiniModificaId, window.hiddenModules || hiddenModules || []);
-                }
-                if (typeof window.syncContatoriPanel === 'function') {
-                    window.syncContatoriPanel({ schedeConfig: previewCfg, rapportinoId: window._rapportiniModificaId });
+                if (typeof window.syncContatoriLayout === 'function') {
+                    window.syncContatoriLayout(previewCfg, window._rapportiniModificaId, hid);
+                } else {
+                    if (typeof window.syncContatoriVerticalSection === 'function') {
+                        window.syncContatoriVerticalSection(previewCfg, window._rapportiniModificaId, hid);
+                    }
+                    if (typeof window.syncContatoriPanel === 'function') {
+                        window.syncContatoriPanel({ schedeConfig: previewCfg, rapportinoId: window._rapportiniModificaId });
+                    }
                 }
                 if (typeof window.syncConteggioFiltraVerticalSection === 'function') {
                     window.syncConteggioFiltraVerticalSection(previewCfg, window._rapportiniModificaId, window.hiddenModules || hiddenModules || []);
@@ -15594,6 +15667,9 @@ window.updateStoricoButton = async function() {
                 if (secId === 'sec-contatori' && mod.enabled !== false && (!mod.fields || !mod.fields.length)) {
                     mod.fields = window.collectFieldsForContatoriSection();
                 }
+                if (secId === 'sec-contatori' && typeof window.normalizeContatoriSchedaModule === 'function') {
+                    window.normalizeContatoriSchedaModule(mod);
+                }
                 if (secId === 'sec-conteggio-filtra' && mod.enabled !== false && (!mod.fields || !mod.fields.length)) {
                     mod.fields = window.collectFieldsForConteggioFiltraSection();
                 }
@@ -15616,6 +15692,12 @@ window.updateStoricoButton = async function() {
             window.saveRapportiniStore(store, { pushCloud: true, flushCloud: true });
             const fresh = window.loadRapportiniStore();
             const savedItem = fresh && fresh.items[id];
+            if (id === 'fuochista' && savedItem && typeof window.syncContatoriLayout === 'function') {
+                const hid = typeof window.getDeviceHiddenModulesForRapportino === 'function'
+                    ? (window.getDeviceHiddenModulesForRapportino(id) || [])
+                    : (window.hiddenModules || hiddenModules || []);
+                window.syncContatoriLayout(savedItem.schedeConfig, id, hid);
+            }
             const savedName = (savedItem && savedItem.name) || id;
             window.closeRapportinoManager();
             const activeId = fresh && fresh.activeId;
@@ -16339,7 +16421,7 @@ window.updateStoricoButton = async function() {
             const store = window.loadRapportiniStore();
             const activeId = opts.rapportinoId || (store && store.activeId);
             if (activeId !== 'fuochista') {
-                if (tendina) tendina.style.display = 'none';
+                if (tendina) tendina.style.setProperty('display', 'none', 'important');
                 return;
             }
             let cntMod;
@@ -16356,15 +16438,15 @@ window.updateStoricoButton = async function() {
             const show = cntMod && cntMod.enabled !== false && !hidden && orient === 'horizontal';
             if (!tendina) return;
             if (!show) {
-                tendina.style.display = 'none';
+                tendina.style.setProperty('display', 'none', 'important');
                 return;
             }
             const vert = document.getElementById('sec-contatori-vertical');
-            if (vert) vert.style.display = 'none';
+            if (vert) vert.style.setProperty('display', 'none', 'important');
             if (typeof window.renderContatoriPanel === 'function') {
                 window.renderContatoriPanel(opts.schedeConfig);
             }
-            tendina.style.display = 'block';
+            tendina.style.setProperty('display', 'block', 'important');
             if (!tendina.dataset.userExpanded) {
                 tendina.classList.add('rapportino-contatori-tendina-collapsed');
             }
@@ -16373,7 +16455,7 @@ window.updateStoricoButton = async function() {
             if (ch) ch.textContent = collapsed ? '▼' : '▲';
             const bar = tendina.querySelector('.cond-tendina-bar');
             if (bar) bar.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-            if (tendinaTitle) tendinaTitle.textContent = (cntMod && cntMod.title) || (window.CONTATORI_SCHEDA_TITLE || 'Contatori H2O');
+            if (tendinaTitle) tendinaTitle.textContent = window.getContatoriSchedaTitle(cntMod);
             if (typeof window.hydrateContatoriInputsFromDom === 'function') window.hydrateContatoriInputsFromDom();
             if (window.isFuochistaPhoneLayoutActive && window.isFuochistaPhoneLayoutActive()) {
                 window.syncFuochistaPhoneLayout();
@@ -18538,11 +18620,15 @@ window.updateStoricoButton = async function() {
                     window.syncConducibilitaVerticalSection(cfg, store && store.activeId, hiddenModules);
                 }
             } else if (id === 'sec-contatori') {
-                if (typeof window.syncContatoriPanel === 'function') window.syncContatoriPanel();
                 const store = window.loadRapportiniStore();
                 const cfg = store && store.items[store.activeId] && store.items[store.activeId].schedeConfig;
-                if (typeof window.syncContatoriVerticalSection === 'function') {
-                    window.syncContatoriVerticalSection(cfg, store && store.activeId, hiddenModules);
+                if (typeof window.syncContatoriLayout === 'function') {
+                    window.syncContatoriLayout(cfg, store && store.activeId, hiddenModules);
+                } else {
+                    if (typeof window.syncContatoriPanel === 'function') window.syncContatoriPanel();
+                    if (typeof window.syncContatoriVerticalSection === 'function') {
+                        window.syncContatoriVerticalSection(cfg, store && store.activeId, hiddenModules);
+                    }
                 }
             } else if (id === 'sec-conteggio-filtra') {
                 if (typeof window.syncConteggioFiltraPanel === 'function') window.syncConteggioFiltraPanel();
@@ -25305,6 +25391,16 @@ window.convertToHtml = async () => {
         .dark #contatori-panel input.cnt-tendina-inp { background: #431407; color: #ffedd5; border-color: #fb923c; }
         #sec-contatori-vertical input[id^="cnt-"] {
             border: 2px solid #f97316; background: #fff7ed; color: #7c2d12;
+        }
+        #sec-contatori-vertical .v-label-container,
+        .rapportino-contatori-vertical-section .v-label-container {
+            min-width: 52px;
+            width: 52px;
+        }
+        #sec-contatori-vertical .v-label-text,
+        .rapportino-contatori-vertical-section .v-label-text {
+            font-size: 8px;
+            letter-spacing: 0.02em;
         }
         .dark #sec-contatori-vertical input[id^="cnt-"] { background: #431407; color: #ffedd5; border-color: #fb923c; }
         body.sh-device-phone .rapportino-contatori-tendina:not(.rapportino-contatori-tendina-collapsed) .cond-tendina-body {

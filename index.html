@@ -664,7 +664,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v291';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v292';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -12281,6 +12281,86 @@ window.updateStoricoButton = async function() {
             return window.__previewViewMode === 'notes';
         };
 
+        /** Note compatte solo per rapportino Fuochista (senza intestazione, tabella Aria). */
+        window.isPreviewFuochistaNotesMode = function() {
+            return window.isPreviewNotesMode() &&
+                typeof window.isFuochistaRapportinoActive === 'function' &&
+                window.isFuochistaRapportinoActive();
+        };
+
+        window.compactAriaMachineHeader = function(machine) {
+            const m = String(machine || '').trim();
+            const match = m.match(/^MK\s+(\d+)\s*([A-Z])?$/i);
+            if (match) return 'MK ' + match[1] + (match[2] ? ' ' + match[2].toUpperCase() : '');
+            return m;
+        };
+
+        /** Fuochista note: tabella compatta — colonne = compressori in marcia, righe = portata/temp/press. */
+        window.buildAriaFuochistaNotesTableHtml = function() {
+            const font = window.PREVIEW_NOTES_FONT_STACK;
+            const running = [];
+            (window.ARIA_COMPRESSORS || []).forEach(function(c) {
+                const st = document.getElementById(c.id);
+                if (!st || !st.innerText.includes('MARCIA')) return;
+                const measures = { portata: '—', temp: '—', press: '—' };
+                ['portata', 'temp', 'press'].forEach(function(key) {
+                    const inp = document.getElementById(c.id + '-' + key);
+                    const raw = inp && String(inp.value || '').trim();
+                    if (!raw) return;
+                    measures[key] = key === 'portata'
+                        ? (window.getAriaPortataReportValue(inp.id, raw) || raw)
+                        : raw;
+                });
+                running.push({ machine: window.compactAriaMachineHeader(c.machine), measures: measures });
+            });
+            if (!running.length) return '';
+
+            const cellBase = 'padding:3px 5px;text-align:center;vertical-align:middle;font-family:' + font + ';font-style:italic;';
+            const lblStyle = 'display:block;font-size:9px;font-weight:600;color:#64748b;line-height:1.15;margin-bottom:1px;';
+            const valStyle = 'display:block;font-size:13px;font-weight:700;color:#0f172a;line-height:1.2;';
+
+            let head = '<tr>';
+            running.forEach(function(c) {
+                head += '<th style="' + cellBase + 'font-size:10px;font-weight:700;color:#166534;border-bottom:1px solid #cbd5e1;white-space:nowrap;">' +
+                    window.previewNotesEsc(c.machine) + '</th>';
+            });
+            head += '</tr>';
+
+            const rowsDef = [
+                { key: 'portata', label: 'Portata' },
+                { key: 'temp', label: 'Temperatura' },
+                { key: 'press', label: 'Pressione' }
+            ];
+            let body = '';
+            rowsDef.forEach(function(row) {
+                body += '<tr>';
+                running.forEach(function(c) {
+                    body += '<td style="' + cellBase + 'border-bottom:1px solid #eef2f7;">' +
+                        '<span style="' + lblStyle + '">' + row.label + '</span>' +
+                        '<span style="' + valStyle + '">' + window.previewNotesEsc(c.measures[row.key]) + '</span></td>';
+                });
+                body += '</tr>';
+            });
+
+            return '<section style="width:100%;break-inside:avoid;margin:0;padding:4px 2px;">' +
+                '<div style="font-family:' + font + ';font-style:italic;font-size:12px;font-weight:700;text-align:center;margin:0 0 6px;color:#0f172a;">Aria</div>' +
+                '<table style="width:100%;max-width:380px;margin:0 auto;border-collapse:collapse;table-layout:auto;">' +
+                '<thead>' + head + '</thead><tbody>' + body + '</tbody></table></section>';
+        };
+
+        window.buildPreviewFuochistaNotesHtml = function(printableSet) {
+            const font = window.PREVIEW_NOTES_FONT_STACK;
+            let inner = '';
+            if (printableSet && printableSet.has('sec-aria') && typeof window.buildAriaFuochistaNotesTableHtml === 'function') {
+                inner = window.buildAriaFuochistaNotesTableHtml();
+            }
+            if (!inner) {
+                inner = '<p style="margin:0;padding:12px 8px;text-align:center;font-family:' + font + ';font-style:italic;font-size:12px;color:#94a3b8;">Nessun compressore in marcia</p>';
+            }
+            return '<div id="capture-content" class="preview-notes-capture preview-notes-fuochista" style="font-family:' + font + ';font-style:italic;color:#1a1a1a;padding:8px 6px 10px;font-size:14px;">' +
+                inner + '</div>';
+        };
+
         window.togglePreviewViewMode = function() {
             window.__previewViewMode = window.isPreviewNotesMode() ? 'report' : 'notes';
             if (typeof window.syncPreviewViewModeUi === 'function') window.syncPreviewViewModeUi();
@@ -12296,7 +12376,10 @@ window.updateStoricoButton = async function() {
             const shareTxt = document.getElementById('share-btn-text');
             if (shareTxt) shareTxt.textContent = notes ? 'INVIA NOTA' : 'INVIA REPORT';
             const sheet = document.getElementById('preview-sheet');
-            if (sheet) sheet.classList.toggle('preview-sheet--notes', notes);
+            if (sheet) {
+                sheet.classList.toggle('preview-sheet--notes', notes);
+                sheet.classList.toggle('preview-sheet--notes-fuochista', notes && typeof window.isPreviewFuochistaNotesMode === 'function' && window.isPreviewFuochistaNotesMode());
+            }
             const screen = document.getElementById('preview-screen');
             if (screen) screen.classList.toggle('preview-screen--notes', notes);
         };
@@ -20820,6 +20903,7 @@ window.updateStoricoButton = async function() {
             // }
             const currentShiftText = document.getElementById('current-shift-label')?.innerText || "TURNO N.D.";
             const isNotesMode = typeof window.isPreviewNotesMode === 'function' && window.isPreviewNotesMode();
+            const isFuochistaNotes = typeof window.isPreviewFuochistaNotesMode === 'function' && window.isPreviewFuochistaNotesMode();
             
             // LAYOUT INTELLIGENTE A4 - MASSIMO 3 COLONNE (report) / singola colonna centrata (note)
             let previewColumns = '1fr 1fr 1fr';
@@ -20846,19 +20930,19 @@ window.updateStoricoButton = async function() {
 
             const colCount = isNotesMode ? 1 : previewColumns.split(' ').length;
             const dateStr = String(now.getDate()).padStart(2, '0') + '/' + String(now.getMonth() + 1).padStart(2, '0') + '/' + String(now.getFullYear()).slice(-2);
-            const headerBlock = isNotesMode
+            const headerBlock = (isNotesMode && !isFuochistaNotes)
                 ? '<div style="text-align:center;padding:18px 12px 22px;border-bottom:1px solid rgba(15,23,42,0.12);margin-bottom:20px;font-family:' + window.PREVIEW_NOTES_FONT_STACK + ';font-style:italic;">' +
                     '<div style="font-size:13px;font-weight:600;color:#64748b;letter-spacing:1px;">Appunti turno</div>' +
                     '<div style="font-size:24px;font-weight:700;color:#0f172a;margin-top:10px;">' + dateStr + '</div>' +
                     '<div style="font-size:16px;font-weight:600;color:#1d4ed8;margin-top:8px;">' + currentShiftText + '</div>' +
                     '</div>'
-                : '<div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #000; padding-bottom: 4px; margin-bottom: 10px;">' +
+                : (isNotesMode ? '' : '<div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #000; padding-bottom: 4px; margin-bottom: 10px;">' +
                     '<div style="display: flex; align-items: center; gap: 25px;">' +
                     '<h1 style="margin: 0; font-size: 12px; font-weight: 700; letter-spacing: -1px; text-transform: uppercase; font-style: italic;">REPORT GIORNALIERO OPERATIVO</h1>' +
                     '<div style="font-size: 8px; font-weight: 650; color: #000;">' + dateStr + '</div></div>' +
-                    '<div style="font-size: ' + (parseInt(previewFont, 10) - 1) + 'px; font-weight: 700; color: #2563eb; text-transform: uppercase;">' + currentShiftText + '</div></div>';
+                    '<div style="font-size: ' + (parseInt(previewFont, 10) - 1) + 'px; font-weight: 700; color: #2563eb; text-transform: uppercase;">' + currentShiftText + '</div></div>');
 
-let html = `<div id="capture-content" class="${isNotesMode ? 'preview-notes-capture' : ''}" style="font-family: ${isNotesMode ? window.PREVIEW_NOTES_FONT_STACK : "'Helvetica Neue', Helvetica, Arial, sans-serif"}; font-style: ${isNotesMode ? 'italic' : 'normal'}; color: #1a1a1a; padding: ${isNotesMode ? '20px 16px 28px' : '8px'}; font-size:${previewFont};">${headerBlock}<div style="column-count: ${colCount}; column-gap: ${previewGap};${isNotesMode ? ' max-width:460px; margin:0 auto;' : ''}">`; 
+let html = `<div id="capture-content" class="${isNotesMode ? 'preview-notes-capture' : ''}${isFuochistaNotes ? ' preview-notes-fuochista' : ''}" style="font-family: ${isNotesMode ? window.PREVIEW_NOTES_FONT_STACK : "'Helvetica Neue', Helvetica, Arial, sans-serif"}; font-style: ${isNotesMode ? 'italic' : 'normal'}; color: #1a1a1a; padding: ${isFuochistaNotes ? '8px 6px 10px' : (isNotesMode ? '20px 16px 28px' : '8px')}; font-size:${isFuochistaNotes ? '14px' : previewFont};">${headerBlock}<div style="column-count: ${colCount}; column-gap: ${previewGap};${isNotesMode ? ' max-width:' + (isFuochistaNotes ? '400px' : '460px') + '; margin:0 auto;' : ''}">`; 
 
 if (!isNotesMode) {
     html += window.getAnalisiPreviewModule(previewFont);
@@ -20871,6 +20955,12 @@ if (hiddenModules.length === 0) {
         ? window.getPrintableReportModuleIds()
         : (window.hiddenModules || hiddenModules || []).slice();
     const printableSet = new Set(printableModules);
+
+    if (isFuochistaNotes && typeof window.buildPreviewFuochistaNotesHtml === 'function') {
+        container.innerHTML = window.buildPreviewFuochistaNotesHtml(printableSet);
+        if (typeof window.syncPreviewViewModeUi === 'function') window.syncPreviewViewModeUi();
+        return;
+    }
 
     // LOGICA ORDINE FLESSIBILE CON BLOCCO AMBIENTE 1 — solo moduli inviati (gestione moduli)
     const ambiente1Inviato = printableSet.has('sec-amb');
@@ -21681,9 +21771,9 @@ if (hiddenModules.length === 0) {
                 html += `</div>`;
             }
             
-            html += isNotesMode
+            html += (isNotesMode && !isFuochistaNotes)
                 ? `<div style="margin-top:28px;padding-top:14px;border-top:1px solid rgba(15,23,42,0.1);text-align:center;font-family:${window.PREVIEW_NOTES_FONT_STACK};font-style:italic;"><span style="font-size:13px;font-weight:600;color:#64748b;">Generato alle ${now.toLocaleTimeString('it-IT')}</span></div></div>`
-                : `<div style="margin-top: 20px; padding-top: 6px; border-top: 1px solid #000; display: flex; justify-content: space-between; align-items: center;"><span style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; color: #999; text-transform: uppercase; letter-spacing: 1px;">STABILE V4.3 ENGINE</span><span style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; color: #000; text-transform: uppercase;">GENERATO ALLE ${now.toLocaleTimeString('it-IT')}</span></div></div>`;
+                : (isFuochistaNotes ? '</div>' : `<div style="margin-top: 20px; padding-top: 6px; border-top: 1px solid #000; display: flex; justify-content: space-between; align-items: center;"><span style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; color: #999; text-transform: uppercase; letter-spacing: 1px;">STABILE V4.3 ENGINE</span><span style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; color: #000; text-transform: uppercase;">GENERATO ALLE ${now.toLocaleTimeString('it-IT')}</span></div></div>`);
             
             // Aggiungi l'avviso operativo MBBR se presente
             html += window.getMBBROperativeInstruction();
@@ -27550,6 +27640,18 @@ window.convertToHtml = async () => {
             #preview-sheet.preview-sheet--notes .preview-notes-capture,
             #preview-sheet.preview-sheet--notes .preview-notes-capture * {
                 font-family: Georgia, 'Palatino Linotype', 'Book Antiqua', Palatino, 'Times New Roman', serif !important;
+            }
+            #preview-sheet.preview-sheet--notes-fuochista {
+                max-width: min(420px, 100%) !important;
+                padding: 6px 4px !important;
+                border-radius: 8px !important;
+                box-shadow: 0 6px 20px rgba(15, 23, 42, 0.1) !important;
+            }
+            #preview-sheet.preview-sheet--notes-fuochista .preview-notes-fuochista {
+                padding: 4px 2px 6px !important;
+            }
+            #preview-sheet.preview-sheet--notes-fuochista table {
+                font-size: 12px !important;
             }
             #preview-screen .preview-toolbar-title-toggle {
                 cursor: pointer;

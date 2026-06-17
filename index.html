@@ -664,7 +664,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v257';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v258';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -9609,7 +9609,7 @@ window.updateStoricoButton = async function() {
         };
         window.CONTEGGIO_FILTRA_DEFAULT_FINE_CICLO = '1500';
         window.CONTEGGIO_FILTRA_FIELDS_META = [
-            { id: 'cfil-produzione', label: 'PRODUZIONE', placeholder: '0' },
+            { id: 'cfil-produzione', label: 'PROD. ATTUALE', placeholder: '0' },
             { id: 'cfil-portata', label: 'PORTATA', placeholder: 't/h' },
             { id: 'cfil-fine-ciclo', label: 'FINE CICLO', placeholder: '1500' }
         ];
@@ -16098,31 +16098,30 @@ window.updateStoricoButton = async function() {
 
         window.formatCfilTimeValue = window.formatCfilClockTime;
 
-        window.cfilResolveCalcProduzione = function(prod, fineCiclo, src) {
-            const fc = typeof fineCiclo === 'number' ? fineCiclo : window.parseCfilNumber(fineCiclo);
-            const p = typeof prod === 'number' ? prod : window.parseCfilNumber(prod);
-            const fcOk = !isNaN(fc) && fc > 0;
-            const pOk = !isNaN(p) && p > 0;
-            if (src === 'cfil-fine-ciclo' && fcOk) return fc;
-            if (src === 'cfil-portata' && fcOk && !pOk) return fc;
-            if (pOk) return fcOk ? Math.min(p, fc) : p;
-            if (fcOk) return fc;
-            return NaN;
+        window.cfilGetProduzionePartenza = function() {
+            const p = window.parseCfilNumber(window.getCfilFieldValue('cfil-produzione'));
+            return isNaN(p) || p < 0 ? 0 : p;
         };
 
-        window.cfilCapProduzioneToFineCiclo = function(prod, fineCiclo) {
+        window.cfilCalcRimanente = function(prodPartenza, fineCiclo) {
             const fc = typeof fineCiclo === 'number' ? fineCiclo : window.parseCfilNumber(fineCiclo);
-            const p = typeof prod === 'number' ? prod : window.parseCfilNumber(prod);
-            if (isNaN(p) || p <= 0) return p;
-            if (isNaN(fc) || fc <= 0) return p;
-            return Math.min(p, fc);
+            const p = typeof prodPartenza === 'number' ? prodPartenza : window.parseCfilNumber(prodPartenza);
+            const start = isNaN(p) || p < 0 ? 0 : p;
+            if (isNaN(fc) || fc <= 0) return NaN;
+            return Math.max(0, fc - start);
         };
 
-        window.cfilApplyForwardCalc = function(prodQty, portata, skipSource) {
-            const p = window.parseCfilNumber(prodQty);
-            const r = window.parseCfilNumber(portata);
-            if (isNaN(p) || p <= 0 || isNaN(r) || r <= 0) return false;
-            const hours = p / r;
+        window.cfilApplyForwardCalcFromRemaining = function(rimanente, portata, skipSource) {
+            const r = typeof rimanente === 'number' ? rimanente : window.parseCfilNumber(rimanente);
+            const rate = window.parseCfilNumber(portata);
+            if (isNaN(rate) || rate <= 0) return false;
+            if (isNaN(r) || r <= 0) {
+                window.setCfilFieldValue('cfil-ore-fine', '0', skipSource);
+                const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+                window.setCfilFieldValue('cfil-orario-fine', window.formatCfilClockTime(nowMin), skipSource);
+                return true;
+            }
+            const hours = r / rate;
             const endMin = window.cfilAddHoursToNowMinutes(hours);
             window.setCfilFineResult(hours, endMin, skipSource);
             return true;
@@ -16236,15 +16235,13 @@ window.updateStoricoButton = async function() {
             });
             window.initConteggioFiltraDefaults();
             window.hydrateConteggioFiltraInputsFromDom();
-            const prod = window.parseCfilNumber(window.getCfilFieldValue('cfil-produzione'));
+            const prod = window.cfilGetProduzionePartenza();
             const portata = window.parseCfilNumber(window.getCfilFieldValue('cfil-portata'));
             const fineCiclo = window.parseCfilNumber(window.getCfilFieldValue('cfil-fine-ciclo'));
             const ore = window.getCfilFieldValue('cfil-ore-fine');
             const orario = window.getCfilFieldValue('cfil-orario-fine');
-            if (!isNaN(prod) && prod > 0 && !isNaN(portata) && portata > 0) {
+            if (!isNaN(portata) && portata > 0 && !isNaN(fineCiclo) && fineCiclo > 0) {
                 window.syncConteggioFiltraCalc('cfil-produzione');
-            } else if (!isNaN(portata) && portata > 0 && !isNaN(fineCiclo) && fineCiclo > 0) {
-                window.syncConteggioFiltraCalc('cfil-fine-ciclo');
             } else if (orario && !ore) {
                 window.syncConteggioFiltraCalc('cfil-orario-fine');
             } else if (ore && !orario) {
@@ -16258,44 +16255,51 @@ window.updateStoricoButton = async function() {
             try {
                 window.initConteggioFiltraDefaults();
                 const src = sourceFieldId || '';
-                let prod = window.parseCfilNumber(window.getCfilFieldValue('cfil-produzione'));
+                let prodPartenza = window.cfilGetProduzionePartenza();
                 const portata = window.parseCfilNumber(window.getCfilFieldValue('cfil-portata'));
                 const fineCiclo = window.parseCfilNumber(window.getCfilFieldValue('cfil-fine-ciclo'));
                 const oreFine = window.parseCfilNumber(window.getCfilFieldValue('cfil-ore-fine'));
                 const orarioMin = window.parseCfilTimeValue(window.getCfilFieldValue('cfil-orario-fine'));
 
+                if (!isNaN(fineCiclo) && fineCiclo > 0 && prodPartenza > fineCiclo) {
+                    prodPartenza = fineCiclo;
+                    if (src === 'cfil-produzione') {
+                        window.setCfilFieldValue('cfil-produzione', window.formatCfilNumber(fineCiclo, 1), src);
+                    }
+                }
+
                 if (src === 'cfil-orario-fine' && orarioMin != null) {
                     const hours = window.cfilMinutesUntilFromNow(orarioMin) / 60;
-                    if (hours > 0) {
-                        window.setCfilFineResult(hours, orarioMin, src);
-                        if (!isNaN(portata) && portata > 0) {
-                            const newProd = window.cfilCapProduzioneToFineCiclo(portata * hours, fineCiclo);
-                            window.setCfilFieldValue('cfil-produzione', window.formatCfilNumber(newProd, 1), src);
-                        } else if (!isNaN(prod) && prod > 0) {
-                            window.setCfilFieldValue('cfil-portata', window.formatCfilNumber(prod / hours, 2), src);
-                        }
-                    }
-                } else if (src === 'cfil-ore-fine' && !isNaN(oreFine) && oreFine > 0) {
-                    const endMin = window.cfilAddHoursToNowMinutes(oreFine);
-                    window.setCfilFineResult(oreFine, endMin, src);
-                    if (!isNaN(portata) && portata > 0) {
-                        const newProd = window.cfilCapProduzioneToFineCiclo(portata * oreFine, fineCiclo);
+                    window.setCfilFineResult(hours > 0 ? hours : 0, orarioMin, src);
+                    if (!isNaN(portata) && portata > 0 && !isNaN(fineCiclo) && fineCiclo > 0) {
+                        const rimanente = portata * hours;
+                        const newProd = Math.max(0, fineCiclo - rimanente);
                         window.setCfilFieldValue('cfil-produzione', window.formatCfilNumber(newProd, 1), src);
-                    } else if (!isNaN(prod) && prod > 0) {
-                        window.setCfilFieldValue('cfil-portata', window.formatCfilNumber(prod / oreFine, 2), src);
-                    }
-                } else if (src === 'cfil-fine-ciclo' && !isNaN(fineCiclo) && fineCiclo > 0 && !isNaN(portata) && portata > 0) {
-                    window.setCfilFieldValue('cfil-produzione', window.formatCfilNumber(fineCiclo, 1), src);
-                    window.cfilApplyForwardCalc(fineCiclo, portata, src);
-                } else {
-                    const calcProd = window.cfilResolveCalcProduzione(prod, fineCiclo, src);
-                    if (!isNaN(calcProd) && calcProd > 0 && !isNaN(portata) && portata > 0) {
-                        if (src === 'cfil-fine-ciclo' || src === 'cfil-portata' || isNaN(prod) || prod <= 0) {
-                            window.setCfilFieldValue('cfil-produzione', window.formatCfilNumber(calcProd, 1), src);
-                        } else if (!isNaN(fineCiclo) && fineCiclo > 0 && prod > fineCiclo) {
-                            window.setCfilFieldValue('cfil-produzione', window.formatCfilNumber(fineCiclo, 1), src);
+                    } else if (prodPartenza >= 0 && hours > 0 && !isNaN(fineCiclo) && fineCiclo > 0) {
+                        const rim = window.cfilCalcRimanente(prodPartenza, fineCiclo);
+                        if (!isNaN(rim) && rim > 0) {
+                            window.setCfilFieldValue('cfil-portata', window.formatCfilNumber(rim / hours, 2), src);
                         }
-                        window.cfilApplyForwardCalc(calcProd, portata, src);
+                    }
+                } else if (src === 'cfil-ore-fine' && !isNaN(oreFine) && oreFine >= 0) {
+                    const endMin = oreFine > 0
+                        ? window.cfilAddHoursToNowMinutes(oreFine)
+                        : (new Date().getHours() * 60 + new Date().getMinutes());
+                    window.setCfilFineResult(oreFine > 0 ? oreFine : 0, endMin, src);
+                    if (!isNaN(portata) && portata > 0 && !isNaN(fineCiclo) && fineCiclo > 0) {
+                        const rimanente = portata * oreFine;
+                        const newProd = Math.max(0, fineCiclo - rimanente);
+                        window.setCfilFieldValue('cfil-produzione', window.formatCfilNumber(newProd, 1), src);
+                    } else if (prodPartenza >= 0 && oreFine > 0 && !isNaN(fineCiclo) && fineCiclo > 0) {
+                        const rim = window.cfilCalcRimanente(prodPartenza, fineCiclo);
+                        if (!isNaN(rim) && rim > 0) {
+                            window.setCfilFieldValue('cfil-portata', window.formatCfilNumber(rim / oreFine, 2), src);
+                        }
+                    }
+                } else if (!isNaN(portata) && portata > 0 && !isNaN(fineCiclo) && fineCiclo > 0) {
+                    const rimanente = window.cfilCalcRimanente(prodPartenza, fineCiclo);
+                    if (!isNaN(rimanente)) {
+                        window.cfilApplyForwardCalcFromRemaining(rimanente, portata, src);
                     }
                 }
                 if (src === 'cfil-orario-fine' && orarioMin != null) {
@@ -16366,7 +16370,7 @@ window.updateStoricoButton = async function() {
         window.renderConteggioFiltraPanel = function() {
             const panel = document.getElementById('conteggio-filtra-panel');
             if (!panel) return;
-            const renderVer = 'v3-cfil-fineciclo-prod';
+            const renderVer = 'v4-cfil-rimanente';
             if (panel.dataset.rendered === renderVer) {
                 window.initConteggioFiltraDefaults();
                 return;

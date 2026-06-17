@@ -664,7 +664,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v254';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v256';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -9607,12 +9607,11 @@ window.updateStoricoButton = async function() {
                 return { id: f.id, label: f.label, enabled: true, kind: 'rapportino-only' };
             });
         };
-        window.CONTEGGIO_FILTRA_DEFAULT_FINE_CICLO = '1500';
+        window.CONTEGGIO_FILTRA_DEFAULT_FINE_CICLO = '15:00';
         window.CONTEGGIO_FILTRA_FIELDS_META = [
             { id: 'cfil-produzione', label: 'PRODUZIONE', placeholder: '0' },
             { id: 'cfil-portata', label: 'PORTATA', placeholder: 't/h' },
-            { id: 'cfil-fine-ciclo', label: 'FINE CICLO', placeholder: '1500' },
-            { id: 'cfil-fine-ora', label: 'FINE ORA', placeholder: 'HHMM' }
+            { id: 'cfil-fine-ciclo', label: 'FINE CICLO', placeholder: '15:00' }
         ];
         window.collectFieldsForConteggioFiltraSection = function() {
             return (window.CONTEGGIO_FILTRA_FIELDS_META || []).map(function(f) {
@@ -16089,12 +16088,37 @@ window.updateStoricoButton = async function() {
             return null;
         };
 
-        window.formatCfilTimeValue = function(totalMin) {
+        window.formatCfilClockTime = function(totalMin) {
             if (totalMin == null || isNaN(totalMin)) return '';
             totalMin = ((Math.round(totalMin) % (24 * 60)) + (24 * 60)) % (24 * 60);
             const h = Math.floor(totalMin / 60);
             const m = totalMin % 60;
-            return String(h).padStart(2, '0') + String(m).padStart(2, '0');
+            return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+        };
+
+        window.formatCfilTimeValue = window.formatCfilClockTime;
+
+        window.cfilCapHoursWithFineCiclo = function(hours, fineCicloMin) {
+            if (hours == null || isNaN(hours) || hours <= 0) return hours;
+            if (fineCicloMin == null) return hours;
+            const maxH = window.cfilMinutesUntilFromNow(fineCicloMin) / 60;
+            return Math.min(hours, maxH);
+        };
+
+        window.cfilCapEndMinWithFineCiclo = function(endMin, fineCicloMin) {
+            if (endMin == null || fineCicloMin == null) return endMin;
+            const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+            if (endMin > fineCicloMin && fineCicloMin >= nowMin) return fineCicloMin;
+            return endMin;
+        };
+
+        window.setCfilFineResult = function(hours, endMin, skipSource) {
+            if (hours != null && !isNaN(hours) && hours > 0) {
+                window.setCfilFieldValue('cfil-ore-fine', window.formatCfilNumber(hours, 2), skipSource);
+            }
+            if (endMin != null) {
+                window.setCfilFieldValue('cfil-orario-fine', window.formatCfilClockTime(endMin), skipSource);
+            }
         };
 
         window.cfilMinutesUntilFromNow = function(targetMin) {
@@ -16147,7 +16171,7 @@ window.updateStoricoButton = async function() {
         };
 
         window.hydrateConteggioFiltraInputsFromDom = function() {
-            const ids = ['cfil-produzione', 'cfil-portata', 'cfil-fine-ciclo', 'cfil-fine-ora'];
+            const ids = ['cfil-produzione', 'cfil-portata', 'cfil-fine-ciclo', 'cfil-ore-fine', 'cfil-orario-fine'];
             ids.forEach(function(fid) {
                 let val = window.getCfilFieldValue(fid);
                 window.getCfilFieldInputs(fid).forEach(function(el) {
@@ -16158,24 +16182,52 @@ window.updateStoricoButton = async function() {
 
         window.initConteggioFiltraDefaults = function() {
             if (!window.getCfilFieldValue('cfil-fine-ciclo')) {
-                window.setCfilFieldValue('cfil-fine-ciclo', window.CONTEGGIO_FILTRA_DEFAULT_FINE_CICLO || '1500');
+                window.setCfilFieldValue('cfil-fine-ciclo', window.CONTEGGIO_FILTRA_DEFAULT_FINE_CICLO || '15:00');
             }
         };
 
+        window.normalizeCfilTimeFieldValue = function(raw) {
+            if (raw == null || raw === '') return '';
+            const min = window.parseCfilTimeValue(raw);
+            return min != null ? window.formatCfilClockTime(min) : String(raw);
+        };
+
         window.applyConteggioFiltraFieldValues = function(data) {
-            ['cfil-produzione', 'cfil-portata', 'cfil-fine-ciclo', 'cfil-fine-ora'].forEach(function(fid) {
+            ['cfil-produzione', 'cfil-portata', 'cfil-fine-ciclo', 'cfil-ore-fine', 'cfil-orario-fine'].forEach(function(fid) {
                 window.getCfilFieldInputs(fid).forEach(function(inp) { inp.value = ''; });
             });
+            const d = data && typeof data === 'object' ? Object.assign({}, data) : {};
+            if (d['cfil-fine-ora'] && !d['cfil-orario-fine']) {
+                const legacyMin = window.parseCfilTimeValue(d['cfil-fine-ora']);
+                if (legacyMin != null) d['cfil-orario-fine'] = window.formatCfilClockTime(legacyMin);
+            }
+            if (d['cfil-fine-ciclo']) {
+                d['cfil-fine-ciclo'] = window.normalizeCfilTimeFieldValue(d['cfil-fine-ciclo']);
+            }
+            if (d['cfil-orario-fine']) {
+                d['cfil-orario-fine'] = window.normalizeCfilTimeFieldValue(d['cfil-orario-fine']);
+            }
             if (!data || typeof data !== 'object') {
                 window.initConteggioFiltraDefaults();
                 return;
             }
-            ['cfil-produzione', 'cfil-portata', 'cfil-fine-ciclo', 'cfil-fine-ora'].forEach(function(fid) {
-                if (data[fid] == null) return;
-                window.setCfilFieldValue(fid, data[fid] != null ? String(data[fid]) : '');
+            ['cfil-produzione', 'cfil-portata', 'cfil-fine-ciclo', 'cfil-ore-fine', 'cfil-orario-fine'].forEach(function(fid) {
+                if (d[fid] == null) return;
+                window.setCfilFieldValue(fid, d[fid] != null ? String(d[fid]) : '');
             });
             window.initConteggioFiltraDefaults();
             window.hydrateConteggioFiltraInputsFromDom();
+            const prod = window.parseCfilNumber(window.getCfilFieldValue('cfil-produzione'));
+            const portata = window.parseCfilNumber(window.getCfilFieldValue('cfil-portata'));
+            const ore = window.getCfilFieldValue('cfil-ore-fine');
+            const orario = window.getCfilFieldValue('cfil-orario-fine');
+            if (!isNaN(prod) && prod > 0 && !isNaN(portata) && portata > 0) {
+                window.syncConteggioFiltraCalc('cfil-produzione');
+            } else if (orario && !ore) {
+                window.syncConteggioFiltraCalc('cfil-orario-fine');
+            } else if (ore && !orario) {
+                window.syncConteggioFiltraCalc('cfil-ore-fine');
+            }
         };
 
         window.syncConteggioFiltraCalc = function(sourceFieldId) {
@@ -16187,28 +16239,63 @@ window.updateStoricoButton = async function() {
                 const prod = window.parseCfilNumber(window.getCfilFieldValue('cfil-produzione'));
                 const portata = window.parseCfilNumber(window.getCfilFieldValue('cfil-portata'));
                 const fineCicloMin = window.parseCfilTimeValue(window.getCfilFieldValue('cfil-fine-ciclo'));
-                const fineOraMin = window.parseCfilTimeValue(window.getCfilFieldValue('cfil-fine-ora'));
+                const oreFine = window.parseCfilNumber(window.getCfilFieldValue('cfil-ore-fine'));
+                const orarioMin = window.parseCfilTimeValue(window.getCfilFieldValue('cfil-orario-fine'));
 
-                if (src === 'cfil-fine-ora' && fineOraMin != null) {
-                    let hours = window.cfilMinutesUntilFromNow(fineOraMin) / 60;
-                    if (fineCicloMin != null) {
-                        const hoursToCiclo = window.cfilMinutesUntilFromNow(fineCicloMin) / 60;
-                        hours = Math.min(hours, hoursToCiclo);
-                    }
+                if (src === 'cfil-orario-fine' && orarioMin != null) {
+                    let hours = window.cfilMinutesUntilFromNow(orarioMin) / 60;
+                    hours = window.cfilCapHoursWithFineCiclo(hours, fineCicloMin);
                     if (hours > 0) {
+                        window.setCfilFineResult(hours, orarioMin, src);
                         if (!isNaN(portata) && portata > 0) {
                             window.setCfilFieldValue('cfil-produzione', window.formatCfilNumber(portata * hours, 1), src);
                         } else if (!isNaN(prod) && prod > 0) {
                             window.setCfilFieldValue('cfil-portata', window.formatCfilNumber(prod / hours, 2), src);
                         }
                     }
-                } else if (!isNaN(prod) && prod > 0 && !isNaN(portata) && portata > 0) {
-                    let endMin = window.cfilAddHoursToNowMinutes(prod / portata);
-                    if (fineCicloMin != null) {
-                        const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
-                        if (endMin > fineCicloMin && fineCicloMin >= nowMin) endMin = fineCicloMin;
+                } else if (src === 'cfil-ore-fine' && !isNaN(oreFine) && oreFine > 0) {
+                    let hours = window.cfilCapHoursWithFineCiclo(oreFine, fineCicloMin);
+                    let endMin = window.cfilAddHoursToNowMinutes(hours);
+                    endMin = window.cfilCapEndMinWithFineCiclo(endMin, fineCicloMin);
+                    hours = window.cfilMinutesUntilFromNow(endMin) / 60;
+                    window.setCfilFineResult(hours, endMin, src);
+                    if (!isNaN(portata) && portata > 0) {
+                        window.setCfilFieldValue('cfil-produzione', window.formatCfilNumber(portata * hours, 1), src);
+                    } else if (!isNaN(prod) && prod > 0) {
+                        window.setCfilFieldValue('cfil-portata', window.formatCfilNumber(prod / hours, 2), src);
                     }
-                    window.setCfilFieldValue('cfil-fine-ora', window.formatCfilTimeValue(endMin), src);
+                } else if (src === 'cfil-fine-ciclo' && fineCicloMin != null) {
+                    if (!isNaN(prod) && prod > 0 && !isNaN(portata) && portata > 0) {
+                        let hours = prod / portata;
+                        hours = window.cfilCapHoursWithFineCiclo(hours, fineCicloMin);
+                        let endMin = window.cfilAddHoursToNowMinutes(hours);
+                        endMin = window.cfilCapEndMinWithFineCiclo(endMin, fineCicloMin);
+                        hours = window.cfilMinutesUntilFromNow(endMin) / 60;
+                        window.setCfilFineResult(hours, endMin, src);
+                    } else if (orarioMin != null) {
+                        let hours = window.cfilMinutesUntilFromNow(orarioMin) / 60;
+                        hours = window.cfilCapHoursWithFineCiclo(hours, fineCicloMin);
+                        if (hours > 0) window.setCfilFineResult(hours, orarioMin, src);
+                    } else if (!isNaN(oreFine) && oreFine > 0) {
+                        let hours = window.cfilCapHoursWithFineCiclo(oreFine, fineCicloMin);
+                        let endMin = window.cfilAddHoursToNowMinutes(hours);
+                        endMin = window.cfilCapEndMinWithFineCiclo(endMin, fineCicloMin);
+                        hours = window.cfilMinutesUntilFromNow(endMin) / 60;
+                        window.setCfilFineResult(hours, endMin, src);
+                    }
+                } else if (!isNaN(prod) && prod > 0 && !isNaN(portata) && portata > 0) {
+                    let hours = prod / portata;
+                    hours = window.cfilCapHoursWithFineCiclo(hours, fineCicloMin);
+                    let endMin = window.cfilAddHoursToNowMinutes(hours);
+                    endMin = window.cfilCapEndMinWithFineCiclo(endMin, fineCicloMin);
+                    hours = window.cfilMinutesUntilFromNow(endMin) / 60;
+                    window.setCfilFineResult(hours, endMin, src);
+                }
+                if (src === 'cfil-fine-ciclo' && fineCicloMin != null) {
+                    window.setCfilFieldValue('cfil-fine-ciclo', window.formatCfilClockTime(fineCicloMin), src);
+                }
+                if (src === 'cfil-orario-fine' && orarioMin != null) {
+                    window.setCfilFieldValue('cfil-orario-fine', window.formatCfilClockTime(orarioMin), src);
                 }
                 window.hydrateConteggioFiltraInputsFromDom();
             } finally {
@@ -16216,10 +16303,25 @@ window.updateStoricoButton = async function() {
             }
         };
 
+        window.buildConteggioFiltraFineSplitHtml = function() {
+            return '<div class="cfil-fine-split">' +
+                '<div class="cfil-fine-split-part">' +
+                '<span class="cfil-fine-sub-lbl">ORE</span>' +
+                '<input type="tel" class="cond-tendina-inp cfil-tendina-inp" data-cfil-field="cfil-ore-fine" id="cfil-ore-fine" ' +
+                'inputmode="decimal" maxlength="8" placeholder="0" autocomplete="off" ' +
+                'oninput="window.syncConteggioFiltraCalc(\'cfil-ore-fine\')" onchange="window.saveData()">' +
+                '</div>' +
+                '<div class="cfil-fine-split-part">' +
+                '<span class="cfil-fine-sub-lbl">ORARIO</span>' +
+                '<input type="tel" class="cond-tendina-inp cfil-tendina-inp" data-cfil-field="cfil-orario-fine" id="cfil-orario-fine" ' +
+                'inputmode="numeric" maxlength="5" placeholder="00:00" autocomplete="off" ' +
+                'oninput="window.syncConteggioFiltraCalc(\'cfil-orario-fine\')" onchange="window.saveData()">' +
+                '</div></div>';
+        };
+
         window.buildConteggioFiltraFieldInputHtml = function(f) {
-            const lab = window.escRapportinoHtml(f.label || f.id);
             const ph = window.escRapportinoHtml(f.placeholder || '');
-            const isTime = f.id === 'cfil-fine-ciclo' || f.id === 'cfil-fine-ora';
+            const isTime = f.id === 'cfil-fine-ciclo';
             return '<input type="tel" class="cond-tendina-inp cfil-tendina-inp" data-cfil-field="' + f.id + '" id="' + f.id + '" ' +
                 'inputmode="' + (isTime ? 'numeric' : 'decimal') + '" maxlength="' + (isTime ? '5' : '12') + '" ' +
                 'placeholder="' + ph + '" autocomplete="off" ' +
@@ -16235,7 +16337,10 @@ window.updateStoricoButton = async function() {
                     window.buildConteggioFiltraFieldInputHtml(f) +
                     '</div>';
             });
-            html += '</div>';
+            html += '<div class="cond-tendina-cell cfil-tendina-cell cfil-tendina-cell-fine">' +
+                '<span class="cond-tendina-lbl">FINE ORA</span>' +
+                window.buildConteggioFiltraFineSplitHtml() +
+                '</div></div>';
             return html;
         };
 
@@ -16246,6 +16351,7 @@ window.updateStoricoButton = async function() {
                 return '<tr><td class="cell-label-main">' + window.escRapportinoHtml(f.label) + '</td>' +
                     '<td>' + window.buildConteggioFiltraFieldInputHtml(f) + '</td></tr>';
             }).join('');
+            rows += '<tr><td class="cell-label-main">FINE ORA</td><td>' + window.buildConteggioFiltraFineSplitHtml() + '</td></tr>';
             return '<div class="v-label-container" style="background-color:#047857;" ' +
                 'ontouchstart="window.startPress(event,\'sec-conteggio-filtra\')" ontouchmove="window.movePress(event)" ' +
                 'ontouchend="window.endPress(event,\'sec-conteggio-filtra\')" onmousedown="window.startPress(event,\'sec-conteggio-filtra\')" ' +
@@ -16257,7 +16363,7 @@ window.updateStoricoButton = async function() {
         window.renderConteggioFiltraPanel = function() {
             const panel = document.getElementById('conteggio-filtra-panel');
             if (!panel) return;
-            const renderVer = 'v1-cfil-grid';
+            const renderVer = 'v2-cfil-split';
             if (panel.dataset.rendered === renderVer) {
                 window.initConteggioFiltraDefaults();
                 return;
@@ -16328,8 +16434,9 @@ window.updateStoricoButton = async function() {
                 rb2.appendChild(vert);
             }
             const title = (cfMod && cfMod.title) || 'CONTEGGIO FILTRA';
-            const existing = vert.querySelector('input[data-cfil-field]');
-            if (existing) {
+            const hasSplitFine = vert.querySelector('input[data-cfil-field="cfil-ore-fine"]');
+            const hasLegacyFine = vert.querySelector('input[data-cfil-field="cfil-fine-ora"]');
+            if (hasSplitFine && !hasLegacyFine) {
                 const lbl = document.getElementById('lbl-sec-conteggio-filtra-vertical');
                 if (lbl) lbl.textContent = title;
                 vert.style.display = 'flex';
@@ -23964,6 +24071,14 @@ window.convertToHtml = async () => {
         }
         .dark #conteggio-filtra-panel input.cfil-tendina-inp,
         .dark .rapportino-conteggio-filtra-vertical-section input.cfil-tendina-inp { background: #022c22; color: #ecfdf5; border-color: #34d399; }
+        .cfil-fine-split { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; }
+        .cfil-fine-split-part { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+        .cfil-fine-sub-lbl { font-size: 9px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.04em; color: #047857; text-align: center; line-height: 1.1; }
+        .dark .cfil-fine-sub-lbl { color: #6ee7b7; }
+        .cfil-tendina-cell-fine { grid-column: span 2; }
+        @media (max-width: 520px) {
+            .cfil-tendina-cell-fine { grid-column: span 2; }
+        }
         body.sh-device-phone .rapportino-conteggio-filtra-tendina:not(.rapportino-conteggio-filtra-tendina-collapsed) .cond-tendina-body {
             max-height: min(520px, 72vh) !important;
             overflow: visible !important;

@@ -664,7 +664,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v292';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v293';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -2511,6 +2511,9 @@ window.colorPreviewNumber = function(tankName, value) {
                     if (typeof window.ensureBackupHistory === 'function') {
                         void window.ensureBackupHistory();
                     }
+                    if (typeof window.__flushPendingArchiveCloudUploads === 'function') {
+                        void window.__flushPendingArchiveCloudUploads();
+                    }
                     setTimeout(function () {
                         if (user && user.uid && db && __plantRetrySaveAfterAuth && typeof window.saveData === 'function') {
                             __plantRetrySaveAfterAuth = false;
@@ -3073,6 +3076,18 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__isFirestorePermissionError = function (e) {
             const c = e && e.code;
             return c === 'permission-denied' || c === 'missing-or-insufficient-permissions';
+        };
+
+        /** Errori Firestore/rete spesso temporanei (iPhone, Wi‑Fi instabile). */
+        window.__isFirestoreTransientError = function (e) {
+            if (!e) return false;
+            const c = e && e.code;
+            const m = e && e.message ? String(e.message).toLowerCase() : '';
+            if (window.__isFirestoreQuotaError && window.__isFirestoreQuotaError(e)) return false;
+            if (window.__isFirestorePermissionError && window.__isFirestorePermissionError(e)) return false;
+            return c === 'unavailable' || c === 'deadline-exceeded' || c === 'aborted' || c === 'internal'
+                || m.indexOf('timeout') >= 0 || m.indexOf('network') >= 0 || m.indexOf('fetch') >= 0
+                || m.indexOf('failed to get') >= 0 || m.indexOf('connection') >= 0;
         };
 
         window.__showPlantCloudSyncBanner = function (message) {
@@ -4105,6 +4120,14 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (typeof window.__showPlantCloudSyncBanner === 'function') {
                     window.__showPlantCloudSyncBanner(msg);
                 }
+                if (window.__isFirestoreTransientError && window.__isFirestoreTransientError(e) && !window.__plantCloudRetryTimer) {
+                    window.__plantCloudRetryTimer = setTimeout(function () {
+                        window.__plantCloudRetryTimer = null;
+                        if (typeof window.__flushPlantCloudSaveNow === 'function') {
+                            void window.__flushPlantCloudSaveNow(true);
+                        }
+                    }, 3500);
+                }
             }
             if (window.isContatoreFiltraModuleActive && window.isContatoreFiltraModuleActive()) {
                 if (typeof window.saveActiveRapportinoFromUI === 'function') {
@@ -4464,17 +4487,239 @@ window.colorPreviewNumber = function(tankName, value) {
             }
         };
 
+        window.__PENDING_ARCHIVE_UPLOADS_KEY = 'servicehub_pending_archive_uploads';
+        window.__archiveSaveInFlight = null;
+
+        window.__shouldSkipArchiveSnapshotKey = function (key) {
+            if (!key || typeof key !== 'string') return true;
+            if (key.indexOf('analisi-') >= 0 && key.indexOf('-input') >= 0) return true;
+            if (key === 'ai-chat-input' || key === 'conv-chat-input') return true;
+            return false;
+        };
+
+        window.__slimArchiveStatusHtml = function (html) {
+            if (!html || typeof html !== 'string') return html;
+            return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        };
+
+        window.__prepareArchivePayloadForFirestore = function (data) {
+            if (!data || typeof data !== 'object') return data;
+            let payload = data;
+            let bytes = JSON.stringify(payload).length;
+            if (bytes <= 950000) return payload;
+            payload = JSON.parse(JSON.stringify(data));
+            Object.keys(payload).forEach(function (k) {
+                const v = payload[k];
+                if (v && typeof v === 'object' && v.text != null) {
+                    payload[k] = {
+                        text: window.__slimArchiveStatusHtml(String(v.text)),
+                        class: v.class || ''
+                    };
+                }
+            });
+            bytes = JSON.stringify(payload).length;
+            if (bytes > 950000) {
+                console.warn('[ServiceHub] archivio ancora grande (' + bytes + ' B), rimuovo campi vuoti');
+                Object.keys(payload).forEach(function (k) {
+                    const v = payload[k];
+                    if (v === '' || v == null) delete payload[k];
+                });
+            }
+            return payload;
+        };
+
+        window.buildArchiveSnapshotFromDOM = function (editMeta) {
+            const now = new Date();
+            const displayDateEl = document.getElementById('display-date');
+            const displayValue = editMeta
+                ? editMeta.displayLabel
+                : (displayDateEl ? displayDateEl.innerText : '');
+            const timeToSave = window.isEditingArchive
+                ? (editMeta ? editMeta.time : displayValue)
+                : now.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+            const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
+            const data = {
+                manualShift: manualShift,
+                shift: currentShift,
+                time: timeToSave,
+                archiveTime: window.isEditingArchive
+                    ? (editMeta ? editMeta.archiveTime : displayValue)
+                    : (displayValue || now.toLocaleString('it-IT', {
+                        day: '2-digit', month: '2-digit', year: '2-digit',
+                        hour: '2-digit', minute: '2-digit'
+                    })),
+                createdAt: (editMeta && editMeta.date)
+                    ? editMeta.date.getTime()
+                    : (window.editingCreatedAt || now.getTime()),
+                tankStatuses: window.__ensureTankStatusesObject ? window.__ensureTankStatusesObject() : (window.tankStatuses || {}),
+                tankStatusManualAD: window.__ensureTankStatusManualADObject ? window.__ensureTankStatusManualADObject() : (window.tankStatusManualAD || {})
+            };
+            document.querySelectorAll('input').forEach(function (input) {
+                if (!input.id || window.__shouldSkipArchiveSnapshotKey(input.id)) return;
+                data[input.id] = input.value;
+            });
+            document.querySelectorAll('.status-cell-btn, .status-header, .vwt-label-dynamic, .osmosi-label-dynamic').forEach(function (el) {
+                if (!el.id) return;
+                data[el.id] = {
+                    text: el.innerHTML,
+                    class: el.className,
+                    style: el.getAttribute('style') || ''
+                };
+            });
+            return data;
+        };
+
+        window.persistArchiveSnapshotLocal = function (data) {
+            if (!data) return false;
+            try {
+                if (typeof window.addToHistory === 'function') window.addToHistory(data);
+                const entry = Object.assign({}, data, { __localSavedAt: Date.now() });
+                let localArchives = [];
+                try {
+                    localArchives = JSON.parse(localStorage.getItem('stabileArchives') || '[]');
+                    if (!Array.isArray(localArchives)) localArchives = [];
+                } catch (_) {
+                    localArchives = [];
+                }
+                const dup = localArchives.some(function (a) {
+                    return a && a.createdAt === entry.createdAt;
+                });
+                if (!dup) {
+                    localArchives.push(entry);
+                    if (localArchives.length > 24) localArchives = localArchives.slice(-24);
+                    localStorage.setItem('stabileArchives', JSON.stringify(localArchives));
+                }
+                return true;
+            } catch (e) {
+                console.warn('[ServiceHub] persistArchiveSnapshotLocal:', e && e.message);
+                return false;
+            }
+        };
+
+        window.__readPendingArchiveUploads = function () {
+            try {
+                const raw = localStorage.getItem(window.__PENDING_ARCHIVE_UPLOADS_KEY);
+                const arr = raw ? JSON.parse(raw) : [];
+                return Array.isArray(arr) ? arr : [];
+            } catch (_) {
+                return [];
+            }
+        };
+
+        window.__queuePendingArchiveUpload = function (entry) {
+            if (!entry || !entry.createdAt) return;
+            try {
+                const list = window.__readPendingArchiveUploads().filter(function (x) {
+                    return x && x.createdAt !== entry.createdAt;
+                });
+                list.push(entry);
+                if (list.length > 12) list.splice(0, list.length - 12);
+                localStorage.setItem(window.__PENDING_ARCHIVE_UPLOADS_KEY, JSON.stringify(list));
+            } catch (_) {}
+        };
+
+        window.__removePendingArchiveUpload = function (createdAt) {
+            try {
+                const list = window.__readPendingArchiveUploads().filter(function (x) {
+                    return x && x.createdAt !== createdAt;
+                });
+                localStorage.setItem(window.__PENDING_ARCHIVE_UPLOADS_KEY, JSON.stringify(list));
+            } catch (_) {}
+        };
+
+        window.__archiveFirestoreTimeoutMs = function () {
+            return (typeof window.isServiceHubPhone === 'function' && window.isServiceHubPhone()) ? 22000 : 14000;
+        };
+
+        window.__archiveFirestoreOp = function (promise, label) {
+            const timeoutMs = window.__archiveFirestoreTimeoutMs();
+            return Promise.race([
+                promise,
+                new Promise(function (_, reject) {
+                    setTimeout(function () {
+                        reject(new Error((label || 'Firestore') + ' timeout'));
+                    }, timeoutMs);
+                })
+            ]);
+        };
+
+        window.__uploadArchiveSnapshotToCloud = async function (data, opts) {
+            opts = opts || {};
+            if (!user || !user.uid || !db) throw new Error('offline');
+            if (window.__firestoreQuotaBlocked) throw new Error('quota');
+            const payload = window.__prepareArchivePayloadForFirestore(data);
+            const editId = opts.editingArchiveId || null;
+            const attempts = opts.maxAttempts != null ? opts.maxAttempts : 3;
+            let lastErr = null;
+            for (let i = 0; i < attempts; i++) {
+                try {
+                    if (editId) {
+                        await window.__archiveFirestoreOp(
+                            setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots', editId), payload),
+                            'salva modifica archivio'
+                        );
+                        return { mode: 'edit', id: editId };
+                    }
+                    const ref = await window.__archiveFirestoreOp(
+                        addDoc(collection(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots'), payload),
+                        'nuovo archivio'
+                    );
+                    return { mode: 'add', id: ref && ref.id };
+                } catch (e) {
+                    lastErr = e;
+                    if (!(window.__isFirestoreTransientError && window.__isFirestoreTransientError(e)) || i >= attempts - 1) {
+                        throw e;
+                    }
+                    await new Promise(function (r) { setTimeout(r, 900 * (i + 1)); });
+                }
+            }
+            throw lastErr || new Error('upload archivio fallito');
+        };
+
+        window.__flushPendingArchiveCloudUploads = async function () {
+            if (!user || !user.uid || !db || window.__firestoreQuotaBlocked) return;
+            if (window.__pendingArchiveUploadBusy) return;
+            const pending = window.__readPendingArchiveUploads();
+            if (!pending.length) return;
+            window.__pendingArchiveUploadBusy = true;
+            try {
+                for (let i = 0; i < pending.length; i++) {
+                    const item = pending[i];
+                    if (!item || !item.payload) continue;
+                    try {
+                        await window.__uploadArchiveSnapshotToCloud(item.payload, {
+                            editingArchiveId: item.editingArchiveId || null,
+                            maxAttempts: 2
+                        });
+                        window.__removePendingArchiveUpload(item.createdAt);
+                    } catch (e) {
+                        console.warn('[ServiceHub] pending archive upload:', e && e.message);
+                        if (window.__isFirestoreQuotaError && window.__isFirestoreQuotaError(e)) {
+                            window.__onFirestoreQuotaExceeded();
+                            break;
+                        }
+                        if (!window.__isFirestoreTransientError || !window.__isFirestoreTransientError(e)) {
+                            break;
+                        }
+                    }
+                }
+            } finally {
+                window.__pendingArchiveUploadBusy = false;
+            }
+        };
+
         window.archiveCurrentData = async function() {
             const btn = document.getElementById('btn-archive-now');
             if (!btn) {
                 console.warn('[ServiceHub] archiveCurrentData: btn-archive-now non trovato');
                 return;
             }
+            if (window.__archiveSaveInFlight) {
+                try { await window.__archiveSaveInFlight; } catch (_) {}
+            }
             const originalClassName = btn.className;
             const sleep = function (ms) {
-                return new Promise(function (resolve) {
-                    setTimeout(resolve, ms);
-                });
+                return new Promise(function (resolve) { setTimeout(resolve, ms); });
             };
             const restoreArchiveButton = function () {
                 const b = document.getElementById('btn-archive-now');
@@ -4489,22 +4734,9 @@ window.colorPreviewNumber = function(tankName, value) {
                 b.style.backgroundColor = '';
                 b.style.borderColor = '';
             };
-            const firestoreOp = function (promise, label, ms) {
-                const timeoutMs = ms || 12000;
-                return Promise.race([
-                    promise,
-                    new Promise(function (_, reject) {
-                        setTimeout(function () {
-                            reject(new Error((label || 'Firestore') + ' timeout'));
-                        }, timeoutMs);
-                    })
-                ]);
-            };
-
-            /** Non bloccare il tasto Salva: publicDigital è secondario rispetto allo snapshot backup. */
             const schedulePublicDigitalAfterArchive = function (logTag) {
                 try {
-                    const tag = logTag || "archiveCurrentData publicDigital";
+                    const tag = logTag || 'archiveCurrentData publicDigital';
                     const pushPromise = Promise.resolve(
                         typeof window.__ensurePublicDigitalPushAllowed === 'function'
                             ? window.__ensurePublicDigitalPushAllowed().then(function (allowed) {
@@ -4513,125 +4745,96 @@ window.colorPreviewNumber = function(tankName, value) {
                               })
                             : window.pushPublicDigitalSnapshotQuiet()
                     );
-                    const wrapped =
-                        typeof window.__serviceHubWithTimeout === "function"
-                            ? window.__serviceHubWithTimeout(pushPromise, 22000, tag)
-                            : pushPromise;
+                    const wrapped = typeof window.__serviceHubWithTimeout === 'function'
+                        ? window.__serviceHubWithTimeout(pushPromise, 22000, tag)
+                        : pushPromise;
                     void Promise.resolve(wrapped).catch(function (e) {
-                        console.warn("[ServiceHub] " + tag + ":", e && e.message);
+                        console.warn('[ServiceHub] ' + tag + ':', e && e.message);
                     });
                 } catch (e) {
-                    console.warn("[ServiceHub] schedulePublicDigitalAfterArchive:", e && e.message);
+                    console.warn('[ServiceHub] schedulePublicDigitalAfterArchive:', e && e.message);
+                }
+            };
+            const showArchiveToast = function (msg, kind) {
+                if (typeof window.__serviceHubFlashToast === 'function') {
+                    window.__serviceHubFlashToast(msg, kind === 'error', kind === 'warn' ? 'warn' : (kind === 'ok' ? 'ok' : undefined));
                 }
             };
 
-            btn.innerHTML = window.isEditingArchive ? "MODIFICA..." : "SALVATAGGIO...";
+            const runArchive = async function () {
+                btn.innerHTML = window.isEditingArchive ? 'MODIFICA...' : 'SALVATAGGIO...';
 
-            if (!user || !user.uid || !db) {
-                btn.innerHTML = "OFFLINE";
-                btn.classList.add('bg-red-600');
-                await sleep(1200);
-                restoreArchiveButton();
-                return;
-            }
-            if (window.__firestoreQuotaBlocked) {
-                btn.innerHTML = "QUOTA";
-                btn.classList.add('bg-red-600');
-                await sleep(1200);
-                restoreArchiveButton();
-                if (typeof window.__showPlantCloudSyncBanner === 'function') {
-                    window.__showPlantCloudSyncBanner('Quota Firestore superata: impossibile salvare lo storico sul cloud ora.');
+                if (typeof window.saveActiveRapportinoFromUI === 'function') {
+                    try { window.saveActiveRapportinoFromUI(); } catch (_) {}
                 }
-                return;
-            }
+                if (typeof window.__flushPlantCloudSaveNow === 'function') {
+                    try { await window.__flushPlantCloudSaveNow(true); } catch (_) {}
+                } else if (typeof window.saveData === 'function') {
+                    try { await window.saveData(true); } catch (_) {}
+                }
 
-            const now = new Date();
+                const editMeta = window.isEditingArchive && typeof window.__getArchiveEditMeta === 'function'
+                    ? window.__getArchiveEditMeta()
+                    : null;
+                const data = window.buildArchiveSnapshotFromDOM(editMeta);
+                const localOk = window.persistArchiveSnapshotLocal(data);
 
-            const displayDateEl = document.getElementById('display-date');
-            const editMeta = window.isEditingArchive && typeof window.__getArchiveEditMeta === 'function'
-                ? window.__getArchiveEditMeta()
-                : null;
-            const displayValue = editMeta
-                ? editMeta.displayLabel
-                : (displayDateEl ? displayDateEl.innerText : '');
+                if (!user || !user.uid || !db) {
+                    btn.innerHTML = localOk ? 'SALVATO!' : 'OFFLINE';
+                    btn.classList.add(localOk ? 'bg-yellow-500' : 'bg-red-600');
+                    if (localOk) showArchiveToast('Salvato in locale. Cloud non disponibile: si riprova quando torni online.', 'warn');
+                    await sleep(1400);
+                    if (localOk && typeof window.updateStoricoButton === 'function') window.updateStoricoButton();
+                    return;
+                }
+                if (window.__firestoreQuotaBlocked) {
+                    btn.innerHTML = localOk ? 'LOCALE OK' : 'QUOTA';
+                    btn.classList.add(localOk ? 'bg-yellow-500' : 'bg-red-600');
+                    if (typeof window.__showPlantCloudSyncBanner === 'function') {
+                        window.__showPlantCloudSyncBanner('Quota Firestore superata: storico salvato in locale su questo dispositivo.');
+                    }
+                    await sleep(1400);
+                    if (localOk && typeof window.updateStoricoButton === 'function') window.updateStoricoButton();
+                    return;
+                }
 
-            const timeToSave = window.isEditingArchive
-                ? (editMeta ? editMeta.time : displayValue)
-                : now.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
-
-            const currentShift = document.getElementById('current-shift-label')?.innerText?.trim() || '';
-            const data = {
-                manualShift,
-                shift: currentShift,
-                time: timeToSave,
-                archiveTime: window.isEditingArchive
-                    ? (editMeta ? editMeta.archiveTime : displayValue)
-                    : (displayValue || now.toLocaleString('it-IT', {
-                    day:'2-digit',
-                    month:'2-digit',
-                    year:'2-digit',
-                    hour:'2-digit',
-                    minute:'2-digit'
-                })),
-                createdAt: (editMeta && editMeta.date)
-                    ? editMeta.date.getTime()
-                    : (window.editingCreatedAt || now.getTime())
-            };
-
-            document.querySelectorAll('input').forEach(input => {
-                if (input.id) data[input.id] = input.value;
-            });
-
-            document.querySelectorAll('.status-cell-btn, .status-header, .vwt-label-dynamic, .osmosi-label-dynamic').forEach(el => {
-                if (el.id) {
-                    data[el.id] = {
-                        text: el.innerHTML,
-                        class: el.className,
-                        style: el.getAttribute('style') || ""
+                let cloudOk = false;
+                let cloudErr = null;
+                try {
+                    const uploadOpts = {
+                        editingArchiveId: (window.isEditingArchive && window.editingArchiveId) ? window.editingArchiveId : null
                     };
+                    await window.__uploadArchiveSnapshotToCloud(data, uploadOpts);
+                    cloudOk = true;
+                    window.__removePendingArchiveUpload(data.createdAt);
+                } catch (e) {
+                    cloudErr = e;
+                    console.error('[ServiceHub] archiveCurrentData cloud:', e && e.code, e && e.message);
+                    if (window.__isFirestoreQuotaError && window.__isFirestoreQuotaError(e)) {
+                        window.__onFirestoreQuotaExceeded();
+                    }
+                    if (localOk) {
+                        window.__queuePendingArchiveUpload({
+                            createdAt: data.createdAt,
+                            payload: data,
+                            editingArchiveId: (window.isEditingArchive && window.editingArchiveId) ? window.editingArchiveId : null
+                        });
+                        void window.__flushPendingArchiveCloudUploads();
+                    }
+                    if (window.__isFirestorePermissionError && window.__isFirestorePermissionError(e)) {
+                        showArchiveToast('Cloud rifiutato (regole Firestore). Dati salvati in locale.', 'warn');
+                    } else if (localOk) {
+                        showArchiveToast('Salvato in locale. Invio cloud in sospeso — si riprova automaticamente.', 'warn');
+                    }
                 }
-            });
 
-            try {
-                const archiveRef = collection(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots');
-
-                // ✅ MODALITÀ MODIFICA = SOVRASCRIVE
-                if (window.isEditingArchive && window.editingArchiveId) {
-                    // ✅ AGGIUNGI I VALORI CORRENTI PRIMA DI SALVARE
-                    document.querySelectorAll('input').forEach(input => {
-                        if (input.id) data[input.id] = input.value;
-                    });
-
-                    document.querySelectorAll('.status-cell-btn, .status-header, .vwt-label-dynamic, .osmosi-label-dynamic').forEach(el => {
-                        if (el.id) {
-                            data[el.id] = {
-                                text: el.innerHTML,
-                                class: el.className,
-                                style: el.getAttribute('style') || ""
-                            };
-                        }
-                    });
-
-                    data.tankStatuses = window.__ensureTankStatusesObject ? window.__ensureTankStatusesObject() : (window.tankStatuses || {});
-                    data.tankStatusManualAD = window.__ensureTankStatusManualADObject ? window.__ensureTankStatusManualADObject() : (window.tankStatusManualAD || {});
-
-                    await firestoreOp(
-                        setDoc(
-                            doc(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots', window.editingArchiveId),
-                            data
-                        ),
-                        'salva modifica archivio',
-                        8000
-                    );
-
+                if (window.isEditingArchive && window.editingArchiveId && (cloudOk || localOk)) {
                     if (window.savedHistory && Array.isArray(window.savedHistory) && window.editingCreatedAt) {
                         window.savedHistory = window.savedHistory.filter(function (entry) {
                             return entry.createdAt !== window.editingCreatedAt;
                         });
                     }
-                    window.addToHistory(data);
                     window.trendDebugData = [];
-
                     window.isEditingArchive = false;
                     if (typeof window.__restorePreModificationLiveUI === 'function') {
                         window.__restorePreModificationLiveUI();
@@ -4642,42 +4845,49 @@ window.colorPreviewNumber = function(tankName, value) {
                     if (typeof window.updateStoricoButton === 'function') {
                         window.updateStoricoButton();
                     }
-
-                    btn.innerHTML = 'SALVATO!';
-                    btn.classList.add('bg-emerald-600');
-                    await sleep(400);
-                    updateDeviceInfo();
-
                     if (typeof window.__scheduleArchiveEditBackgroundSync === 'function') {
                         window.__scheduleArchiveEditBackgroundSync();
                     }
-                    return;
+                    if (typeof updateDeviceInfo === 'function') updateDeviceInfo();
                 }
 
-                // ✅ MODALITÀ NORMALE = NUOVO BACKUP
-                await firestoreOp(addDoc(archiveRef, data), 'nuovo archivio');
+                if (!window.isEditingArchive && (cloudOk || localOk)) {
+                    if (window.setTankLevelBaselineFromSnapshotData) window.setTankLevelBaselineFromSnapshotData(data);
+                    if (window.refreshAllTankLevelArrows) window.refreshAllTankLevelArrows();
+                    if (cloudOk) schedulePublicDigitalAfterArchive('archiveCurrentData nuovo backup publicDigital');
+                    if (typeof window.updateStoricoButton === 'function') window.updateStoricoButton();
+                }
 
-                if (window.setTankLevelBaselineFromSnapshotData) window.setTankLevelBaselineFromSnapshotData(data);
-                if (window.refreshAllTankLevelArrows) window.refreshAllTankLevelArrows();
+                if (cloudOk) {
+                    btn.innerHTML = 'SALVATO!';
+                    btn.classList.add('bg-emerald-600');
+                    await sleep(1200);
+                } else if (localOk) {
+                    btn.innerHTML = 'LOCALE OK';
+                    btn.classList.add('bg-yellow-500');
+                    await sleep(1400);
+                } else {
+                    const errLabel = (cloudErr && String(cloudErr.message || '').indexOf('timeout') >= 0) ? 'TIMEOUT'
+                        : (cloudErr && window.__isFirestorePermissionError && window.__isFirestorePermissionError(cloudErr)) ? 'REGOLE'
+                        : 'ERRORE';
+                    btn.innerHTML = errLabel;
+                    btn.classList.add('bg-red-600');
+                    await sleep(1400);
+                }
+            };
 
-                schedulePublicDigitalAfterArchive("archiveCurrentData nuovo backup publicDigital");
-
-                btn.innerHTML = "SALVATO!";
-                btn.classList.add('bg-emerald-600');
-                await sleep(1200);
-                window.updateStoricoButton();
-
-            } catch (e) {
+            const p = runArchive().catch(function (e) {
                 console.error('[ServiceHub] archiveCurrentData:', e);
-                if (window.__isFirestoreQuotaError && window.__isFirestoreQuotaError(e)) {
-                    window.__onFirestoreQuotaExceeded();
-                }
-                btn.innerHTML = "ERRORE";
+                btn.innerHTML = 'ERRORE';
                 btn.classList.add('bg-red-600');
-                await sleep(1200);
-            } finally {
+                return sleep(1200);
+            }).finally(function () {
                 restoreArchiveButton();
-            }
+            });
+            window.__archiveSaveInFlight = p;
+            return p.finally(function () {
+                if (window.__archiveSaveInFlight === p) window.__archiveSaveInFlight = null;
+            });
         };
 
         // ✅ FUNZIONE IBRIDA STILE IPHONE CON INPUT E RUOTA
@@ -6108,6 +6318,9 @@ window.updateStoricoButton = async function() {
             window.addEventListener('online', function () {
                 if (typeof window.__pullAllCloudStateNow === 'function') {
                     void window.__pullAllCloudStateNow();
+                }
+                if (typeof window.__flushPendingArchiveCloudUploads === 'function') {
+                    void window.__flushPendingArchiveCloudUploads();
                 }
             });
 

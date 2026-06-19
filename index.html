@@ -687,7 +687,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v304';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v305';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -11729,6 +11729,49 @@ window.updateStoricoButton = async function() {
         window.TANK_TIMELINE_PREDICT_HOURS_DEFAULT = 12;
         window.TANK_TIMELINE_PREDICT_OPTIONS = [8, 12, 24];
         window.TANK_TIMELINE_PREDICT_HOURS = window.TANK_TIMELINE_PREDICT_HOURS_DEFAULT;
+        window.TANK_TIMELINE_NOW_FRAC = 0.34;
+
+        window.buildTankTimelineSvgGeom = function (model, pad, plotW, plotH) {
+            var zoneTop = pad.t;
+            var zoneBottom = pad.t + plotH;
+            var lineY = pad.t + plotH * 0.5;
+            var nowFrac = window.TANK_TIMELINE_NOW_FRAC != null ? window.TANK_TIMELINE_NOW_FRAC : 0.34;
+            var nowX = pad.l + plotW * nowFrac;
+            var endX = pad.l + plotW;
+            var w = Math.ceil(endX) + 1;
+            var toXHist = function (ts) {
+                if (!Number.isFinite(ts)) return pad.l;
+                if (ts >= model.nowTs) return nowX;
+                var histSpan = model.nowTs - model.tStart;
+                if (histSpan <= 0) return pad.l;
+                return pad.l + (nowX - pad.l) * ((ts - model.tStart) / histSpan);
+            };
+            var toXPred = function (ts) {
+                if (!Number.isFinite(ts)) return nowX;
+                if (ts <= model.nowTs) return nowX;
+                var predSpan = model.tEnd - model.nowTs;
+                if (predSpan <= 0) return nowX;
+                return nowX + (endX - nowX) * ((ts - model.nowTs) / predSpan);
+            };
+            return {
+                w: w,
+                h: pad.t + plotH + pad.b,
+                pad: pad,
+                plotW: plotW,
+                plotH: plotH,
+                tSpan: model.tEnd - model.tStart,
+                lineY: lineY,
+                nowX: nowX,
+                endX: endX,
+                zoneTop: zoneTop,
+                zoneBottom: zoneBottom,
+                toXHist: toXHist,
+                toXPred: toXPred,
+                toX: toXPred,
+                nowTs: model.nowTs,
+                tEnd: model.tEnd
+            };
+        };
 
         window.computeTankTimelineRateMmH = function (series, info) {
             info = info || {};
@@ -11904,21 +11947,13 @@ window.updateStoricoButton = async function() {
                 '</div></div>';
         };
 
-        window.buildTankTimelineHistPts = function (model, toX, lineY, nowX) {
+        window.buildTankTimelineHistPts = function (model, toXHist, lineY, nowX) {
             if (!model || !Number.isFinite(lineY)) return [];
-            var nowPt = {
-                ts: model.nowTs,
-                mm: model.nowMm,
-                label: 'Livello attuale',
-                live: true
-            };
-            var startPt = model.initialPt
-                || (model.series && model.series.length ? model.series[0] : null);
+            var startPt = model.initialPt;
             var pts = [];
             if (startPt && Number.isFinite(startPt.ts)) {
-                pts.push({ x: toX(startPt.ts), y: lineY, p: startPt });
+                pts.push({ x: toXHist(startPt.ts), y: lineY, p: startPt });
             }
-            pts.push({ x: nowX, y: lineY, p: nowPt });
             return pts;
         };
 
@@ -11928,20 +11963,19 @@ window.updateStoricoButton = async function() {
             var pad = { l: 76, r: 0, t: 6, b: 14 };
             var plotW = 800 - pad.l - 8;
             var plotH = h - pad.t - pad.b;
-            var zoneTop = pad.t;
-            var zoneBottom = pad.t + plotH;
-            var tSpan = model.tEnd - model.tStart;
-            if (tSpan <= 0) tSpan = 3600000;
-            var toX = function (ts) { return pad.l + plotW * ((ts - model.tStart) / tSpan); };
-            var lineY = pad.t + plotH * 0.5;
-            var nowX = toX(model.nowTs);
-            var endX = toX(model.tEnd);
-            var w = Math.ceil(endX) + 1;
+            var geom = window.buildTankTimelineSvgGeom(model, pad, plotW, plotH);
+            var zoneTop = geom.zoneTop;
+            var zoneBottom = geom.zoneBottom;
+            var lineY = geom.lineY;
+            var nowX = geom.nowX;
+            var endX = geom.endX;
+            var w = geom.w;
+            var toXHist = geom.toXHist;
             var startPt = model.initialPt
                 || (model.series && model.series.length ? model.series[0] : null);
-            var startX = startPt && Number.isFinite(startPt.ts) ? toX(startPt.ts) : pad.l;
+            var startX = startPt && Number.isFinite(startPt.ts) ? toXHist(startPt.ts) : pad.l;
             var histPts = typeof window.buildTankTimelineHistPts === 'function'
-                ? window.buildTankTimelineHistPts(model, toX, lineY, nowX)
+                ? window.buildTankTimelineHistPts(model, toXHist, lineY, nowX)
                 : [];
             var histPath = 'M' + startX.toFixed(1) + ',' + lineY.toFixed(1) +
                 ' L' + nowX.toFixed(1) + ',' + lineY.toFixed(1);
@@ -11949,13 +11983,10 @@ window.updateStoricoButton = async function() {
                 ' L' + endX.toFixed(1) + ',' + lineY.toFixed(1);
             var nowY = lineY;
             var dots = histPts.map(function (pt) {
-                var fill = pt.p.live ? '#fbbf24' : '#38bdf8';
                 var lbl = window.__escTankDetailHtml(pt.p.label || window.formatTankTimelineClock(pt.p.ts));
                 var mmLbl = window.__fmtTankDetailMm(pt.p.mm);
-                var dot = '<circle cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) + '" r="5" fill="' + fill + '" stroke="#0f172a" stroke-width="1.2">' +
+                return '<circle pointer-events="none" cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) + '" r="5" fill="#38bdf8" stroke="#0f172a" stroke-width="1.2">' +
                     '<title>' + lbl + ': ' + mmLbl + ' mm</title></circle>';
-                if (pt.p.live) return dot;
-                return dot;
             }).join('');
             var zonePredLight = '<rect data-tl-zone-light pointer-events="none" x="' + nowX.toFixed(1) + '" y="' + pad.t + '" width="' + Math.max(0, endX - nowX).toFixed(1) +
                 '" height="' + plotH + '" fill="rgba(167,139,250,0.025)" />';
@@ -11983,17 +12014,23 @@ window.updateStoricoButton = async function() {
                 dots + nowLine + plotHit + scrubber;
             svgEl.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
             svgEl.__tlModel = model;
-            svgEl.__tlGeom = { w: w, h: h, pad: pad, plotW: plotW, plotH: plotH, tSpan: tSpan, lineY: lineY, nowX: nowX, endX: endX, toX: toX, nowTs: model.nowTs, tEnd: model.tEnd, zoneTop: zoneTop, zoneBottom: zoneBottom };
+            svgEl.__tlGeom = geom;
         };
 
         window.timelineScrubHoursFromSvgX = function (geom, model, svgX) {
             if (!geom || !model) return 0;
-            if (geom.endX != null && svgX > geom.endX) svgX = geom.endX;
-            if (svgX < geom.pad.l) svgX = geom.pad.l;
-            var ts = model.tStart + ((svgX - geom.pad.l) / geom.plotW) * geom.tSpan;
-            if (ts < model.nowTs) ts = model.nowTs;
-            if (ts > model.tEnd) ts = model.tEnd;
-            return (ts - model.nowTs) / 3600000;
+            var nowX = geom.nowX;
+            var endX = geom.endX != null ? geom.endX : geom.w - (geom.pad ? geom.pad.r : 0);
+            if (svgX <= nowX) return 0;
+            if (svgX >= endX) {
+                return model.predictH || ((model.tEnd - model.nowTs) / 3600000);
+            }
+            var predW = endX - nowX;
+            if (predW <= 0) return 0;
+            var frac = (svgX - nowX) / predW;
+            var predSpan = model.tEnd - model.nowTs;
+            if (predSpan <= 0) return 0;
+            return (frac * predSpan) / 3600000;
         };
 
         window.timelineFloatLeftPct = function (geom, svgX) {
@@ -12022,7 +12059,7 @@ window.updateStoricoButton = async function() {
             var nowX = geom.nowX;
             var initialPt = model.initialPt;
             var startPt = initialPt || (model.series.length ? model.series[0] : { ts: model.nowTs, mm: model.nowMm });
-            var startX = geom.toX(startPt.ts);
+            var startX = geom.toXHist ? geom.toXHist(startPt.ts) : (geom.toX ? geom.toX(startPt.ts) : 0);
             var showStart = !!initialPt;
             function setLeft(sel, svgX) {
                 var el = root.querySelector(sel);
@@ -12070,7 +12107,7 @@ window.updateStoricoButton = async function() {
             ));
             var targetTs = model.nowTs + hoursAhead * 3600000;
             var predMm = window.predictTankLevelAtTs(model, targetTs);
-            var x = geom.toX(targetTs);
+            var x = geom.toXPred ? geom.toXPred(targetTs) : geom.toX(targetTs);
             if (geom.endX != null && x > geom.endX) x = geom.endX;
             var y = geom.lineY != null ? geom.lineY : (((geom.zoneTop != null ? geom.zoneTop : geom.pad.t) + (geom.zoneBottom != null ? geom.zoneBottom : geom.pad.t + geom.plotH)) / 2);
             var nowX = geom.nowX;
@@ -12294,7 +12331,7 @@ window.updateStoricoButton = async function() {
         };
 
         window.ensureDigitalRemoteGaugeCss = function () {
-            var linkVer = 'dig113';
+            var linkVer = 'dig114';
             var link = document.getElementById('sh-digital-remote-css');
             if (link && link.getAttribute('data-css-ver') === linkVer) return;
             if (link) link.remove();
@@ -12310,7 +12347,7 @@ window.updateStoricoButton = async function() {
             if (typeof window.ensureDigitalRemoteGaugeCss === 'function') {
                 window.ensureDigitalRemoteGaugeCss();
             }
-            var cssVer = '222';
+            var cssVer = '223';
             var st = document.getElementById('tank-detail-styles');
             if (st && st.getAttribute('data-css-ver') !== cssVer) {
                 st.remove();

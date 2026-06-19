@@ -687,7 +687,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v306';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v307';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -11730,6 +11730,101 @@ window.updateStoricoButton = async function() {
         window.TANK_TIMELINE_PREDICT_OPTIONS = [8, 12, 24];
         window.TANK_TIMELINE_PREDICT_HOURS = window.TANK_TIMELINE_PREDICT_HOURS_DEFAULT;
 
+        window.__tankHardcodedAlarmThresholds = function (tankDbKey) {
+            var name = tankDbKey ? String(tankDbKey).toUpperCase() : '';
+            if (name === 'TK9000' || name === 'TK9201') return { yellow: 8000, red: 8400 };
+            if (name === 'TK9100') return { yellow: 1500, red: 1600 };
+            if (name === 'TK9200') return { yellow: 600, red: 650 };
+            if (name === 'TK9001') return { yellow: 3000, red: 3200 };
+            if (name === 'TK9101') return { yellow: 1500, red: 1600 };
+            if (name === 'TK9202') return { yellow: 600, red: 650 };
+            if (name === 'TK9002') return { yellow: 3000, red: 3200 };
+            if (name === 'TK9102') return { yellow: 1500, red: 1600 };
+            if (name === 'A10605' || name === 'TK10605') return { yellow: 3750, red: 5000 };
+            if (name === 'S818' || name === 'S817') return { yellow: 10000, red: 10500 };
+            return { yellow: 1000, red: 1200 };
+        };
+
+        window.resolveTankLevelAlarmState = function (fieldId, levelMm, opts) {
+            opts = opts || {};
+            if (!Number.isFinite(levelMm)) return 'normal';
+            if (opts.livMax && opts.livMax > 0 && levelMm > opts.livMax * 1.005) return 'critical';
+            var th = typeof window.thresholdsForAlarmFieldId === 'function'
+                ? window.thresholdsForAlarmFieldId(fieldId) : null;
+            if (th && typeof window.hasAnyAlarmThreshold === 'function' && window.hasAnyAlarmThreshold(th)) {
+                if (window.isAlarmThresholdConfigured(th.red) && levelMm >= th.red) return 'critical';
+                if (window.isAlarmThresholdConfigured(th.yellow) && levelMm >= th.yellow) return 'warn';
+                if (!opts.skipMin) {
+                    if (window.isAlarmThresholdConfigured(th.redMin) && levelMm <= th.redMin) return 'critical';
+                    if (window.isAlarmThresholdConfigured(th.yellowMin) && levelMm <= th.yellowMin) return 'warn';
+                }
+                return 'normal';
+            }
+            var tankKey = opts.tankDbKey;
+            if (!tankKey && fieldId && typeof window.getTankStatusKeyForFieldId === 'function') {
+                tankKey = window.getTankStatusKeyForFieldId(fieldId);
+            }
+            var hc = window.__tankHardcodedAlarmThresholds(tankKey);
+            if (hc.red != null && levelMm >= hc.red) return 'critical';
+            if (hc.yellow != null && levelMm >= hc.yellow) return 'warn';
+            return 'normal';
+        };
+
+        window.timelineAlarmKnobFill = function (state) {
+            if (state === 'critical') return '#dc2626';
+            if (state === 'warn') return '#f59e0b';
+            return '#fbbf24';
+        };
+
+        window.timelineAlarmLineStroke = function (state) {
+            return window.timelineAlarmKnobFill(state);
+        };
+
+        window.timelineAlarmDotFill = function (state) {
+            if (state === 'critical') return '#dc2626';
+            if (state === 'warn') return '#f59e0b';
+            return '#38bdf8';
+        };
+
+        window.timelineAlarmPredStroke = function (state) {
+            if (state === 'critical') return '#dc2626';
+            if (state === 'warn') return '#f59e0b';
+            return '#a78bfa';
+        };
+
+        window.applyTankTimelineAlarmMetricClass = function (el, state) {
+            if (!el) return;
+            el.classList.remove('tank-detail-timeline-metric-mm--warn', 'tank-detail-timeline-metric-mm--crit');
+            if (state === 'warn') el.classList.add('tank-detail-timeline-metric-mm--warn');
+            else if (state === 'critical') el.classList.add('tank-detail-timeline-metric-mm--crit');
+        };
+
+        window.updateTankDetailTimelineAlarmSvg = function (svg, model, geom, predMm, hoursAhead, fieldId) {
+            if (!svg || !model || !geom) return;
+            fieldId = fieldId || model.fieldId;
+            var alarmOpts = { tankDbKey: model.tankDbKey, livMax: model.livMax };
+            var nowState = window.resolveTankLevelAlarmState(fieldId, model.nowMm, alarmOpts);
+            var predState = window.resolveTankLevelAlarmState(fieldId, predMm, alarmOpts);
+            var scrubState = (hoursAhead != null && hoursAhead > 0.05) ? predState : nowState;
+            var scrub = svg.querySelector('[data-tl-scrub]');
+            var knob = svg.querySelector('[data-tl-knob]');
+            var predPathEl = svg.querySelector('[data-tl-pred-path]');
+            if (scrub) scrub.setAttribute('stroke', window.timelineAlarmLineStroke(scrubState));
+            if (knob) knob.setAttribute('fill', window.timelineAlarmKnobFill(scrubState));
+            if (predPathEl) {
+                predPathEl.setAttribute('stroke', window.timelineAlarmPredStroke(
+                    (hoursAhead != null && hoursAhead > 0.05) ? predState : 'normal'
+                ));
+            }
+            if (model.initialPt && Number.isFinite(model.initialPt.mm)) {
+                var startDot = svg.querySelector('[data-tl-start-dot]');
+                if (startDot) {
+                    var startState = window.resolveTankLevelAlarmState(fieldId, model.initialPt.mm, alarmOpts);
+                    startDot.setAttribute('fill', window.timelineAlarmDotFill(startState));
+                }
+            }
+        };
+
         window.buildTankTimelineSvgGeom = function (model, pad, plotW, plotH) {
             var zoneTop = pad.t;
             var zoneBottom = pad.t + plotH;
@@ -11865,7 +11960,8 @@ window.updateStoricoButton = async function() {
                 predictH: predH,
                 nowX: 0,
                 livMax: info.livMax,
-                tankDbKey: info.tankDbKey
+                tankDbKey: info.tankDbKey,
+                fieldId: info.fieldId
             };
         };
 
@@ -11936,6 +12032,8 @@ window.updateStoricoButton = async function() {
                 '<div class="tank-detail-timeline-legend">' +
                 '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--hist">■ Storico / adesso</span>' +
                 '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--pred">■ Zona previsione</span>' +
+                '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--alarm-warn">■ Allarme giallo</span>' +
+                '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--alarm-crit">■ Allarme rosso</span>' +
                 '</div></div>';
         };
 
@@ -11977,7 +12075,12 @@ window.updateStoricoButton = async function() {
             var dots = histPts.map(function (pt) {
                 var lbl = window.__escTankDetailHtml(pt.p.label || window.formatTankTimelineClock(pt.p.ts));
                 var mmLbl = window.__fmtTankDetailMm(pt.p.mm);
-                return '<circle pointer-events="none" cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) + '" r="5" fill="#38bdf8" stroke="#0f172a" stroke-width="1.2">' +
+                var dotState = window.resolveTankLevelAlarmState(model.fieldId, pt.p.mm, {
+                    tankDbKey: model.tankDbKey,
+                    livMax: model.livMax
+                });
+                var dotFill = window.timelineAlarmDotFill(dotState);
+                return '<circle data-tl-start-dot pointer-events="none" cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) + '" r="5" fill="' + dotFill + '" stroke="#0f172a" stroke-width="1.2">' +
                     '<title>' + lbl + ': ' + mmLbl + ' mm</title></circle>';
             }).join('');
             var zonePredLight = '<rect data-tl-zone-light pointer-events="none" x="' + nowX.toFixed(1) + '" y="' + pad.t + '" width="' + Math.max(0, endX - nowX).toFixed(1) +
@@ -12085,6 +12188,14 @@ window.updateStoricoButton = async function() {
             if (actualTimeEl) actualTimeEl.textContent = window.formatTankTimelineClock(model.actualTs != null ? model.actualTs : model.nowTs);
             if (predMmEl) predMmEl.textContent = window.__fmtTankDetailMm(predMm) + ' mm';
             if (predTimeEl) predTimeEl.textContent = window.formatTankTimelineClock(targetTs);
+            var fieldId = root.__tlInfo && root.__tlInfo.fieldId;
+            var alarmOpts = { tankDbKey: model.tankDbKey, livMax: model.livMax };
+            window.applyTankTimelineAlarmMetricClass(startMmEl, showStart
+                ? window.resolveTankLevelAlarmState(fieldId, startPt.mm, alarmOpts) : 'normal');
+            window.applyTankTimelineAlarmMetricClass(actualMmEl,
+                window.resolveTankLevelAlarmState(fieldId, model.nowMm, alarmOpts));
+            window.applyTankTimelineAlarmMetricClass(predMmEl,
+                window.resolveTankLevelAlarmState(fieldId, predMm, alarmOpts));
         };
 
         window.updateTankDetailTimelineScrub = function (root, hoursAhead) {
@@ -12148,6 +12259,10 @@ window.updateStoricoButton = async function() {
                     predPathEl.setAttribute('d', '');
                     predPathEl.style.display = 'none';
                 }
+            }
+            if (typeof window.updateTankDetailTimelineAlarmSvg === 'function') {
+                window.updateTankDetailTimelineAlarmSvg(svg, model, geom, predMm, hoursAhead,
+                    root.__tlInfo && root.__tlInfo.fieldId);
             }
             var isPred = hoursAhead > 0.05;
             window.positionTankDetailTimelineMetrics(root, geom, model, x, targetTs, predMm);
@@ -12323,7 +12438,7 @@ window.updateStoricoButton = async function() {
         };
 
         window.ensureDigitalRemoteGaugeCss = function () {
-            var linkVer = 'dig115';
+            var linkVer = 'dig116';
             var link = document.getElementById('sh-digital-remote-css');
             if (link && link.getAttribute('data-css-ver') === linkVer) return;
             if (link) link.remove();
@@ -12339,7 +12454,7 @@ window.updateStoricoButton = async function() {
             if (typeof window.ensureDigitalRemoteGaugeCss === 'function') {
                 window.ensureDigitalRemoteGaugeCss();
             }
-            var cssVer = '224';
+            var cssVer = '225';
             var st = document.getElementById('tank-detail-styles');
             if (st && st.getAttribute('data-css-ver') !== cssVer) {
                 st.remove();
@@ -12424,6 +12539,10 @@ window.updateStoricoButton = async function() {
                 '.tank-detail-timeline-metric-lbl--pred{color:#a78bfa}' +
                 '.tank-detail-timeline-metric-mm{font-size:clamp(15px,2.4vw,21px);font-weight:900;color:#f8fafc;font-variant-numeric:tabular-nums}' +
                 '.tank-detail-timeline-pred-mm{color:#7c3aed}' +
+                '.tank-detail-timeline-metric-mm--warn{color:#f59e0b!important;font-weight:900}' +
+                '.tank-detail-timeline-metric-mm--crit{color:#dc2626!important;font-weight:900}' +
+                '.tank-detail-timeline-pred-mm.tank-detail-timeline-metric-mm--warn{color:#f59e0b!important}' +
+                '.tank-detail-timeline-pred-mm.tank-detail-timeline-metric-mm--crit{color:#dc2626!important}' +
                 '.tank-detail-timeline-times-row{position:relative;left:0;right:0;height:18px;margin-top:2px}' +
                 '.tank-detail-timeline-time-slot{position:absolute;bottom:0;transform:translateX(-50%);font-size:12px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}' +
                 '.tank-detail-timeline-float--actual .tank-detail-timeline-time-slot{position:static;transform:none;font-size:12px;font-weight:700;color:#94a3b8;margin-bottom:1px}' +
@@ -12434,6 +12553,8 @@ window.updateStoricoButton = async function() {
                 '.tank-detail-timeline-svg [data-tl-zone-light],.tank-detail-timeline-svg [data-tl-zone-dark],.tank-detail-timeline-svg [data-tl-now-line],.tank-detail-timeline-svg .tank-detail-timeline-scrub-line,.tank-detail-timeline-svg path,.tank-detail-timeline-svg line:not([data-tl-drag-hit]){pointer-events:none}' +
                 '.tank-detail-timeline-legend{display:flex;flex-wrap:wrap;gap:8px 14px;font-size:10px;font-weight:700;color:#64748b;margin-top:2px}' +
                 '.tank-detail-timeline-legend-item--hist{color:#38bdf8}.tank-detail-timeline-legend-item--pred{color:#a78bfa}' +
+                '.tank-detail-timeline-legend-item--alarm-warn{color:#f59e0b}' +
+                '.tank-detail-timeline-legend-item--alarm-crit{color:#dc2626}' +
                 '.tank-detail-trend-block,.tank-detail-history-block{margin-top:18px}' +
                 '.tank-detail-trend-line{font-size:14px;font-weight:700;margin:6px 0 8px;color:#cbd5e1}' +
                 '.tank-detail-trend-line--up{color:#fca5a5}.tank-detail-trend-line--down{color:#93c5fd}.tank-detail-trend-line--flat{color:#94a3b8}' +

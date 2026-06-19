@@ -259,7 +259,7 @@
   <link rel="manifest" href="manifest.json?v=fb5" />
   <link rel="apple-touch-icon" href="sh-remote-touch.png?v=fb3" />
   <link rel="icon" type="image/png" sizes="32x32" href="sh-remote-favicon.png?v=fb3" />
-  <link rel="stylesheet" href="digital-remote.css?v=dig110" />
+  <link rel="stylesheet" href="digital-remote.css?v=dig116" />
   <style>
     html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; overflow: hidden; overflow-x: hidden !important; touch-action: pan-y; overscroll-behavior-x: none; }
     #digital-preview-container {
@@ -2884,6 +2884,85 @@
     var TANK_TIMELINE_PREDICT_OPTIONS = [8, 12, 24];
     var TANK_TIMELINE_PREDICT_H = TANK_TIMELINE_PREDICT_H_DEFAULT;
 
+    function tankHardcodedAlarmThresholds(tankDbKey) {
+      var name = tankDbKey ? String(tankDbKey).toUpperCase() : "";
+      if (name === "TK9000" || name === "TK9201") return { yellow: 8000, red: 8400 };
+      if (name === "TK9100") return { yellow: 1500, red: 1600 };
+      if (name === "TK9200") return { yellow: 600, red: 650 };
+      if (name === "TK9001") return { yellow: 3000, red: 3200 };
+      if (name === "TK9101") return { yellow: 1500, red: 1600 };
+      if (name === "TK9202") return { yellow: 600, red: 650 };
+      if (name === "TK9002") return { yellow: 3000, red: 3200 };
+      if (name === "TK9102") return { yellow: 1500, red: 1600 };
+      if (name === "A10605" || name === "TK10605") return { yellow: 3750, red: 5000 };
+      if (name === "S818" || name === "S817") return { yellow: 10000, red: 10500 };
+      return { yellow: 1000, red: 1200 };
+    }
+
+    function resolveTankLevelAlarmState(fieldId, levelMm, opts) {
+      opts = opts || {};
+      if (!Number.isFinite(levelMm)) return "normal";
+      if (opts.livMax && opts.livMax > 0 && levelMm > opts.livMax * 1.005) return "critical";
+      var tankKey = opts.tankDbKey;
+      var hc = tankHardcodedAlarmThresholds(tankKey);
+      if (hc.red != null && levelMm >= hc.red) return "critical";
+      if (hc.yellow != null && levelMm >= hc.yellow) return "warn";
+      return "normal";
+    }
+
+    function timelineAlarmKnobFill(state) {
+      if (state === "critical") return "#dc2626";
+      if (state === "warn") return "#f59e0b";
+      return "#fbbf24";
+    }
+
+    function timelineAlarmLineStroke(state) { return timelineAlarmKnobFill(state); }
+
+    function timelineAlarmDotFill(state) {
+      if (state === "critical") return "#dc2626";
+      if (state === "warn") return "#f59e0b";
+      return "#38bdf8";
+    }
+
+    function timelineAlarmPredStroke(state) {
+      if (state === "critical") return "#dc2626";
+      if (state === "warn") return "#f59e0b";
+      return "#a78bfa";
+    }
+
+    function applyTankTimelineAlarmMetricClass(el, state) {
+      if (!el) return;
+      el.classList.remove("tank-detail-timeline-metric-mm--warn", "tank-detail-timeline-metric-mm--crit");
+      if (state === "warn") el.classList.add("tank-detail-timeline-metric-mm--warn");
+      else if (state === "critical") el.classList.add("tank-detail-timeline-metric-mm--crit");
+    }
+
+    function updateRemoteTimelineAlarmSvg(svg, model, geom, predMm, hoursAhead, fieldId) {
+      if (!svg || !model || !geom) return;
+      fieldId = fieldId || model.fieldId;
+      var alarmOpts = { tankDbKey: model.tankDbKey, livMax: model.livMax };
+      var nowState = resolveTankLevelAlarmState(fieldId, model.nowMm, alarmOpts);
+      var predState = resolveTankLevelAlarmState(fieldId, predMm, alarmOpts);
+      var scrubState = (hoursAhead != null && hoursAhead > 0.05) ? predState : nowState;
+      var scrub = svg.querySelector("[data-tl-scrub]");
+      var knob = svg.querySelector("[data-tl-knob]");
+      var predPathEl = svg.querySelector("[data-tl-pred-path]");
+      if (scrub) scrub.setAttribute("stroke", timelineAlarmLineStroke(scrubState));
+      if (knob) knob.setAttribute("fill", timelineAlarmKnobFill(scrubState));
+      if (predPathEl) {
+        predPathEl.setAttribute("stroke", timelineAlarmPredStroke(
+          (hoursAhead != null && hoursAhead > 0.05) ? predState : "normal"
+        ));
+      }
+      if (model.initialPt && Number.isFinite(model.initialPt.mm)) {
+        var startDot = svg.querySelector("[data-tl-start-dot]");
+        if (startDot) {
+          var startState = resolveTankLevelAlarmState(fieldId, model.initialPt.mm, alarmOpts);
+          startDot.setAttribute("fill", timelineAlarmDotFill(startState));
+        }
+      }
+    }
+
     function buildTimelineSvgGeom(model, pad, plotW, plotH) {
       var zoneTop = pad.t;
       var zoneBottom = pad.t + plotH;
@@ -3114,7 +3193,9 @@
         "</div></div>" +
         "</div>" +
         '<div class="tank-detail-timeline-legend"><span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--hist">■ Storico / adesso</span>' +
-        '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--pred">■ Zona previsione</span></div></div>';
+        '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--pred">■ Zona previsione</span>' +
+        '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--alarm-warn">■ Allarme giallo</span>' +
+        '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--alarm-crit">■ Allarme rosso</span></div></div>';
     }
 
     function buildRemoteTimelineHistPts(model, toXHist, lineY, nowX) {
@@ -3140,7 +3221,12 @@
       var predPath = "M" + nowX.toFixed(1) + "," + lineY.toFixed(1) + " L" + endX.toFixed(1) + "," + lineY.toFixed(1);
       var nowY = lineY;
       var dots = histPts.map(function (pt) {
-        var dot = '<circle pointer-events="none" cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) + '" r="5" fill="#38bdf8" stroke="#0f172a" stroke-width="1.2">' +
+        var dotState = resolveTankLevelAlarmState(model.fieldId, pt.p.mm, {
+          tankDbKey: model.tankDbKey,
+          livMax: model.livMax
+        });
+        var dotFill = timelineAlarmDotFill(dotState);
+        var dot = '<circle data-tl-start-dot pointer-events="none" cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) + '" r="5" fill="' + dotFill + '" stroke="#0f172a" stroke-width="1.2">' +
           '<title>' + esc(String(pt.p.label || fmtTimelineClock(pt.p.ts))) + ": " + fmtTankMm(pt.p.mm) + " mm</title></circle>";
         return dot;
       }).join("");
@@ -3247,6 +3333,14 @@
       if (actualTimeEl) actualTimeEl.textContent = fmtTimelineClock(model.actualTs != null ? model.actualTs : model.nowTs);
       if (predMmEl) predMmEl.textContent = fmtTankMm(predMm) + " mm";
       if (predTimeEl) predTimeEl.textContent = fmtTimelineClock(targetTs);
+      var fieldId = block.__tlInfo && block.__tlInfo.fieldId;
+      var alarmOpts = { tankDbKey: model.tankDbKey, livMax: model.livMax };
+      applyTankTimelineAlarmMetricClass(startMmEl, showStart
+        ? resolveTankLevelAlarmState(fieldId, startPt.mm, alarmOpts) : "normal");
+      applyTankTimelineAlarmMetricClass(actualMmEl,
+        resolveTankLevelAlarmState(fieldId, model.nowMm, alarmOpts));
+      applyTankTimelineAlarmMetricClass(predMmEl,
+        resolveTankLevelAlarmState(fieldId, predMm, alarmOpts));
     }
 
     function updateRemoteTimelineScrub(block, hoursAhead) {
@@ -3307,6 +3401,8 @@
           predPathEl.style.display = "none";
         }
       }
+      updateRemoteTimelineAlarmSvg(svg, model, geom, predMm, hoursAhead,
+        block.__tlInfo && block.__tlInfo.fieldId);
       var isPred = hoursAhead > 0.05;
       positionRemoteTimelineMetrics(block, geom, model, x, targetTs, predMm);
       if (block.__tlInfo) {

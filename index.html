@@ -104,14 +104,37 @@
                 pointer-events: none !important;
             }
         }
+
+        /* Boot: nascondi dashboard finché layout + rapportino attivo non sono applicati (no flash PC su iPhone) */
+        html.sh-boot-pending .fixed-management-container,
+        html.sh-boot-pending .main-container,
+        html.sh-boot-pending #robot-background,
+        html.sh-boot-pending .robot-hand-magnet-anchor {
+            visibility: hidden !important;
+            pointer-events: none !important;
+        }
     </style>
     <script>
 (function () {
     var ua = navigator.userAgent || '';
-    if (/Android/i.test(ua) && Math.min(window.screen.width, window.screen.height) >= 600) {
-        document.documentElement.classList.add('sh-android-tablet-boot');
-        document.documentElement.setAttribute('writingsuggestions', 'false');
+    var html = document.documentElement;
+    html.classList.add('sh-boot-pending');
+    if (/iPhone|iPod/i.test(ua)) {
+        html.classList.add('sh-phone-boot');
+    } else if (/Android/i.test(ua) && Math.min(window.screen.width, window.screen.height) < 600) {
+        html.classList.add('sh-phone-boot');
     }
+    if (/Android/i.test(ua) && Math.min(window.screen.width, window.screen.height) >= 600) {
+        html.classList.add('sh-android-tablet-boot');
+        html.setAttribute('writingsuggestions', 'false');
+    }
+    try {
+        var raw = localStorage.getItem('servicehub_session_prefs');
+        if (raw) {
+            var p = JSON.parse(raw);
+            if (p && p.activeId) window.__sessionActiveIdHint = p.activeId;
+        }
+    } catch (_) {}
 })();
 </script>
     <script>
@@ -664,7 +687,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v296';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v297';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -1466,6 +1489,33 @@ window.colorPreviewNumber = function(tankName, value) {
             if (typeof window.isServiceHubPhone === 'function' && window.isServiceHubPhone()) return false;
             if (typeof window.isServiceHubTablet === 'function' && window.isServiceHubTablet()) return false;
             return true;
+        };
+
+        window.__shBootUiRevealed = false;
+        window.__shBootRevealTimer = null;
+        window.__shRevealBootUi = function () {
+            if (window.__shBootUiRevealed) return;
+            window.__shBootUiRevealed = true;
+            if (window.__shBootRevealTimer) {
+                clearTimeout(window.__shBootRevealTimer);
+                window.__shBootRevealTimer = null;
+            }
+            document.documentElement.classList.remove('sh-boot-pending');
+            document.documentElement.classList.add('sh-layout-ready');
+            document.body.classList.remove('sh-instant-layout');
+            try {
+                var splash = document.getElementById('splash-screen');
+                if (splash && document.body.classList.contains('splash-active')) {
+                    document.body.classList.remove('splash-active');
+                    splash.classList.add('fade-out');
+                    splash.style.display = 'none';
+                }
+            } catch (_) {}
+        };
+        window.__shScheduleBootReveal = function () {
+            if (window.__shBootUiRevealed) return;
+            if (window.__shBootRevealTimer) clearTimeout(window.__shBootRevealTimer);
+            window.__shBootRevealTimer = setTimeout(window.__shRevealBootUi, 48);
         };
 
         /** Solo UI input / S Pen — non tocca cloud né saveData. */
@@ -6229,8 +6279,11 @@ window.updateStoricoButton = async function() {
             if (typeof window.loadGeminiKeySettings === 'function') window.loadGeminiKeySettings();
             if (typeof window.loadLocalDarkMode === 'function') window.loadLocalDarkMode();
             if (typeof updateThemeUI === 'function') updateThemeUI();
-            if (!(window.isServiceHubPhone && window.isServiceHubPhone()) && typeof window.expandAllSectionsLayout === 'function') {
-                window.expandAllSectionsLayout();
+
+            const sessPrefsEarly = typeof window.readSessionPrefs === 'function' ? window.readSessionPrefs() : null;
+            if (sessPrefsEarly && sessPrefsEarly.activeId) window.__sessionActiveIdHint = sessPrefsEarly.activeId;
+            if (typeof window.ensureRapportiniInitialized === 'function') {
+                window.ensureRapportiniInitialized({ allowBootstrap: false });
             }
 
             if (typeof window.restoreUiScrollIfNeeded === 'function') {
@@ -6442,6 +6495,9 @@ window.updateStoricoButton = async function() {
 
             updateDeviceInfo(); 
             setInterval(updateDeviceInfo, 60000);
+            setTimeout(function () {
+                if (typeof window.__shRevealBootUi === 'function') window.__shRevealBootUi();
+            }, 900);
 
             // Rapportini: init solo da Firestore (syncWithCloud), non da timeout locale.
 
@@ -15527,6 +15583,7 @@ window.updateStoricoButton = async function() {
                 if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
                 if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
             });
+            if (typeof window.__shScheduleBootReveal === 'function') window.__shScheduleBootReveal();
         };
 
         window.switchToRapportino = async function(id, opts) {
@@ -20071,6 +20128,8 @@ window.updateStoricoButton = async function() {
         }
 
         function updateDeviceInfo() {
+            const bootLayoutPass = !window.__shBootUiRevealed;
+            if (bootLayoutPass) document.body.classList.add('sh-instant-layout');
             const tag = document.getElementById('device-tag');
             const isTablet = window.isServiceHubTablet && window.isServiceHubTablet();
             const deviceType = isTablet ? 'TABLET' : (/Android|iPhone|iPad/i.test(navigator.userAgent) ? 'MOBILE' : 'DESKTOP');
@@ -20107,6 +20166,10 @@ window.updateStoricoButton = async function() {
                     : (typeof window.getShiftLabelForDate === 'function'
                         ? window.getShiftLabelForDate(now)
                         : '3° TURNO');
+            }
+            if (bootLayoutPass) {
+                document.body.classList.remove('sh-instant-layout');
+                if (typeof window.__shScheduleBootReveal === 'function') window.__shScheduleBootReveal();
             }
         }
 
@@ -28821,7 +28884,10 @@ window.convertToHtml = async () => {
             }
 
             try {
-                if (sessionStorage.getItem('servicehub_splash_entered') === '1') {
+                var uaSplash = navigator.userAgent || '';
+                var isPhoneSplash = /iPhone|iPod/i.test(uaSplash)
+                    || (/Android/i.test(uaSplash) && Math.min(window.screen.width, window.screen.height) < 600);
+                if (!isPhoneSplash && sessionStorage.getItem('servicehub_splash_entered') === '1') {
                     document.body.classList.remove('splash-active');
                     splash.style.display = 'none';
                     splash.classList.add('fade-out');

@@ -515,7 +515,7 @@ window.TANK_DATABASE = {
     "S819": { coeff: 150.00 },
     "S829": { coeff: 200.00 },
     "TK8066": { coeff: 180.00 },
-    "TK8092": { coeff: 250.00 },
+    "TK8092": { coeff: 2921.35 },
     "LURGI": { coeff: 300.00 },
     "SG9400A": { coeff: 120.00 },
     "SG9400D": { coeff: 120.00 },
@@ -563,13 +563,67 @@ window.TANK_MAX = {
     "S852": 11000,
     "S829": 11000,
     "TK8066": 8400,
-    "TK8092": 9000,
+    "TK8092": 13348,
     "LURGI": 8000,
     "SF3": 8000,
     "UNITA-DAF": 6000,
-    "BACINO-TK8092": 9000,
+    "BACINO-TK8092": 13348,
     "BACINO-TK8093": 9000,
     "TK101": 5000
+};
+
+
+// ===============================
+// GEOMETRIA SERBATOI (volume da livello)
+// Cilindro verticale: V(m³) = π × (D/2)² × h(m); tonnellate = V × densità (t/m³)
+// ===============================
+window.TANK_GEOMETRY = {
+    "TK8092": {
+        type: 'vertical_cylinder',
+        diameterM: 61,
+        capacityM3: 39000,
+        densityTPerM3: 1
+    },
+    "BACINO-TK8092": {
+        type: 'vertical_cylinder',
+        diameterM: 61,
+        capacityM3: 39000,
+        densityTPerM3: 1
+    }
+};
+
+window.lookupTankGeometry = function (tankKey) {
+    if (!tankKey || !window.TANK_GEOMETRY) return null;
+    const geo = window.TANK_GEOMETRY;
+    if (geo[tankKey]) return geo[tankKey];
+    const upper = String(tankKey).toUpperCase();
+    if (geo[upper]) return geo[upper];
+    const norm = window.normalizeTankId ? window.normalizeTankId(tankKey) : String(tankKey).toLowerCase();
+    const found = Object.keys(geo).find(function (k) { return k.toLowerCase() === norm; });
+    return found ? geo[found] : null;
+};
+
+window.resolveTankGeometryMaxLevelMm = function (tankKey) {
+    const geo = window.lookupTankGeometry(tankKey);
+    if (!geo) return null;
+    if (geo.maxLevelMm != null && Number(geo.maxLevelMm) > 0) return Number(geo.maxLevelMm);
+    if (geo.type !== 'vertical_cylinder') return null;
+    const cap = Number(geo.capacityM3);
+    const d = Number(geo.diameterM);
+    if (!Number.isFinite(cap) || cap <= 0 || !Number.isFinite(d) || d <= 0) return null;
+    const area = Math.PI * Math.pow(d / 2, 2);
+    if (!Number.isFinite(area) || area <= 0) return null;
+    return Math.round((cap / area) * 1000);
+};
+
+window.computeTankVolumeM3FromLevel = function (tankKey, levelMm) {
+    const geo = window.lookupTankGeometry(tankKey);
+    if (!geo || geo.type !== 'vertical_cylinder') return null;
+    const lvl = typeof levelMm === 'number' ? levelMm : Number(String(levelMm == null ? '' : levelMm).replace(',', '.'));
+    if (!Number.isFinite(lvl) || lvl < 0) return null;
+    const d = Number(geo.diameterM);
+    if (!Number.isFinite(d) || d <= 0) return null;
+    return Math.PI * Math.pow(d / 2, 2) * (lvl / 1000);
 };
 
 
@@ -592,6 +646,15 @@ window.calculateTons = function(tankName, level) {
         ? window.parseTankLevelMm(level)
         : parseFloat(String(level == null ? '' : level).replace(',', '.'));
     if (!Number.isFinite(lvl)) return null;
+    const volumeM3 = typeof window.computeTankVolumeM3FromLevel === 'function'
+        ? window.computeTankVolumeM3FromLevel(tankName, lvl)
+        : null;
+    if (volumeM3 != null) {
+        const geo = window.lookupTankGeometry(tankName);
+        const rho = geo && geo.densityTPerM3 != null ? Number(geo.densityTPerM3) : 1;
+        const density = Number.isFinite(rho) && rho > 0 ? rho : 1;
+        return (volumeM3 * density).toFixed(1);
+    }
     const tankData = window.lookupTankDatabaseEntry(tankName);
     if (!tankData) return null;
     return ((lvl / 1000) * tankData.coeff).toFixed(1);
@@ -818,7 +881,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v336';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v337';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');

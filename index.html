@@ -616,9 +616,28 @@ window.hasAnyAlarmThreshold = function (th) {
         || window.isAlarmThresholdConfigured(th.yellowMin);
 };
 
-/** Campi con soglie MIN configurabili (livello basso): PH SCAM + TK 9000 / TK 9201. */
-window.alarmEditorSupportsMinThresholds = function (inputId) {
-    return inputId === 'ph' || inputId === 'inp-tk9000' || inputId === 'inp-tk9201';
+/** True se l'editor allarmi può configurare soglie MIN (B.L). Esclusa solo conducibilità (contesto cond:). */
+window.alarmEditorSupportsMinThresholds = function (inputId, opts) {
+    opts = opts || {};
+    if (!inputId) return false;
+    if (opts.alarmStorageKey && String(opts.alarmStorageKey).indexOf('cond:') === 0) return false;
+    if (opts.alarmKind === 'conductivity') return false;
+    if (opts.element && typeof window.isConductivityAlarmInput === 'function'
+        && window.isConductivityAlarmInput(opts.element)) return false;
+    return true;
+};
+
+/** Etichette editor/numpad: livello serbatoio vs parametro generico. */
+window.alarmEditorIsTankLevelField = function (inputId) {
+    if (!inputId) return false;
+    if (inputId === 'ph' || inputId === 'cloro' || inputId === 'reintegro') return false;
+    var probes = typeof window.queryTankLevelAlarmInputs === 'function'
+        ? window.queryTankLevelAlarmInputs(inputId) : [];
+    if (probes.length && typeof window.isTankLevelAlarmInput === 'function') {
+        return window.isTankLevelAlarmInput(probes[0]);
+    }
+    var map = typeof window.__getTankAlarmFieldMap === 'function' ? window.__getTankAlarmFieldMap() : null;
+    return !!(map && map[inputId]);
 };
 
 /** Chiave config allarmi conducibilità (separata dai livelli mm con stesso field id). */
@@ -683,8 +702,11 @@ window.buildNumpadAlarmDraftFromThresholds = function (th) {
 
 window.syncNumpadAlarmMinRowsVisibility = function () {
     const targetId = currentNumpadTarget && currentNumpadTarget.id;
-    const show = !!(targetId && window.alarmEditorSupportsMinThresholds(targetId));
-    const isTankLevel = targetId === 'inp-tk9000' || targetId === 'inp-tk9201';
+    const show = !!(targetId && window.alarmEditorSupportsMinThresholds(targetId, {
+        element: currentNumpadTarget
+    }));
+    const isTankLevel = typeof window.alarmEditorIsTankLevelField === 'function'
+        && window.alarmEditorIsTankLevelField(targetId);
     ['numpad-alarm-row-yellow-min', 'numpad-alarm-row-red-min'].forEach(function (id) {
         const row = document.getElementById(id);
         if (row) row.hidden = !show;
@@ -820,7 +842,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v329';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v331';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -7630,7 +7652,9 @@ window.updateStoricoButton = async function() {
                 red: draft.red
             };
             if (typeof window.alarmEditorSupportsMinThresholds === 'function'
-                && window.alarmEditorSupportsMinThresholds(currentNumpadTarget.id)) {
+                && window.alarmEditorSupportsMinThresholds(currentNumpadTarget.id, {
+                    element: currentNumpadTarget
+                })) {
                 saveOpts.yellowMin = draft.yellowMin;
                 saveOpts.redMin = draft.redMin;
             }
@@ -11025,8 +11049,39 @@ window.updateStoricoButton = async function() {
             }
         };
 
-        window.__mirrorAcquaSharedToStoccaggio = function () {
-            /* Livelli stoccaggio interno indipendenti dalla scheda ACQUA — niente mirror. */
+        /** Copia livello (mm) tra ACQUA e Stoccaggio interno per le sigle condivise (TK 9000 / TK 9201). */
+        window.__mirrorAcquaSharedToStoccaggio = function (input) {
+            if (!input || !input.id) return;
+            if (typeof window.isTankLevelAlarmInput === 'function' && !window.isTankLevelAlarmInput(input)) return;
+            var shared = window.DCS_ACQUA_SHARED_FIELD_IDS || ['inp-tk9000', 'inp-tk9201'];
+            if (shared.indexOf(input.id) < 0) return;
+            var val = input.value;
+            var targets = typeof window.queryTankLevelAlarmInputs === 'function'
+                ? window.queryTankLevelAlarmInputs(input.id)
+                : [];
+            targets.forEach(function (el) {
+                if (el === input || el.readOnly) return;
+                if (el.value === val) return;
+                el.value = val;
+                if (typeof window.refreshAlarmVisualForField === 'function') {
+                    window.refreshAlarmVisualForField(el, true);
+                }
+            });
+            if (typeof window.refreshStoccaggioInternoTons === 'function') window.refreshStoccaggioInternoTons();
+        };
+
+        window.__syncPlantLevelSharedFieldsOnPanelBuild = function (panel) {
+            var shared = window.DCS_ACQUA_SHARED_FIELD_IDS || ['inp-tk9000', 'inp-tk9201'];
+            shared.forEach(function (fid) {
+                var acqua = document.querySelector('#sec-acqua input[id="' + fid + '"]');
+                var stocc = panel && panel.querySelector('input.nott-stocc-inp[id="' + fid + '"]');
+                if (!acqua || !stocc) return;
+                var av = String(acqua.value || '').trim();
+                var sv = String(stocc.value || '').trim();
+                if (av && !sv) stocc.value = av;
+                else if (sv && !av) acqua.value = sv;
+                else if (av && sv && av !== sv) stocc.value = av;
+            });
         };
 
         window.__mirrorConducibilitaSharedFields = function (input) {
@@ -11162,7 +11217,9 @@ window.updateStoricoButton = async function() {
                 if (input.closest && input.closest('#sec-acqua')) return false;
                 if (input.closest && input.closest('#conducibilita-panel')) return false;
                 if (input.closest && input.closest('#sec-conducibilita-vertical')) return false;
-                if (input.closest && input.closest('#stoccaggio-panel-notturno')) return true;
+                if (input.closest && input.closest('#stoccaggio-panel-notturno')) {
+                    return !(input.classList && input.classList.contains('nott-stocc-inp'));
+                }
             }
             if (input.id && String(input.id).indexOf('cnt-') === 0) return true;
             if (input.id && String(input.id).indexOf('cfil-') === 0) return true;
@@ -11335,6 +11392,13 @@ window.updateStoricoButton = async function() {
                 ? window.readStoccaggioLiveInputValue(fieldId)
                 : '';
             if (live) return live;
+            var acquaShared = window.DCS_ACQUA_SHARED_FIELD_IDS || ['inp-tk9000', 'inp-tk9201'];
+            if (acquaShared.indexOf(fieldId) >= 0) {
+                var acquaInp = document.querySelector('#sec-acqua input[id="' + fieldId + '"]');
+                if (acquaInp && acquaInp.value != null && String(acquaInp.value).trim() !== '') {
+                    return String(acquaInp.value).trim();
+                }
+            }
             const snap = window.getNotturnoStoccaggioSnapshot();
             if (snap && snap[fieldId] != null && String(snap[fieldId]).trim() !== '') {
                 return String(snap[fieldId]).trim();
@@ -13422,6 +13486,9 @@ window.updateStoricoButton = async function() {
                 const el = panel.querySelector('input.nott-stocc-inp[id="' + fid + '"]');
                 if (el) el.value = saved[fid];
             });
+            if (typeof window.__syncPlantLevelSharedFieldsOnPanelBuild === 'function') {
+                window.__syncPlantLevelSharedFieldsOnPanelBuild(panel);
+            }
             window.refreshStoccaggioInternoTons();
             if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
             if (typeof window.wireAlarmFieldInputListeners === 'function') window.wireAlarmFieldInputListeners();
@@ -32399,9 +32466,8 @@ function getAlarmSiglaThresholdIconState(inputId, alarmStorageKey) {
     const th = typeof window.thresholdsForAlarmFieldId === 'function'
         ? window.thresholdsForAlarmFieldId(lookup)
         : null;
-    const supportsMin = !(alarmStorageKey && String(alarmStorageKey).indexOf('cond:') === 0)
-        && typeof window.alarmEditorSupportsMinThresholds === 'function'
-        && window.alarmEditorSupportsMinThresholds(inputId);
+    const supportsMin = typeof window.alarmEditorSupportsMinThresholds === 'function'
+        && window.alarmEditorSupportsMinThresholds(inputId, { alarmStorageKey: alarmStorageKey });
     return {
         yellow: window.isAlarmThresholdConfigured(th && th.yellow),
         red: window.isAlarmThresholdConfigured(th && th.red),
@@ -32713,16 +32779,20 @@ function openTankAlarmEditor(tank, tab) {
     const maxRedSub = isConductivity ? 'Soglia massima µS/cm — critico' : 'Soglia massima di sicurezza';
     const maxYellowSub = isConductivity ? 'Soglia massima µS/cm — attenzione' : 'Soglia di pre-allarme';
 
-    // Soglie minime: PH SCAM + TK 9000 / TK 9201 (livello basso), non conducibilità
     const supportsMinThresholds = !isConductivity
         && typeof window.alarmEditorSupportsMinThresholds === 'function'
-        && window.alarmEditorSupportsMinThresholds(tank.inputId);
+        && window.alarmEditorSupportsMinThresholds(tank.inputId, {
+            alarmStorageKey: storageKey,
+            alarmKind: tank.alarmKind
+        });
+    const isTankLevelField = typeof window.alarmEditorIsTankLevelField === 'function'
+        && window.alarmEditorIsTankLevelField(tank.inputId);
     const yellowMinSub = tank.inputId === 'ph'
         ? 'Soglia minima pre-allarme'
-        : 'Soglia minima livello — attenzione basso';
+        : (isTankLevelField ? 'Soglia minima livello — attenzione basso' : 'Soglia minima pre-allarme');
     const redMinSub = tank.inputId === 'ph'
         ? 'Soglia minima di sicurezza'
-        : 'Soglia minima livello — critico basso';
+        : (isTankLevelField ? 'Soglia minima livello — critico basso' : 'Soglia minima di sicurezza');
 
     let additionalFields = '';
     if (supportsMinThresholds) {
@@ -32877,7 +32947,7 @@ window.persistTankAlarmThresholds = async function (inputId, opts) {
     if (redVal !== null) alarmData.red = redVal;
 
     if (!isConductivity && typeof window.alarmEditorSupportsMinThresholds === 'function'
-        && window.alarmEditorSupportsMinThresholds(inputId)) {
+        && window.alarmEditorSupportsMinThresholds(inputId, { alarmStorageKey: opts.alarmStorageKey })) {
         if (opts.yellowMin !== undefined) {
             const yellowMinVal = window.parseAlarmThresholdInput(opts.yellowMin);
             if (yellowMinVal !== null) alarmData.yellowMin = yellowMinVal;
@@ -32945,7 +33015,10 @@ async function saveTankAlarm(e, tank) {
 
     const supportsMin = tank.alarmKind !== 'conductivity'
         && typeof window.alarmEditorSupportsMinThresholds === 'function'
-        && window.alarmEditorSupportsMinThresholds(tank.inputId);
+        && window.alarmEditorSupportsMinThresholds(tank.inputId, {
+            alarmStorageKey: tank.alarmStorageKey,
+            alarmKind: tank.alarmKind
+        });
 
     await window.persistTankAlarmThresholds(tank.inputId, {
         alarmStorageKey: tank.alarmStorageKey,
@@ -34572,12 +34645,21 @@ window.setAllPlantInputsById = function(fieldId, value) {
     }
     const val = String(value == null ? '' : value).trim();
     let n = 0;
-    document.querySelectorAll('input[id="' + fieldId + '"]').forEach(function(el) {
+    const targets = typeof window.queryTankLevelAlarmInputs === 'function'
+        ? window.queryTankLevelAlarmInputs(fieldId)
+        : [];
+    const list = targets.length
+        ? targets
+        : Array.prototype.slice.call(document.querySelectorAll('input[id="' + fieldId + '"]'));
+    list.forEach(function(el) {
         if (el.readOnly) return;
         el.value = val;
         n++;
         try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
     });
+    if (n && typeof window.__mirrorAcquaSharedToStoccaggio === 'function') {
+        list.forEach(function(el) { window.__mirrorAcquaSharedToStoccaggio(el); });
+    }
     return n;
 };
 

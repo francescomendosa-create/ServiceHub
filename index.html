@@ -687,7 +687,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v314';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v315';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -13836,6 +13836,7 @@ window.updateStoricoButton = async function() {
 
         window.syncFuochistaPhoneBodyClass = function() {
             document.body.classList.toggle('fuochista-phone-active', !!window.isFuochistaPhoneLayoutActive());
+            document.body.classList.toggle('fuochista-rapportino-active', !!window.isFuochistaRapportinoActive());
             if (typeof window.syncGeneralePhoneConducibilitaMount === 'function') {
                 window.syncGeneralePhoneConducibilitaMount();
             }
@@ -14267,9 +14268,17 @@ window.updateStoricoButton = async function() {
                 return;
             }
             window.normalizeFuochistaPhoneSectionsVisibility();
+            const store = window.loadRapportiniStore && window.loadRapportiniStore();
+            const fuCfg = store && store.items.fuochista && store.items.fuochista.schedeConfig;
+            const fuHid = window.hiddenModules || hiddenModules || [];
+            if (typeof window.syncRapportinoVerticalRowsLayout === 'function') {
+                window.syncRapportinoVerticalRowsLayout(fuCfg, 'fuochista', fuHid);
+            }
             const recentTap = window.__fuochistaPhoneSectionTapTs &&
                 (Date.now() - window.__fuochistaPhoneSectionTapTs < 450);
-            if (!opts.skipApplySections && !recentTap &&
+            const verticalIds = typeof window.collectRapportinoVerticalSchedaDomIds === 'function'
+                ? window.collectRapportinoVerticalSchedaDomIds(fuCfg, 'fuochista', fuHid) : [];
+            if (!verticalIds.length && !opts.skipApplySections && !recentTap &&
                 typeof window.__applyPhoneSectionsLayout === 'function') {
                 window.__applyPhoneSectionsLayout(null);
             }
@@ -14801,6 +14810,194 @@ window.updateStoricoButton = async function() {
             return window.defaultSchedaOrientation(secId || '');
         };
 
+        /** Schede verticali: sempre fino a 3 colonne sulla stessa riga (tutti i dispositivi). */
+        window.RAPPORTINO_VERTICAL_SCHEDE_PER_ROW = 3;
+
+        window.getVerticalSchedaDomId = function (moduleId) {
+            if (moduleId === 'sec-chemicals') return 'sec-chemicals-vertical';
+            if (moduleId === 'sec-conducibilita') return 'sec-conducibilita-vertical';
+            if (moduleId === 'sec-contatori') return 'sec-contatori-vertical';
+            if (moduleId === 'sec-conteggio-filtra') return 'sec-conteggio-filtra-vertical';
+            return moduleId;
+        };
+
+        window.getFuochistaVerticalSchedaModuleOrder = function () {
+            return ['sec-aria', 'sec-chemicals', 'sec-contatori', 'sec-conducibilita', 'sec-conteggio-filtra'];
+        };
+
+        window.isRapportinoVerticalSchedaDomVisible = function (domId, schedeConfig, rapportinoId, hiddenList) {
+            const cfg = schedeConfig || { modules: {} };
+            const rid = rapportinoId || 'generale';
+            const hid = hiddenList || hiddenModules || [];
+            const el = document.getElementById(domId);
+            if (!el) return false;
+            if (el.style.display === 'none') return false;
+            const moduleMap = {
+                'sec-chemicals-vertical': 'sec-chemicals',
+                'sec-conducibilita-vertical': 'sec-conducibilita',
+                'sec-contatori-vertical': 'sec-contatori',
+                'sec-conteggio-filtra-vertical': 'sec-conteggio-filtra'
+            };
+            const moduleId = moduleMap[domId] || domId;
+            if (window.isCustomRapportinoScheda(moduleId)) {
+                const mod = cfg.modules && cfg.modules[moduleId];
+                if (!mod || mod.enabled === false || hid.indexOf(moduleId) >= 0) return false;
+                return window.getRapportinoSchedaOrientation(mod, moduleId) === 'vertical';
+            }
+            if (moduleId === 'sec-chemicals' || moduleId === 'sec-conducibilita' ||
+                moduleId === 'sec-contatori' || moduleId === 'sec-conteggio-filtra') {
+                const mod = cfg.modules && cfg.modules[moduleId];
+                if (!window.isRapportinoModuleEnabled(moduleId, cfg) || hid.indexOf(moduleId) >= 0) return false;
+                return window.getRapportinoSchedaOrientation(mod, moduleId) === 'vertical';
+            }
+            return window.shouldShowPlantSchedaInDashboard(moduleId, cfg, rid, hid);
+        };
+
+        window.restoreDefaultVerticalSchedaRowPlacement = function () {
+            const rb3 = document.getElementById('row-block-3');
+            const rb2 = document.getElementById('row-block-2');
+            const move = function (id, row) {
+                const el = document.getElementById(id);
+                if (el && row) row.appendChild(el);
+            };
+            move('sec-bluedown', rb3);
+            move('sec-aria', rb3);
+            move('sec-azoto', rb3);
+            move('sec-chemicals-vertical', rb3);
+            move('sec-conducibilita-vertical', rb3);
+            move('sec-contatori-vertical', rb3);
+            move('sec-conteggio-filtra-vertical', rb2);
+            document.querySelectorAll('.rapportino-vertical-row').forEach(function (r) {
+                r.style.display = 'none';
+            });
+        };
+
+        window.collectRapportinoVerticalSchedaDomIds = function (schedeConfig, rapportinoId, hiddenList) {
+            const cfg = schedeConfig || { modules: {} };
+            const rid = rapportinoId || (window.loadRapportiniStore && window.loadRapportiniStore().activeId) || 'generale';
+            const hid = hiddenList || hiddenModules || [];
+            const out = [];
+            const seen = {};
+
+            const pushDom = function (domId) {
+                if (!domId || seen[domId]) return;
+                if (!window.isRapportinoVerticalSchedaDomVisible(domId, cfg, rid, hid)) return;
+                seen[domId] = true;
+                out.push(domId);
+            };
+
+            if (rid === 'fuochista') {
+                window.getFuochistaVerticalSchedaModuleOrder().forEach(function (moduleId) {
+                    pushDom(window.getVerticalSchedaDomId(moduleId));
+                });
+                (window.getCustomRapportinoSchedaIds(cfg) || []).forEach(function (secId) {
+                    const mod = cfg.modules && cfg.modules[secId];
+                    if (mod && window.getRapportinoSchedaOrientation(mod, secId) === 'vertical') {
+                        pushDom(secId);
+                    }
+                });
+                return out;
+            }
+
+            if (rid === 'generale') return out;
+
+            Object.keys(cfg.modules || {}).forEach(function (moduleId) {
+                if (window.isCustomRapportinoScheda(moduleId)) {
+                    const mod = cfg.modules[moduleId];
+                    if (mod && window.getRapportinoSchedaOrientation(mod, moduleId) === 'vertical') {
+                        pushDom(moduleId);
+                    }
+                    return;
+                }
+                if (moduleId === 'sec-chemicals' || moduleId === 'sec-conducibilita' ||
+                    moduleId === 'sec-contatori' || moduleId === 'sec-conteggio-filtra') {
+                    const mod = cfg.modules[moduleId];
+                    if (mod && window.getRapportinoSchedaOrientation(mod, moduleId) === 'vertical') {
+                        pushDom(window.getVerticalSchedaDomId(moduleId));
+                    }
+                }
+            });
+            return out;
+        };
+
+        window.syncRapportinoVerticalRowsLayout = function (schedeConfig, rapportinoId, hiddenList) {
+            const store = window.loadRapportiniStore && window.loadRapportiniStore();
+            const rid = rapportinoId || (store && store.activeId) || 'generale';
+            if (rid === 'generale') {
+                if (typeof window.restoreDefaultVerticalSchedaRowPlacement === 'function') {
+                    window.restoreDefaultVerticalSchedaRowPlacement();
+                }
+                return;
+            }
+
+            const ids = window.collectRapportinoVerticalSchedaDomIds(schedeConfig, rid, hiddenList);
+            const mc = document.querySelector('.main-container');
+            if (!mc) return;
+
+            if (!ids.length) {
+                if (typeof window.restoreDefaultVerticalSchedaRowPlacement === 'function') {
+                    window.restoreDefaultVerticalSchedaRowPlacement();
+                }
+                return;
+            }
+
+            const perRow = window.RAPPORTINO_VERTICAL_SCHEDE_PER_ROW || 3;
+            const chunks = [];
+            for (let i = 0; i < ids.length; i += perRow) {
+                chunks.push(ids.slice(i, i + perRow));
+            }
+
+            const anchor = document.getElementById('row-block-1');
+            const insertParent = anchor && anchor.parentNode ? anchor.parentNode : mc;
+            const builtRows = [];
+
+            chunks.forEach(function (chunk, idx) {
+                const rowId = 'row-block-rapportino-vertical-' + idx;
+                let row = document.getElementById(rowId);
+                if (!row) {
+                    row = document.createElement('div');
+                    row.id = rowId;
+                    row.className = 'row-block rapportino-vertical-row';
+                    row.style.minHeight = '200px';
+                    row.style.borderBottom = '2px solid var(--border-main)';
+                }
+                row.classList.add('rapportino-vertical-row');
+                row.dataset.verticalCount = String(chunk.length);
+                row.style.display = chunk.length ? 'flex' : 'none';
+                row.style.flexWrap = 'nowrap';
+
+                chunk.forEach(function (domId) {
+                    const el = document.getElementById(domId);
+                    if (!el) return;
+                    row.appendChild(el);
+                    el.classList.remove('col-collapsed');
+                    el.classList.add('col-expanded');
+                    el.style.setProperty('display', 'flex', 'important');
+                    el.style.flex = '1 1 0';
+                    el.style.minWidth = '0';
+                });
+
+                builtRows.push(row);
+            });
+
+            builtRows.forEach(function (row, idx) {
+                if (idx === 0) {
+                    if (anchor) insertParent.insertBefore(row, anchor);
+                    else if (!row.parentNode) insertParent.appendChild(row);
+                } else {
+                    builtRows[idx - 1].insertAdjacentElement('afterend', row);
+                }
+            });
+
+            let extraIdx = chunks.length;
+            while (true) {
+                const extra = document.getElementById('row-block-rapportino-vertical-' + extraIdx);
+                if (!extra) break;
+                extra.style.display = 'none';
+                extraIdx++;
+            }
+        };
+
         window.supportsRapportinoSchedaOrientation = function(secId) {
             if (secId === 'sec-chemicals' && window._rapportiniModificaId === 'fuochista') return false;
             return secId === 'sec-chemicals' || secId === 'sec-conducibilita' || secId === 'sec-contatori' || secId === 'sec-conteggio-filtra' || window.isCustomRapportinoScheda(secId);
@@ -15017,6 +15214,9 @@ window.updateStoricoButton = async function() {
             }
             if (rid !== 'generale') {
                 window.enforceRapportinoPlantVisibility(cfg, rid, hid);
+            }
+            if (typeof window.syncRapportinoVerticalRowsLayout === 'function') {
+                window.syncRapportinoVerticalRowsLayout(cfg, rid, hid);
             }
             if (typeof window.updateRapportiniRowBlocksVisibility === 'function') {
                 window.updateRapportiniRowBlocksVisibility();
@@ -15358,20 +15558,22 @@ window.updateStoricoButton = async function() {
         window.updateRapportiniRowBlocksVisibility = function() {
             const store = window.loadRapportiniStore();
             const cfg = store && store.items[store.activeId] ? store.items[store.activeId].schedeConfig : null;
-            const isNott = store && store.activeId === 'notturno';
-            const visible = function(id) {
-                const el = document.getElementById(id);
-                return el && el.style.display !== 'none';
+            const visibleCol = function(el) {
+                return el && el.classList.contains('col-section') && el.style.display !== 'none';
             };
-            const row1 = ['sec-chpp', 'sec-well', 'sec-amb', 'sec-ambiente2'];
-            const row2 = ['sec-acqua', 'sec-scam', 'sec-filtra'];
-            const row3 = ['sec-bluedown', 'sec-aria', 'sec-azoto', 'sec-chemicals-vertical', 'sec-conducibilita-vertical', 'sec-contatori-vertical'];
+            const rowHasVisible = function(rowEl) {
+                if (!rowEl) return false;
+                return Array.from(rowEl.children).some(visibleCol);
+            };
             const rb1 = document.getElementById('row-block-1');
             const rb2 = document.getElementById('row-block-2');
             const rb3 = document.getElementById('row-block-3');
-            if (rb1) rb1.style.display = row1.some(visible) ? 'flex' : 'none';
-            if (rb2) rb2.style.display = row2.some(visible) ? 'flex' : 'none';
-            if (rb3) rb3.style.display = row3.some(visible) ? 'flex' : 'none';
+            if (rb1) rb1.style.display = rowHasVisible(rb1) ? 'flex' : 'none';
+            if (rb2) rb2.style.display = rowHasVisible(rb2) ? 'flex' : 'none';
+            if (rb3) rb3.style.display = rowHasVisible(rb3) ? 'flex' : 'none';
+            document.querySelectorAll('.rapportino-vertical-row').forEach(function(row) {
+                row.style.display = rowHasVisible(row) ? 'flex' : 'none';
+            });
             const rbCustom = document.getElementById('row-block-custom');
             if (rbCustom) {
                 const customIds = window.getCustomRapportinoSchedaIds(cfg);
@@ -26407,6 +26609,29 @@ window.convertToHtml = async () => {
         body.sh-instant-layout .cond-tendina-chevron { transition: none !important; }
         .v-label-text { transform: rotate(-90deg); white-space: nowrap; font-weight: 800; font-size: 11px; color: white; text-transform: uppercase; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
         .row-block { display: flex; width: 100%; border-bottom: 2px solid var(--border-main); align-items: stretch; overflow: hidden; }
+        /* Schede verticali rapportino: max 3 per riga, stessa linea su tutti i dispositivi */
+        .row-block.rapportino-vertical-row {
+            flex-wrap: nowrap !important;
+            width: 100%;
+        }
+        .row-block.rapportino-vertical-row .col-section {
+            flex: 1 1 0 !important;
+            min-width: 0 !important;
+        }
+        .row-block.rapportino-vertical-row[data-vertical-count="1"] .col-section { max-width: 100%; }
+        .row-block.rapportino-vertical-row[data-vertical-count="2"] .col-section { max-width: 50%; }
+        .row-block.rapportino-vertical-row[data-vertical-count="3"] .col-section { max-width: 33.333%; }
+        body.fuochista-rapportino-active .row-block.rapportino-vertical-row .col-section.col-expanded {
+            flex: 1 1 0 !important;
+            min-width: 0 !important;
+        }
+        body.fuochista-rapportino-active .row-block.rapportino-vertical-row #sec-aria .aria-compressor-table {
+            width: 100%;
+            table-layout: fixed;
+        }
+        body.fuochista-rapportino-active .row-block.rapportino-vertical-row #sec-aria .aria-compressor-table td {
+            min-width: 0;
+        }
         .col-expanded { flex: 1 1 0% !important; min-width: 0 !important; }
         .col-collapsed { flex: 0 0 46px !important; min-width: 46px !important; }
         .filtra-panel-grow { flex: 1; min-width: 0; display: flex; flex-direction: column; }

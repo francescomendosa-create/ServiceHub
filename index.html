@@ -44,6 +44,14 @@
             -webkit-user-select: text !important;
             user-select: text !important;
         }
+        input.tank-warning:not(#numpad-display) {
+            color: #f59e0b !important;
+            font-weight: 600 !important;
+        }
+        input.tank-critical:not(#numpad-display) {
+            color: #dc2626 !important;
+            font-weight: 700 !important;
+        }
         
         /* Fix per iOS */
         @media screen and (-webkit-min-device-pixel-ratio: 0) {
@@ -732,7 +740,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v326';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v328';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -3764,6 +3772,172 @@ window.colorPreviewNumber = function(tankName, value) {
             input.classList.remove('tank-normal', 'tank-warning', 'tank-critical');
         };
 
+        /** True se l'input mostra un livello serbatoio (mm), non conducibilità condivisa. */
+        window.isTankLevelAlarmInput = function (el) {
+            if (!el || !el.id) return false;
+            var fid = el.id;
+            var overlap = window.CONDUCTIVITY_LEVEL_OVERLAP_FIELD_IDS || [];
+            if (el.closest('#conducibilita-panel') || el.closest('#sec-conducibilita-vertical')) {
+                return overlap.indexOf(fid) < 0;
+            }
+            if (el.classList.contains('cond-tendina-inp') || el.classList.contains('cond-vert-inp')) {
+                return overlap.indexOf(fid) < 0;
+            }
+            if (el.closest('#sec-acqua') || el.closest('#sec-amb') || el.closest('#sec-ambiente2')) return true;
+            if (el.closest('#stoccaggio-panel-notturno') && el.classList.contains('nott-stocc-inp')) return true;
+            if (typeof window.isStoccaggioInternoLevelInput === 'function' && window.isStoccaggioInternoLevelInput(el)) return true;
+            if (el.closest('#sec-well') || el.closest('#sec-chpp')) return true;
+            return false;
+        };
+
+        /** Tutti gli input livello per una sigla (es. sec-acqua + ambiente), esclusa conducibilità. */
+        window.queryTankLevelAlarmInputs = function (fieldId) {
+            if (!fieldId) return [];
+            var out = [];
+            document.querySelectorAll('input[id="' + fieldId + '"]').forEach(function (el) {
+                if (window.isTankLevelAlarmInput(el)) out.push(el);
+            });
+            if (!out.length) {
+                var fallback = document.getElementById(fieldId);
+                if (fallback && window.isTankLevelAlarmInput(fallback)) out.push(fallback);
+            }
+            return out;
+        };
+
+        window.__getTankAlarmFieldMap = function () {
+            return {
+                'inp-s818': 'S818', 'inp-s817': 'S817', 'inp-s846': 'S846', 'inp-s848': 'S848',
+                'inp-s854': 'S854', 'inp-a10605': 'A10605', 'inp-s864': 'S864', 'inp-s121': 'S121',
+                'inp-s133': 'S133', 'inp-tk9000': 'TK9000', 'inp-tk9201': 'TK9201', 'inp-tk9204': 'TK9204',
+                'inp-tk9205': 'TK9205', 'inp-tk10000': 'TK10000', 'inp-tk10601a': 'TK10601A',
+                'inp-tk10601b': 'TK10601B', 'inp-tk10602': 'TK10602', 'inp-tk10602a': 'TK10602A',
+                'inp-tk10604': 'TK10604', 'inp-tk10605': 'TK10605', 'inp-tk10606a': 'TK10606A',
+                'inp-tk10606b': 'TK10606B', 'inp-tk10607': 'TK10607', 'inp-tk10608': 'TK10608',
+                'inp-v9203': 'V9203', 'inp-v172c': 'V172C', 'inp-a-cond': 'SG9400A', 'inp-d-cond': 'SG9400D',
+                'f-ciclo': 'F-CICLO', 'f-cond': 'F-COND', 'inp-s813': 'S813', 'inp-s148-ab': 'S148',
+                'inp-s819': 'S819', 'inp-tk8066': 'TK8066', 'inp-tk8092': 'TK8092',
+                'inp-bacino-tk8092': 'BACINO-TK8092', 'inp-bacino-tk8093': 'BACINO-TK8093',
+                'inp-s852': 'S852', 'inp-lurgi': 'LURGI', 'inp-sf3': 'SF3', 'inp-s829': 'S829',
+                'inp-daf': 'UNITA-DAF', 'tk101': 'TK101'
+            };
+        };
+
+        window.__applyTankAlarmVisualState = function (input, state) {
+            if (!input) return;
+            input.style.background = '';
+            input.style.backgroundColor = '';
+            input.classList.remove('tank-normal', 'tank-warning', 'tank-critical');
+            if (state === 'critical') {
+                input.style.color = '#dc2626';
+                input.style.fontWeight = '700';
+                input.classList.add('tank-critical');
+            } else if (state === 'warning') {
+                input.style.color = '#f59e0b';
+                input.style.fontWeight = '600';
+                input.classList.add('tank-warning');
+            } else {
+                input.style.color = '';
+                input.style.fontWeight = '';
+            }
+        };
+
+        window.__resolveTankLevelAlarmVisualState = function (inputId, currentValue, opts) {
+            opts = opts || {};
+            var tankMapping = window.__getTankAlarmFieldMap();
+            var tankName = tankMapping[inputId];
+            if (!tankName) {
+                var thOnly = typeof window.thresholdsForAlarmFieldId === 'function'
+                    ? window.thresholdsForAlarmFieldId(inputId) : null;
+                if (thOnly && window.hasAnyAlarmThreshold(thOnly)) {
+                    var skipOnly = !opts.forceMin && opts.focusEl && typeof window.__shouldSkipMinAlarmWhileFocused === 'function'
+                        && window.__shouldSkipMinAlarmWhileFocused(opts.focusEl, currentValue, thOnly);
+                    if (window.isAlarmThresholdConfigured(thOnly.red) && currentValue >= thOnly.red) return 'critical';
+                    if (window.isAlarmThresholdConfigured(thOnly.yellow) && currentValue >= thOnly.yellow) return 'warning';
+                    if (!skipOnly) {
+                        if (window.isAlarmThresholdConfigured(thOnly.redMin) && currentValue <= thOnly.redMin) return 'critical';
+                        if (window.isAlarmThresholdConfigured(thOnly.yellowMin) && currentValue <= thOnly.yellowMin) return 'warning';
+                    }
+                }
+                return 'normal';
+            }
+            var maxLevel = window.TANK_MAX[tankName];
+            if (!maxLevel) {
+                var thNoMax = typeof window.thresholdsForAlarmFieldId === 'function'
+                    ? window.thresholdsForAlarmFieldId(inputId) : null;
+                if (thNoMax && window.hasAnyAlarmThreshold(thNoMax)) {
+                    var skipNm = !opts.forceMin && opts.focusEl && typeof window.__shouldSkipMinAlarmWhileFocused === 'function'
+                        && window.__shouldSkipMinAlarmWhileFocused(opts.focusEl, currentValue, thNoMax);
+                    if (window.isAlarmThresholdConfigured(thNoMax.red) && currentValue >= thNoMax.red) return 'critical';
+                    if (window.isAlarmThresholdConfigured(thNoMax.yellow) && currentValue >= thNoMax.yellow) return 'warning';
+                    if (!skipNm) {
+                        if (window.isAlarmThresholdConfigured(thNoMax.redMin) && currentValue <= thNoMax.redMin) return 'critical';
+                        if (window.isAlarmThresholdConfigured(thNoMax.yellowMin) && currentValue <= thNoMax.yellowMin) return 'warning';
+                    }
+                }
+                return 'normal';
+            }
+
+            var normalizedTankName = tankName.toUpperCase();
+            var normalizedInputId = window.normalizeTankId(inputId);
+            var th = typeof window.thresholdsForAlarmFieldId === 'function'
+                ? window.thresholdsForAlarmFieldId(inputId)
+                : null;
+            var yellow = null;
+            var red = null;
+            var hasCustom = th && typeof window.hasAnyAlarmThreshold === 'function' && window.hasAnyAlarmThreshold(th);
+
+            if (hasCustom) {
+                yellow = window.isAlarmThresholdConfigured(th.yellow) ? Number(th.yellow) : null;
+                red = window.isAlarmThresholdConfigured(th.red) ? Number(th.red) : null;
+            } else if (normalizedTankName === 'TK9000' || normalizedTankName === 'TK9201') {
+                yellow = 8000;
+                red = 8400;
+            } else if (normalizedTankName === 'TK9100') {
+                yellow = 1500;
+                red = 1600;
+            } else if (normalizedTankName === 'TK9200') {
+                yellow = 600;
+                red = 650;
+            } else if (normalizedTankName === 'TK9001') {
+                yellow = 3000;
+                red = 3200;
+            } else if (normalizedTankName === 'TK9101') {
+                yellow = 1500;
+                red = 1600;
+            } else if (normalizedTankName === 'TK9202') {
+                yellow = 600;
+                red = 650;
+            } else if (normalizedTankName === 'TK9002') {
+                yellow = 3000;
+                red = 3200;
+            } else if (normalizedTankName === 'TK9102') {
+                yellow = 1500;
+                red = 1600;
+            } else if (normalizedInputId === 'a10605' || normalizedTankName === 'TK10605') {
+                yellow = 3750;
+                red = 5000;
+            } else if (normalizedTankName === 'S818' || normalizedTankName === 'S817') {
+                yellow = 10000;
+                red = 10500;
+            } else {
+                yellow = 1000;
+                red = 1200;
+            }
+
+            if (red != null && currentValue >= red) return 'critical';
+            if (yellow != null && currentValue >= yellow) return 'warning';
+
+            if (th) {
+                var skipMin = !opts.forceMin && opts.focusEl && typeof window.__shouldSkipMinAlarmWhileFocused === 'function'
+                    && window.__shouldSkipMinAlarmWhileFocused(opts.focusEl, currentValue, th);
+                if (!skipMin) {
+                    if (window.isAlarmThresholdConfigured(th.redMin) && currentValue <= Number(th.redMin)) return 'critical';
+                    if (window.isAlarmThresholdConfigured(th.yellowMin) && currentValue <= Number(th.yellowMin)) return 'warning';
+                }
+            }
+            return 'normal';
+        };
+
         // Evita falsi rossi/gialli per soglie MIN mentre il numero è ancora un prefisso corto (es. "2" prima di "250").
         // Le soglie MAX restano sempre valutate subito. All'uscita dal campo si forza il ricalcolo (forceMin).
         window.__shouldSkipMinAlarmWhileFocused = function (el, value, th) {
@@ -3783,208 +3957,51 @@ window.colorPreviewNumber = function(tankName, value) {
             return zDigits > 1 && intLen > 0 && intLen < zDigits;
         };
 
-        // Funzione per colorare input serbatoi in base al livello
-        window.colorTankInput = function (input) {
-            if (!input) return;
-            
-            if (!String(input.value == null ? '' : input.value).trim()) {
-                window.__clearTankAlarmVisual(input);
-                input.classList.add('tank-normal');
-                return;
-            }
-            
-            const inputId = input.id;
-            let tankName = null;
-            
-            const tankMapping = {
-                'inp-s818': 'S818',
-                'inp-s817': 'S817',
-                'inp-s846': 'S846', 
-                'inp-s848': 'S848',
-                'inp-s854': 'S854',
-                'inp-a10605': 'A10605',
-                'inp-s864': 'S864',
-                'inp-s121': 'S121',
-                'inp-s133': 'S133',
-                'inp-tk9000': 'TK9000',
-                'inp-tk9201': 'TK9201',
-                'inp-tk9204': 'TK9204',
-                'inp-tk9205': 'TK9205',
-                'inp-tk10000': 'TK10000',
-                'inp-tk10601a': 'TK10601A',
-                'inp-tk10601b': 'TK10601B',
-                'inp-tk10602': 'TK10602',
-                'inp-tk10602a': 'TK10602A',
-                'inp-tk10604': 'TK10604',
-                'inp-tk10605': 'TK10605',
-                'inp-tk10606a': 'TK10606A',
-                'inp-tk10606b': 'TK10606B',
-                'inp-tk10607': 'TK10607',
-                'inp-tk10608': 'TK10608',
-                'inp-v9203': 'V9203',
-                'inp-v172c': 'V172C',
-                'inp-a-cond': 'SG9400A',
-                'inp-d-cond': 'SG9400D',
-                'f-ciclo': 'F-CICLO',
-                'f-cond': 'F-COND',
-                'inp-s813': 'S813',
-                'inp-s148-ab': 'S148',
-                'inp-s819': 'S819',
-                'inp-tk8066': 'TK8066',
-                'inp-tk8092': 'TK8092',
-                'inp-bacino-tk8092': 'BACINO-TK8092',
-                'inp-bacino-tk8093': 'BACINO-TK8093',
-                'inp-s852': 'S852',
-                'inp-lurgi': 'LURGI',
-                'inp-sf3': 'SF3',
-                'inp-s829': 'S829',
-                'inp-daf': 'UNITA-DAF',
-                'tk101': 'TK101'
-            };
-            
-            tankName = tankMapping[inputId];
-            if (!tankName) {
-                if (typeof window.applyAlarmLevelFillToField === 'function') {
-                    window.applyAlarmLevelFillToField(input);
-                }
-                return;
-            }
-            
-            const normalizedTankName = tankName.toUpperCase();
-            
-            // Ottieni il livello massimo dal database
-            const maxLevel = window.TANK_MAX[tankName];
-            if (!maxLevel) {
-                window.__clearTankAlarmVisual(input);
-                if (typeof window.applyAlarmLevelFillToField === 'function') {
-                    window.applyAlarmLevelFillToField(input, true);
-                }
-                return;
-            }
-            
-            // Calcola la percentuale (virgola decimale come su tastiera IT)
-            const currentValue = typeof window.__parseNumericInputValue === 'function'
-                ? window.__parseNumericInputValue(input)
-                : parseFloat(String(input.value).replace(',', '.'));
-            if (isNaN(currentValue)) {
-                window.__clearTankAlarmVisual(input);
-                if (typeof window.applyAlarmLevelFillToField === 'function') {
-                    window.applyAlarmLevelFillToField(input, true);
-                }
-                return;
-            }
-            
-            const percentage = (currentValue / maxLevel) * 100;
-            
-            // Rimuovi tutte le classi di colore esistenti
-            input.classList.remove('tank-normal', 'tank-warning', 'tank-critical');
-            
-            // Applica il colore in base alle soglie personalizzate o default
-            let isCritical = false;
-            let isWarning = false;
-            
-            const alarmConfig = getAlarmConfig ? window.getAlarmConfig() : {};
-            const normalizedInputId = window.normalizeTankId(inputId);
-            const customThresholds = alarmConfig[normalizedInputId];
-            
-            let yellow, red;
-            
-            const hasCustomYellow = customThresholds && window.isAlarmThresholdConfigured(customThresholds.yellow);
-            const hasCustomRed = customThresholds && window.isAlarmThresholdConfigured(customThresholds.red);
-            if (hasCustomYellow || hasCustomRed) {
-                yellow = hasCustomYellow ? Number(customThresholds.yellow) : null;
-                red = hasCustomRed ? Number(customThresholds.red) : null;
-            } else {
-                // USA SOGLIE DEFAULT HARDCODED (supporta sia maiuscolo che minuscolo)
-                if (normalizedTankName === 'TK9000' || normalizedTankName === 'tk9000' || normalizedTankName === 'TK9201' || normalizedTankName === 'tk9201') {
-                    yellow = 8000;
-                    red = 8400;
-                } else if (normalizedTankName === 'TK9100' || normalizedTankName === 'tk9100') {
-                    yellow = 1500;
-                    red = 1600;
-                } else if (normalizedTankName === 'TK9200' || normalizedTankName === 'tk9200') {
-                    yellow = 600;
-                    red = 650;
-                } else if (normalizedTankName === 'TK9001' || normalizedTankName === 'tk9001') {
-                    yellow = 3000;
-                    red = 3200;
-                } else if (normalizedTankName === 'TK9101' || normalizedTankName === 'tk9101') {
-                    yellow = 1500;
-                    red = 1600;
-                } else if (normalizedTankName === 'TK9202' || normalizedTankName === 'tk9202') {
-                    yellow = 600;
-                    red = 650;
-                } else if (normalizedTankName === 'TK9002' || normalizedTankName === 'tk9002') {
-                    yellow = 3000;
-                    red = 3200;
-                } else if (normalizedTankName === 'TK9102' || normalizedTankName === 'tk9102') {
-                    yellow = 1500;
-                    red = 1600;
-                } else if (normalizedInputId === 'a10605') {
-                    // Soglie personalizzate per A10605
-                    yellow = 3750;
-                    red = 5000;
-                } else if (normalizedTankName === 'TK10605' || normalizedTankName === 'tk10605') {
-                    // Soglie personalizzate per TK10605
-                    yellow = 3750;
-                    red = 5000;
-                } else if (normalizedTankName === 'S818' || normalizedTankName === 's818') {
-                    // Soglie personalizzate per S818
-                    yellow = 10000;
-                    red = 10500;
-                } else if (normalizedTankName === 'S817' || normalizedTankName === 's817') {
-                    // Soglie personalizzate per S817
-                    yellow = 10000;
-                    red = 10500;
-                } else {
-                    // Default generico per tutti gli altri serbatoi
-                    yellow = 1000;
-                    red = 1200;
+        // Funzione per colorare input serbatoi in base al livello (tutte le copie livello: acqua, ambiente, stoccaggio)
+        window.colorTankInput = function (input, forceMin) {
+            if (!input || !input.id) return;
+
+            var fieldId = input.id;
+            var targets = typeof window.queryTankLevelAlarmInputs === 'function'
+                ? window.queryTankLevelAlarmInputs(fieldId)
+                : [input];
+            if (!targets.length) targets = [input];
+
+            var probe = null;
+            for (var i = 0; i < targets.length; i++) {
+                if (String(targets[i].value || '').trim()) {
+                    probe = targets[i];
+                    break;
                 }
             }
-            
-            if (red != null && currentValue >= red) {
-                isCritical = true;
-            } else if (yellow != null && currentValue >= yellow) {
-                isWarning = true;
+            if (!probe) probe = input;
+
+            if (!String(probe.value == null ? '' : probe.value).trim()) {
+                targets.forEach(function (el) {
+                    window.__clearTankAlarmVisual(el);
+                    el.classList.add('tank-normal');
+                });
+                return;
             }
 
-            if (!isCritical && !isWarning && customThresholds) {
-                const skipMin = typeof window.__shouldSkipMinAlarmWhileFocused === 'function'
-                    && window.__shouldSkipMinAlarmWhileFocused(input, currentValue, customThresholds);
-                if (!skipMin) {
-                    if (window.isAlarmThresholdConfigured(customThresholds.redMin) &&
-                        currentValue <= Number(customThresholds.redMin)) {
-                        isCritical = true;
-                    } else if (window.isAlarmThresholdConfigured(customThresholds.yellowMin) &&
-                        currentValue <= Number(customThresholds.yellowMin)) {
-                        isWarning = true;
-                    }
-                }
+            var currentValue = typeof window.__parseNumericInputValue === 'function'
+                ? window.__parseNumericInputValue(probe)
+                : parseFloat(String(probe.value).replace(',', '.'));
+            if (isNaN(currentValue)) {
+                targets.forEach(function (el) { window.__clearTankAlarmVisual(el); });
+                return;
             }
-            
-            if (isCritical) {
-                // CRITICO - Rosso (solo testo)
-                input.style.background = '';
-                input.style.backgroundColor = '';
-                input.style.color = '#dc2626';
-                input.style.fontWeight = '700';
-                input.classList.add('tank-critical');
-            } else if (isWarning) {
-                // ATTENZIONE - Giallo (solo testo)
-                input.style.background = '';
-                input.style.backgroundColor = '';
-                input.style.color = '#f59e0b';
-                input.style.fontWeight = '600';
-                input.classList.add('tank-warning');
-            } else {
-                // NORMALE - Reset colori
-                input.style.background = '';
-                input.style.backgroundColor = '';
-                input.style.color = '';
-                input.style.fontWeight = '';
-                input.classList.remove('tank-normal', 'tank-warning', 'tank-critical');
-            }
+
+            var state = typeof window.__resolveTankLevelAlarmVisualState === 'function'
+                ? window.__resolveTankLevelAlarmVisualState(fieldId, currentValue, {
+                    forceMin: !!forceMin,
+                    focusEl: document.activeElement && document.activeElement.id === fieldId ? document.activeElement : probe
+                })
+                : 'normal';
+
+            targets.forEach(function (el) {
+                window.__applyTankAlarmVisualState(el, state);
+            });
         };
 
         // Funzione per colorare input SCAM in base ai valori di allarme personalizzati
@@ -4081,10 +4098,19 @@ window.colorPreviewNumber = function(tankName, value) {
             ];
 
             tankInputIds.forEach(inputId => {
-                const input = document.getElementById(inputId);
-                if (input) {
-                    window.colorTankInput(input);
+                var probe = null;
+                if (typeof window.queryTankLevelAlarmInputs === 'function') {
+                    var list = window.queryTankLevelAlarmInputs(inputId);
+                    for (var li = 0; li < list.length; li++) {
+                        if (String(list[li].value || '').trim()) {
+                            probe = list[li];
+                            break;
+                        }
+                    }
+                    if (!probe && list.length) probe = list[0];
                 }
+                if (!probe) probe = document.getElementById(inputId);
+                if (probe) window.colorTankInput(probe, true);
             });
 
             // Aggiungi anche la colorazione per gli input SCAM
@@ -4114,7 +4140,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 return;
             }
             if (typeof window.colorTankInput === 'function') {
-                window.colorTankInput(el);
+                window.colorTankInput(el, forceMin);
                 return;
             }
             if (typeof window.applyAlarmLevelFillToField === 'function') {
@@ -13306,6 +13332,7 @@ window.updateStoricoButton = async function() {
                 if (el) el.value = saved[fid];
             });
             window.refreshStoccaggioInternoTons();
+            if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
             if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
         };
         window._rapportiniPendingId = null;
@@ -28138,9 +28165,31 @@ window.convertToHtml = async () => {
         }
         .alarm-sigla-threshold-icons {
             display: flex;
-            align-items: center;
-            gap: 6px;
+            align-items: flex-end;
+            gap: 8px;
             flex-shrink: 0;
+        }
+        .alarm-sigla-threshold-icons--dual {
+            gap: 6px;
+        }
+        .alarm-sigla-threshold-group {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 3px;
+        }
+        .alarm-sigla-threshold-group-label {
+            font-size: 8px;
+            font-weight: 900;
+            letter-spacing: 0.08em;
+            color: #94a3b8;
+            line-height: 1;
+            text-transform: uppercase;
+        }
+        .alarm-sigla-threshold-group-icons {
+            display: flex;
+            align-items: center;
+            gap: 4px;
         }
         .alarm-sigla-threshold-icon {
             width: 36px;
@@ -28150,6 +28199,14 @@ window.convertToHtml = async () => {
             align-items: center;
             justify-content: center;
             flex-shrink: 0;
+        }
+        .alarm-sigla-threshold-icons--dual .alarm-sigla-threshold-icon {
+            width: 30px;
+            height: 30px;
+        }
+        .alarm-sigla-threshold-icons--dual .alarm-sigla-threshold-icon svg {
+            width: 15px;
+            height: 15px;
         }
         .alarm-sigla-threshold-icon--yellow {
             background: #eab308;
@@ -32248,12 +32305,60 @@ function getAlarmSiglaThresholdIconState(inputId) {
     const th = typeof window.thresholdsForAlarmFieldId === 'function'
         ? window.thresholdsForAlarmFieldId(inputId)
         : null;
+    const supportsMin = typeof window.alarmEditorSupportsMinThresholds === 'function'
+        && window.alarmEditorSupportsMinThresholds(inputId);
     return {
-        yellow: window.isAlarmThresholdConfigured(th && th.yellow)
-            || window.isAlarmThresholdConfigured(th && th.yellowMin),
-        red: window.isAlarmThresholdConfigured(th && th.red)
-            || window.isAlarmThresholdConfigured(th && th.redMin)
+        yellow: window.isAlarmThresholdConfigured(th && th.yellow),
+        red: window.isAlarmThresholdConfigured(th && th.red),
+        yellowMin: window.isAlarmThresholdConfigured(th && th.yellowMin),
+        redMin: window.isAlarmThresholdConfigured(th && th.redMin),
+        supportsMin: supportsMin
     };
+}
+
+function buildAlarmSiglaThresholdIcon(kind, isOn, title) {
+    const cls = isOn ? 'alarm-sigla-threshold-icon--on' : 'alarm-sigla-threshold-icon--off';
+    const colorCls = kind.indexOf('red') >= 0 ? 'red' : 'yellow';
+    const extraLine = kind.indexOf('red') >= 0 ? '<line x1="12" y1="17" x2="12.01" y2="17"/>' : '';
+    return `<div class="alarm-sigla-threshold-icon alarm-sigla-threshold-icon--${colorCls} ${cls}" title="${escapeHtmlAlarm(title)}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+            <line x1="12" y1="9" x2="12" y2="13"/>
+            ${extraLine}
+        </svg>
+    </div>`;
+}
+
+function buildAlarmSiglaThresholdGroup(label, yellowOn, redOn, yellowTitle, redTitle) {
+    return `<div class="alarm-sigla-threshold-group">
+        <span class="alarm-sigla-threshold-group-label">${escapeHtmlAlarm(label)}</span>
+        <div class="alarm-sigla-threshold-group-icons">
+            ${buildAlarmSiglaThresholdIcon('yellow', yellowOn, yellowTitle)}
+            ${buildAlarmSiglaThresholdIcon('red', redOn, redTitle)}
+        </div>
+    </div>`;
+}
+
+function buildAlarmSiglaThresholdIconsHtml(inputId) {
+    const iconState = getAlarmSiglaThresholdIconState(inputId);
+    let html = buildAlarmSiglaThresholdGroup(
+        'A.L',
+        iconState.yellow,
+        iconState.red,
+        iconState.yellow ? 'Attenzione alto livello impostata' : 'Attenzione alto livello non impostata',
+        iconState.red ? 'Critico alto livello impostato' : 'Critico alto livello non impostato'
+    );
+    if (iconState.supportsMin) {
+        html += buildAlarmSiglaThresholdGroup(
+            'B.L',
+            iconState.yellowMin,
+            iconState.redMin,
+            iconState.yellowMin ? 'Attenzione basso livello impostata' : 'Attenzione basso livello non impostata',
+            iconState.redMin ? 'Critico basso livello impostato' : 'Critico basso livello non impostato'
+        );
+    }
+    const dualClass = iconState.supportsMin ? ' alarm-sigla-threshold-icons--dual' : '';
+    return `<div class="alarm-sigla-threshold-icons${dualClass}" aria-hidden="true">${html}</div>`;
 }
 
 function formatAlarmThresholdInputValue(val) {
@@ -32452,30 +32557,12 @@ function loadTabSignals(tab) {
         row.type = 'button';
         row.className = 'alarm-scheda-card';
 
-        const iconState = getAlarmSiglaThresholdIconState(tank.inputId);
-        const yellowIconClass = iconState.yellow ? 'alarm-sigla-threshold-icon--on' : 'alarm-sigla-threshold-icon--off';
-        const redIconClass = iconState.red ? 'alarm-sigla-threshold-icon--on' : 'alarm-sigla-threshold-icon--off';
-
         row.innerHTML = `
             <div class="alarm-scheda-card-body">
                 <p class="alarm-scheda-card-title">${escapeHtmlAlarm(tank.label)}</p>
                 <p class="alarm-scheda-card-hint">Tocca per configurare gli allarmi</p>
             </div>
-            <div class="alarm-sigla-threshold-icons" aria-hidden="true">
-                <div class="alarm-sigla-threshold-icon alarm-sigla-threshold-icon--yellow ${yellowIconClass}" title="${iconState.yellow ? 'Soglia attenzione impostata' : 'Soglia attenzione non impostata'}">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3">
-                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-                        <line x1="12" y1="9" x2="12" y2="13"/>
-                    </svg>
-                </div>
-                <div class="alarm-sigla-threshold-icon alarm-sigla-threshold-icon--red ${redIconClass}" title="${iconState.red ? 'Soglia critica impostata' : 'Soglia critica non impostata'}">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3">
-                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-                        <line x1="12" y1="9" x2="12" y2="13"/>
-                        <line x1="12" y1="17" x2="12.01" y2="17"/>
-                    </svg>
-                </div>
-            </div>
+            ${buildAlarmSiglaThresholdIconsHtml(tank.inputId)}
         `;
 
         row.onclick = () => openTankAlarmEditor(tank, tab);

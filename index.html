@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v345';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v346';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -6838,6 +6838,7 @@ window.updateStoricoButton = async function() {
             }
             if (typeof window.renderStoccaggioInternoPanel === 'function') window.renderStoccaggioInternoPanel();
             if (typeof window.stripTankDetailChipsFromDom === 'function') window.stripTankDetailChipsFromDom();
+            if (typeof window.initNumpadTitleDetailShortcut === 'function') window.initNumpadTitleDetailShortcut();
             if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
             // CARICAMENTO DATABASE CENTRALE - PRIMA DI TUTTO!
             window.loadDB();
@@ -7335,7 +7336,10 @@ window.updateStoricoButton = async function() {
             };
 
             const isDragExcludedTarget = function (target) {
-                return !!(target && target.closest && target.closest('button'));
+                if (!target || !target.closest) return false;
+                if (target.closest('button')) return true;
+                if (target.closest('#numpad-title.numpad-title--tank-detail')) return true;
+                return false;
             };
 
             handle.addEventListener('pointerdown', function (e) {
@@ -7757,6 +7761,27 @@ window.updateStoricoButton = async function() {
             el.style.color = arrow.style.color || '';
         };
 
+        window.initNumpadTitleDetailShortcut = function () {
+            if (window.__numpadTitleDetailInited) return;
+            var titleEl = document.getElementById('numpad-title');
+            if (!titleEl) return;
+            window.__numpadTitleDetailInited = true;
+            titleEl.addEventListener('pointerdown', function (e) {
+                if (!titleEl.classList.contains('numpad-title--tank-detail')) return;
+                e.stopPropagation();
+            }, true);
+            titleEl.addEventListener('click', function (e) {
+                if (!titleEl.classList.contains('numpad-title--tank-detail')) return;
+                window.onNumpadTitleClick(e);
+            });
+            titleEl.addEventListener('keydown', function (e) {
+                if (e.key !== 'Enter' && e.key !== ' ') return;
+                if (!titleEl.classList.contains('numpad-title--tank-detail')) return;
+                e.preventDefault();
+                window.openTankDetailFromNumpadTitle();
+            });
+        };
+
         window.syncNumpadTitleDetailShortcut = function (input) {
             var titleEl = document.getElementById('numpad-title');
             if (!titleEl) return;
@@ -7778,6 +7803,9 @@ window.updateStoricoButton = async function() {
             if (!currentNumpadTarget || window.currentAnalisiPopupInput) return;
             if (window.__numpadView !== 'value') return;
             var fieldId = currentNumpadTarget.id;
+            if (typeof window.normalizeTrendFieldId === 'function') {
+                fieldId = window.normalizeTrendFieldId(fieldId) || fieldId;
+            }
             if (!fieldId || typeof window.canOpenTankDetailForField !== 'function' ||
                 !window.canOpenTankDetailForField(fieldId)) return;
             if (typeof window.commitNumpadFieldValue === 'function') window.commitNumpadFieldValue();
@@ -7787,8 +7815,40 @@ window.updateStoricoButton = async function() {
                 ? window.buildTankDetailNavCtxFromEl(row, fieldId, 'numpad')
                 : { backLabel: window.__numpadSavedContext || 'Indietro', source: 'numpad' };
             navCtx.backLabel = navCtx.backLabel || window.__numpadSavedContext || 'Indietro';
-            if (typeof window.closeNumpad === 'function') window.closeNumpad();
+            navCtx.source = 'numpad';
+            navCtx.keepNumpadOpen = true;
+            navCtx.numpadFieldId = fieldId;
             window.openTankDetailPage(fieldId, navCtx);
+        };
+
+        window.restoreNumpadAfterTankDetail = function (nav) {
+            var numpadModal = document.getElementById('numpad-modal');
+            if (!numpadModal) return;
+            var fieldId = (nav && nav.numpadFieldId) || (currentNumpadTarget && currentNumpadTarget.id);
+            if (fieldId && typeof window.normalizeTrendFieldId === 'function') {
+                fieldId = window.normalizeTrendFieldId(fieldId) || fieldId;
+            }
+            var inp = fieldId ? document.getElementById(fieldId) : null;
+            if (inp) currentNumpadTarget = inp;
+            if (!currentNumpadTarget) return;
+            var display = document.getElementById('numpad-display');
+            if (display) {
+                display.value = String(currentNumpadTarget.value == null ? '' : currentNumpadTarget.value)
+                    .replace(/[^\d.,]/g, '');
+            }
+            window.__numpadLivePreviewOrigin = currentNumpadTarget.value;
+            window.__numpadCommitted = false;
+            window.__numpadView = 'value';
+            if (!numpadModal.classList.contains('active')) numpadModal.classList.add('active');
+            if (typeof window.syncNumpadViewLayout === 'function') window.syncNumpadViewLayout();
+            if (typeof window.refreshNumpadAlarmVisual === 'function') window.refreshNumpadAlarmVisual();
+            if (typeof window.syncNumpadTankTrendArrow === 'function') {
+                window.syncNumpadTankTrendArrow(currentNumpadTarget);
+            }
+            if (typeof window.syncNumpadTitleDetailShortcut === 'function') {
+                window.syncNumpadTitleDetailShortcut(currentNumpadTarget);
+            }
+            if (typeof window.updateTankButton === 'function') window.updateTankButton();
         };
 
         window.onNumpadTitleClick = function (e) {
@@ -7876,6 +7936,7 @@ window.updateStoricoButton = async function() {
                 return;
             }
             if (!window.populateNumpadForLabel(labelEl, explicitInput)) return;
+            if (typeof window.initNumpadTitleDetailShortcut === 'function') window.initNumpadTitleDetailShortcut();
             if (typeof window.initNumpadDrag === 'function') window.initNumpadDrag();
             if (typeof window.resetNumpadPanelPosition === 'function') window.resetNumpadPanelPosition();
             if (typeof window.applyNumpadDisplayScale === 'function') window.applyNumpadDisplayScale();
@@ -13799,10 +13860,15 @@ window.updateStoricoButton = async function() {
         };
 
         window.closeTankDetailPage = function () {
+            var nav = window.__tankDetailNav;
+            var keepNumpad = nav && (nav.keepNumpadOpen || nav.source === 'numpad');
             var ov = document.getElementById('tank-detail-overlay');
             if (ov) ov.classList.remove('active');
             document.body.classList.remove('tank-detail-open');
             window.__tankDetailNav = null;
+            if (keepNumpad && typeof window.restoreNumpadAfterTankDetail === 'function') {
+                window.restoreNumpadAfterTankDetail(nav);
+            }
         };
 
         window.buildTankDetailRemotePayload = function () {

@@ -578,6 +578,35 @@ window.hasAnyAlarmThreshold = function (th) {
         || window.isAlarmThresholdConfigured(th.yellowMin);
 };
 
+/** Campi con soglie MIN configurabili (livello basso): PH SCAM + TK 9000 / TK 9201. */
+window.alarmEditorSupportsMinThresholds = function (inputId) {
+    return inputId === 'ph' || inputId === 'inp-tk9000' || inputId === 'inp-tk9201';
+};
+
+window.buildNumpadAlarmDraftFromThresholds = function (th) {
+    th = th || {};
+    return {
+        yellow: window.isAlarmThresholdConfigured(th.yellow) ? String(th.yellow) : '',
+        red: window.isAlarmThresholdConfigured(th.red) ? String(th.red) : '',
+        yellowMin: window.isAlarmThresholdConfigured(th.yellowMin) ? String(th.yellowMin) : '',
+        redMin: window.isAlarmThresholdConfigured(th.redMin) ? String(th.redMin) : ''
+    };
+};
+
+window.syncNumpadAlarmMinRowsVisibility = function () {
+    const targetId = currentNumpadTarget && currentNumpadTarget.id;
+    const show = !!(targetId && window.alarmEditorSupportsMinThresholds(targetId));
+    const isTankLevel = targetId === 'inp-tk9000' || targetId === 'inp-tk9201';
+    ['numpad-alarm-row-yellow-min', 'numpad-alarm-row-red-min'].forEach(function (id) {
+        const row = document.getElementById(id);
+        if (row) row.hidden = !show;
+    });
+    const yLabel = document.getElementById('numpad-alarm-row-yellow-label');
+    const rLabel = document.getElementById('numpad-alarm-row-red-label');
+    if (yLabel) yLabel.textContent = isTankLevel ? 'Attenzione livello alto' : 'Allarme attenzione';
+    if (rLabel) rLabel.textContent = isTankLevel ? 'Critico livello alto' : 'Allarme critico';
+};
+
 // ===============================
 // CONTROLLO LIVELLI CRITICI
 // ===============================
@@ -598,11 +627,22 @@ window.checkHighLevel = function(tankTrends) {
         const alarmConfig = window.getAlarmConfig ? window.getAlarmConfig() : {};
         const customThresholds = alarmConfig[tankId];
         
-        if (customThresholds && (window.isAlarmThresholdConfigured(customThresholds.red) || window.isAlarmThresholdConfigured(customThresholds.yellow))) {
+        if (customThresholds && typeof window.hasAnyAlarmThreshold === 'function'
+            && window.hasAnyAlarmThreshold(customThresholds)) {
+            let alerted = false;
             if (window.isAlarmThresholdConfigured(customThresholds.red) && currentValue >= customThresholds.red) {
                 alerts.push(`${tankName} al ${currentValue.toFixed(0)}  LIVELLO CRITICO`);
+                alerted = true;
             } else if (window.isAlarmThresholdConfigured(customThresholds.yellow) && currentValue >= customThresholds.yellow) {
                 alerts.push(`${tankName} al ${currentValue.toFixed(0)}  monitorare livello`);
+                alerted = true;
+            }
+            if (!alerted) {
+                if (window.isAlarmThresholdConfigured(customThresholds.redMin) && currentValue <= customThresholds.redMin) {
+                    alerts.push(`${tankName} al ${currentValue.toFixed(0)}  LIVELLO CRITICO BASSO`);
+                } else if (window.isAlarmThresholdConfigured(customThresholds.yellowMin) && currentValue <= customThresholds.yellowMin) {
+                    alerts.push(`${tankName} al ${currentValue.toFixed(0)}  monitorare livello basso`);
+                }
             }
         } else {
             // USA SOGLIE DEFAULT HARDCODED
@@ -650,10 +690,15 @@ window.colorPreviewNumber = function(tankName, value) {
     const alarmConfig = window.getAlarmConfig ? window.getAlarmConfig() : {};
     const customThresholds = alarmConfig[tankId];
     
-    if (customThresholds && (window.isAlarmThresholdConfigured(customThresholds.red) || window.isAlarmThresholdConfigured(customThresholds.yellow))) {
+    if (customThresholds && typeof window.hasAnyAlarmThreshold === 'function'
+        && window.hasAnyAlarmThreshold(customThresholds)) {
         if (window.isAlarmThresholdConfigured(customThresholds.red) && currentValue >= customThresholds.red) {
             return `<span style="color: #dc2626; font-weight: 700;">${value}</span>`;
         } else if (window.isAlarmThresholdConfigured(customThresholds.yellow) && currentValue >= customThresholds.yellow) {
+            return `<span style="color: #f59e0b; font-weight: 600;">${value}</span>`;
+        } else if (window.isAlarmThresholdConfigured(customThresholds.redMin) && currentValue <= customThresholds.redMin) {
+            return `<span style="color: #dc2626; font-weight: 700;">${value}</span>`;
+        } else if (window.isAlarmThresholdConfigured(customThresholds.yellowMin) && currentValue <= customThresholds.yellowMin) {
             return `<span style="color: #f59e0b; font-weight: 600;">${value}</span>`;
         }
     } else {
@@ -687,7 +732,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v323';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v326';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -3903,6 +3948,20 @@ window.colorPreviewNumber = function(tankName, value) {
             } else if (yellow != null && currentValue >= yellow) {
                 isWarning = true;
             }
+
+            if (!isCritical && !isWarning && customThresholds) {
+                const skipMin = typeof window.__shouldSkipMinAlarmWhileFocused === 'function'
+                    && window.__shouldSkipMinAlarmWhileFocused(input, currentValue, customThresholds);
+                if (!skipMin) {
+                    if (window.isAlarmThresholdConfigured(customThresholds.redMin) &&
+                        currentValue <= Number(customThresholds.redMin)) {
+                        isCritical = true;
+                    } else if (window.isAlarmThresholdConfigured(customThresholds.yellowMin) &&
+                        currentValue <= Number(customThresholds.yellowMin)) {
+                        isWarning = true;
+                    }
+                }
+            }
             
             if (isCritical) {
                 // CRITICO - Rosso (solo testo)
@@ -5028,6 +5087,10 @@ window.colorPreviewNumber = function(tankName, value) {
             btn.disabled = state === 'loading';
             btn.classList.toggle('archive-cloud-sync-btn--spinning', state === 'loading');
             btn.setAttribute('aria-busy', state === 'loading' ? 'true' : 'false');
+            const label = btn.querySelector('.archive-cloud-sync-label');
+            if (label) {
+                label.textContent = state === 'loading' ? 'Invio in corso…' : 'Invia archivi locali al cloud';
+            }
         };
 
         /** Forza invio archivi LOCALE → cloud (altri dispositivi). */
@@ -7172,11 +7235,15 @@ window.updateStoricoButton = async function() {
             const th = typeof window.thresholdsForAlarmFieldId === 'function'
                 ? window.thresholdsForAlarmFieldId(currentNumpadTarget.id)
                 : null;
-            window.__numpadAlarmDraft = {
-                yellow: window.isAlarmThresholdConfigured(th && th.yellow) ? String(th.yellow) : '',
-                red: window.isAlarmThresholdConfigured(th && th.red) ? String(th.red) : ''
-            };
-            const field = window.__numpadAlarmActiveField === 'red' ? 'red' : 'yellow';
+            window.__numpadAlarmDraft = typeof window.buildNumpadAlarmDraftFromThresholds === 'function'
+                ? window.buildNumpadAlarmDraftFromThresholds(th)
+                : {
+                    yellow: window.isAlarmThresholdConfigured(th && th.yellow) ? String(th.yellow) : '',
+                    red: window.isAlarmThresholdConfigured(th && th.red) ? String(th.red) : '',
+                    yellowMin: '',
+                    redMin: ''
+                };
+            const field = window.__numpadAlarmActiveField || 'yellow';
             const display = document.getElementById('numpad-display');
             if (display) display.value = window.__numpadAlarmDraft[field] || '';
             if (typeof window.syncNumpadAlarmRowPreviews === 'function') window.syncNumpadAlarmRowPreviews();
@@ -7321,15 +7388,18 @@ window.updateStoricoButton = async function() {
         };
 
         window.syncNumpadAlarmRowPreviews = function () {
-            const draft = window.__numpadAlarmDraft || { yellow: '', red: '' };
+            const draft = window.__numpadAlarmDraft || { yellow: '', red: '', yellowMin: '', redMin: '' };
             const display = document.getElementById('numpad-display');
             const buffer = display ? display.value.replace(/[^\d.,]/g, '') : '';
-            const yVal = window.__numpadAlarmActiveField === 'yellow' && window.__numpadView === 'alarm'
-                ? buffer : draft.yellow;
-            const rVal = window.__numpadAlarmActiveField === 'red' && window.__numpadView === 'alarm'
-                ? buffer : draft.red;
+            const active = window.__numpadAlarmActiveField || 'yellow';
+            const yVal = active === 'yellow' && window.__numpadView === 'alarm' ? buffer : draft.yellow;
+            const rVal = active === 'red' && window.__numpadView === 'alarm' ? buffer : draft.red;
+            const yMinVal = active === 'yellowMin' && window.__numpadView === 'alarm' ? buffer : draft.yellowMin;
+            const rMinVal = active === 'redMin' && window.__numpadView === 'alarm' ? buffer : draft.redMin;
             const yEl = document.getElementById('numpad-alarm-yellow-preview');
             const rEl = document.getElementById('numpad-alarm-red-preview');
+            const yMinEl = document.getElementById('numpad-alarm-yellow-min-preview');
+            const rMinEl = document.getElementById('numpad-alarm-red-min-preview');
             if (yEl) {
                 yEl.textContent = yVal ? yVal : '—';
                 yEl.classList.toggle('numpad-alarm-row-val--empty', !yVal);
@@ -7338,17 +7408,29 @@ window.updateStoricoButton = async function() {
                 rEl.textContent = rVal ? rVal : '—';
                 rEl.classList.toggle('numpad-alarm-row-val--empty', !rVal);
             }
+            if (yMinEl) {
+                yMinEl.textContent = yMinVal ? yMinVal : '—';
+                yMinEl.classList.toggle('numpad-alarm-row-val--empty', !yMinVal);
+            }
+            if (rMinEl) {
+                rMinEl.textContent = rMinVal ? rMinVal : '—';
+                rMinEl.classList.toggle('numpad-alarm-row-val--empty', !rMinVal);
+            }
             const yRow = document.getElementById('numpad-alarm-row-yellow');
             const rRow = document.getElementById('numpad-alarm-row-red');
-            if (yRow) yRow.classList.toggle('numpad-alarm-row--active', window.__numpadAlarmActiveField === 'yellow');
-            if (rRow) rRow.classList.toggle('numpad-alarm-row--active', window.__numpadAlarmActiveField === 'red');
+            const yMinRow = document.getElementById('numpad-alarm-row-yellow-min');
+            const rMinRow = document.getElementById('numpad-alarm-row-red-min');
+            if (yRow) yRow.classList.toggle('numpad-alarm-row--active', active === 'yellow');
+            if (rRow) rRow.classList.toggle('numpad-alarm-row--active', active === 'red');
+            if (yMinRow) yMinRow.classList.toggle('numpad-alarm-row--active', active === 'yellowMin');
+            if (rMinRow) rMinRow.classList.toggle('numpad-alarm-row--active', active === 'redMin');
         };
 
         window.commitNumpadAlarmBufferToDraft = function () {
             const display = document.getElementById('numpad-display');
             if (!display || window.__numpadView !== 'alarm') return;
-            const field = window.__numpadAlarmActiveField === 'red' ? 'red' : 'yellow';
-            window.__numpadAlarmDraft = window.__numpadAlarmDraft || { yellow: '', red: '' };
+            const field = window.__numpadAlarmActiveField || 'yellow';
+            window.__numpadAlarmDraft = window.__numpadAlarmDraft || { yellow: '', red: '', yellowMin: '', redMin: '' };
             window.__numpadAlarmDraft[field] = display.value.replace(/[^\d.,]/g, '');
             window.syncNumpadAlarmRowPreviews();
         };
@@ -7356,9 +7438,10 @@ window.updateStoricoButton = async function() {
         window.selectNumpadAlarmField = function (field) {
             if (window.__numpadView !== 'alarm') return;
             window.commitNumpadAlarmBufferToDraft();
-            window.__numpadAlarmActiveField = field === 'red' ? 'red' : 'yellow';
+            const allowed = ['yellow', 'red', 'yellowMin', 'redMin'];
+            window.__numpadAlarmActiveField = allowed.indexOf(field) >= 0 ? field : 'yellow';
             const display = document.getElementById('numpad-display');
-            const draft = window.__numpadAlarmDraft || { yellow: '', red: '' };
+            const draft = window.__numpadAlarmDraft || { yellow: '', red: '', yellowMin: '', redMin: '' };
             if (display) display.value = draft[window.__numpadAlarmActiveField] || '';
             window.syncNumpadAlarmRowPreviews();
         };
@@ -7373,14 +7456,19 @@ window.updateStoricoButton = async function() {
             const th = typeof window.thresholdsForAlarmFieldId === 'function'
                 ? window.thresholdsForAlarmFieldId(currentNumpadTarget.id)
                 : null;
-            window.__numpadAlarmDraft = {
-                yellow: window.isAlarmThresholdConfigured(th && th.yellow) ? String(th.yellow) : '',
-                red: window.isAlarmThresholdConfigured(th && th.red) ? String(th.red) : ''
-            };
+            window.__numpadAlarmDraft = typeof window.buildNumpadAlarmDraftFromThresholds === 'function'
+                ? window.buildNumpadAlarmDraftFromThresholds(th)
+                : {
+                    yellow: window.isAlarmThresholdConfigured(th && th.yellow) ? String(th.yellow) : '',
+                    red: window.isAlarmThresholdConfigured(th && th.red) ? String(th.red) : '',
+                    yellowMin: '',
+                    redMin: ''
+                };
             window.__numpadView = 'alarm';
             window.__numpadAlarmActiveField = 'yellow';
             const alarmPanel = document.getElementById('numpad-alarm-panel');
             if (alarmPanel) alarmPanel.hidden = false;
+            if (typeof window.syncNumpadAlarmMinRowsVisibility === 'function') window.syncNumpadAlarmMinRowsVisibility();
             if (typeof window.syncNumpadViewLayout === 'function') window.syncNumpadViewLayout();
             const ctxEl = document.getElementById('numpad-context');
             if (ctxEl) {
@@ -7421,12 +7509,18 @@ window.updateStoricoButton = async function() {
         window.saveNumpadAlarms = async function () {
             if (!currentNumpadTarget || window.__numpadView !== 'alarm') return false;
             window.commitNumpadAlarmBufferToDraft();
-            const draft = window.__numpadAlarmDraft || { yellow: '', red: '' };
+            const draft = window.__numpadAlarmDraft || { yellow: '', red: '', yellowMin: '', redMin: '' };
             if (typeof window.persistTankAlarmThresholds !== 'function') return false;
-            await window.persistTankAlarmThresholds(currentNumpadTarget.id, {
+            const saveOpts = {
                 yellow: draft.yellow,
                 red: draft.red
-            });
+            };
+            if (typeof window.alarmEditorSupportsMinThresholds === 'function'
+                && window.alarmEditorSupportsMinThresholds(currentNumpadTarget.id)) {
+                saveOpts.yellowMin = draft.yellowMin;
+                saveOpts.redMin = draft.redMin;
+            }
+            await window.persistTankAlarmThresholds(currentNumpadTarget.id, saveOpts);
             if (typeof window.refreshNumpadAlarmVisual === 'function') window.refreshNumpadAlarmVisual();
             const startBtnText = document.getElementById('numpad-start-text');
             if (startBtnText) {
@@ -28760,38 +28854,83 @@ window.convertToHtml = async () => {
         #archive-list-modal { align-items: flex-end; justify-content: stretch; }
         #archive-list-modal { z-index: 10120; }
         #archive-list-modal.active { background: rgba(0,0,0,0.75); backdrop-filter: blur(5px); visibility: visible; pointer-events: auto; }
-        .archive-cloud-sync-btn {
-            width: 36px;
-            height: 36px;
-            border-radius: 9999px;
-            border: 2px solid #2563eb;
-            background: #eff6ff;
-            color: #1d4ed8;
-            display: inline-flex;
+        .archive-list-modal-header {
+            border-bottom: 1px solid #e2e8f0;
+            background: #fff;
+        }
+        .dark .archive-list-modal-header {
+            border-bottom-color: #1e293b;
+            background: #0f172a;
+        }
+        .archive-list-modal-topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 18px 20px 12px;
+        }
+        .archive-list-modal-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding: 0 16px 16px;
+        }
+        .archive-delete-all-btn {
+            width: 100%;
+            background: #dc2626;
+            color: #fff;
+            border: none;
+            border-bottom: 4px solid #991b1b;
+            border-radius: 14px;
+            padding: 12px 16px;
+            font-weight: 900;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            cursor: pointer;
+            transition: transform 0.15s ease, background 0.15s ease;
+        }
+        .archive-delete-all-btn:active {
+            transform: scale(0.98);
+            background: #b91c1c;
+        }
+        .archive-cloud-sync-action-btn {
+            width: 100%;
+            display: flex;
             align-items: center;
             justify-content: center;
-            flex-shrink: 0;
+            gap: 10px;
+            border: 2px solid #2563eb;
+            border-bottom: 4px solid #1d4ed8;
+            border-radius: 14px;
+            background: #eff6ff;
+            color: #1d4ed8;
+            padding: 12px 16px;
+            font-weight: 900;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
             cursor: pointer;
-            transition: transform 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
-            box-shadow: 0 2px 6px rgba(37, 99, 235, 0.25);
+            transition: transform 0.15s ease, background 0.15s ease;
         }
-        .dark .archive-cloud-sync-btn {
+        .dark .archive-cloud-sync-action-btn {
             background: #1e3a8a;
             border-color: #3b82f6;
+            border-bottom-color: #2563eb;
             color: #dbeafe;
         }
-        .archive-cloud-sync-btn:hover:not(:disabled) {
-            transform: scale(1.06);
-            background: #dbeafe;
+        .archive-cloud-sync-action-btn:active:not(:disabled) {
+            transform: scale(0.98);
         }
-        .archive-cloud-sync-btn:active:not(:disabled) {
-            transform: scale(0.94);
-        }
-        .archive-cloud-sync-btn:disabled {
+        .archive-cloud-sync-action-btn:disabled {
             opacity: 0.65;
             cursor: wait;
         }
-        .archive-cloud-sync-btn--spinning svg {
+        .archive-cloud-sync-action-btn .archive-cloud-sync-icon {
+            display: inline-flex;
+            flex-shrink: 0;
+        }
+        .archive-cloud-sync-btn--spinning .archive-cloud-sync-icon svg {
             animation: archive-cloud-sync-spin 0.85s linear infinite;
         }
         @keyframes archive-cloud-sync-spin {
@@ -29088,6 +29227,18 @@ window.convertToHtml = async () => {
             #management-modal .management-sheet > .p-6,
             #archive-list-modal .management-sheet > .p-6 {
                 padding: 10px 14px max(6px, env(safe-area-inset-bottom, 0px)) !important;
+            }
+            #archive-list-modal .archive-list-modal-topbar {
+                padding: 14px 16px 10px !important;
+            }
+            #archive-list-modal .archive-list-modal-actions {
+                padding: 0 14px 12px !important;
+                gap: 8px !important;
+            }
+            #archive-list-modal .archive-delete-all-btn,
+            #archive-list-modal .archive-cloud-sync-action-btn {
+                font-size: 10px !important;
+                padding: 11px 14px !important;
             }
             #management-modal #btn-restore-all {
                 margin-bottom: 8px !important;
@@ -30129,15 +30280,29 @@ window.convertToHtml = async () => {
                     <span class="numpad-alarm-row-icon numpad-alarm-row-icon--yellow" aria-hidden="true">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/></svg>
                     </span>
-                    <span class="numpad-alarm-row-label">Allarme attenzione</span>
+                    <span id="numpad-alarm-row-yellow-label" class="numpad-alarm-row-label">Allarme attenzione</span>
                     <span id="numpad-alarm-yellow-preview" class="numpad-alarm-row-val numpad-alarm-row-val--empty">—</span>
                 </button>
                 <button type="button" id="numpad-alarm-row-red" class="numpad-alarm-row numpad-alarm-row--red" onclick="window.selectNumpadAlarmField('red')">
                     <span class="numpad-alarm-row-icon numpad-alarm-row-icon--red" aria-hidden="true">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                     </span>
-                    <span class="numpad-alarm-row-label">Allarme critico</span>
+                    <span id="numpad-alarm-row-red-label" class="numpad-alarm-row-label">Allarme critico</span>
                     <span id="numpad-alarm-red-preview" class="numpad-alarm-row-val numpad-alarm-row-val--empty">—</span>
+                </button>
+                <button type="button" id="numpad-alarm-row-yellow-min" class="numpad-alarm-row numpad-alarm-row--yellow numpad-alarm-row--min" hidden onclick="window.selectNumpadAlarmField('yellowMin')">
+                    <span class="numpad-alarm-row-icon numpad-alarm-row-icon--yellow" aria-hidden="true">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/></svg>
+                    </span>
+                    <span class="numpad-alarm-row-label">Attenzione livello basso</span>
+                    <span id="numpad-alarm-yellow-min-preview" class="numpad-alarm-row-val numpad-alarm-row-val--empty">—</span>
+                </button>
+                <button type="button" id="numpad-alarm-row-red-min" class="numpad-alarm-row numpad-alarm-row--red numpad-alarm-row--min" hidden onclick="window.selectNumpadAlarmField('redMin')">
+                    <span class="numpad-alarm-row-icon numpad-alarm-row-icon--red" aria-hidden="true">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                    </span>
+                    <span class="numpad-alarm-row-label">Critico livello basso</span>
+                    <span id="numpad-alarm-red-min-preview" class="numpad-alarm-row-val numpad-alarm-row-val--empty">—</span>
                 </button>
             </div>
             <div id="numpad-value-panel" class="numpad-value-panel bg-slate-50 p-2 text-center border-b border-slate-200">
@@ -31305,22 +31470,23 @@ window.convertToHtml = async () => {
 
     <div id="archive-list-modal" class="modal-overlay" onclick="if(event.target === this) this.classList.remove('active')">
         <div class="management-sheet" onclick="event.stopPropagation()">
-            <div class="px-8 py-6 flex justify-between items-center gap-3 border-b border-slate-100 dark:border-slate-800">
-                <div class="flex items-center gap-3 min-w-0">
-                    <h2 class="font-black italic text-lg uppercase tracking-tighter text-slate-900 dark:text-white shrink-0">Ripristino Cloud</h2>
-                    <button type="button" id="btn-archive-cloud-sync" class="archive-cloud-sync-btn" onclick="window.forceSyncLocalArchivesToCloud()" title="Invia archivi locali al cloud (altri dispositivi)" aria-label="Invia archivi locali al cloud">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                            <path d="M21 12a9 9 0 1 1-3-6.7"></path>
-                            <polyline points="21 3 21 9 15 9"></polyline>
-                        </svg>
+            <div class="archive-list-modal-header">
+                <div class="archive-list-modal-topbar">
+                    <h2 class="font-black italic text-lg uppercase tracking-tighter text-slate-900 dark:text-white m-0">Ripristino Cloud</h2>
+                    <button type="button" onclick="document.getElementById('archive-list-modal').classList.remove('active')" class="font-black text-slate-900 dark:text-white text-xl leading-none px-2 py-1" aria-label="Chiudi">X</button>
+                </div>
+                <div class="archive-list-modal-actions">
+                    <button type="button" class="archive-delete-all-btn" onclick="window.eliminaTutto()">Elimina tutti gli archivi</button>
+                    <button type="button" id="btn-archive-cloud-sync" class="archive-cloud-sync-action-btn" onclick="window.forceSyncLocalArchivesToCloud()" title="Invia al cloud gli archivi salvati solo su questo dispositivo" aria-label="Invia archivi locali al cloud">
+                        <span class="archive-cloud-sync-icon" aria-hidden="true">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 12a9 9 0 1 1-3-6.7"></path>
+                                <polyline points="21 3 21 9 15 9"></polyline>
+                            </svg>
+                        </span>
+                        <span class="archive-cloud-sync-label">Invia archivi locali al cloud</span>
                     </button>
                 </div>
-                <div class="flex items-center gap-3 shrink-0">
-                    <button onclick="window.eliminaTutto()" style="background: red; color: white; padding: 6px 12px; border: none; cursor: pointer; font-weight: bold; font-size: 12px; border-radius: 4px; transition: all 0.2s ease; transform: scale(1);" onmousedown="this.style.transform='scale(0.95)'; this.style.background='#dc2626';" onmouseup="this.style.transform='scale(1)'; this.style.background='red';" onmouseleave="this.style.transform='scale(1)'; this.style.background='red';">Elimina tutti gli archivi</button>
-                    <button onclick="document.getElementById('archive-list-modal').classList.remove('active')" class="font-black text-slate-900 dark:text-white">X</button>
-                </div>
-            </div>
-            <div class="p-4">
             </div>
             <div id="archive-list-content" class="overflow-y-auto grow p-4 flex flex-col gap-2 bg-slate-50 dark:bg-slate-950"></div>
         </div>
@@ -32083,8 +32249,10 @@ function getAlarmSiglaThresholdIconState(inputId) {
         ? window.thresholdsForAlarmFieldId(inputId)
         : null;
     return {
-        yellow: window.isAlarmThresholdConfigured(th && th.yellow),
+        yellow: window.isAlarmThresholdConfigured(th && th.yellow)
+            || window.isAlarmThresholdConfigured(th && th.yellowMin),
         red: window.isAlarmThresholdConfigured(th && th.red)
+            || window.isAlarmThresholdConfigured(th && th.redMin)
     };
 }
 
@@ -32333,11 +32501,18 @@ function openTankAlarmEditor(tank, tab) {
         config[normalizedTank] ||
         { red: '', yellow: '', redMin: '', yellowMin: '' };
 
-    // Verifica se è PH SCAM per mostrare soglie minime
-    const isPhScam = tank.inputId === 'ph';
+    // Soglie minime: PH SCAM + TK 9000 / TK 9201 (livello basso)
+    const supportsMinThresholds = typeof window.alarmEditorSupportsMinThresholds === 'function'
+        && window.alarmEditorSupportsMinThresholds(tank.inputId);
+    const yellowMinSub = tank.inputId === 'ph'
+        ? 'Soglia minima pre-allarme'
+        : 'Soglia minima livello — attenzione basso';
+    const redMinSub = tank.inputId === 'ph'
+        ? 'Soglia minima di sicurezza'
+        : 'Soglia minima livello — critico basso';
 
     let additionalFields = '';
-    if (isPhScam) {
+    if (supportsMinThresholds) {
         additionalFields = `
                 <!-- ALLARME ATTENZIONE MINIMO -->
                 <div class="bg-yellow-50 border-2 border-yellow-200 rounded-2xl p-6 shadow-lg">
@@ -32350,7 +32525,7 @@ function openTankAlarmEditor(tank, tab) {
                         </div>
                         <div class="alarm-editor-card-title-row">
                             <h3 class="font-black text-yellow-900 text-lg">Allarme Attenzione</h3>
-                            <span class="alarm-editor-card-sub alarm-editor-card-sub--yellow">Soglia minima pre-allarme</span>
+                            <span class="alarm-editor-card-sub alarm-editor-card-sub--yellow">${escapeHtmlAlarm(yellowMinSub)}</span>
                         </div>
                     </div>
                     <div class="flex items-center gap-4">
@@ -32373,7 +32548,7 @@ function openTankAlarmEditor(tank, tab) {
                         </div>
                         <div class="alarm-editor-card-title-row">
                             <h3 class="font-black text-red-900 text-lg">Allarme Critico</h3>
-                            <span class="alarm-editor-card-sub alarm-editor-card-sub--red">Soglia minima di sicurezza</span>
+                            <span class="alarm-editor-card-sub alarm-editor-card-sub--red">${escapeHtmlAlarm(redMinSub)}</span>
                         </div>
                     </div>
                     <div class="flex items-center gap-4">
@@ -32484,7 +32659,8 @@ window.persistTankAlarmThresholds = async function (inputId, opts) {
     if (yellowVal !== null) alarmData.yellow = yellowVal;
     if (redVal !== null) alarmData.red = redVal;
 
-    if (inputId === 'ph') {
+    if (typeof window.alarmEditorSupportsMinThresholds === 'function'
+        && window.alarmEditorSupportsMinThresholds(inputId)) {
         if (opts.yellowMin !== undefined) {
             const yellowMinVal = window.parseAlarmThresholdInput(opts.yellowMin);
             if (yellowMinVal !== null) alarmData.yellowMin = yellowMinVal;
@@ -32549,11 +32725,14 @@ async function saveTankAlarm(e, tank) {
     const saveBtn = document.getElementById('saveBtn');
     if (!saveBtn) return;
 
+    const supportsMin = typeof window.alarmEditorSupportsMinThresholds === 'function'
+        && window.alarmEditorSupportsMinThresholds(tank.inputId);
+
     await window.persistTankAlarmThresholds(tank.inputId, {
         yellow: document.getElementById('yellowInput')?.value,
         red: document.getElementById('redInput')?.value,
-        yellowMin: tank.inputId === 'ph' ? document.getElementById('yellowMinInput')?.value : undefined,
-        redMin: tank.inputId === 'ph' ? document.getElementById('redMinInput')?.value : undefined
+        yellowMin: supportsMin ? document.getElementById('yellowMinInput')?.value : undefined,
+        redMin: supportsMin ? document.getElementById('redMinInput')?.value : undefined
     });
 
     const original = saveBtn.innerHTML;

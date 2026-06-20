@@ -1,9 +1,9 @@
-﻿// ServiceHub Service Worker - minimal install-only worker
+// ServiceHub Service Worker - minimal install-only worker
 // Necessario perch├® il browser mostri il pulsante "Installa" come PWA.
 // NON facciamo cache offline aggressiva per evitare di servire versioni stantie
 // del index.html: l'app si aggiorna automaticamente a ogni reload.
 
-const CACHE_NAME = 'servicehub-shell-realtime-sync-v2-v346';
+const CACHE_NAME = 'servicehub-shell-realtime-sync-v2-v350';
 
 self.addEventListener('message', (event) => {
   if (event && event.data === 'SKIP_WAITING') self.skipWaiting();

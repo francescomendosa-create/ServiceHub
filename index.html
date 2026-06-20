@@ -52,6 +52,36 @@
             color: #dc2626 !important;
             font-weight: 700 !important;
         }
+        #stoccaggio-panel-notturno input.nott-stocc-inp.tank-warning {
+            color: #f59e0b !important;
+            font-weight: 600 !important;
+        }
+        #stoccaggio-panel-notturno input.nott-stocc-inp.tank-critical {
+            color: #dc2626 !important;
+            font-weight: 700 !important;
+        }
+        .dark #stoccaggio-panel-notturno input.nott-stocc-inp.tank-warning {
+            color: #fbbf24 !important;
+        }
+        .dark #stoccaggio-panel-notturno input.nott-stocc-inp.tank-critical {
+            color: #f87171 !important;
+        }
+        #conducibilita-panel input.cond-tendina-inp.tank-warning,
+        #sec-conducibilita-vertical input.cond-vert-inp.tank-warning,
+        #sec-filtra input#f-cond.tank-warning,
+        #sec-well input#inp-a-cond.tank-warning,
+        #sec-well input#inp-d-cond.tank-warning {
+            color: #f59e0b !important;
+            font-weight: 600 !important;
+        }
+        #conducibilita-panel input.cond-tendina-inp.tank-critical,
+        #sec-conducibilita-vertical input.cond-vert-inp.tank-critical,
+        #sec-filtra input#f-cond.tank-critical,
+        #sec-well input#inp-a-cond.tank-critical,
+        #sec-well input#inp-d-cond.tank-critical {
+            color: #dc2626 !important;
+            font-weight: 700 !important;
+        }
         
         /* Fix per iOS */
         @media screen and (-webkit-min-device-pixel-ratio: 0) {
@@ -591,6 +621,56 @@ window.alarmEditorSupportsMinThresholds = function (inputId) {
     return inputId === 'ph' || inputId === 'inp-tk9000' || inputId === 'inp-tk9201';
 };
 
+/** Chiave config allarmi conducibilità (separata dai livelli mm con stesso field id). */
+window.getConductivityAlarmStorageKey = function (fieldId) {
+    return 'cond:' + String(fieldId || '').toLowerCase();
+};
+
+window.isConductivityAlarmFieldId = function (fieldId) {
+    var shared = window.CONDUCTIVITY_SHARED_FIELD_IDS || [];
+    return shared.indexOf(fieldId) >= 0;
+};
+
+window.isConductivityAlarmInput = function (el) {
+    if (!el || !el.id) return false;
+    if (!window.isConductivityAlarmFieldId(el.id)) return false;
+    if (typeof window.isTankLevelAlarmInput === 'function' && window.isTankLevelAlarmInput(el)) return false;
+    return true;
+};
+
+window.getAlarmStorageKeyForElement = function (el) {
+    if (!el || !el.id) return '';
+    if (typeof window.isConductivityAlarmInput === 'function' && window.isConductivityAlarmInput(el)) {
+        return window.getConductivityAlarmStorageKey(el.id);
+    }
+    return el.id;
+};
+
+window.wireAlarmFieldInputListeners = function () {
+    function handleAlarmFieldInput() {
+        if (typeof window.refreshAlarmVisualForField === 'function') {
+            window.refreshAlarmVisualForField(this);
+        }
+    }
+    document.querySelectorAll('input[type="tel"], input.nott-stocc-inp, input.cond-tendina-inp, input.cond-vert-inp').forEach(function (input) {
+        if (!input || !input.id || input.__shAlarmWired) return;
+        input.__shAlarmWired = true;
+        input.addEventListener('input', handleAlarmFieldInput);
+        input.addEventListener('change', handleAlarmFieldInput);
+    });
+};
+
+window.colorConductivityAlarmInputs = function () {
+    (window.CONDUCTIVITY_SHARED_FIELD_IDS || []).forEach(function (fieldId) {
+        document.querySelectorAll('input[id="' + fieldId + '"]').forEach(function (el) {
+            if (typeof window.isConductivityAlarmInput === 'function' && !window.isConductivityAlarmInput(el)) return;
+            if (typeof window.applyAlarmLevelFillToField === 'function') {
+                window.applyAlarmLevelFillToField(el, true);
+            }
+        });
+    });
+};
+
 window.buildNumpadAlarmDraftFromThresholds = function (th) {
     th = th || {};
     return {
@@ -740,7 +820,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v328';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v329';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -2072,6 +2152,7 @@ window.colorPreviewNumber = function(tankName, value) {
                     localStorage.setItem('alarmConfig', json);
                 } catch (_) {}
                 if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
+                if (typeof window.colorConductivityAlarmInputs === 'function') window.colorConductivityAlarmInputs();
                 if (typeof window.colorScamInputs === 'function') window.colorScamInputs(true);
                 if (typeof window.refreshReportPreview === 'function') window.refreshReportPreview();
             }, function (err) {
@@ -3957,7 +4038,7 @@ window.colorPreviewNumber = function(tankName, value) {
             return zDigits > 1 && intLen > 0 && intLen < zDigits;
         };
 
-        // Funzione per colorare input serbatoi in base al livello (tutte le copie livello: acqua, ambiente, stoccaggio)
+        // Funzione per colorare input serbatoi — ogni copia livello (Acqua, Stoccaggio, Ambiente) col proprio valore
         window.colorTankInput = function (input, forceMin) {
             if (!input || !input.id) return;
 
@@ -3967,39 +4048,25 @@ window.colorPreviewNumber = function(tankName, value) {
                 : [input];
             if (!targets.length) targets = [input];
 
-            var probe = null;
-            for (var i = 0; i < targets.length; i++) {
-                if (String(targets[i].value || '').trim()) {
-                    probe = targets[i];
-                    break;
-                }
-            }
-            if (!probe) probe = input;
-
-            if (!String(probe.value == null ? '' : probe.value).trim()) {
-                targets.forEach(function (el) {
+            targets.forEach(function (el) {
+                if (!String(el.value == null ? '' : el.value).trim()) {
                     window.__clearTankAlarmVisual(el);
                     el.classList.add('tank-normal');
-                });
-                return;
-            }
-
-            var currentValue = typeof window.__parseNumericInputValue === 'function'
-                ? window.__parseNumericInputValue(probe)
-                : parseFloat(String(probe.value).replace(',', '.'));
-            if (isNaN(currentValue)) {
-                targets.forEach(function (el) { window.__clearTankAlarmVisual(el); });
-                return;
-            }
-
-            var state = typeof window.__resolveTankLevelAlarmVisualState === 'function'
-                ? window.__resolveTankLevelAlarmVisualState(fieldId, currentValue, {
-                    forceMin: !!forceMin,
-                    focusEl: document.activeElement && document.activeElement.id === fieldId ? document.activeElement : probe
-                })
-                : 'normal';
-
-            targets.forEach(function (el) {
+                    return;
+                }
+                var currentValue = typeof window.__parseNumericInputValue === 'function'
+                    ? window.__parseNumericInputValue(el)
+                    : parseFloat(String(el.value).replace(',', '.'));
+                if (isNaN(currentValue)) {
+                    window.__clearTankAlarmVisual(el);
+                    return;
+                }
+                var state = typeof window.__resolveTankLevelAlarmVisualState === 'function'
+                    ? window.__resolveTankLevelAlarmVisualState(fieldId, currentValue, {
+                        forceMin: !!forceMin,
+                        focusEl: document.activeElement === el ? el : null
+                    })
+                    : 'normal';
                 window.__applyTankAlarmVisualState(el, state);
             });
         };
@@ -4125,6 +4192,12 @@ window.colorPreviewNumber = function(tankName, value) {
                     window.applyAlarmLevelFillToField(el, true);
                 });
             }
+            if (typeof window.colorConductivityAlarmInputs === 'function') {
+                window.colorConductivityAlarmInputs();
+            }
+            if (typeof window.wireAlarmFieldInputListeners === 'function') {
+                window.wireAlarmFieldInputListeners();
+            }
             if (typeof window.refreshStoccaggioInternoTons === 'function') {
                 window.refreshStoccaggioInternoTons();
             }
@@ -4137,6 +4210,18 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!el || !el.id) return;
             if (['ph', 'cloro', 'reintegro'].includes(el.id)) {
                 if (typeof window.colorScamInputs === 'function') window.colorScamInputs(forceMin);
+                return;
+            }
+            if (typeof window.isConductivityAlarmInput === 'function' && window.isConductivityAlarmInput(el)) {
+                if (typeof window.applyAlarmLevelFillToField === 'function') {
+                    window.applyAlarmLevelFillToField(el, forceMin);
+                }
+                return;
+            }
+            if (typeof window.isTankLevelAlarmInput === 'function' && window.isTankLevelAlarmInput(el)) {
+                if (typeof window.colorTankInput === 'function') {
+                    window.colorTankInput(el, forceMin);
+                }
                 return;
             }
             if (typeof window.colorTankInput === 'function') {
@@ -6992,23 +7077,26 @@ window.updateStoricoButton = async function() {
                     }
                 }
 
-                tankInputIds.forEach(inputId => {
-                    const input = document.getElementById(inputId);
-                    if (!input) return;
-                    input.removeEventListener('input', handleAlarmFieldInput);
-                    input.removeEventListener('change', handleAlarmFieldInput);
-                    input.addEventListener('input', handleAlarmFieldInput);
-                    input.addEventListener('change', handleAlarmFieldInput);
-                });
-
-                document.querySelectorAll('input[type="tel"]').forEach(input => {
-                    if (!input || !input.id) return;
-                    if (tankInputIds.includes(input.id)) return;
-                    input.removeEventListener('input', handleAlarmFieldInput);
-                    input.removeEventListener('change', handleAlarmFieldInput);
-                    input.addEventListener('input', handleAlarmFieldInput);
-                    input.addEventListener('change', handleAlarmFieldInput);
-                });
+                if (typeof window.wireAlarmFieldInputListeners === 'function') {
+                    window.wireAlarmFieldInputListeners();
+                } else {
+                    tankInputIds.forEach(inputId => {
+                        const input = document.getElementById(inputId);
+                        if (!input) return;
+                        input.removeEventListener('input', handleAlarmFieldInput);
+                        input.removeEventListener('change', handleAlarmFieldInput);
+                        input.addEventListener('input', handleAlarmFieldInput);
+                        input.addEventListener('change', handleAlarmFieldInput);
+                    });
+                    document.querySelectorAll('input[type="tel"]').forEach(input => {
+                        if (!input || !input.id) return;
+                        if (tankInputIds.includes(input.id)) return;
+                        input.removeEventListener('input', handleAlarmFieldInput);
+                        input.removeEventListener('change', handleAlarmFieldInput);
+                        input.addEventListener('input', handleAlarmFieldInput);
+                        input.addEventListener('change', handleAlarmFieldInput);
+                    });
+                }
 
                 ['ph', 'cloro', 'reintegro'].forEach(inputId => {
                     const input = document.getElementById(inputId);
@@ -10500,6 +10588,9 @@ window.updateStoricoButton = async function() {
             if (window.colorAllTankInputs) {
                 window.colorAllTankInputs();
             }
+            if (typeof window.colorConductivityAlarmInputs === 'function') {
+                window.colorConductivityAlarmInputs();
+            }
 
             var isArchivePayload = data && (data.archiveTime || (typeof data.createdAt === 'number' && data.time));
             if (isArchivePayload && window.setTankLevelBaselineFromSnapshotData) {
@@ -11119,8 +11210,8 @@ window.updateStoricoButton = async function() {
                 'autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" ' +
                 'data-lpignore="true" data-1p-ignore data-form-type="other" ' +
                 'name="sh-nott-stocc-' + t.fieldId + '" ' +
-                'oninput="window.__plantFieldEditMs=window.__plantFieldEditMs||{};window.__plantFieldEditMs[\'' + t.fieldId + '\']=Date.now();window.recordTankLevelInputTimestamp&&window.recordTankLevelInputTimestamp(this);window.refreshStoccaggioInternoTons(); window.persistNotturnoStoccaggioToRapportino && window.persistNotturnoStoccaggioToRapportino()" ' +
-                'onchange="window.recordTankLevelInputTimestamp&&window.recordTankLevelInputTimestamp(this);window.saveData(); window.persistNotturnoStoccaggioToRapportino && window.persistNotturnoStoccaggioToRapportino()">' +
+                'oninput="window.__plantFieldEditMs=window.__plantFieldEditMs||{};window.__plantFieldEditMs[\'' + t.fieldId + '\']=Date.now();window.recordTankLevelInputTimestamp&&window.recordTankLevelInputTimestamp(this);window.refreshStoccaggioInternoTons();if(typeof window.refreshAlarmVisualForField===\'function\')window.refreshAlarmVisualForField(this);window.persistNotturnoStoccaggioToRapportino && window.persistNotturnoStoccaggioToRapportino()" ' +
+                'onchange="window.recordTankLevelInputTimestamp&&window.recordTankLevelInputTimestamp(this);if(typeof window.refreshAlarmVisualForField===\'function\')window.refreshAlarmVisualForField(this,true);window.saveData(); window.persistNotturnoStoccaggioToRapportino && window.persistNotturnoStoccaggioToRapportino()">' +
                 '</div>' +
                 '<div class="nott-stocc-ton-cell">' +
                 '<span class="nott-stocc-ton-val" id="' + t.fieldId + '-ton" aria-live="polite">—</span>' +
@@ -13333,6 +13424,7 @@ window.updateStoricoButton = async function() {
             });
             window.refreshStoccaggioInternoTons();
             if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
+            if (typeof window.wireAlarmFieldInputListeners === 'function') window.wireAlarmFieldInputListeners();
             if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
         };
         window._rapportiniPendingId = null;
@@ -31821,6 +31913,7 @@ window.convertToHtml = async () => {
 <script>
     window.APP_TABS = [
         { id: 'sec-stoccaggio-interno', name: 'STOCCAGGIO INTERNO' },
+        { id: 'sec-conducibilita', name: 'CONDUCIBILITÀ' },
         { id: 'sec-azoto', name: 'Scheda Azoto' },
         { id: 'sec-acqua', name: 'Scheda Acqua' },
         { id: 'sec-scam', name: 'Scheda Scam' },
@@ -32301,11 +32394,13 @@ function escapeHtmlAlarm(s) {
         .replace(/"/g, '&quot;');
 }
 
-function getAlarmSiglaThresholdIconState(inputId) {
+function getAlarmSiglaThresholdIconState(inputId, alarmStorageKey) {
+    const lookup = alarmStorageKey || inputId;
     const th = typeof window.thresholdsForAlarmFieldId === 'function'
-        ? window.thresholdsForAlarmFieldId(inputId)
+        ? window.thresholdsForAlarmFieldId(lookup)
         : null;
-    const supportsMin = typeof window.alarmEditorSupportsMinThresholds === 'function'
+    const supportsMin = !(alarmStorageKey && String(alarmStorageKey).indexOf('cond:') === 0)
+        && typeof window.alarmEditorSupportsMinThresholds === 'function'
         && window.alarmEditorSupportsMinThresholds(inputId);
     return {
         yellow: window.isAlarmThresholdConfigured(th && th.yellow),
@@ -32339,14 +32434,19 @@ function buildAlarmSiglaThresholdGroup(label, yellowOn, redOn, yellowTitle, redT
     </div>`;
 }
 
-function buildAlarmSiglaThresholdIconsHtml(inputId) {
-    const iconState = getAlarmSiglaThresholdIconState(inputId);
+function buildAlarmSiglaThresholdIconsHtml(inputId, alarmStorageKey) {
+    const iconState = getAlarmSiglaThresholdIconState(inputId, alarmStorageKey);
+    const isCond = alarmStorageKey && String(alarmStorageKey).indexOf('cond:') === 0;
     let html = buildAlarmSiglaThresholdGroup(
-        'A.L',
+        isCond ? 'MAX' : 'A.L',
         iconState.yellow,
         iconState.red,
-        iconState.yellow ? 'Attenzione alto livello impostata' : 'Attenzione alto livello non impostata',
-        iconState.red ? 'Critico alto livello impostato' : 'Critico alto livello non impostato'
+        iconState.yellow
+            ? (isCond ? 'Attenzione conducibilità impostata' : 'Attenzione alto livello impostata')
+            : (isCond ? 'Attenzione conducibilità non impostata' : 'Attenzione alto livello non impostata'),
+        iconState.red
+            ? (isCond ? 'Critico conducibilità impostato' : 'Critico alto livello impostato')
+            : (isCond ? 'Critico conducibilità non impostato' : 'Critico alto livello non impostato')
     );
     if (iconState.supportsMin) {
         html += buildAlarmSiglaThresholdGroup(
@@ -32471,6 +32571,26 @@ function loadTabSignals(tab) {
         return;
     }
 
+    let tanks = [];
+
+    if (tab.id === 'sec-stoccaggio-interno') {
+        if (typeof window.renderStoccaggioInternoPanel === 'function') window.renderStoccaggioInternoPanel();
+        (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
+            tanks.push({ label: t.label, inputId: t.fieldId });
+        });
+    } else if (tab.id === 'sec-conducibilita') {
+        if (typeof window.syncConducibilitaPanel === 'function') window.syncConducibilitaPanel();
+        (window.CONDUCTIVITY_FIELDS_META || []).forEach(function (f) {
+            tanks.push({
+                label: f.label,
+                inputId: f.id,
+                alarmStorageKey: typeof window.getConductivityAlarmStorageKey === 'function'
+                    ? window.getConductivityAlarmStorageKey(f.id)
+                    : ('cond:' + f.id),
+                alarmKind: 'conductivity'
+            });
+        });
+    } else {
     const section = document.getElementById(tab.id);
 
     if (!section) {
@@ -32479,8 +32599,6 @@ function loadTabSignals(tab) {
     }
 
     const inputs = section.querySelectorAll('input, select');
-
-    let tanks = [];
 
     inputs.forEach(el => {
         let id = el.id;
@@ -32544,6 +32662,7 @@ function loadTabSignals(tab) {
             tanks.push(tankData);
         }
     });
+    }
 
     if (!tanks.length) {
         container.innerHTML = 'Nessuna sigla trovata';
@@ -32562,7 +32681,7 @@ function loadTabSignals(tab) {
                 <p class="alarm-scheda-card-title">${escapeHtmlAlarm(tank.label)}</p>
                 <p class="alarm-scheda-card-hint">Tocca per configurare gli allarmi</p>
             </div>
-            ${buildAlarmSiglaThresholdIconsHtml(tank.inputId)}
+            ${buildAlarmSiglaThresholdIconsHtml(tank.inputId, tank.alarmStorageKey)}
         `;
 
         row.onclick = () => openTankAlarmEditor(tank, tab);
@@ -32582,14 +32701,21 @@ function openTankAlarmEditor(tank, tab) {
     if (typeof window.updateSettingsHeaderExportImport === 'function') window.updateSettingsHeaderExportImport(true);
 
     const config = window.getAlarmConfig();
-    const normalizedTank = window.normalizeTankId(tank.inputId);
+    const storageKey = tank.alarmStorageKey || tank.inputId;
+    const isConductivity = tank.alarmKind === 'conductivity'
+        || (storageKey && String(storageKey).indexOf('cond:') === 0);
+    const normalizedTank = isConductivity ? storageKey : window.normalizeTankId(tank.inputId);
     const current =
-        (typeof window.thresholdsForAlarmFieldId === 'function' && window.thresholdsForAlarmFieldId(tank.inputId)) ||
+        (typeof window.thresholdsForAlarmFieldId === 'function' && window.thresholdsForAlarmFieldId(storageKey)) ||
         config[normalizedTank] ||
         { red: '', yellow: '', redMin: '', yellowMin: '' };
 
-    // Soglie minime: PH SCAM + TK 9000 / TK 9201 (livello basso)
-    const supportsMinThresholds = typeof window.alarmEditorSupportsMinThresholds === 'function'
+    const maxRedSub = isConductivity ? 'Soglia massima µS/cm — critico' : 'Soglia massima di sicurezza';
+    const maxYellowSub = isConductivity ? 'Soglia massima µS/cm — attenzione' : 'Soglia di pre-allarme';
+
+    // Soglie minime: PH SCAM + TK 9000 / TK 9201 (livello basso), non conducibilità
+    const supportsMinThresholds = !isConductivity
+        && typeof window.alarmEditorSupportsMinThresholds === 'function'
         && window.alarmEditorSupportsMinThresholds(tank.inputId);
     const yellowMinSub = tank.inputId === 'ph'
         ? 'Soglia minima pre-allarme'
@@ -32670,7 +32796,7 @@ function openTankAlarmEditor(tank, tab) {
                         </div>
                         <div class="alarm-editor-card-title-row">
                             <h3 class="font-black text-red-900 text-lg">Allarme Critico</h3>
-                            <span class="alarm-editor-card-sub alarm-editor-card-sub--red">Soglia massima di sicurezza</span>
+                            <span class="alarm-editor-card-sub alarm-editor-card-sub--red">${escapeHtmlAlarm(maxRedSub)}</span>
                         </div>
                     </div>
                     <div class="flex items-center gap-4">
@@ -32692,7 +32818,7 @@ function openTankAlarmEditor(tank, tab) {
                         </div>
                         <div class="alarm-editor-card-title-row">
                             <h3 class="font-black text-yellow-900 text-lg">Allarme Attenzione</h3>
-                            <span class="alarm-editor-card-sub alarm-editor-card-sub--yellow">Soglia di pre-allarme</span>
+                            <span class="alarm-editor-card-sub alarm-editor-card-sub--yellow">${escapeHtmlAlarm(maxYellowSub)}</span>
                         </div>
                     </div>
                     <div class="flex items-center gap-4">
@@ -32736,9 +32862,13 @@ function openTankAlarmEditor(tank, tab) {
 window.persistTankAlarmThresholds = async function (inputId, opts) {
     if (!inputId) return;
     opts = opts || {};
-    const normalizedTank = window.normalizeTankId(inputId);
+    const isConductivity = !!(opts.alarmStorageKey && String(opts.alarmStorageKey).indexOf('cond:') === 0);
+    const configKey = opts.alarmStorageKey
+        ? opts.alarmStorageKey
+        : window.normalizeTankId(inputId);
     const config = { ...(window.APP_DB.alarms || {}) };
-    const existing = (typeof window.thresholdsForAlarmFieldId === 'function' && window.thresholdsForAlarmFieldId(inputId)) || {};
+    const existing = (typeof window.thresholdsForAlarmFieldId === 'function'
+        && window.thresholdsForAlarmFieldId(configKey)) || {};
     const alarmData = {};
     const yellowVal = window.parseAlarmThresholdInput(opts.yellow);
     const redVal = window.parseAlarmThresholdInput(opts.red);
@@ -32746,7 +32876,7 @@ window.persistTankAlarmThresholds = async function (inputId, opts) {
     if (yellowVal !== null) alarmData.yellow = yellowVal;
     if (redVal !== null) alarmData.red = redVal;
 
-    if (typeof window.alarmEditorSupportsMinThresholds === 'function'
+    if (!isConductivity && typeof window.alarmEditorSupportsMinThresholds === 'function'
         && window.alarmEditorSupportsMinThresholds(inputId)) {
         if (opts.yellowMin !== undefined) {
             const yellowMinVal = window.parseAlarmThresholdInput(opts.yellowMin);
@@ -32763,24 +32893,25 @@ window.persistTankAlarmThresholds = async function (inputId, opts) {
     }
 
     if (window.hasAnyAlarmThreshold(alarmData)) {
-        config[normalizedTank] = alarmData;
+        config[configKey] = alarmData;
     } else {
-        delete config[normalizedTank];
+        delete config[configKey];
     }
 
-    if (/^val[\-_]/i.test(inputId)) {
+    if (!isConductivity && /^val[\-_]/i.test(inputId)) {
         const legacy = inputId
             .replace(/^analisi\-/gi, '')
             .replace(/^inp/gi, '')
             .replace(/^v/gi, '')
             .replace(/[^a-z0-9]/gi, '')
             .toLowerCase();
-        if (legacy && legacy !== normalizedTank) delete config[legacy];
+        if (legacy && legacy !== configKey) delete config[legacy];
     }
 
     await saveAlarmConfig(config);
 
     if (window.colorAllTankInputs) window.colorAllTankInputs();
+    if (typeof window.colorConductivityAlarmInputs === 'function') window.colorConductivityAlarmInputs();
     if (typeof window.colorScamInputs === 'function') window.colorScamInputs(true);
     if (typeof window.refreshReportPreview === 'function') window.refreshReportPreview();
     if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
@@ -32812,10 +32943,12 @@ async function saveTankAlarm(e, tank) {
     const saveBtn = document.getElementById('saveBtn');
     if (!saveBtn) return;
 
-    const supportsMin = typeof window.alarmEditorSupportsMinThresholds === 'function'
+    const supportsMin = tank.alarmKind !== 'conductivity'
+        && typeof window.alarmEditorSupportsMinThresholds === 'function'
         && window.alarmEditorSupportsMinThresholds(tank.inputId);
 
     await window.persistTankAlarmThresholds(tank.inputId, {
+        alarmStorageKey: tank.alarmStorageKey,
         yellow: document.getElementById('yellowInput')?.value,
         red: document.getElementById('redInput')?.value,
         yellowMin: supportsMin ? document.getElementById('yellowMinInput')?.value : undefined,
@@ -33173,10 +33306,13 @@ window.normalizeTankId = function(id) {
         .trim();
 };
 
-/** Soglie allarme per id campo: chiave nuova (normalizeTankId) o legacy (prima "v" su val-...) */
+/** Soglie allarme per id campo o chiave cond:... (conducibilità). */
 window.thresholdsForAlarmFieldId = function (rawId) {
     const cfg = window.getAlarmConfig ? window.getAlarmConfig() : {};
     if (!rawId || !cfg) return null;
+    if (String(rawId).indexOf('cond:') === 0) {
+        return cfg[rawId] || null;
+    }
     const nid = window.normalizeTankId(rawId);
     if (nid && cfg[nid]) return cfg[nid];
     if (/^val[\-_]/i.test(rawId)) {
@@ -33195,7 +33331,10 @@ window.thresholdsForAlarmFieldId = function (rawId) {
  *  forceMin true = ricalcolo completo (sync / uscita campo); altrimenti le soglie MIN si sopprimono solo per prefissi corti mentre digiti. */
 window.applyAlarmLevelFillToField = function (el, forceMin) {
     if (!el || !el.id) return;
-    const th = window.thresholdsForAlarmFieldId(el.id);
+    const storageKey = typeof window.getAlarmStorageKeyForElement === 'function'
+        ? window.getAlarmStorageKeyForElement(el)
+        : el.id;
+    const th = window.thresholdsForAlarmFieldId(storageKey);
     if (!window.hasAnyAlarmThreshold(th)) {
         el.style.backgroundColor = '';
         el.style.background = '';

@@ -616,15 +616,9 @@ window.hasAnyAlarmThreshold = function (th) {
         || window.isAlarmThresholdConfigured(th.yellowMin);
 };
 
-/** True se l'editor allarmi può configurare soglie MIN (B.L). Esclusa solo conducibilità (contesto cond:). */
-window.alarmEditorSupportsMinThresholds = function (inputId, opts) {
-    opts = opts || {};
-    if (!inputId) return false;
-    if (opts.alarmStorageKey && String(opts.alarmStorageKey).indexOf('cond:') === 0) return false;
-    if (opts.alarmKind === 'conductivity') return false;
-    if (opts.element && typeof window.isConductivityAlarmInput === 'function'
-        && window.isConductivityAlarmInput(opts.element)) return false;
-    return true;
+/** True se l'editor allarmi può configurare soglie MIN (B.L) — tutte le sigle, conducibilità inclusa. */
+window.alarmEditorSupportsMinThresholds = function (inputId) {
+    return !!inputId;
 };
 
 /** Etichette editor/numpad: livello serbatoio vs parametro generico. */
@@ -702,19 +696,20 @@ window.buildNumpadAlarmDraftFromThresholds = function (th) {
 
 window.syncNumpadAlarmMinRowsVisibility = function () {
     const targetId = currentNumpadTarget && currentNumpadTarget.id;
-    const show = !!(targetId && window.alarmEditorSupportsMinThresholds(targetId, {
-        element: currentNumpadTarget
-    }));
+    const show = !!(targetId && window.alarmEditorSupportsMinThresholds(targetId));
+    const isCond = currentNumpadTarget && typeof window.isConductivityAlarmInput === 'function'
+        && window.isConductivityAlarmInput(currentNumpadTarget);
     const isTankLevel = typeof window.alarmEditorIsTankLevelField === 'function'
         && window.alarmEditorIsTankLevelField(targetId);
+    const isLevelStyle = isCond || isTankLevel;
     ['numpad-alarm-row-yellow-min', 'numpad-alarm-row-red-min'].forEach(function (id) {
         const row = document.getElementById(id);
         if (row) row.hidden = !show;
     });
     const yLabel = document.getElementById('numpad-alarm-row-yellow-label');
     const rLabel = document.getElementById('numpad-alarm-row-red-label');
-    if (yLabel) yLabel.textContent = isTankLevel ? 'Attenzione livello alto' : 'Allarme attenzione';
-    if (rLabel) rLabel.textContent = isTankLevel ? 'Critico livello alto' : 'Allarme critico';
+    if (yLabel) yLabel.textContent = isLevelStyle ? 'Attenzione alto livello' : 'Allarme attenzione';
+    if (rLabel) rLabel.textContent = isLevelStyle ? 'Critico alto livello' : 'Allarme critico';
 };
 
 // ===============================
@@ -842,7 +837,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v331';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v332';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -7368,8 +7363,11 @@ window.updateStoricoButton = async function() {
 
         window.resetNumpadAlarms = function () {
             if (!currentNumpadTarget || window.__numpadView !== 'alarm') return;
+            const lookupKey = typeof window.getAlarmStorageKeyForElement === 'function'
+                ? window.getAlarmStorageKeyForElement(currentNumpadTarget)
+                : currentNumpadTarget.id;
             const th = typeof window.thresholdsForAlarmFieldId === 'function'
-                ? window.thresholdsForAlarmFieldId(currentNumpadTarget.id)
+                ? window.thresholdsForAlarmFieldId(lookupKey)
                 : null;
             window.__numpadAlarmDraft = typeof window.buildNumpadAlarmDraftFromThresholds === 'function'
                 ? window.buildNumpadAlarmDraftFromThresholds(th)
@@ -7589,8 +7587,11 @@ window.updateStoricoButton = async function() {
                 const display = document.getElementById('numpad-display');
                 window.__numpadSavedDisplayValue = display ? display.value : '';
             }
+            const lookupKey = typeof window.getAlarmStorageKeyForElement === 'function'
+                ? window.getAlarmStorageKeyForElement(currentNumpadTarget)
+                : currentNumpadTarget.id;
             const th = typeof window.thresholdsForAlarmFieldId === 'function'
-                ? window.thresholdsForAlarmFieldId(currentNumpadTarget.id)
+                ? window.thresholdsForAlarmFieldId(lookupKey)
                 : null;
             window.__numpadAlarmDraft = typeof window.buildNumpadAlarmDraftFromThresholds === 'function'
                 ? window.buildNumpadAlarmDraftFromThresholds(th)
@@ -7647,16 +7648,17 @@ window.updateStoricoButton = async function() {
             window.commitNumpadAlarmBufferToDraft();
             const draft = window.__numpadAlarmDraft || { yellow: '', red: '', yellowMin: '', redMin: '' };
             if (typeof window.persistTankAlarmThresholds !== 'function') return false;
+            const lookupKey = typeof window.getAlarmStorageKeyForElement === 'function'
+                ? window.getAlarmStorageKeyForElement(currentNumpadTarget)
+                : currentNumpadTarget.id;
             const saveOpts = {
                 yellow: draft.yellow,
-                red: draft.red
+                red: draft.red,
+                yellowMin: draft.yellowMin,
+                redMin: draft.redMin
             };
-            if (typeof window.alarmEditorSupportsMinThresholds === 'function'
-                && window.alarmEditorSupportsMinThresholds(currentNumpadTarget.id, {
-                    element: currentNumpadTarget
-                })) {
-                saveOpts.yellowMin = draft.yellowMin;
-                saveOpts.redMin = draft.redMin;
+            if (lookupKey && lookupKey !== currentNumpadTarget.id) {
+                saveOpts.alarmStorageKey = lookupKey;
             }
             await window.persistTankAlarmThresholds(currentNumpadTarget.id, saveOpts);
             if (typeof window.refreshNumpadAlarmVisual === 'function') window.refreshNumpadAlarmVisual();
@@ -32467,7 +32469,7 @@ function getAlarmSiglaThresholdIconState(inputId, alarmStorageKey) {
         ? window.thresholdsForAlarmFieldId(lookup)
         : null;
     const supportsMin = typeof window.alarmEditorSupportsMinThresholds === 'function'
-        && window.alarmEditorSupportsMinThresholds(inputId, { alarmStorageKey: alarmStorageKey });
+        && window.alarmEditorSupportsMinThresholds(inputId);
     return {
         yellow: window.isAlarmThresholdConfigured(th && th.yellow),
         red: window.isAlarmThresholdConfigured(th && th.red),
@@ -32503,28 +32505,30 @@ function buildAlarmSiglaThresholdGroup(label, yellowOn, redOn, yellowTitle, redT
 function buildAlarmSiglaThresholdIconsHtml(inputId, alarmStorageKey) {
     const iconState = getAlarmSiglaThresholdIconState(inputId, alarmStorageKey);
     const isCond = alarmStorageKey && String(alarmStorageKey).indexOf('cond:') === 0;
+    const unitHint = isCond ? ' (µS/cm)' : '';
     let html = buildAlarmSiglaThresholdGroup(
-        isCond ? 'MAX' : 'A.L',
+        'A.L',
         iconState.yellow,
         iconState.red,
         iconState.yellow
-            ? (isCond ? 'Attenzione conducibilità impostata' : 'Attenzione alto livello impostata')
-            : (isCond ? 'Attenzione conducibilità non impostata' : 'Attenzione alto livello non impostata'),
+            ? ('Attenzione alto livello impostata' + unitHint)
+            : ('Attenzione alto livello non impostata' + unitHint),
         iconState.red
-            ? (isCond ? 'Critico conducibilità impostato' : 'Critico alto livello impostato')
-            : (isCond ? 'Critico conducibilità non impostato' : 'Critico alto livello non impostato')
+            ? ('Critico alto livello impostato' + unitHint)
+            : ('Critico alto livello non impostato' + unitHint)
     );
-    if (iconState.supportsMin) {
-        html += buildAlarmSiglaThresholdGroup(
-            'B.L',
-            iconState.yellowMin,
-            iconState.redMin,
-            iconState.yellowMin ? 'Attenzione basso livello impostata' : 'Attenzione basso livello non impostata',
-            iconState.redMin ? 'Critico basso livello impostato' : 'Critico basso livello non impostato'
-        );
-    }
-    const dualClass = iconState.supportsMin ? ' alarm-sigla-threshold-icons--dual' : '';
-    return `<div class="alarm-sigla-threshold-icons${dualClass}" aria-hidden="true">${html}</div>`;
+    html += buildAlarmSiglaThresholdGroup(
+        'B.L',
+        iconState.yellowMin,
+        iconState.redMin,
+        iconState.yellowMin
+            ? ('Attenzione basso livello impostata' + unitHint)
+            : ('Attenzione basso livello non impostata' + unitHint),
+        iconState.redMin
+            ? ('Critico basso livello impostato' + unitHint)
+            : ('Critico basso livello non impostato' + unitHint)
+    );
+    return `<div class="alarm-sigla-threshold-icons alarm-sigla-threshold-icons--dual" aria-hidden="true">${html}</div>`;
 }
 
 function formatAlarmThresholdInputValue(val) {
@@ -32776,23 +32780,23 @@ function openTankAlarmEditor(tank, tab) {
         config[normalizedTank] ||
         { red: '', yellow: '', redMin: '', yellowMin: '' };
 
-    const maxRedSub = isConductivity ? 'Soglia massima µS/cm — critico' : 'Soglia massima di sicurezza';
-    const maxYellowSub = isConductivity ? 'Soglia massima µS/cm — attenzione' : 'Soglia di pre-allarme';
+    const maxRedSub = isConductivity ? 'Alto livello µS/cm — critico' : 'Soglia massima di sicurezza';
+    const maxYellowSub = isConductivity ? 'Alto livello µS/cm — attenzione' : 'Soglia di pre-allarme';
 
-    const supportsMinThresholds = !isConductivity
-        && typeof window.alarmEditorSupportsMinThresholds === 'function'
-        && window.alarmEditorSupportsMinThresholds(tank.inputId, {
-            alarmStorageKey: storageKey,
-            alarmKind: tank.alarmKind
-        });
+    const supportsMinThresholds = typeof window.alarmEditorSupportsMinThresholds === 'function'
+        && window.alarmEditorSupportsMinThresholds(tank.inputId);
     const isTankLevelField = typeof window.alarmEditorIsTankLevelField === 'function'
         && window.alarmEditorIsTankLevelField(tank.inputId);
-    const yellowMinSub = tank.inputId === 'ph'
-        ? 'Soglia minima pre-allarme'
-        : (isTankLevelField ? 'Soglia minima livello — attenzione basso' : 'Soglia minima pre-allarme');
-    const redMinSub = tank.inputId === 'ph'
-        ? 'Soglia minima di sicurezza'
-        : (isTankLevelField ? 'Soglia minima livello — critico basso' : 'Soglia minima di sicurezza');
+    const yellowMinSub = isConductivity
+        ? 'Basso livello µS/cm — attenzione'
+        : (tank.inputId === 'ph'
+            ? 'Soglia minima pre-allarme'
+            : (isTankLevelField ? 'Soglia minima livello — attenzione basso' : 'Soglia minima pre-allarme'));
+    const redMinSub = isConductivity
+        ? 'Basso livello µS/cm — critico'
+        : (tank.inputId === 'ph'
+            ? 'Soglia minima di sicurezza'
+            : (isTankLevelField ? 'Soglia minima livello — critico basso' : 'Soglia minima di sicurezza'));
 
     let additionalFields = '';
     if (supportsMinThresholds) {
@@ -32946,8 +32950,8 @@ window.persistTankAlarmThresholds = async function (inputId, opts) {
     if (yellowVal !== null) alarmData.yellow = yellowVal;
     if (redVal !== null) alarmData.red = redVal;
 
-    if (!isConductivity && typeof window.alarmEditorSupportsMinThresholds === 'function'
-        && window.alarmEditorSupportsMinThresholds(inputId, { alarmStorageKey: opts.alarmStorageKey })) {
+    if (typeof window.alarmEditorSupportsMinThresholds === 'function'
+        && window.alarmEditorSupportsMinThresholds(inputId)) {
         if (opts.yellowMin !== undefined) {
             const yellowMinVal = window.parseAlarmThresholdInput(opts.yellowMin);
             if (yellowMinVal !== null) alarmData.yellowMin = yellowMinVal;
@@ -33013,12 +33017,8 @@ async function saveTankAlarm(e, tank) {
     const saveBtn = document.getElementById('saveBtn');
     if (!saveBtn) return;
 
-    const supportsMin = tank.alarmKind !== 'conductivity'
-        && typeof window.alarmEditorSupportsMinThresholds === 'function'
-        && window.alarmEditorSupportsMinThresholds(tank.inputId, {
-            alarmStorageKey: tank.alarmStorageKey,
-            alarmKind: tank.alarmKind
-        });
+    const supportsMin = typeof window.alarmEditorSupportsMinThresholds === 'function'
+        && window.alarmEditorSupportsMinThresholds(tank.inputId);
 
     await window.persistTankAlarmThresholds(tank.inputId, {
         alarmStorageKey: tank.alarmStorageKey,

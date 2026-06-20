@@ -687,7 +687,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v321';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v322';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -5017,6 +5017,149 @@ window.colorPreviewNumber = function(tankName, value) {
                 }
             } finally {
                 window.__pendingArchiveUploadBusy = false;
+            }
+        };
+
+        window.__archiveCloudForceSyncBusy = false;
+
+        window.__setArchiveCloudSyncBtnState = function (state) {
+            const btn = document.getElementById('btn-archive-cloud-sync');
+            if (!btn) return;
+            btn.disabled = state === 'loading';
+            btn.classList.toggle('archive-cloud-sync-btn--spinning', state === 'loading');
+            btn.setAttribute('aria-busy', state === 'loading' ? 'true' : 'false');
+        };
+
+        /** Forza invio archivi LOCALE → cloud (altri dispositivi). */
+        window.forceSyncLocalArchivesToCloud = async function (opts) {
+            opts = opts || {};
+            if (window.__archiveCloudForceSyncBusy) return { ok: false, reason: 'busy' };
+
+            const toast = function (msg, isErr, kind) {
+                if (typeof window.__serviceHubFlashToast === 'function') {
+                    window.__serviceHubFlashToast(msg, !!isErr, kind);
+                }
+            };
+
+            if (!user || !user.uid || !db) {
+                toast('Cloud non connesso (LED rosso). Impossibile inviare agli altri dispositivi.', true, 'warn');
+                return { ok: false, reason: 'offline' };
+            }
+            if (window.__firestoreQuotaBlocked) {
+                if (typeof window.__showPlantCloudSyncBanner === 'function') {
+                    window.__showPlantCloudSyncBanner('Quota Firestore superata: invio archivi sospeso.');
+                }
+                toast('Quota Firestore superata. Invio archivi sospeso.', true, 'warn');
+                return { ok: false, reason: 'quota' };
+            }
+
+            window.__archiveCloudForceSyncBusy = true;
+            window.__setArchiveCloudSyncBtnState('loading');
+
+            let uploaded = 0;
+            let failed = 0;
+
+            try {
+                if (typeof window.__flushPendingArchiveCloudUploads === 'function') {
+                    await window.__flushPendingArchiveCloudUploads();
+                }
+
+                const cloudKeys = {};
+                const archiveRef = collection(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots');
+                const querySnapshot = await window.__archiveFirestoreOp(
+                    getDocs(query(archiveRef, limit(50))),
+                    'lettura archivi cloud'
+                );
+                querySnapshot.forEach(function (docSnap) {
+                    const d = docSnap.data();
+                    if (d && d.createdAt != null) cloudKeys[String(d.createdAt)] = true;
+                });
+
+                let localArchives = [];
+                try {
+                    localArchives = JSON.parse(localStorage.getItem('stabileArchives') || '[]');
+                    if (!Array.isArray(localArchives)) localArchives = [];
+                } catch (_) {
+                    localArchives = [];
+                }
+
+                for (let i = 0; i < localArchives.length; i++) {
+                    const raw = localArchives[i];
+                    if (!raw || raw.createdAt == null) continue;
+                    const key = String(raw.createdAt);
+                    if (cloudKeys[key]) continue;
+
+                    const payload = Object.assign({}, raw);
+                    delete payload.__localSavedAt;
+                    delete payload.__cloudDocId;
+
+                    try {
+                        await window.__uploadArchiveSnapshotToCloud(payload, { maxAttempts: 3 });
+                        if (typeof window.__removePendingArchiveUpload === 'function') {
+                            window.__removePendingArchiveUpload(raw.createdAt);
+                        }
+                        cloudKeys[key] = true;
+                        uploaded++;
+                    } catch (e) {
+                        console.warn('[ServiceHub] forceSyncLocalArchivesToCloud:', raw.createdAt, e && e.message);
+                        failed++;
+                        if (window.__isFirestoreQuotaError && window.__isFirestoreQuotaError(e)) {
+                            if (typeof window.__onFirestoreQuotaExceeded === 'function') {
+                                window.__onFirestoreQuotaExceeded();
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                if (typeof window.syncBackupHistory === 'function') {
+                    await window.syncBackupHistory();
+                }
+                if (typeof window.refreshTankLevelBaselineFromSavedHistory === 'function') {
+                    window.refreshTankLevelBaselineFromSavedHistory();
+                }
+                if (typeof window.refreshAllTankLevelArrows === 'function') {
+                    window.refreshAllTankLevelArrows();
+                }
+                if (typeof window.updateStoricoButton === 'function') {
+                    await window.updateStoricoButton();
+                }
+
+                const modal = document.getElementById('archive-list-modal');
+                if (!opts.skipRefreshList && modal && modal.classList.contains('active')) {
+                    window.archiveListLocked = false;
+                    await window.openArchiveList();
+                }
+
+                const pendingLeft = typeof window.__readPendingArchiveUploads === 'function'
+                    ? window.__readPendingArchiveUploads().length : 0;
+
+                if (uploaded > 0 && failed === 0) {
+                    toast(
+                        uploaded === 1
+                            ? '1 archivio inviato al cloud — visibile sugli altri dispositivi.'
+                            : uploaded + ' archivi inviati al cloud — visibili sugli altri dispositivi.',
+                        false,
+                        'ok'
+                    );
+                } else if (uploaded > 0) {
+                    toast(uploaded + ' inviati, ' + failed + ' falliti. Controlla rete e riprova.', false, 'warn');
+                } else if (failed > 0) {
+                    toast('Invio fallito. Controlla rete e LED verde, poi riprova.', true, 'warn');
+                } else if (pendingLeft > 0) {
+                    toast('Restano ' + pendingLeft + ' archivi in coda locale. Riprova tra poco.', false, 'warn');
+                } else {
+                    toast('Nessun archivio locale da inviare — tutto già sul cloud.', false, 'ok');
+                }
+
+                return { ok: true, uploaded: uploaded, failed: failed };
+            } catch (e) {
+                console.error('[ServiceHub] forceSyncLocalArchivesToCloud:', e);
+                toast('Errore invio cloud: ' + ((e && e.message) || 'rete'), true, 'warn');
+                return { ok: false, reason: 'error', error: e };
+            } finally {
+                window.__archiveCloudForceSyncBusy = false;
+                window.__setArchiveCloudSyncBtnState('idle');
             }
         };
 
@@ -28593,6 +28736,43 @@ window.convertToHtml = async () => {
         #archive-list-modal { align-items: flex-end; justify-content: stretch; }
         #archive-list-modal { z-index: 10120; }
         #archive-list-modal.active { background: rgba(0,0,0,0.75); backdrop-filter: blur(5px); visibility: visible; pointer-events: auto; }
+        .archive-cloud-sync-btn {
+            width: 36px;
+            height: 36px;
+            border-radius: 9999px;
+            border: 2px solid #2563eb;
+            background: #eff6ff;
+            color: #1d4ed8;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            cursor: pointer;
+            transition: transform 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+            box-shadow: 0 2px 6px rgba(37, 99, 235, 0.25);
+        }
+        .dark .archive-cloud-sync-btn {
+            background: #1e3a8a;
+            border-color: #3b82f6;
+            color: #dbeafe;
+        }
+        .archive-cloud-sync-btn:hover:not(:disabled) {
+            transform: scale(1.06);
+            background: #dbeafe;
+        }
+        .archive-cloud-sync-btn:active:not(:disabled) {
+            transform: scale(0.94);
+        }
+        .archive-cloud-sync-btn:disabled {
+            opacity: 0.65;
+            cursor: wait;
+        }
+        .archive-cloud-sync-btn--spinning svg {
+            animation: archive-cloud-sync-spin 0.85s linear infinite;
+        }
+        @keyframes archive-cloud-sync-spin {
+            to { transform: rotate(360deg); }
+        }
         .settings-sheet {
             transform: translateY(-100%);
             width: 100%;
@@ -31101,10 +31281,18 @@ window.convertToHtml = async () => {
 
     <div id="archive-list-modal" class="modal-overlay" onclick="if(event.target === this) this.classList.remove('active')">
         <div class="management-sheet" onclick="event.stopPropagation()">
-            <div class="px-8 py-6 flex justify-between items-center border-b border-slate-100 dark:border-slate-800">
-                <h2 class="font-black italic text-lg uppercase tracking-tighter text-slate-900 dark:text-white">Ripristino Cloud</h2>
-                <div class="flex items-center gap-16">
-                    <button onclick="window.eliminaTutto()" style="background: red; color: white; padding: 6px 12px; border: none; cursor: pointer; font-weight: bold; font-size: 12px; border-radius: 4px; margin-right: 24px; transition: all 0.2s ease; transform: scale(1);" onmousedown="this.style.transform='scale(0.95)'; this.style.background='#dc2626';" onmouseup="this.style.transform='scale(1)'; this.style.background='red';" onmouseleave="this.style.transform='scale(1)'; this.style.background='red';">Elimina tutti gli archivi</button>
+            <div class="px-8 py-6 flex justify-between items-center gap-3 border-b border-slate-100 dark:border-slate-800">
+                <div class="flex items-center gap-3 min-w-0">
+                    <h2 class="font-black italic text-lg uppercase tracking-tighter text-slate-900 dark:text-white shrink-0">Ripristino Cloud</h2>
+                    <button type="button" id="btn-archive-cloud-sync" class="archive-cloud-sync-btn" onclick="window.forceSyncLocalArchivesToCloud()" title="Invia archivi locali al cloud (altri dispositivi)" aria-label="Invia archivi locali al cloud">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M21 12a9 9 0 1 1-3-6.7"></path>
+                            <polyline points="21 3 21 9 15 9"></polyline>
+                        </svg>
+                    </button>
+                </div>
+                <div class="flex items-center gap-3 shrink-0">
+                    <button onclick="window.eliminaTutto()" style="background: red; color: white; padding: 6px 12px; border: none; cursor: pointer; font-weight: bold; font-size: 12px; border-radius: 4px; transition: all 0.2s ease; transform: scale(1);" onmousedown="this.style.transform='scale(0.95)'; this.style.background='#dc2626';" onmouseup="this.style.transform='scale(1)'; this.style.background='red';" onmouseleave="this.style.transform='scale(1)'; this.style.background='red';">Elimina tutti gli archivi</button>
                     <button onclick="document.getElementById('archive-list-modal').classList.remove('active')" class="font-black text-slate-900 dark:text-white">X</button>
                 </div>
             </div>

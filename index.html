@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v346';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v347';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -12562,13 +12562,20 @@ window.updateStoricoButton = async function() {
                 ? window.resolveTankCurrentLevelTs(info.fieldId, series, info) : null;
             var currentMm = Number.isFinite(info.levelMm) ? info.levelMm
                 : (series.length ? series[series.length - 1].mm : NaN);
-            var manualRef = info.manualRefPt
-                || (info.fieldId && typeof window.loadTankTimelineManualRef === 'function'
-                    ? window.loadTankTimelineManualRef(info.fieldId) : null);
-            if (manualRef && Number.isFinite(currentTs) && Number.isFinite(currentMm)) {
-                var dtRefH = (currentTs - manualRef.ts) / 3600000;
-                if (dtRefH >= 0.08 && Number.isFinite(manualRef.mm)) {
-                    return (currentMm - manualRef.mm) / dtRefH;
+            var manualRefs = info.manualRefPts
+                || (info.fieldId && typeof window.loadTankTimelineManualRefs === 'function'
+                    ? window.loadTankTimelineManualRefs(info.fieldId) : []);
+            if (!manualRefs.length && info.manualRefPt) manualRefs = [info.manualRefPt];
+            if (manualRefs.length && Number.isFinite(currentTs) && Number.isFinite(currentMm)) {
+                var lastRef = null;
+                manualRefs.forEach(function (r) {
+                    if (r && Number.isFinite(r.ts) && Number.isFinite(r.mm) && r.ts <= currentTs + 60000) {
+                        if (!lastRef || r.ts >= lastRef.ts) lastRef = r;
+                    }
+                });
+                if (lastRef) {
+                    var dtRefH = (currentTs - lastRef.ts) / 3600000;
+                    if (dtRefH >= 0.08) return (currentMm - lastRef.mm) / dtRefH;
                 }
             }
             if (initial && Number.isFinite(currentTs) && Number.isFinite(currentMm)) {
@@ -12636,14 +12643,14 @@ window.updateStoricoButton = async function() {
             if (!initialPt && typeof window.getTankTimelineInitialPoint === 'function') {
                 initialPt = window.getTankTimelineInitialPoint(series);
             }
-            var manualRefPt = info.manualRefPt
-                || (info.fieldId && typeof window.loadTankTimelineManualRef === 'function'
-                    ? window.loadTankTimelineManualRef(info.fieldId) : null);
-            if (manualRefPt && Number.isFinite(manualRefPt.ts) && Number.isFinite(manualRefPt.mm)) {
-                info.manualRefPt = manualRefPt;
-            } else {
-                manualRefPt = null;
-            }
+            var manualRefPts = info.manualRefPts
+                || (info.fieldId && typeof window.loadTankTimelineManualRefs === 'function'
+                    ? window.loadTankTimelineManualRefs(info.fieldId) : []);
+            if (!manualRefPts.length && info.manualRefPt) manualRefPts = [info.manualRefPt];
+            manualRefPts = (manualRefPts || []).filter(function (r) {
+                return r && Number.isFinite(r.ts) && Number.isFinite(r.mm);
+            }).slice().sort(function (a, b) { return a.ts - b.ts; });
+            info.manualRefPts = manualRefPts;
             var tStart = initialPt ? initialPt.ts
                 : (series.length ? series[0].ts : nowTs - 3600000);
             var predH = predictH || window.TANK_TIMELINE_PREDICT_HOURS_DEFAULT || 12;
@@ -12659,7 +12666,7 @@ window.updateStoricoButton = async function() {
                 actualTs: actualTs,
                 nowMm: nowMm,
                 initialPt: initialPt,
-                manualRefPt: manualRefPt,
+                manualRefPts: manualRefPts,
                 tStart: tStart,
                 tEnd: tEnd,
                 predictH: predH,
@@ -12696,23 +12703,42 @@ window.updateStoricoButton = async function() {
             return '+' + String(hrs).replace('.', ',') + ' h';
         };
 
-        window.loadTankTimelineManualRef = function (fieldId) {
-            if (!fieldId) return null;
+        window.loadTankTimelineManualRefs = function (fieldId) {
+            if (!fieldId) return [];
             try {
                 var raw = localStorage.getItem('sh-tl-manual-ref:' + fieldId);
-                if (!raw) return null;
-                var o = JSON.parse(raw);
-                if (!o || !Number.isFinite(o.ts) || !Number.isFinite(o.mm)) return null;
-                return { ts: o.ts, mm: o.mm, label: 'Riferimento', manualRef: true };
+                if (!raw) return [];
+                var parsed = JSON.parse(raw);
+                var list = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);
+                return list.filter(function (o) {
+                    return o && Number.isFinite(o.ts) && Number.isFinite(o.mm);
+                }).map(function (o) {
+                    return { ts: o.ts, mm: o.mm, label: 'Riferimento', manualRef: true };
+                }).sort(function (a, b) { return a.ts - b.ts; });
             } catch (_) {
-                return null;
+                return [];
             }
+        };
+
+        window.loadTankTimelineManualRef = function (fieldId) {
+            var refs = window.loadTankTimelineManualRefs(fieldId);
+            return refs.length ? refs[refs.length - 1] : null;
         };
 
         window.saveTankTimelineManualRef = function (fieldId, pt) {
             if (!fieldId || !pt || !Number.isFinite(pt.ts) || !Number.isFinite(pt.mm)) return;
             try {
-                localStorage.setItem('sh-tl-manual-ref:' + fieldId, JSON.stringify({ ts: pt.ts, mm: pt.mm }));
+                var refs = window.loadTankTimelineManualRefs(fieldId);
+                var dupIdx = refs.findIndex(function (r) {
+                    return Math.abs(r.ts - pt.ts) < 60000;
+                });
+                var entry = { ts: pt.ts, mm: pt.mm, label: 'Riferimento', manualRef: true };
+                if (dupIdx >= 0) refs[dupIdx] = entry;
+                else refs.push(entry);
+                refs.sort(function (a, b) { return a.ts - b.ts; });
+                localStorage.setItem('sh-tl-manual-ref:' + fieldId, JSON.stringify(refs.map(function (r) {
+                    return { ts: r.ts, mm: r.mm };
+                })));
             } catch (_) {}
         };
 
@@ -12739,23 +12765,87 @@ window.updateStoricoButton = async function() {
         };
 
         window.augmentTankTrendSeriesWithManualRef = function (series, fieldId) {
-            var ref = fieldId && typeof window.loadTankTimelineManualRef === 'function'
-                ? window.loadTankTimelineManualRef(fieldId) : null;
-            if (!ref) return series || [];
+            var refs = fieldId && typeof window.loadTankTimelineManualRefs === 'function'
+                ? window.loadTankTimelineManualRefs(fieldId) : [];
+            if (!refs.length) return series || [];
             var out = (series || []).slice();
-            var dup = out.some(function (p) {
-                return Math.abs(p.ts - ref.ts) < 60000 && Math.abs(p.mm - ref.mm) < 0.5;
-            });
-            if (!dup) {
-                out.push({
-                    ts: ref.ts,
-                    mm: ref.mm,
-                    label: 'Riferimento',
-                    manualRef: true
+            refs.forEach(function (ref) {
+                var dup = out.some(function (p) {
+                    return Math.abs(p.ts - ref.ts) < 60000 && Math.abs(p.mm - ref.mm) < 0.5;
                 });
-            }
+                if (!dup) {
+                    out.push({
+                        ts: ref.ts,
+                        mm: ref.mm,
+                        label: 'Riferimento',
+                        manualRef: true
+                    });
+                }
+            });
             out.sort(function (a, b) { return a.ts - b.ts; });
             return out;
+        };
+
+        window.suggestTankTimelineRefMmAtTs = function (model, ts) {
+            if (!model || !Number.isFinite(ts)) return NaN;
+            var pts = [];
+            if (model.initialPt && Number.isFinite(model.initialPt.ts) && Number.isFinite(model.initialPt.mm)) {
+                pts.push({ ts: model.initialPt.ts, mm: model.initialPt.mm });
+            }
+            (model.manualRefPts || []).forEach(function (r) {
+                if (r && Number.isFinite(r.ts) && Number.isFinite(r.mm)) pts.push({ ts: r.ts, mm: r.mm });
+            });
+            if (Number.isFinite(model.nowTs) && Number.isFinite(model.nowMm)) {
+                pts.push({ ts: model.nowTs, mm: model.nowMm });
+            }
+            pts.sort(function (a, b) { return a.ts - b.ts; });
+            if (!pts.length) return model.nowMm;
+            if (ts <= pts[0].ts) return pts[0].mm;
+            if (ts >= pts[pts.length - 1].ts) return pts[pts.length - 1].mm;
+            for (var i = 0; i < pts.length - 1; i++) {
+                var a = pts[i];
+                var b = pts[i + 1];
+                if (ts >= a.ts && ts <= b.ts) {
+                    var frac = (b.ts - a.ts) > 0 ? (ts - a.ts) / (b.ts - a.ts) : 0;
+                    return a.mm + frac * (b.mm - a.mm);
+                }
+            }
+            return model.nowMm;
+        };
+
+        window.syncTankTimelineSavedRefLabels = function (block, model) {
+            if (!block || !model) return;
+            var svg = block.querySelector('[data-tl-svg]');
+            var geom = svg && svg.__tlGeom;
+            var metricsHost = block.querySelector('[data-tl-refs-metrics]');
+            var timesHost = block.querySelector('[data-tl-refs-times]');
+            if (!metricsHost || !timesHost) return;
+            var refs = (model.manualRefPts || []).slice().sort(function (a, b) { return a.ts - b.ts; });
+            var isDraft = block.__tlRefDraftTs != null && Number.isFinite(block.__tlRefDraftTs);
+            metricsHost.innerHTML = '';
+            timesHost.innerHTML = '';
+            if (!refs.length || isDraft || !geom) return;
+            refs.forEach(function (ref, idx) {
+                var refX = geom.toXHist ? geom.toXHist(ref.ts) : geom.nowX;
+                var leftPct = window.timelineFloatLeftPct(geom, refX).toFixed(2) + '%';
+                var lbl = refs.length > 1 ? 'Riferimento ' + (idx + 1) : 'Riferimento';
+                metricsHost.insertAdjacentHTML('beforeend',
+                    '<div class="tank-detail-timeline-float tank-detail-timeline-float--ref" style="left:' + leftPct + '">' +
+                    '<div class="tank-detail-timeline-metric-lbl tank-detail-timeline-metric-lbl--ref">' + lbl + '</div>' +
+                    '<div class="tank-detail-timeline-metric-mm tank-detail-timeline-ref-mm">' +
+                    window.__fmtTankDetailMm(ref.mm) + ' mm</div></div>');
+                timesHost.insertAdjacentHTML('beforeend',
+                    '<div class="tank-detail-timeline-time-slot tank-detail-timeline-time-slot--ref" style="left:' + leftPct + '">' +
+                    '<span>' + window.formatTankTimelineClock(ref.ts) + '</span></div>');
+                var mmEl = metricsHost.lastElementChild && metricsHost.lastElementChild.querySelector('.tank-detail-timeline-ref-mm');
+                var fieldId = block.__tlInfo && block.__tlInfo.fieldId;
+                if (mmEl && fieldId) {
+                    window.applyTankTimelineAlarmMetricClass(mmEl, window.resolveTankLevelAlarmState(fieldId, ref.mm, {
+                        tankDbKey: model.tankDbKey,
+                        livMax: model.livMax
+                    }));
+                }
+            });
         };
 
         window.ensureTankTimelineRefModal = function () {
@@ -12842,36 +12932,15 @@ window.updateStoricoButton = async function() {
             var geom = svg && svg.__tlGeom;
             var model = svg && svg.__tlModel;
             var draftEl = block.querySelector('[data-tl-ref-draft]');
-            var refMetric = block.querySelector('[data-tl-metric-ref]');
-            var refTime = block.querySelector('[data-tl-time-ref]');
             var clockBtn = block.querySelector('[data-tl-ref-clock]');
-            var manualRef = model && model.manualRefPt;
             var isDraft = draftTs != null && Number.isFinite(draftTs);
             block.classList.toggle('tank-detail-timeline-block--ref-draft', isDraft);
             if (draftEl) draftEl.style.display = isDraft ? '' : 'none';
-            if (refMetric) refMetric.style.display = (!isDraft && manualRef) ? '' : 'none';
-            if (refTime) refTime.style.display = (!isDraft && manualRef) ? '' : 'none';
             if (isDraft && geom && clockBtn) {
                 var x = geom.toXHist ? geom.toXHist(draftTs) : geom.nowX;
                 var leftPct = window.timelineFloatLeftPct(geom, x).toFixed(2) + '%';
                 draftEl.style.left = leftPct;
                 clockBtn.textContent = window.formatTankTimelineClock(draftTs);
-            }
-            if (!isDraft && manualRef && geom) {
-                var refX = geom.toXHist(manualRef.ts);
-                var refLeft = window.timelineFloatLeftPct(geom, refX).toFixed(2) + '%';
-                if (refMetric) refMetric.style.left = refLeft;
-                if (refTime) refTime.style.left = refLeft;
-                var refMmEl = block.querySelector('[data-tl-ref-mm]');
-                var refTimeTxt = block.querySelector('[data-tl-ref-time]');
-                if (refMmEl) refMmEl.textContent = window.__fmtTankDetailMm(manualRef.mm) + ' mm';
-                if (refTimeTxt) refTimeTxt.textContent = window.formatTankTimelineClock(manualRef.ts);
-                var fieldId = block.__tlInfo && block.__tlInfo.fieldId;
-                window.applyTankTimelineAlarmMetricClass(refMmEl, fieldId
-                    ? window.resolveTankLevelAlarmState(fieldId, manualRef.mm, {
-                        tankDbKey: model.tankDbKey,
-                        livMax: model.livMax
-                    }) : 'normal');
             }
             if (svg) {
                 var refScrub = svg.querySelector('[data-tl-ref-scrub]');
@@ -12904,6 +12973,7 @@ window.updateStoricoButton = async function() {
                     });
                 }
             }
+            window.syncTankTimelineSavedRefLabels(block, model);
         };
 
         window.cancelTankTimelineRefDraft = function (block) {
@@ -12926,8 +12996,8 @@ window.updateStoricoButton = async function() {
             var svg = block.querySelector('[data-tl-svg]');
             var h = block.__tlPredictH || window.TANK_TIMELINE_PREDICT_HOURS_DEFAULT || 12;
             var fieldId = block.__tlInfo && block.__tlInfo.fieldId;
-            var manualRef = fieldId ? window.loadTankTimelineManualRef(fieldId) : null;
-            if (block.__tlInfo) block.__tlInfo.manualRefPt = manualRef;
+            var manualRefs = fieldId ? window.loadTankTimelineManualRefs(fieldId) : [];
+            if (block.__tlInfo) block.__tlInfo.manualRefPts = manualRefs;
             block.__tlRefDraftTs = null;
             var prevH = block.__tlHoursAhead || 0;
             var model = window.buildTankTimelineModel(block.__tlSeries, block.__tlInfo, h);
@@ -12991,10 +13061,7 @@ window.updateStoricoButton = async function() {
                 '<div class="tank-detail-timeline-metric-lbl">Posiziona riferimento</div>' +
                 '<button type="button" class="tank-detail-timeline-ref-clock" data-tl-ref-clock title="Conferma ora e inserisci livello">--:--</button>' +
                 '</div>' +
-                '<div class="tank-detail-timeline-float tank-detail-timeline-float--ref" data-tl-metric-ref style="display:none;left:30%">' +
-                '<div class="tank-detail-timeline-metric-lbl tank-detail-timeline-metric-lbl--ref">Riferimento</div>' +
-                '<div class="tank-detail-timeline-metric-mm tank-detail-timeline-ref-mm" data-tl-ref-mm>— mm</div>' +
-                '</div>' +
+                '<div class="tank-detail-timeline-saved-refs" data-tl-refs-metrics></div>' +
                 '<div class="tank-detail-timeline-float tank-detail-timeline-float--pred" data-tl-metric-pred style="left:50%">' +
                 '<div class="tank-detail-timeline-metric-lbl tank-detail-timeline-metric-lbl--pred">Previsione</div>' +
                 '<div class="tank-detail-timeline-metric-mm tank-detail-timeline-pred-mm" data-tl-pred-mm>' + window.__fmtTankDetailMm(model.nowMm) + ' mm</div>' +
@@ -13002,8 +13069,7 @@ window.updateStoricoButton = async function() {
                 '<div class="tank-detail-timeline-times-row">' +
                 '<div class="tank-detail-timeline-time-slot tank-detail-timeline-time-slot--start" data-tl-time-start style="left:4%">' +
                 '<span data-tl-start-time>' + window.formatTankTimelineClock(startPt.ts) + '</span></div>' +
-                '<div class="tank-detail-timeline-time-slot tank-detail-timeline-time-slot--ref" data-tl-time-ref style="display:none;left:30%">' +
-                '<span data-tl-ref-time>--:--</span></div>' +
+                '<div class="tank-detail-timeline-saved-ref-times" data-tl-refs-times></div>' +
                 '<div class="tank-detail-timeline-time-slot tank-detail-timeline-time-slot--pred" data-tl-time-pred style="left:50%">' +
                 '<span data-tl-pred-time>' + window.formatTankTimelineClock(model.nowTs) + '</span></div>' +
                 '</div></div>' +
@@ -13019,7 +13085,7 @@ window.updateStoricoButton = async function() {
                 '<div class="tank-detail-timeline-legend">' +
                 '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--hist">■ Storico / adesso</span>' +
                 '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--pred">■ Zona previsione</span>' +
-                '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--ref">○ Riferimento manuale</span>' +
+                '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--ref">○ Riferimenti manuali</span>' +
                 '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--alarm-warn">■ Allarme giallo</span>' +
                 '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--alarm-crit">■ Allarme rosso</span>' +
                 '</div></div>';
@@ -13032,9 +13098,11 @@ window.updateStoricoButton = async function() {
             if (startPt && Number.isFinite(startPt.ts)) {
                 pts.push({ x: toXHist(startPt.ts), y: lineY, p: startPt, kind: 'start' });
             }
-            if (model.manualRefPt && Number.isFinite(model.manualRefPt.ts)) {
-                pts.push({ x: toXHist(model.manualRefPt.ts), y: lineY, p: model.manualRefPt, kind: 'ref' });
-            }
+            (model.manualRefPts || []).forEach(function (ref) {
+                if (ref && Number.isFinite(ref.ts)) {
+                    pts.push({ x: toXHist(ref.ts), y: lineY, p: ref, kind: 'ref' });
+                }
+            });
             return pts;
         };
 
@@ -13055,20 +13123,19 @@ window.updateStoricoButton = async function() {
             var startPt = model.initialPt
                 || (model.series && model.series.length ? model.series[0] : null);
             var startX = startPt && Number.isFinite(startPt.ts) ? toXHist(startPt.ts) : pad.l;
-            var refPt = model.manualRefPt;
-            var refX = refPt && Number.isFinite(refPt.ts) ? toXHist(refPt.ts) : null;
             var histPts = typeof window.buildTankTimelineHistPts === 'function'
                 ? window.buildTankTimelineHistPts(model, toXHist, lineY, nowX)
                 : [];
-            var histPath;
-            if (refX != null && refX > startX + 1 && refX < nowX - 1) {
-                histPath = 'M' + startX.toFixed(1) + ',' + lineY.toFixed(1) +
-                    ' L' + refX.toFixed(1) + ',' + lineY.toFixed(1) +
-                    ' L' + nowX.toFixed(1) + ',' + lineY.toFixed(1);
-            } else {
-                histPath = 'M' + startX.toFixed(1) + ',' + lineY.toFixed(1) +
-                    ' L' + nowX.toFixed(1) + ',' + lineY.toFixed(1);
-            }
+            var histPathXs = [startX];
+            (model.manualRefPts || []).slice().sort(function (a, b) { return a.ts - b.ts; }).forEach(function (ref) {
+                if (!ref || !Number.isFinite(ref.ts)) return;
+                var rx = toXHist(ref.ts);
+                if (rx > histPathXs[histPathXs.length - 1] + 1 && rx < nowX - 1) histPathXs.push(rx);
+            });
+            if (nowX > histPathXs[histPathXs.length - 1] + 0.5) histPathXs.push(nowX);
+            var histPath = histPathXs.map(function (x, i) {
+                return (i === 0 ? 'M' : ' L') + x.toFixed(1) + ',' + lineY.toFixed(1);
+            }).join('');
             var predPath = 'M' + nowX.toFixed(1) + ',' + lineY.toFixed(1) +
                 ' L' + endX.toFixed(1) + ',' + lineY.toFixed(1);
             var nowY = lineY;
@@ -13337,8 +13404,8 @@ window.updateStoricoButton = async function() {
             if (!svg || !wrap) return;
             block.__tlSeries = series;
             block.__tlInfo = info;
-            if (info && info.fieldId && typeof window.loadTankTimelineManualRef === 'function') {
-                info.manualRefPt = window.loadTankTimelineManualRef(info.fieldId);
+            if (info && info.fieldId && typeof window.loadTankTimelineManualRefs === 'function') {
+                info.manualRefPts = window.loadTankTimelineManualRefs(info.fieldId);
             }
             if (!block.__tlPredictH) {
                 block.__tlPredictH = window.TANK_TIMELINE_PREDICT_HOURS_DEFAULT || 12;
@@ -13355,6 +13422,7 @@ window.updateStoricoButton = async function() {
                     btn.classList.toggle('is-active', parseInt(btn.getAttribute('data-tl-h'), 10) === h);
                 });
                 window.updateTankDetailTimelineScrub(block, Math.min(prevH, h));
+                window.updateTankTimelineRefDraftUI(block, block.__tlRefDraftTs != null ? block.__tlRefDraftTs : null);
             }
 
             if (!block.__tlHorizonWired) {
@@ -13444,10 +13512,9 @@ window.updateStoricoButton = async function() {
                     var draftTs = block.__tlRefDraftTs;
                     var m = svg.__tlModel;
                     if (!m) return;
-                    var initial = m.initialPt || { mm: m.nowMm, ts: m.tStart };
-                    var span = m.nowTs - m.tStart;
-                    var frac = span > 0 ? (draftTs - m.tStart) / span : 0.5;
-                    var suggested = initial.mm + frac * (m.nowMm - initial.mm);
+                    var suggested = typeof window.suggestTankTimelineRefMmAtTs === 'function'
+                        ? window.suggestTankTimelineRefMmAtTs(m, draftTs)
+                        : m.nowMm;
                     window.openTankTimelineRefLevelPopup({
                         ts: draftTs,
                         suggestedMm: suggested,
@@ -13638,7 +13705,8 @@ window.updateStoricoButton = async function() {
                 '.tank-detail-timeline-band--bottom{position:relative;min-height:58px;flex:0 0 auto;padding-top:2px}' +
                 '.tank-detail-timeline-levels-row{position:relative;min-height:38px;margin-bottom:2px}' +
                 '.tank-detail-timeline-float{position:absolute;transform:translateX(-50%);text-align:center;width:max-content;max-width:min(150px,40vw);line-height:1.25;display:flex;flex-direction:column;align-items:center;gap:2px}' +
-                '.tank-detail-timeline-float--start,.tank-detail-timeline-float--pred{top:0}' +
+                '.tank-detail-timeline-float--start,.tank-detail-timeline-float--pred,.tank-detail-timeline-float--ref{top:0}' +
+                '.tank-detail-timeline-saved-refs,.tank-detail-timeline-saved-ref-times{position:static}' +
                 '.tank-detail-timeline-float--actual{top:2px}' +
                 '.tank-detail-timeline-metric-lbl{font-size:10px;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:0.06em;line-height:1.15;min-height:1.15em}' +
                 '.tank-detail-timeline-metric-lbl--ghost{visibility:hidden;pointer-events:none}' +
@@ -13657,6 +13725,7 @@ window.updateStoricoButton = async function() {
                 '.tank-detail-timeline-time-slot{position:absolute;bottom:0;transform:translateX(-50%);font-size:12px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}' +
                 '.tank-detail-timeline-float--actual .tank-detail-timeline-time-slot{position:static;transform:none;font-size:12px;font-weight:700;color:#94a3b8;margin-bottom:1px}' +
                 '.tank-detail-timeline-time-slot--start{color:#64748b}' +
+                '.tank-detail-timeline-time-slot--ref{color:#e2e8f0}' +
                 '.tank-detail-timeline-time-slot--pred{color:#7c3aed}' +
                 '.tank-detail-timeline-svg{width:100%;height:68px;min-height:68px;max-height:68px;flex:0 0 auto;display:block;touch-action:none;position:relative;z-index:3;pointer-events:auto;border-radius:8px;overflow:visible;cursor:default}' +
                 '.tank-detail-timeline-svg [data-tl-plot-hit],.tank-detail-timeline-svg [data-tl-drag-hit],.tank-detail-timeline-svg .tank-detail-timeline-scrub-knob{pointer-events:all;cursor:grab;touch-action:none}' +

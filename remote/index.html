@@ -7,7 +7,7 @@
     var SK = "servicehub_remote_share_k";
     var SA = "servicehub_remote_app_id";
     var FB_ORIGIN = "https://servicehub-18309.web.app";
-    window.SVCREMOTE_BUILD = "2026.06.14-v142";
+    window.SVCREMOTE_BUILD = "2026.06.14-v143";
 
     /** Vecchi link su GitHub → stesso remoto su Firebase. */
     (function redirectGithubToFirebase() {
@@ -2777,6 +2777,38 @@
       return html;
     }
 
+    var TANK_TREND_AUTO_MIN_DELTA_MM = 5;
+
+    function buildTankDetailTrendSummaryHTML(info, series) {
+      var parts = [];
+      series = buildRemoteTrendSeries(series, info);
+      if (info.trendDir === "up") {
+        parts.push('<div class="tank-detail-trend-line tank-detail-trend-line--up">↑ In salita: <b>+' +
+          fmtTankMm(Math.abs(info.trendDelta)) + ' mm</b> rispetto al baseline turno</div>');
+      } else if (info.trendDir === "down") {
+        parts.push('<div class="tank-detail-trend-line tank-detail-trend-line--down">↓ In discesa: <b>-' +
+          fmtTankMm(Math.abs(info.trendDelta)) + ' mm</b> rispetto al baseline turno</div>');
+      } else if (info.baselineMm != null && info.levelMm != null) {
+        parts.push('<div class="tank-detail-trend-line tank-detail-trend-line--flat">→ Stabile (Δ ≤ ' +
+          TANK_TREND_AUTO_MIN_DELTA_MM + ' mm vs baseline turno)</div>');
+      } else {
+        parts.push('<div class="tank-detail-trend-line tank-detail-trend-line--flat">Trend turno: baseline non disponibile</div>');
+      }
+      if (series && series.length >= 2) {
+        var first = series[0];
+        var last = series[series.length - 1];
+        var dtH = (last.ts - first.ts) / 3600000;
+        if (dtH > 0.08) {
+          var rate = (last.mm - first.mm) / dtH;
+          var rateCls = rate > 0 ? "up" : rate < 0 ? "down" : "flat";
+          var rateSign = rate > 0 ? "+" : "";
+          parts.push('<div class="tank-detail-trend-line tank-detail-trend-line--' + rateCls + '">Velocità stimata: <b>' +
+            rateSign + fmtTankMm(rate) + ' mm/h</b> (' + series.length + " punti)</div>");
+        }
+      }
+      return parts.join("");
+    }
+
     function buildTankDetailHistoryTableHTML(series) {
       if (!series || !series.length) {
         return '<div class="tank-detail-history-empty">Nessun salvataggio storico.</div>';
@@ -2864,6 +2896,17 @@
         var tm = String(row.val).match(/\(([\d.,]+)\s*t\)/i);
         if (tm) currentTons = parseFloat(String(tm[1]).replace(",", "."));
       }
+      var baselineMap = payload.tankLevelCompareBaseline || {};
+      var baselineRaw = baselineMap[fieldId];
+      var baseMm = parseTankLevelMmRemote(baselineRaw);
+      var trendDelta = null;
+      var trendDir = null;
+      if (Number.isFinite(levelMm) && Number.isFinite(baseMm)) {
+        trendDelta = levelMm - baseMm;
+        if (Math.abs(trendDelta) > TANK_TREND_AUTO_MIN_DELTA_MM) {
+          trendDir = trendDelta > 0 ? "up" : "down";
+        }
+      }
       return {
         fieldId: fieldId,
         label: meta.label || (row && row.label) || fieldId,
@@ -2876,7 +2919,10 @@
         fillPctOfMax: livMax && Number.isFinite(levelMm) ? Math.round((levelMm / livMax) * 1000) / 10 : null,
         vis: vis,
         statusArr: parseStatusArr(payload.tankStatuses, tankDbKey),
-        tankDbKey: tankDbKey
+        tankDbKey: tankDbKey,
+        trendDelta: trendDelta,
+        trendDir: trendDir,
+        baselineMm: Number.isFinite(baseMm) ? baseMm : null
       };
     }
 
@@ -3540,6 +3586,7 @@
         (info.fillPctOfMax != null ? info.fillPctOfMax + " <small>%</small>" : "—") + "</span></div></div></div>" +
         buildRemoteTimelineHTML(series, info) +
         '<div class="tank-detail-trend-block"><div class="tank-detail-section-title">Trend livello</div>' +
+        buildTankDetailTrendSummaryHTML(info, series) +
         '<div class="tank-detail-chart-wrap">' + chart + "</div></div>" +
         '<div class="tank-detail-history-block"><div class="tank-detail-section-title">Storico salvataggi</div>' +
         buildTankDetailHistoryTableHTML(series) + "</div></div>";

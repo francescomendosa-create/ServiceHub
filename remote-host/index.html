@@ -7,7 +7,7 @@
     var SK = "servicehub_remote_share_k";
     var SA = "servicehub_remote_app_id";
     var FB_ORIGIN = "https://servicehub-18309.web.app";
-    window.SVCREMOTE_BUILD = "2026.06.14-v144";
+    window.SVCREMOTE_BUILD = "2026.06.14-v145";
 
     /** Vecchi link su GitHub → stesso remoto su Firebase. */
     (function redirectGithubToFirebase() {
@@ -2294,12 +2294,56 @@
       return "Turno " + raw;
     }
 
+    var TANK_CONDUCTIVITY_OVERLAP_FIELD_IDS = ["inp-tk9000", "inp-tk9201", "inp-tk9204"];
+    var TANK_CONDUCTIVITY_UNIT = "µS/cm";
+
+    function tankFieldHasConductivity(fieldId) {
+      if (!fieldId) return false;
+      return TANK_CONDUCTIVITY_OVERLAP_FIELD_IDS.indexOf(fieldId) >= 0;
+    }
+
+    function readRemoteTankConductivity(fieldId, payload) {
+      if (!tankFieldHasConductivity(fieldId)) return "";
+      payload = payload || window.__remoteDigitalPayload || {};
+      var fromMap = payload.tankConductivity && payload.tankConductivity[fieldId];
+      if (fromMap != null && String(fromMap).trim() !== "") return String(fromMap).trim();
+      var row = (payload.stoccaggioRows || []).find(function (r) { return r.fieldId === fieldId; });
+      if (row && row.conductivity != null && String(row.conductivity).trim() !== "") {
+        return String(row.conductivity).trim();
+      }
+      return "";
+    }
+
+    function fmtTankConductivity(raw) {
+      var s = raw == null ? "" : String(raw).trim();
+      if (!s) return "—";
+      var n = parseFloat(s.replace(",", "."));
+      if (Number.isFinite(n)) {
+        var rounded = Math.round(n * 10) / 10;
+        if (Math.abs(rounded - Math.round(rounded)) < 0.05) return String(Math.round(rounded));
+        return String(rounded);
+      }
+      return s;
+    }
+
+    function buildTankConductivityLineHTML(conductivityRaw) {
+      var raw = conductivityRaw == null ? "" : String(conductivityRaw).trim();
+      if (!raw) return "";
+      return (
+        '<div class="digital-stocc-cond-line">' +
+        esc(fmtTankConductivity(raw)) +
+        ' <span class="digital-stocc-cond-unit">' +
+        esc(TANK_CONDUCTIVITY_UNIT) +
+        "</span></div>"
+      );
+    }
+
     function stoccaggioRowsSignature(rows) {
       if (!Array.isArray(rows) || !rows.length) return "";
       return rows
         .map(function (r) {
           return String(r.label || "") + ":" + String(r.val || "").replace(/<[^>]+>/g, "") + ":" + String(r.fillPct != null ? r.fillPct : "") +
-            ":" + (r.drain ? "D" : "") + (r.acc ? "A" : "");
+            ":" + (r.drain ? "D" : "") + (r.acc ? "A" : "") + ":" + String(r.conductivity != null ? r.conductivity : "");
         })
         .join("|");
     }
@@ -2474,6 +2518,14 @@
       var imgSrc = acc && drain ? "tank-3d-acc-dren.png?v=2" : acc ? "tank-3d-acc.png?v=2" : drain ? "tank-3d-drain.png?v=2" : "tank-3d.png?v=3";
       var waterActive = drain || acc;
       var bubblesHTML = waterActive ? __tankInteriorBubblesHTML() : "";
+      var condHtml = "";
+      if (arguments.length > 2 && arguments[2] && arguments[2].conductivity != null && String(arguments[2].conductivity).trim() !== "") {
+        var condUnit = arguments[2].conductivityUnit || TANK_CONDUCTIVITY_UNIT;
+        condHtml =
+          '<div class="digital-tank3d-cond" aria-label="Conducibilità">' +
+          esc(fmtTankConductivity(arguments[2].conductivity) + " " + condUnit) +
+          "</div>";
+      }
       return (
         '<div class="digital-tank-gauge digital-tank3d' + (drain ? " digital-tank3d--drain" : "") + (acc ? " digital-tank3d--acc" : "") + (detail ? " digital-tank3d--detail" : "") + '">' +
         '<img class="digital-tank3d-img" src="' + imgSrc + '" alt="" draggable="false" decoding="sync"/>' +
@@ -2482,6 +2534,7 @@
         (drain && waterH > 0 ? '<div class="digital-tank3d-drain-stream"></div><div class="digital-tank3d-drain-splash"></div>' : "") +
         (acc ? '<div class="digital-tank3d-acc-flow"></div>' : "") +
         siglaSvg +
+        condHtml +
         "</div>"
       );
       /* eslint-disable no-unreachable */
@@ -2630,7 +2683,15 @@
         p.tons != null && !isNaN(p.tons)
           ? '<div class="digital-stocc-ton-line">' + esc(String(p.tons)) + " tonnellate</div>"
           : "";
-      return '<div class="digital-stocc-level-info">' + levelLine + tonLine + "</div>";
+      var condLine = "";
+      if (r && r.fieldId && tankFieldHasConductivity(r.fieldId)) {
+        condLine = buildTankConductivityLineHTML(
+          r.conductivity != null ? r.conductivity : readRemoteTankConductivity(r.fieldId)
+        );
+      } else if (r && r.conductivity) {
+        condLine = buildTankConductivityLineHTML(r.conductivity);
+      }
+      return '<div class="digital-stocc-level-info">' + levelLine + tonLine + condLine + "</div>";
     }
 
     function buildStoccaggioRowsHTML(rows, tankStatuses) {
@@ -2641,7 +2702,12 @@
         const val = r.val != null ? String(r.val) : "";
         const pct = getStoccaggioTankFillPct(r.tankDbKey, r.levelMm, r.fillPct);
         const vis = rowTankVisualFlags(r, tankStatuses);
-        const gauge = buildDigitalTankGaugeSVG(pct, r.label || "", { drain: vis.drain, acc: vis.acc });
+        var gaugeOpts = { drain: vis.drain, acc: vis.acc };
+        if (r.fieldId && tankFieldHasConductivity(r.fieldId)) {
+          var condGaugeRaw = r.conductivity != null ? r.conductivity : readRemoteTankConductivity(r.fieldId);
+          if (condGaugeRaw) gaugeOpts.conductivity = condGaugeRaw;
+        }
+        const gauge = buildDigitalTankGaugeSVG(pct, r.label || "", gaugeOpts);
         const levelInfo = buildStoccLevelInfoHTML(r);
         var siglaUnder = String(r.label || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
         var fieldAttr = r.fieldId ? ' data-field-id="' + esc(String(r.fieldId)) + '"' : "";
@@ -2941,7 +3007,14 @@
         tankDbKey: tankDbKey,
         trendDelta: trendDelta,
         trendDir: trendDir,
-        baselineMm: Number.isFinite(baseMm) ? baseMm : null
+        baselineMm: Number.isFinite(baseMm) ? baseMm : null,
+        hasConductivity: tankFieldHasConductivity(fieldId),
+        conductivity: (function () {
+          if (!tankFieldHasConductivity(fieldId)) return null;
+          var cv = readRemoteTankConductivity(fieldId, payload);
+          return cv || null;
+        })(),
+        conductivityUnit: TANK_CONDUCTIVITY_UNIT
       };
     }
 
@@ -3582,10 +3655,19 @@
 
     function buildRemoteTankDetailPageHTML(info, series) {
       var pct = Math.max(0, Math.min(100, Number(info.fillPct) || 0));
-      var gauge = buildDigitalTankGaugeSVG(pct, info.label || "", { drain: info.vis.drain, acc: info.vis.acc, detail: true, predFillPct: pct });
+      var gaugeOpts = { drain: info.vis.drain, acc: info.vis.acc, detail: true, predFillPct: pct };
+      if (info.conductivity) {
+        gaugeOpts.conductivity = info.conductivity;
+        gaugeOpts.conductivityUnit = info.conductivityUnit;
+      }
+      var gauge = buildDigitalTankGaugeSVG(pct, info.label || "", gaugeOpts);
       var chart = buildTankDetailTrendChartSVG(series, info.livMax, info);
       var desc = info.description
         ? '<div class="tank-detail-desc-chip">' + esc(info.description) + "</div>"
+        : "";
+      var condStat = (info.hasConductivity || info.conductivity)
+        ? ('<div class="tank-detail-stat"><span class="tank-detail-stat-label">Conducibilità</span><span class="tank-detail-stat-val">' +
+          fmtTankConductivity(info.conductivity) + " <small>" + esc(info.conductivityUnit || TANK_CONDUCTIVITY_UNIT) + "</small></span></div>")
         : "";
       return '<div class="tank-detail-page">' +
         '<div class="tank-detail-header"><div class="tank-detail-title">' + esc(info.label) + "</div>" + desc + "</div>" +
@@ -3602,7 +3684,9 @@
         '<div class="tank-detail-stat"><span class="tank-detail-stat-label">Tonnellate max</span><span class="tank-detail-stat-val">' +
         fmtTankTons(info.maxTons) + ' <small>t</small></span></div>' +
         '<div class="tank-detail-stat"><span class="tank-detail-stat-label">Riempimento</span><span class="tank-detail-stat-val">' +
-        (info.fillPctOfMax != null ? info.fillPctOfMax + " <small>%</small>" : "—") + "</span></div></div></div>" +
+        (info.fillPctOfMax != null ? info.fillPctOfMax + " <small>%</small>" : "—") + "</span></div>" +
+        condStat +
+        "</div></div>" +
         buildRemoteTimelineHTML(series, info) +
         '<div class="tank-detail-trend-block"><div class="tank-detail-section-title">Trend livello</div>' +
         buildTankDetailTrendSummaryHTML(info, series) +
@@ -3732,6 +3816,16 @@
       window.__remoteTankDetailCtx = null;
     };
 
+    function tankConductivitySignature(map) {
+      if (!map || typeof map !== "object") return "";
+      return Object.keys(map)
+        .sort()
+        .map(function (k) {
+          return k + ":" + String(map[k] || "");
+        })
+        .join("|");
+    }
+
     function digitalRemoteSig(d) {
       return (
         String((d && d.updatedAt) || "") +
@@ -3742,7 +3836,9 @@
         "\u0001" +
         tankStatusesSignature(d && d.tankStatuses) +
         "\u0001" +
-        tankDetailMetaSignature(d && d.tankDetailMeta)
+        tankDetailMetaSignature(d && d.tankDetailMeta) +
+        "\u0001" +
+        tankConductivitySignature(d && d.tankConductivity)
       );
     }
 

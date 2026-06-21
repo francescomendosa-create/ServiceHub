@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v349';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v350';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -11691,6 +11691,8 @@ window.updateStoricoButton = async function() {
                 if (!raw && snap[t.fieldId] != null) raw = String(snap[t.fieldId]).trim();
                 if (!raw) return;
                 const vis = window.getTankVisualFlagsForDbKey ? window.getTankVisualFlagsForDbKey(t.tankDbKey) : { drain: false, acc: false };
+                var condVal = typeof window.readTankConductivityValue === 'function'
+                    ? window.readTankConductivityValue(t.fieldId) : '';
                 rows.push({
                     label: t.label,
                     val: window.formatStoccaggioInternoReportValue(raw, t.tankDbKey),
@@ -11702,7 +11704,8 @@ window.updateStoricoButton = async function() {
                         : parseFloat(String(raw).replace(',', '.'))) || 0,
                     fillPct: window.getStoccaggioTankFillPct(t.tankDbKey, raw),
                     drain: !!vis.drain,
-                    acc: !!vis.acc
+                    acc: !!vis.acc,
+                    conductivity: condVal || null
                 });
             });
             return {
@@ -11903,6 +11906,17 @@ window.updateStoricoButton = async function() {
             const imgSrc = acc && drain ? 'tank-3d-acc-dren.png?v=2' : acc ? 'tank-3d-acc.png?v=2' : drain ? 'tank-3d-drain.png?v=2' : 'tank-3d.png?v=3';
             const waterActive = drain || acc;
             const bubblesHTML = waterActive ? window.__tankInteriorBubblesHTML() : '';
+            var condHtml = '';
+            if (opts && opts.conductivity != null && String(opts.conductivity).trim() !== '') {
+                var condUnit = opts.conductivityUnit || window.CONDUCTIVITY_UNIT || 'µS/cm';
+                var condFmt = typeof window.__fmtTankDetailConductivity === 'function'
+                    ? window.__fmtTankDetailConductivity(opts.conductivity)
+                    : String(opts.conductivity).trim();
+                var condEsc = typeof window.__escTankDetailHtml === 'function'
+                    ? window.__escTankDetailHtml(condFmt + ' ' + condUnit)
+                    : (condFmt + ' ' + condUnit);
+                condHtml = '<div class="digital-tank3d-cond" aria-label="Conducibilità">' + condEsc + '</div>';
+            }
             return '<div class="digital-tank-gauge digital-tank3d' + (drain ? ' digital-tank3d--drain' : '') + (acc ? ' digital-tank3d--acc' : '') + (overfill ? ' digital-tank3d--overfill' : '') + (detail ? ' digital-tank3d--detail' : '') + '">' +
                 '<img class="digital-tank3d-img" src="' + imgSrc + '" alt="" draggable="false" decoding="sync"/>' +
                 (waterH > 0 ? '<div class="digital-tank3d-water' + (waterActive ? ' digital-tank3d-water--active' : '') + '" style="height:' + waterH.toFixed(2) + '%">' + bubblesHTML + '</div>' : '') +
@@ -11910,6 +11924,7 @@ window.updateStoricoButton = async function() {
                 (drain && waterH > 0 ? '<div class="digital-tank3d-drain-stream"></div><div class="digital-tank3d-drain-splash"></div>' : '') +
                 (acc ? '<div class="digital-tank3d-acc-flow"></div>' : '') +
                 siglaSvg +
+                condHtml +
                 '</div>';
             /* codice SVG precedente non più raggiungibile */
             const uid = 'dtk' + Math.random().toString(36).slice(2, 9);
@@ -12015,7 +12030,16 @@ window.updateStoricoButton = async function() {
                 : '—';
             var levelLine = '<div class="digital-stocc-level-line">' + mmStr + ' mm</div>';
             var tonLine = (p.tons != null && !isNaN(p.tons)) ? '<div class="digital-stocc-ton-line">' + p.tons + ' tonnellate</div>' : '';
-            return '<div class="digital-stocc-level-info">' + levelLine + tonLine + '</div>';
+            var condLine = '';
+            if (r && r.fieldId && typeof window.tankFieldHasConductivity === 'function' && window.tankFieldHasConductivity(r.fieldId)) {
+                var condRaw = r.conductivity != null ? r.conductivity : window.readTankConductivityValue(r.fieldId);
+                condLine = typeof window.buildTankConductivityLineHTML === 'function'
+                    ? window.buildTankConductivityLineHTML(condRaw) : '';
+            } else if (r && r.conductivity) {
+                condLine = typeof window.buildTankConductivityLineHTML === 'function'
+                    ? window.buildTankConductivityLineHTML(r.conductivity) : '';
+            }
+            return '<div class="digital-stocc-level-info">' + levelLine + tonLine + condLine + '</div>';
         };
 
         window.buildStoccaggioDigitalRowsHTML = function(rows) {
@@ -12029,7 +12053,12 @@ window.updateStoricoButton = async function() {
                 const vis = (r.drain != null || r.acc != null)
                     ? { drain: !!r.drain, acc: !!r.acc }
                     : { drain: tankSt.includes('drenagg'), acc: tankSt.includes('accumul') };
-                const gauge = window.buildDigitalTankGaugeSVG(pct, r.label || '', { drain: vis.drain, acc: vis.acc });
+                var gaugeOpts = { drain: vis.drain, acc: vis.acc };
+                if (r.fieldId && typeof window.tankFieldHasConductivity === 'function' && window.tankFieldHasConductivity(r.fieldId)) {
+                    var condGaugeRaw = r.conductivity != null ? r.conductivity : window.readTankConductivityValue(r.fieldId);
+                    if (condGaugeRaw) gaugeOpts.conductivity = condGaugeRaw;
+                }
+                const gauge = window.buildDigitalTankGaugeSVG(pct, r.label || '', gaugeOpts);
                 const levelInfo = window.buildStoccLevelInfoHTML(r);
                 const siglaUnder = String(r.label || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
                 const fieldAttr = r.fieldId ? (' data-field-id="' + String(r.fieldId).replace(/"/g, '') + '"') : '';
@@ -12081,6 +12110,43 @@ window.updateStoricoButton = async function() {
         window.__escTankDetailHtml = function (s) {
             return String(s == null ? '' : s)
                 .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        };
+
+        window.tankFieldHasConductivity = function (fieldId) {
+            if (!fieldId) return false;
+            var normId = typeof window.normalizeTrendFieldId === 'function'
+                ? window.normalizeTrendFieldId(fieldId) : fieldId;
+            var overlap = window.CONDUCTIVITY_LEVEL_OVERLAP_FIELD_IDS || [];
+            return overlap.indexOf(normId) >= 0 || overlap.indexOf(fieldId) >= 0;
+        };
+
+        window.readTankConductivityValue = function (fieldId) {
+            if (!window.tankFieldHasConductivity(fieldId)) return '';
+            return typeof window.readConducibilitaFieldValue === 'function'
+                ? window.readConducibilitaFieldValue(fieldId) : '';
+        };
+
+        window.__fmtTankDetailConductivity = function (raw) {
+            var s = raw == null ? '' : String(raw).trim();
+            if (!s) return '—';
+            var n = parseFloat(s.replace(',', '.'));
+            if (Number.isFinite(n)) {
+                var rounded = Math.round(n * 10) / 10;
+                if (Math.abs(rounded - Math.round(rounded)) < 0.05) {
+                    return Math.round(rounded).toLocaleString('it-IT');
+                }
+                return rounded.toLocaleString('it-IT', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+            }
+            return s;
+        };
+
+        window.buildTankConductivityLineHTML = function (conductivityRaw) {
+            var raw = conductivityRaw == null ? '' : String(conductivityRaw).trim();
+            if (!raw) return '';
+            var unit = window.CONDUCTIVITY_UNIT || 'µS/cm';
+            var fmt = window.__fmtTankDetailConductivity(raw);
+            return '<div class="digital-stocc-cond-line">' + window.__escTankDetailHtml(fmt) +
+                ' <span class="digital-stocc-cond-unit">' + window.__escTankDetailHtml(unit) + '</span></div>';
         };
 
         window.readTankFieldLiveRawFromDigitalRow = function (fieldId) {
@@ -12223,6 +12289,12 @@ window.updateStoricoButton = async function() {
             var levelInputTs = typeof window.getTankLevelInputTimestampMs === 'function'
                 ? window.getTankLevelInputTimestampMs(normId)
                 : null;
+            var hasConductivity = typeof window.tankFieldHasConductivity === 'function'
+                && window.tankFieldHasConductivity(normId);
+            var conductivityRaw = hasConductivity && typeof window.readTankConductivityValue === 'function'
+                ? window.readTankConductivityValue(normId) : '';
+            var conductivity = conductivityRaw && String(conductivityRaw).trim() !== ''
+                ? String(conductivityRaw).trim() : null;
 
             return {
                 fieldId: normId,
@@ -12241,7 +12313,10 @@ window.updateStoricoButton = async function() {
                 statusArr: statusArr,
                 trendDelta: trendDelta,
                 trendDir: trendDir,
-                baselineMm: Number.isFinite(baseMm) ? baseMm : null
+                baselineMm: Number.isFinite(baseMm) ? baseMm : null,
+                hasConductivity: hasConductivity,
+                conductivity: conductivity,
+                conductivityUnit: window.CONDUCTIVITY_UNIT || 'µS/cm'
             };
         };
 
@@ -13597,11 +13672,22 @@ window.updateStoricoButton = async function() {
 
         window.buildTankDetailPageHTML = function (info, series) {
             if (!info) return '';
+            var gaugeOpts = Object.assign({}, info.vis || {}, { detail: true, predFillPct: info.fillPct });
+            if (info.conductivity) {
+                gaugeOpts.conductivity = info.conductivity;
+                gaugeOpts.conductivityUnit = info.conductivityUnit;
+            }
             var gauge = typeof window.buildDigitalTankGaugeSVG === 'function'
-                ? window.buildDigitalTankGaugeSVG(info.fillPct, info.label, Object.assign({}, info.vis || {}, { detail: true, predFillPct: info.fillPct })) : '';
+                ? window.buildDigitalTankGaugeSVG(info.fillPct, info.label, gaugeOpts) : '';
             var chart = window.buildTankDetailTrendChartSVG(series, info.livMax, info);
             var descBlock = info.description
                 ? '<div class="tank-detail-desc-chip">' + window.__escTankDetailHtml(info.description) + '</div>'
+                : '';
+            var condStat = (info.hasConductivity || info.conductivity)
+                ? ('<div class="tank-detail-stat"><span class="tank-detail-stat-label">Conducibilità</span><span class="tank-detail-stat-val">' +
+                    window.__fmtTankDetailConductivity(info.conductivity) + ' <small>' +
+                    window.__escTankDetailHtml(info.conductivityUnit || window.CONDUCTIVITY_UNIT || 'µS/cm') +
+                    '</small></span></div>')
                 : '';
             return '<div class="tank-detail-page">' +
                 '<div class="tank-detail-header">' +
@@ -13627,6 +13713,7 @@ window.updateStoricoButton = async function() {
                 (info.fillPctOfMax != null ? info.fillPctOfMax.toLocaleString('it-IT') + ' <small>%</small>' : '—') +
                 (info.fillOverMax ? ' <small class="tank-detail-overmax-hint">sopra max</small>' : '') +
                 '</span></div>' +
+                condStat +
                 '</div>' +
                 '</div>' +
                 window.buildTankDetailTimelineHTML(series, info) +
@@ -13642,7 +13729,7 @@ window.updateStoricoButton = async function() {
         };
 
         window.ensureDigitalRemoteGaugeCss = function () {
-            var linkVer = 'dig116';
+            var linkVer = 'dig117';
             var link = document.getElementById('sh-digital-remote-css');
             if (link && link.getAttribute('data-css-ver') === linkVer) return;
             if (link) link.remove();
@@ -14039,11 +14126,20 @@ window.updateStoricoButton = async function() {
                     if (v != null && String(v).trim() !== '') baseline[fid] = String(v);
                 });
             }
+            var tankConductivity = {};
+            Object.keys(meta).forEach(function (fid) {
+                if (typeof window.tankFieldHasConductivity === 'function' && window.tankFieldHasConductivity(fid)) {
+                    var cv = typeof window.readTankConductivityValue === 'function'
+                        ? window.readTankConductivityValue(fid) : '';
+                    if (cv && String(cv).trim() !== '') tankConductivity[fid] = String(cv).trim();
+                }
+            });
             return {
                 tankDetailMeta: meta,
                 tankLevelHistory: history,
                 tankLevelInputAt: Object.assign({}, window.tankLevelInputAtMs || {}),
-                tankLevelCompareBaseline: baseline
+                tankLevelCompareBaseline: baseline,
+                tankConductivity: tankConductivity
             };
         };
 
@@ -24907,6 +25003,8 @@ window.buildDigitalCardsHTML = function() {
                                 ? window.parseTankLevelMm(row.levelRaw)
                                 : parseFloat(String(row.levelRaw).replace(',', '.'));
                             const vis = window.getTankVisualFlagsForDbKey ? window.getTankVisualFlagsForDbKey(row.tankDbKey) : { drain: false, acc: false };
+                            var condVal = row.fieldId && typeof window.readTankConductivityValue === 'function'
+                                ? window.readTankConductivityValue(row.fieldId) : '';
                             return {
                                 label: row.label,
                                 val: row.val,
@@ -24916,7 +25014,8 @@ window.buildDigitalCardsHTML = function() {
                                 fillPct: window.getStoccaggioTankFillPct(row.tankDbKey, mm),
                                 tons: window.calculateTons ? window.calculateTons(row.tankDbKey, mm) : null,
                                 drain: vis.drain,
-                                acc: vis.acc
+                                acc: vis.acc,
+                                conductivity: condVal || null
                             };
                         }));
                     }
@@ -26580,7 +26679,8 @@ window.pushPublicDigitalSnapshotQuiet = async function (opts) {
         tankDetailMeta: tankDetailRemote.tankDetailMeta || {},
         tankLevelHistory: tankDetailRemote.tankLevelHistory || {},
         tankLevelInputAt: tankDetailRemote.tankLevelInputAt || {},
-        tankLevelCompareBaseline: tankDetailRemote.tankLevelCompareBaseline || {}
+        tankLevelCompareBaseline: tankDetailRemote.tankLevelCompareBaseline || {},
+        tankConductivity: tankDetailRemote.tankConductivity || {}
     };
     // Regole Firestore: su update ownerUid non deve cambiare. Non reinviarlo se il doc esiste già
     // (altrimenti ogni tablet con utente diverso riceve permission-denied e il link remoto non si pubblica).

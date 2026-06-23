@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v360';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v362';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -3314,6 +3314,9 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (!input.id) return;
                 if (window.isRapportinoOnlyDataKey && window.isRapportinoOnlyDataKey(input.id)) return;
                 if (window.__shouldSkipInputForPlantPayload && window.__shouldSkipInputForPlantPayload(input)) return;
+                if ((window.CONDUCTIVITY_LEVEL_OVERLAP_FIELD_IDS || []).indexOf(input.id) >= 0
+                    && typeof window.isTankLevelAlarmInput === 'function'
+                    && !window.isTankLevelAlarmInput(input)) return;
                 data[input.id] = input.value;
                 if (input.id === 'inp-osmosi') {
                     const reportVal = input.getAttribute('data-report-value');
@@ -7227,8 +7230,10 @@ window.updateStoricoButton = async function() {
             });
             
             if (typeof window.wireAllPlantNumpadHandlers === 'function') window.wireAllPlantNumpadHandlers();
+            if (typeof window.repairPairedTableLabels === 'function') window.repairPairedTableLabels();
             setTimeout(function () {
                 if (typeof window.wireAllPlantNumpadHandlers === 'function') window.wireAllPlantNumpadHandlers();
+                if (typeof window.repairPairedTableLabels === 'function') window.repairPairedTableLabels();
             }, 600);
             
             document.body.addEventListener('click', (e) => {
@@ -7385,7 +7390,7 @@ window.updateStoricoButton = async function() {
             const isDragExcludedTarget = function (target) {
                 if (!target || !target.closest) return false;
                 if (target.closest('button')) return true;
-                if (target.closest('#numpad-title.numpad-title--tank-detail')) return true;
+                if (target.closest('#numpad-title')) return true;
                 return false;
             };
 
@@ -7760,6 +7765,21 @@ window.updateStoricoButton = async function() {
             const npt = currentNumpadTarget;
             if (npt.id === 'vwt-notes' && val !== '') npt.value = val + ' mc';
             else npt.value = val;
+            if (typeof window.queryTankLevelAlarmInputs === 'function') {
+                window.queryTankLevelAlarmInputs(npt.id).forEach(function (el) {
+                    if (!el || el === npt || el.readOnly) return;
+                    el.value = npt.value;
+                    if (typeof window.refreshAlarmVisualForField === 'function') {
+                        window.refreshAlarmVisualForField(el, true);
+                    }
+                });
+            }
+            if (typeof window.__mirrorAcquaSharedToStoccaggio === 'function') {
+                window.__mirrorAcquaSharedToStoccaggio(npt);
+            }
+            if (typeof window.__touchPlantFieldEdit === 'function') {
+                window.__touchPlantFieldEdit(npt);
+            }
             if (typeof window.refreshAlarmVisualForField === 'function') window.refreshAlarmVisualForField(npt, true);
             if (typeof window.updateTankLevelArrowForInput === 'function') window.updateTankLevelArrowForInput(npt);
             if (typeof window.recordTankLevelInputTimestamp === 'function') {
@@ -7813,19 +7833,13 @@ window.updateStoricoButton = async function() {
             var titleEl = document.getElementById('numpad-title');
             if (!titleEl) return;
             window.__numpadTitleDetailInited = true;
-            titleEl.addEventListener('pointerdown', function (e) {
-                if (!titleEl.classList.contains('numpad-title--tank-detail')) return;
-                e.stopPropagation();
-            }, true);
             titleEl.addEventListener('click', function (e) {
-                if (!titleEl.classList.contains('numpad-title--tank-detail')) return;
                 window.onNumpadTitleClick(e);
             });
             titleEl.addEventListener('keydown', function (e) {
                 if (e.key !== 'Enter' && e.key !== ' ') return;
-                if (!titleEl.classList.contains('numpad-title--tank-detail')) return;
                 e.preventDefault();
-                window.openTankDetailFromNumpadTitle();
+                window.onNumpadTitleClick(e);
             });
         };
 
@@ -8064,7 +8078,12 @@ window.updateStoricoButton = async function() {
                 const info = window.getAriaNumpadStepForInput(input);
                 titleEl.textContent = info ? info.step.machine : window.getNumpadLabelText(labelEl);
             } else {
-                titleEl.textContent = window.getNumpadLabelText(labelEl);
+                var titleText = window.getNumpadLabelText(labelEl);
+                if (input.id && typeof window.getTankName === 'function') {
+                    var tankName = window.getTankName(input.id);
+                    if (tankName) titleText = tankName;
+                }
+                titleEl.textContent = titleText;
             }
             displayEl.value = input.value.replace(/[^\d.,]/g, '');
             const startBtnText = document.getElementById('numpad-start-text');
@@ -8108,6 +8127,17 @@ window.updateStoricoButton = async function() {
         };
 
         window.closeNumpad = () => {
+            if (!window.__numpadCommitted && currentNumpadTarget && window.__numpadView === 'value'
+                && !window.currentAnalisiPopupInput) {
+                const display = document.getElementById('numpad-display');
+                const displayVal = display ? String(display.value || '').replace(/[^\d.,]/g, '') : '';
+                const originVal = window.__numpadLivePreviewOrigin != null
+                    ? String(window.__numpadLivePreviewOrigin).replace(/[^\d.,]/g, '') : '';
+                if (displayVal !== originVal && typeof window.commitNumpadFieldValue === 'function') {
+                    window.commitNumpadFieldValue();
+                    window.__numpadCommitted = true;
+                }
+            }
             if (!window.__numpadCommitted && typeof window.revertNumpadLivePreview === 'function') {
                 window.revertNumpadLivePreview();
             }
@@ -11489,11 +11519,10 @@ window.updateStoricoButton = async function() {
             var acquaShared = window.DCS_ACQUA_SHARED_FIELD_IDS || ['inp-tk9000', 'inp-tk9201'];
             if (acquaShared.indexOf(input.id) >= 0) {
                 if (input.closest && input.closest('#sec-acqua')) return false;
-                if (input.closest && input.closest('#conducibilita-panel')) return false;
-                if (input.closest && input.closest('#sec-conducibilita-vertical')) return false;
                 if (input.closest && input.closest('#stoccaggio-panel-notturno')) {
                     return !(input.classList && input.classList.contains('nott-stocc-inp'));
                 }
+                return true;
             }
             if (input.id && String(input.id).indexOf('cnt-') === 0) return true;
             if (input.id && String(input.id).indexOf('cfil-') === 0) return true;
@@ -14103,6 +14132,7 @@ window.updateStoricoButton = async function() {
                 '#digital-preview-container.digital-focus-stocc .digital-stocc-sigla-under{cursor:pointer;touch-action:manipulation}' +
                 '.numpad-tank-trend-arrow{position:absolute;right:2.75rem;top:58%;transform:translateY(-50%);font-size:2.25rem;font-weight:900;line-height:1;pointer-events:none;z-index:2}' +
                 '#numpad-title.numpad-title--tank-detail{cursor:pointer;touch-action:manipulation;transition:color 0.15s ease}' +
+                '#numpad-title{cursor:pointer;touch-action:manipulation}' +
                 '#numpad-title.numpad-title--tank-detail:hover,#numpad-title.numpad-title--tank-detail:focus{color:#93c5fd;outline:none}' +
                 '.tank-detail-overlay.tank-detail-phone-layout #tank-detail-back-btn{display:none!important}' +
                 '.tank-detail-overlay.tank-detail-phone-layout #tank-detail-content{padding-top:max(4px,env(safe-area-inset-top,0px))}' +
@@ -15130,7 +15160,9 @@ window.updateStoricoButton = async function() {
                     }
                 }
                 if (tr && !label) {
-                    const cell = tr.querySelector('.cell-label-main');
+                    const cell = typeof window.resolveTableLabelCellForInput === 'function'
+                        ? window.resolveTableLabelCellForInput(inp)
+                        : tr.querySelector('.cell-label-main');
                     if (cell) label = cell.innerText.replace(/\s+/g, ' ').trim();
                 }
                 const bd = inp.closest('.bd-input-row');
@@ -16881,6 +16913,40 @@ window.updateStoricoButton = async function() {
             return window.buildSavedSchedeConfigFromDraft(rapportinoId, schedeConfig || { modules: {} });
         };
 
+        window.resolveTableLabelCellForInput = function (input) {
+            if (!input) return null;
+            const valueTd = input.closest('td');
+            if (valueTd) {
+                const prev = valueTd.previousElementSibling;
+                if (prev && prev.classList.contains('cell-label-main')) return prev;
+            }
+            const tr = input.closest('tr');
+            if (!tr) return null;
+            const tds = tr.querySelectorAll('td');
+            for (let i = 0; i < tds.length - 1; i++) {
+                if (tds[i + 1].contains(input) && tds[i].classList.contains('cell-label-main')) {
+                    return tds[i];
+                }
+            }
+            return tr.querySelector('.cell-label-main');
+        };
+
+        window.repairPairedTableLabels = function (root) {
+            const scope = root && root.querySelectorAll ? root : document;
+            scope.querySelectorAll('#sec-acqua tr, #sec-well tr, #sec-chpp tr, #sec-scam tr, #sec-filtra tr').forEach(function (tr) {
+                tr.querySelectorAll('input[id]').forEach(function (inp) {
+                    const labCell = window.resolveTableLabelCellForInput(inp);
+                    if (!labCell || !inp.id) return;
+                    const name = typeof window.getTankName === 'function'
+                        ? window.getTankName(inp.id)
+                        : '';
+                    const derived = name || (typeof window.deriveLabelFromInputId === 'function'
+                        ? window.deriveLabelFromInputId(inp.id) : '');
+                    if (derived) labCell.innerText = derived;
+                });
+            });
+        };
+
         window.applyFieldLabelInDom = function(fieldId, labelText) {
             if (!labelText) return;
             if (fieldId === 'inp-vwt-notes' || fieldId === 'inp-osmosi') return;
@@ -16902,10 +16968,9 @@ window.updateStoricoButton = async function() {
                 if (lab) window.applyAmbLabelText(lab, labelText, fieldId);
                 return;
             }
-            const tr = el.closest('tr');
-            if (tr) {
-                const cell = tr.querySelector('.cell-label-main');
-                if (cell) cell.innerText = labelText;
+            const labCell = window.resolveTableLabelCellForInput(el);
+            if (labCell) {
+                labCell.innerText = labelText;
                 return;
             }
             const bd = el.closest('.bd-input-row');
@@ -17037,6 +17102,7 @@ window.updateStoricoButton = async function() {
             });
             window.syncNotturnoModulesAfterVisibility();
             if (typeof window.__ensureAmbSpecialPopupRows === 'function') window.__ensureAmbSpecialPopupRows();
+            if (typeof window.repairPairedTableLabels === 'function') window.repairPairedTableLabels();
             if (typeof window.wireAllPlantNumpadHandlers === 'function') window.wireAllPlantNumpadHandlers();
         };
 
@@ -17894,6 +17960,7 @@ window.updateStoricoButton = async function() {
                 if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
                 if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
                 if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
+                if (typeof window.repairPairedTableLabels === 'function') window.repairPairedTableLabels();
                 if (typeof window.wireAllPlantNumpadHandlers === 'function') window.wireAllPlantNumpadHandlers();
             });
             if (keepExpanded) {

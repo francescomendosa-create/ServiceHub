@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v365';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v366';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -2478,6 +2478,14 @@ window.colorPreviewNumber = function(tankName, value) {
         let currentMatches = {};
         let currentNumpadTarget = null;
         let nextNumpadTarget = null;
+        window.__currentNumpadTarget = null;
+        window.__syncNumpadTarget = function (inp) {
+            currentNumpadTarget = inp || null;
+            window.__currentNumpadTarget = currentNumpadTarget;
+        };
+        window.__getNumpadTarget = function () {
+            return window.__currentNumpadTarget || currentNumpadTarget || null;
+        };
         
         // Variabili per il numpad serbatoio
         let comingFromNumpad = false;
@@ -7279,7 +7287,7 @@ window.updateStoricoButton = async function() {
         };
 
         window.isNumpadDraggable = function () {
-            return typeof window.isNumpadFloatingDevice === 'function' && window.isNumpadFloatingDevice();
+            return false;
         };
 
         window.onNumpadOverlayClick = function (e) {
@@ -7852,6 +7860,52 @@ window.updateStoricoButton = async function() {
             /* v365: pulsanti via onclick inline nel HTML — niente capture che blocca i click */
         };
 
+        window.shNumpadDispatch = function (action, arg) {
+            if (typeof window.__clearPostLongPressShield === 'function') window.__clearPostLongPressShield();
+            if (typeof window.__clearNumpadClickBlockers === 'function') window.__clearNumpadClickBlockers();
+            globalInteractionLock = false;
+            try { document.body.classList.remove('sh-long-press-lock'); } catch (_) {}
+            if (action === 'close') {
+                if (typeof window.closeNumpad === 'function') window.closeNumpad();
+                return;
+            }
+            if (action === 'confirm') {
+                if (typeof window.confirmNumpad === 'function') window.confirmNumpad();
+                return;
+            }
+            if (action === 'nav-prev') {
+                if (typeof window.navigateNumpad === 'function') window.navigateNumpad('prev');
+                return;
+            }
+            if (action === 'nav-next') {
+                if (typeof window.navigateNumpad === 'function') window.navigateNumpad('next');
+                return;
+            }
+            if (action === 'title') {
+                if (typeof window.onNumpadTitleClick === 'function') window.onNumpadTitleClick(arg || null);
+                return;
+            }
+            if (action === 'tank-btn') {
+                if (typeof window.openTankFromNumpad === 'function') window.openTankFromNumpad();
+                return;
+            }
+            if (typeof window.numpadAction === 'function') window.numpadAction(action);
+        };
+
+        window.__clearNumpadClickBlockers = function () {
+            var shield = document.getElementById('sh-post-long-press-shield');
+            if (shield) {
+                shield.style.display = 'none';
+                window.__postLongPressShieldActive = false;
+            }
+            var splash = document.getElementById('splash-screen');
+            if (splash && splash.style.display !== 'none') {
+                splash.style.display = 'none';
+                splash.classList.add('fade-out');
+                document.body.classList.remove('splash-active');
+            }
+        };
+
         window.bootstrapNumpadUi = function () {
             if (window.__numpadUiBootstrapped) return;
             var modal = document.getElementById('numpad-modal');
@@ -7861,6 +7915,7 @@ window.updateStoricoButton = async function() {
             if (typeof window.initNumpadDrag === 'function') window.initNumpadDrag();
             if (typeof window.initNumpadTitleDetailShortcut === 'function') window.initNumpadTitleDetailShortcut();
             if (typeof window.wireAllPlantNumpadHandlers === 'function') window.wireAllPlantNumpadHandlers();
+            if (typeof window.__bindNumpadUiHard === 'function') window.__bindNumpadUiHard();
         };
 
         window.syncNumpadTitleDetailShortcut = function (input) {
@@ -7937,9 +7992,10 @@ window.updateStoricoButton = async function() {
                 e.preventDefault();
                 e.stopPropagation();
             }
-            if (!currentNumpadTarget || window.currentAnalisiPopupInput) return;
+            var npt = typeof window.__getNumpadTarget === 'function' ? window.__getNumpadTarget() : currentNumpadTarget;
+            if (!npt || window.currentAnalisiPopupInput) return;
             if (window.__numpadView !== 'value') return;
-            var fieldId = currentNumpadTarget.id;
+            var fieldId = npt.id;
             if (!fieldId || typeof window.canOpenTankDetailForField !== 'function'
                 || !window.canOpenTankDetailForField(fieldId)) return;
             window.openTankDetailFromNumpadTitle();
@@ -7989,6 +8045,22 @@ window.updateStoricoButton = async function() {
                     const inp = typeof window.resolveNumpadInputFromLabel === 'function'
                         ? window.resolveNumpadInputFromLabel(labelEl) : null;
                     window.openNumpad(labelEl, inp);
+                    return false;
+                };
+                labelEl.ondblclick = function (ev) {
+                    const inp = typeof window.resolveNumpadInputFromLabel === 'function'
+                        ? window.resolveNumpadInputFromLabel(labelEl) : null;
+                    if (!inp || !inp.id || typeof window.canOpenTankDetailForField !== 'function'
+                        || !window.canOpenTankDetailForField(inp.id)) return false;
+                    if (ev) {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                    }
+                    var row = inp.closest('tr, .amb-row, .bd-input-row, .nott-stocc-row');
+                    var navCtx = typeof window.buildTankDetailNavCtxFromEl === 'function'
+                        ? window.buildTankDetailNavCtxFromEl(row, inp.id, 'sigla-dblclick')
+                        : { backLabel: 'Indietro', source: 'sigla-dblclick' };
+                    window.openTankDetailPage(inp.id, navCtx);
                     return false;
                 };
             });
@@ -8081,7 +8153,8 @@ window.updateStoricoButton = async function() {
             const alarmPanel = document.getElementById('numpad-alarm-panel');
             if (alarmPanel) alarmPanel.hidden = true;
             if (typeof window.syncNumpadViewLayout === 'function') window.syncNumpadViewLayout();
-            currentNumpadTarget = input;
+            if (typeof window.__syncNumpadTarget === 'function') window.__syncNumpadTarget(input);
+            else currentNumpadTarget = input;
             window.__numpadLivePreviewOrigin = input.value;
             window.__numpadCommitted = false;
             const vLabelEl = section && section.querySelector('.v-label-text, .nott-stocc-tendina-title');
@@ -8134,6 +8207,7 @@ window.updateStoricoButton = async function() {
         };
 
         window.openNumpad = (labelEl, explicitInput) => {
+            if (typeof window.__clearNumpadClickBlockers === 'function') window.__clearNumpadClickBlockers();
             if (typeof window.__clearPostLongPressShield === 'function') window.__clearPostLongPressShield();
             globalInteractionLock = false;
             document.body.classList.remove('sh-long-press-lock');
@@ -8144,15 +8218,14 @@ window.updateStoricoButton = async function() {
                 if (typeof window.switchNumpadField === 'function' && window.switchNumpadField(labelEl, explicitInput)) return;
                 return;
             }
-            const now = Date.now();
-            if (window.__numpadLastOpenMs && (now - window.__numpadLastOpenMs) < 280) return;
-            window.__numpadLastOpenMs = now;
             if (!window.populateNumpadForLabel(labelEl, explicitInput)) return;
             if (!numpadModal) return;
             if (typeof window.bootstrapNumpadUi === 'function') window.bootstrapNumpadUi();
             if (typeof window.resetNumpadPanelPosition === 'function') window.resetNumpadPanelPosition();
             if (typeof window.applyNumpadDisplayScale === 'function') window.applyNumpadDisplayScale();
             numpadModal.classList.add('active');
+            numpadModal.style.zIndex = '10000002';
+            if (typeof window.__bindNumpadUiHard === 'function') window.__bindNumpadUiHard();
             setTimeout(() => window.applyDesktopNumpadStyles(), 50);
         };
 
@@ -8183,7 +8256,7 @@ window.updateStoricoButton = async function() {
             const numpadModalEl = document.getElementById('numpad-modal');
             if (numpadModalEl) numpadModalEl.classList.remove('active');
             if (typeof window.resetNumpadPanelPosition === 'function') window.resetNumpadPanelPosition();
-            currentNumpadTarget = null;
+            if (typeof window.__syncNumpadTarget === 'function') window.__syncNumpadTarget(null);
             if (typeof window.syncNumpadTankTrendArrow === 'function') window.syncNumpadTankTrendArrow(null);
             if (typeof window.syncNumpadTitleDetailShortcut === 'function') window.syncNumpadTitleDetailShortcut(null);
             if (typeof window.updateAriaNumpadHint === 'function') window.updateAriaNumpadHint(null);
@@ -8200,10 +8273,11 @@ window.updateStoricoButton = async function() {
         };
 
         window.navigateNumpad = (direction) => {
-            if (!currentNumpadTarget) return;
+            const npt = typeof window.__getNumpadTarget === 'function' ? window.__getNumpadTarget() : currentNumpadTarget;
+            if (!npt) return;
 
             if (window.isAriaNumpadSequenceActive && window.isAriaNumpadSequenceActive()) {
-                const info = window.getAriaNumpadStepForInput(currentNumpadTarget);
+                const info = window.getAriaNumpadStepForInput(npt);
                 if (info && info.seq) {
                     const newIdx = direction === 'next' ? info.idx + 1 : info.idx - 1;
                     if (newIdx >= 0 && newIdx < info.seq.length) {
@@ -8214,7 +8288,7 @@ window.updateStoricoButton = async function() {
                 return;
             }
             
-            const currentRow = currentNumpadTarget.closest('tr') || currentNumpadTarget.closest('.amb-row') || currentNumpadTarget.closest('.bd-input-row');
+            const currentRow = npt.closest('tr') || npt.closest('.amb-row') || npt.closest('.bd-input-row');
             if (!currentRow) return;
             
             let nextRow;
@@ -8334,6 +8408,8 @@ window.updateStoricoButton = async function() {
         window.numpadAction = (val) => {
             const display = document.getElementById('numpad-display');
             if (!display) return;
+            const npt = typeof window.__getNumpadTarget === 'function' ? window.__getNumpadTarget() : currentNumpadTarget;
+            if (!npt && window.__numpadView === 'value' && !window.currentAnalisiPopupInput) return;
             if (window.__numpadView === 'settings') return;
             if (window.__numpadView === 'alarm') {
                 if (val === 'DEL') display.value = display.value.slice(0, -1);
@@ -29956,7 +30032,7 @@ window.convertToHtml = async () => {
             display: flex !important;
             align-items: center !important;
             justify-content: center !important;
-            z-index: 101200 !important;
+            z-index: 10000002 !important;
             padding: max(18px, calc(env(safe-area-inset-top, 0px) + 12px)) 14px max(18px, env(safe-area-inset-bottom, 0px)) !important;
         }
         #numpad-modal #numpad-modal-panel.modal-content-centered {
@@ -29976,6 +30052,7 @@ window.convertToHtml = async () => {
         #numpad-modal.active #numpad-modal-panel.modal-content-centered:not(.numpad-modal-panel--user-pos) {
             transform: translate(0, 0) scale(var(--numpad-ui-scale)) !important;
             opacity: 1 !important;
+            transition: none !important;
         }
         #numpad-modal.active #numpad-modal-panel.numpad-modal-panel--user-pos {
             opacity: 1 !important;
@@ -29997,6 +30074,15 @@ window.convertToHtml = async () => {
             position: relative;
             z-index: 2;
             box-shadow: 0 16px 48px rgba(0, 0, 0, 0.28), 0 4px 12px rgba(0, 0, 0, 0.18);
+        }
+        #numpad-modal .numpad-btn,
+        #numpad-modal .numpad-enter-btn,
+        #numpad-modal .numpad-nav-btn,
+        #numpad-modal #numpad-close-btn,
+        #numpad-modal #numpad-title {
+            pointer-events: auto !important;
+            cursor: pointer !important;
+            touch-action: manipulation;
         }
         body:not(.sh-device-phone) .numpad-drag-handle {
             touch-action: none;
@@ -31773,11 +31859,11 @@ window.convertToHtml = async () => {
                 </div>
                 <div class="absolute left-1/2 top-0 transform -translate-x-1/2"><span id="numpad-context" class="text-[15px] font-black bg-blue-600 text-white px-2 py-0.5 rounded uppercase" style="border-top-right-radius: 12px; border-bottom-right-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.2), 0 1px 2px rgba(0,0,0,0.1); text-shadow: 0 1px 2px rgba(0,0,0,0.5); transform: translateY(-1px); border-bottom: 2px solid #1e40af;">MODULO</span></div>
                 <div class="flex items-center justify-center w-full relative">
-                    <span id="numpad-title" class="font-black uppercase italic text-4xl tracking-widest text-white mt-6 text-center w-full" onclick="window.onNumpadTitleClick(event)">PARAMETRO</span>
+                    <span id="numpad-title" class="font-black uppercase italic text-4xl tracking-widest text-white mt-6 text-center w-full" onclick="window.shNumpadDispatch('title', event)">PARAMETRO</span>
                     <span id="numpad-tank-trend-arrow" class="numpad-tank-trend-arrow" hidden aria-hidden="true"></span>
                 </div>
-                <button type="button" id="numpad-close-btn" onclick="window.closeNumpad()" class="absolute right-3 top-2 w-8 h-8 bg-red-600 text-white font-black text-sm font-bold rounded-full border-2 border-red-800 shadow-lg hover:bg-red-700 transition-all transform" style="background-color: #dc2626; border-bottom: 6px solid #991b1b; border-left: none; border-right: none; border-top: none; transition: all 0.15s ease; box-shadow: 0 6px 12px rgba(220, 38, 38, 0.4), 0 3px 6px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.06); transform: translateY(-1px);" onmousedown="this.style.transform='translateY(2px) scale(0.9)'" onmouseup="this.style.transform='translateY(-1px)'" onmouseleave="this.style.transform='translateY(-1px)'" ontouchstart="this.style.transform='translateY(2px) scale(0.9)'" ontouchend="this.style.transform='translateY(-1px)'">X</button>
-                <button onclick="window.openTankFromNumpad()" class="absolute right-3 bottom-2 w-6 h-6 bg-gray-400 text-white rounded-full flex items-center justify-center font-black text-[10px] hover:bg-gray-500 transition-colors shadow-lg" id="numpad-tank-btn">...</button>
+                <button type="button" id="numpad-close-btn" onclick="window.shNumpadDispatch('close')" class="absolute right-3 top-2 w-8 h-8 bg-red-600 text-white font-black text-sm font-bold rounded-full border-2 border-red-800 shadow-lg hover:bg-red-700 transition-all transform" style="background-color: #dc2626; border-bottom: 6px solid #991b1b; border-left: none; border-right: none; border-top: none; transition: all 0.15s ease; box-shadow: 0 6px 12px rgba(220, 38, 38, 0.4), 0 3px 6px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.06); transform: translateY(-1px);" onmousedown="this.style.transform='translateY(2px) scale(0.9)'" onmouseup="this.style.transform='translateY(-1px)'" onmouseleave="this.style.transform='translateY(-1px)'" ontouchstart="this.style.transform='translateY(2px) scale(0.9)'" ontouchend="this.style.transform='translateY(-1px)'">X</button>
+                <button type="button" onclick="window.shNumpadDispatch('tank-btn')" class="absolute right-3 bottom-2 w-6 h-6 bg-gray-400 text-white rounded-full flex items-center justify-center font-black text-[10px] hover:bg-gray-500 transition-colors shadow-lg" id="numpad-tank-btn">...</button>
             </div>
             <div id="numpad-alarm-panel" class="numpad-alarm-panel" hidden>
                 <button type="button" id="numpad-alarm-row-yellow" class="numpad-alarm-row numpad-alarm-row--yellow" onclick="window.selectNumpadAlarmField('yellow')">
@@ -31824,31 +31910,78 @@ window.convertToHtml = async () => {
                 </div>
             </div>
             <div class="numpad-grid">
-                <button onclick="window.numpadAction('1')" class="numpad-btn">1</button>
-                <button onclick="window.numpadAction('2')" class="numpad-btn">2</button>
-                <button onclick="window.numpadAction('3')" class="numpad-btn">3</button>
-                <button onclick="window.numpadAction('4')" class="numpad-btn">4</button>
-                <button onclick="window.numpadAction('5')" class="numpad-btn">5</button>
-                <button onclick="window.numpadAction('6')" class="numpad-btn">6</button>
-                <button onclick="window.numpadAction('7')" class="numpad-btn">7</button>
-                <button onclick="window.numpadAction('8')" class="numpad-btn">8</button>
-                <button onclick="window.numpadAction('9')" class="numpad-btn">9</button>
-                <button onclick="window.numpadAction('.')" class="numpad-btn">.</button>
-                <button onclick="window.numpadAction('0')" class="numpad-btn">0</button>
-                <button onclick="window.numpadAction('DEL')" class="numpad-btn text-amber-600">Canc</button>
-                <button onclick="window.numpadAction('%')" class="numpad-btn text-blue-600">%</button>
+                <button type="button" onclick="window.shNumpadDispatch('1')" class="numpad-btn">1</button>
+                <button type="button" onclick="window.shNumpadDispatch('2')" class="numpad-btn">2</button>
+                <button type="button" onclick="window.shNumpadDispatch('3')" class="numpad-btn">3</button>
+                <button type="button" onclick="window.shNumpadDispatch('4')" class="numpad-btn">4</button>
+                <button type="button" onclick="window.shNumpadDispatch('5')" class="numpad-btn">5</button>
+                <button type="button" onclick="window.shNumpadDispatch('6')" class="numpad-btn">6</button>
+                <button type="button" onclick="window.shNumpadDispatch('7')" class="numpad-btn">7</button>
+                <button type="button" onclick="window.shNumpadDispatch('8')" class="numpad-btn">8</button>
+                <button type="button" onclick="window.shNumpadDispatch('9')" class="numpad-btn">9</button>
+                <button type="button" onclick="window.shNumpadDispatch('.')" class="numpad-btn">.</button>
+                <button type="button" onclick="window.shNumpadDispatch('0')" class="numpad-btn">0</button>
+                <button type="button" onclick="window.shNumpadDispatch('DEL')" class="numpad-btn text-amber-600">Canc</button>
+                <button type="button" onclick="window.shNumpadDispatch('%')" class="numpad-btn text-blue-600">%</button>
                 <div class="numpad-bottom-row">
-                    <button type="button" onclick="window.navigateNumpad('prev')" class="numpad-nav-btn" aria-label="Campo precedente">←</button>
-                    <button type="button" onclick="window.confirmNumpad()" class="numpad-enter-btn" aria-label="Invio">
+                    <button type="button" onclick="window.shNumpadDispatch('nav-prev')" class="numpad-nav-btn" aria-label="Campo precedente">←</button>
+                    <button type="button" onclick="window.shNumpadDispatch('confirm')" class="numpad-enter-btn" aria-label="Invio">
                         <span id="numpad-start-text">INVIO</span>
                     </button>
-                    <button type="button" onclick="window.navigateNumpad('next')" class="numpad-nav-btn" aria-label="Campo successivo">→</button>
+                    <button type="button" onclick="window.shNumpadDispatch('nav-next')" class="numpad-nav-btn" aria-label="Campo successivo">→</button>
                 </div>
             </div>
         </div>
     </div>
     <script>
+    (function () {
+        function bindBtn(btn, fn) {
+            if (!btn || btn.getAttribute('data-sh-hard') === '1') return;
+            btn.setAttribute('data-sh-hard', '1');
+            btn.type = 'button';
+            btn.addEventListener('click', function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (typeof window.__clearNumpadClickBlockers === 'function') window.__clearNumpadClickBlockers();
+                fn(e);
+            });
+        }
+        window.__bindNumpadUiHard = function () {
+            var modal = document.getElementById('numpad-modal');
+            var panel = document.getElementById('numpad-modal-panel');
+            if (!modal || !panel) return;
+            if (modal) modal.style.zIndex = '10000002';
+            panel.querySelectorAll('.numpad-btn').forEach(function (btn) {
+                bindBtn(btn, function () {
+                    var label = (btn.textContent || '').trim();
+                    if (typeof window.shNumpadDispatch !== 'function') return;
+                    if (label === 'Canc') window.shNumpadDispatch('DEL');
+                    else if (label === '%') window.shNumpadDispatch('%');
+                    else window.shNumpadDispatch(label);
+                });
+            });
+            bindBtn(document.getElementById('numpad-close-btn'), function () {
+                if (typeof window.shNumpadDispatch === 'function') window.shNumpadDispatch('close');
+            });
+            bindBtn(panel.querySelector('.numpad-enter-btn'), function () {
+                if (typeof window.shNumpadDispatch === 'function') window.shNumpadDispatch('confirm');
+            });
+            panel.querySelectorAll('.numpad-nav-btn').forEach(function (btn) {
+                bindBtn(btn, function () {
+                    if (typeof window.shNumpadDispatch !== 'function') return;
+                    window.shNumpadDispatch(btn.getAttribute('aria-label') === 'Campo precedente' ? 'nav-prev' : 'nav-next');
+                });
+            });
+            bindBtn(document.getElementById('numpad-title'), function (e) {
+                if (typeof window.shNumpadDispatch === 'function') window.shNumpadDispatch('title', e);
+            });
+            bindBtn(document.getElementById('numpad-tank-btn'), function () {
+                if (typeof window.shNumpadDispatch === 'function') window.shNumpadDispatch('tank-btn');
+            });
+        };
         if (typeof window.bootstrapNumpadUi === 'function') window.bootstrapNumpadUi();
+        else if (typeof window.__bindNumpadUiHard === 'function') window.__bindNumpadUiHard();
+    })();
     </script>
 
     <div id="analisi-choice-modal" class="modal-overlay" onclick="if(event.target === this) window.confirmAnalisiValues();">

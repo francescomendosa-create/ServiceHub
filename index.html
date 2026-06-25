@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v357';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v358';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -12844,8 +12844,9 @@ window.updateStoricoButton = async function() {
                 if (!raw) return [];
                 var parsed = JSON.parse(raw);
                 var list = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);
+                var nowCap = Date.now() - 60000;
                 return list.filter(function (o) {
-                    return o && Number.isFinite(o.ts) && Number.isFinite(o.mm);
+                    return o && Number.isFinite(o.ts) && Number.isFinite(o.mm) && o.ts <= nowCap;
                 }).map(function (o) {
                     return { ts: o.ts, mm: o.mm, label: 'Riferimento', manualRef: true };
                 }).sort(function (a, b) { return a.ts - b.ts; });
@@ -12861,6 +12862,7 @@ window.updateStoricoButton = async function() {
 
         window.saveTankTimelineManualRef = function (fieldId, pt) {
             if (!fieldId || !pt || !Number.isFinite(pt.ts) || !Number.isFinite(pt.mm)) return;
+            if (pt.ts > Date.now() - 60000) return;
             try {
                 var refs = window.loadTankTimelineManualRefs(fieldId);
                 var dupIdx = refs.findIndex(function (r) {
@@ -12896,30 +12898,6 @@ window.updateStoricoButton = async function() {
             var frac = (svgX - startX) / Math.max(1, nowX - startX);
             var ts = model.tStart + frac * (model.nowTs - model.tStart);
             return window.snapTankTimelineRefTs(ts);
-        };
-
-        /** Timestamp da posizione X sulla timeline (storico + zona previsione). */
-        window.timelineTsFromSvgX = function (geom, model, svgX) {
-            if (!geom || !model) return model ? model.nowTs : Date.now();
-            var startPt = typeof window.getTankTimelineStartPoint === 'function'
-                ? window.getTankTimelineStartPoint(model)
-                : (model.initialPt || (model.series.length ? model.series[0] : null));
-            var toX = geom.toX || geom.toXHist;
-            var startX = startPt && toX ? toX(startPt.ts) : geom.pad.l;
-            var nowX = geom.nowX;
-            var endX = geom.endX != null ? geom.endX : geom.w - (geom.pad ? geom.pad.r : 0);
-            if (svgX <= startX + 2) return startPt ? startPt.ts : model.tStart;
-            if (svgX >= endX - 2) return model.tEnd;
-            if (svgX <= nowX + 2) {
-                var fracHist = (svgX - startX) / Math.max(1, nowX - startX);
-                return window.snapTankTimelineRefTs(model.tStart + fracHist * (model.nowTs - model.tStart));
-            }
-            var predW = endX - nowX;
-            if (predW <= 0) return model.nowTs;
-            var fracPred = (svgX - nowX) / predW;
-            var predSpan = model.tEnd - model.nowTs;
-            if (predSpan <= 0) return model.nowTs;
-            return window.snapTankTimelineRefTs(model.nowTs + fracPred * predSpan);
         };
 
         window.augmentTankTrendSeriesWithManualRef = function (series, fieldId) {
@@ -12959,12 +12937,7 @@ window.updateStoricoButton = async function() {
             pts.sort(function (a, b) { return a.ts - b.ts; });
             if (!pts.length) return model.nowMm;
             if (ts <= pts[0].ts) return pts[0].mm;
-            if (ts >= pts[pts.length - 1].ts) {
-                if (ts > model.nowTs + 60000 && typeof window.predictTankLevelAtTs === 'function') {
-                    return window.predictTankLevelAtTs(model, ts);
-                }
-                return pts[pts.length - 1].mm;
-            }
+            if (ts >= pts[pts.length - 1].ts) return pts[pts.length - 1].mm;
             for (var i = 0; i < pts.length - 1; i++) {
                 var a = pts[i];
                 var b = pts[i + 1];
@@ -12989,8 +12962,7 @@ window.updateStoricoButton = async function() {
             timesHost.innerHTML = '';
             if (!refs.length || isDraft || !geom) return;
             refs.forEach(function (ref, idx) {
-                var toX = geom.toX || geom.toXHist;
-                var refX = toX ? toX(ref.ts) : geom.nowX;
+                var refX = geom.toXHist ? geom.toXHist(ref.ts) : geom.nowX;
                 var leftPct = window.timelineFloatLeftPct(geom, refX).toFixed(2) + '%';
                 var lbl = refs.length > 1 ? 'Riferimento ' + (idx + 1) : 'Riferimento';
                 metricsHost.insertAdjacentHTML('beforeend',
@@ -13046,10 +13018,8 @@ window.updateStoricoButton = async function() {
             var btnOk = modal.querySelector('[data-tl-ref-modal-ok]');
             var btnCancel = modal.querySelector('[data-tl-ref-modal-cancel]');
             if (hint) {
-                var nowTs = Date.now();
-                var isFuture = Number.isFinite(opts.ts) && opts.ts > nowTs + 60000;
-                hint.textContent = (isFuture ? 'Orario futuro ' : 'Ora ') + window.formatTankTimelineClock(opts.ts) +
-                    (isFuture ? ' · livello previsto in mm' : ' · inserisci il livello misurato in mm');
+                hint.textContent = 'Ora ' + window.formatTankTimelineClock(opts.ts) +
+                    ' · inserisci il livello misurato in mm';
             }
             if (inp) {
                 inp.value = opts.suggestedMm != null && Number.isFinite(opts.suggestedMm)
@@ -13103,21 +13073,17 @@ window.updateStoricoButton = async function() {
             block.classList.toggle('tank-detail-timeline-block--ref-draft', isDraft);
             if (draftEl) draftEl.style.display = isDraft ? '' : 'none';
             if (isDraft && geom && clockBtn) {
-                var toX = geom.toX || geom.toXHist;
-                var x = toX ? toX(draftTs) : geom.nowX;
+                var x = geom.toXHist ? geom.toXHist(draftTs) : geom.nowX;
                 var leftPct = window.timelineFloatLeftPct(geom, x).toFixed(2) + '%';
                 draftEl.style.left = leftPct;
-                var isFutureDraft = Number.isFinite(draftTs) && Number.isFinite(model && model.nowTs)
-                    && draftTs > model.nowTs + 60000;
-                clockBtn.textContent = window.formatTankTimelineClock(draftTs) + (isFutureDraft ? ' · futuro' : '');
+                clockBtn.textContent = window.formatTankTimelineClock(draftTs);
             }
             if (svg) {
                 var refScrub = svg.querySelector('[data-tl-ref-scrub]');
                 var refKnob = svg.querySelector('[data-tl-ref-knob]');
                 var refHit = svg.querySelector('[data-tl-ref-hit]');
                 if (isDraft && geom) {
-                    var toXDraft = geom.toX || geom.toXHist;
-                    var dx = toXDraft ? toXDraft(draftTs) : geom.nowX;
+                    var dx = geom.toXHist(draftTs);
                     var y = geom.lineY;
                     var zTop = geom.zoneTop != null ? geom.zoneTop : geom.pad.t;
                     if (refScrub) {
@@ -13543,11 +13509,11 @@ window.updateStoricoButton = async function() {
                 ev.preventDefault();
                 var sx = a.svgXFromEvent(ev);
                 if (a.mode === 'ref-draft') {
-                    var ts = window.timelineTsFromSvgX(a.geom, a.model, sx);
+                    var ts = window.timelineTsFromSvgXHist(a.geom, a.model, sx);
                     var startPt = typeof window.getTankTimelineStartPoint === 'function'
                         ? window.getTankTimelineStartPoint(a.model) : a.model.initialPt;
                     var minTs = (startPt && Number.isFinite(startPt.ts) ? startPt.ts : a.model.tStart) + 60000;
-                    var maxTs = a.model.tEnd - 60000;
+                    var maxTs = a.model.nowTs - 60000;
                     ts = Math.max(minTs, Math.min(maxTs, ts));
                     a.block.__tlRefDraftTs = ts;
                     window.updateTankTimelineRefDraftUI(a.block, ts);
@@ -13642,13 +13608,13 @@ window.updateStoricoButton = async function() {
                         svgXFromEvent: svgXFromEvent
                     };
                     wrap.classList.add('is-tl-dragging');
-                    var ts0 = window.timelineTsFromSvgX(geom, model, sx);
+                    var ts0 = window.timelineTsFromSvgXHist(geom, model, sx);
                     block.__tlRefDraftTs = ts0;
                     window.updateTankTimelineRefDraftUI(block, ts0);
                     return;
                 }
                 if (block.__tlRefDraftTs != null) {
-                    if (!ev.target.closest('[data-tl-ref-hit], [data-tl-ref-knob], [data-tl-ref-scrub], [data-tl-plot-hit]')) return;
+                    if (!ev.target.closest('[data-tl-ref-hit], [data-tl-ref-knob], [data-tl-ref-scrub]')) return;
                     ev.preventDefault();
                     window.__tankTimelineDragActive = {
                         block: block,
@@ -13660,7 +13626,7 @@ window.updateStoricoButton = async function() {
                         svgXFromEvent: svgXFromEvent
                     };
                     wrap.classList.add('is-tl-dragging');
-                    var ts = window.timelineTsFromSvgX(geom, model, sx);
+                    var ts = window.timelineTsFromSvgXHist(geom, model, sx);
                     block.__tlRefDraftTs = ts;
                     window.updateTankTimelineRefDraftUI(block, ts);
                     return;

@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v359';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v360';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -12644,7 +12644,10 @@ window.updateStoricoButton = async function() {
                 if (ts >= model.tEnd) return pad.l + plotW;
                 return pad.l + plotW * ((ts - model.tStart) / tSpan);
             };
-            var nowX = toX(model.nowTs);
+            var wallNowTs = Number.isFinite(model.wallNowTs) ? model.wallNowTs : (model.nowTs || Date.now());
+            var levelTs = model.nowTs;
+            var nowX = toX(wallNowTs);
+            var levelNowX = toX(levelTs);
             var endX = toX(model.tEnd);
             var w = Math.ceil(Math.max(endX, pad.l + plotW)) + 1;
             return {
@@ -12656,6 +12659,9 @@ window.updateStoricoButton = async function() {
                 tSpan: tSpan,
                 lineY: lineY,
                 nowX: nowX,
+                levelNowX: levelNowX,
+                wallNowTs: wallNowTs,
+                levelTs: levelTs,
                 endX: endX,
                 zoneTop: zoneTop,
                 zoneBottom: zoneBottom,
@@ -12763,6 +12769,16 @@ window.updateStoricoButton = async function() {
             if (!initialPt && typeof window.getTankTimelineInitialPoint === 'function') {
                 initialPt = window.getTankTimelineInitialPoint(series);
             }
+            var manualInitial = info.fieldId && typeof window.loadTankTimelineManualInitial === 'function'
+                ? window.loadTankTimelineManualInitial(info.fieldId) : null;
+            if (manualInitial) {
+                initialPt = {
+                    ts: manualInitial.ts,
+                    mm: manualInitial.mm,
+                    label: 'Livello iniziale',
+                    manualInitial: true
+                };
+            }
             var manualRefPts = info.manualRefPts
                 || (info.fieldId && typeof window.loadTankTimelineManualRefs === 'function'
                     ? window.loadTankTimelineManualRefs(info.fieldId) : []);
@@ -12773,16 +12789,18 @@ window.updateStoricoButton = async function() {
             info.manualRefPts = manualRefPts;
             var tStart = initialPt ? initialPt.ts
                 : (series.length ? series[0].ts : nowTs - 3600000);
+            var wallNowTs = Date.now();
             var predH = predictH || window.TANK_TIMELINE_PREDICT_HOURS_DEFAULT || 12;
             if ((window.TANK_TIMELINE_PREDICT_OPTIONS || [8, 12, 24]).indexOf(predH) < 0) {
                 predH = window.TANK_TIMELINE_PREDICT_HOURS_DEFAULT || 12;
             }
-            var tEnd = nowTs + predH * 3600000;
+            var tEnd = wallNowTs + predH * 3600000;
             if (tEnd <= tStart) tEnd = tStart + predH * 3600000;
             return {
                 series: series,
                 rateMmH: rate,
                 nowTs: nowTs,
+                wallNowTs: wallNowTs,
                 actualTs: actualTs,
                 nowMm: nowMm,
                 initialPt: initialPt,
@@ -12883,6 +12901,43 @@ window.updateStoricoButton = async function() {
             try { localStorage.removeItem('sh-tl-manual-ref:' + fieldId); } catch (_) {}
         };
 
+        window.loadTankTimelineManualInitial = function (fieldId) {
+            if (!fieldId) return null;
+            try {
+                var raw = localStorage.getItem('sh-tl-manual-initial:' + fieldId);
+                if (!raw) return null;
+                var o = JSON.parse(raw);
+                if (o && Number.isFinite(o.ts) && Number.isFinite(o.mm)) {
+                    return { ts: o.ts, mm: o.mm };
+                }
+            } catch (_) {}
+            return null;
+        };
+
+        window.saveTankTimelineManualInitial = function (fieldId, pt) {
+            if (!fieldId || !pt || !Number.isFinite(pt.ts) || !Number.isFinite(pt.mm)) return;
+            try {
+                localStorage.setItem('sh-tl-manual-initial:' + fieldId, JSON.stringify({ ts: pt.ts, mm: pt.mm }));
+            } catch (_) {}
+        };
+
+        window.clearTankTimelineManualInitial = function (fieldId) {
+            if (!fieldId) return;
+            try { localStorage.removeItem('sh-tl-manual-initial:' + fieldId); } catch (_) {}
+        };
+
+        window.timelineTsFromTimeInput = function (baseTs, timeStr) {
+            if (!Number.isFinite(baseTs) || !timeStr) return baseTs;
+            var parts = String(timeStr).trim().split(':');
+            if (parts.length < 2) return baseTs;
+            var h = parseInt(parts[0], 10);
+            var m = parseInt(parts[1], 10);
+            if (!Number.isFinite(h) || !Number.isFinite(m)) return baseTs;
+            var d = new Date(baseTs);
+            d.setHours(h, m, 0, 0);
+            return window.snapTankTimelineRefTs(d.getTime());
+        };
+
         window.snapTankTimelineRefTs = function (ts) {
             var snapMs = 15 * 60 * 1000;
             return Math.round(ts / snapMs) * snapMs;
@@ -12894,9 +12949,10 @@ window.updateStoricoButton = async function() {
             var startX = startPt && geom.toXHist ? geom.toXHist(startPt.ts) : geom.pad.l;
             var nowX = geom.nowX;
             if (svgX <= startX + 2) return startPt ? startPt.ts : model.tStart;
-            if (svgX >= nowX - 2) return model.nowTs;
+            var capTs = Number.isFinite(model.wallNowTs) ? model.wallNowTs : model.nowTs;
+            if (svgX >= nowX - 2) return capTs;
             var frac = (svgX - startX) / Math.max(1, nowX - startX);
-            var ts = model.tStart + frac * (model.nowTs - model.tStart);
+            var ts = model.tStart + frac * (capTs - model.tStart);
             return window.snapTankTimelineRefTs(ts);
         };
 
@@ -12992,8 +13048,12 @@ window.updateStoricoButton = async function() {
             el.className = 'tank-timeline-ref-modal';
             el.innerHTML =
                 '<div class="tank-timeline-ref-modal-sheet" onclick="event.stopPropagation()">' +
-                '<div class="tank-timeline-ref-modal-title">Livello di riferimento</div>' +
+                '<div class="tank-timeline-ref-modal-title" data-tl-ref-modal-title>Livello di riferimento</div>' +
                 '<p class="tank-timeline-ref-modal-hint" data-tl-ref-modal-hint>Ora — · inserisci il livello in mm</p>' +
+                '<div class="tank-timeline-ref-modal-time-row" data-tl-ref-modal-time-row style="display:none">' +
+                '<label class="tank-timeline-ref-modal-time-lbl">Ora</label>' +
+                '<input type="time" class="tank-timeline-ref-modal-time" data-tl-ref-modal-time autocomplete="off">' +
+                '</div>' +
                 '<input type="tel" class="tank-timeline-ref-modal-inp" data-tl-ref-modal-inp inputmode="decimal" placeholder="mm" autocomplete="off">' +
                 '<div class="tank-timeline-ref-modal-actions">' +
                 '<button type="button" class="tank-timeline-ref-modal-btn tank-timeline-ref-modal-btn--ghost" data-tl-ref-modal-cancel>Annulla</button>' +
@@ -13013,13 +13073,31 @@ window.updateStoricoButton = async function() {
         window.openTankTimelineRefLevelPopup = function (opts) {
             opts = opts || {};
             var modal = window.ensureTankTimelineRefModal();
+            var titleEl = modal.querySelector('[data-tl-ref-modal-title]');
             var hint = modal.querySelector('[data-tl-ref-modal-hint]');
+            var timeRow = modal.querySelector('[data-tl-ref-modal-time-row]');
+            var timeInp = modal.querySelector('[data-tl-ref-modal-time]');
             var inp = modal.querySelector('[data-tl-ref-modal-inp]');
             var btnOk = modal.querySelector('[data-tl-ref-modal-ok]');
             var btnCancel = modal.querySelector('[data-tl-ref-modal-cancel]');
+            if (titleEl) {
+                titleEl.textContent = opts.title || (opts.mode === 'initial' ? 'Livello iniziale' : 'Livello di riferimento');
+            }
             if (hint) {
-                hint.textContent = 'Ora ' + window.formatTankTimelineClock(opts.ts) +
-                    ' · inserisci il livello misurato in mm';
+                hint.textContent = opts.editTime
+                    ? 'Modifica ora e livello misurato in mm'
+                    : ('Ora ' + window.formatTankTimelineClock(opts.ts) + ' · inserisci il livello misurato in mm');
+            }
+            if (timeRow) timeRow.style.display = opts.editTime ? '' : 'none';
+            if (timeInp && opts.editTime && Number.isFinite(opts.ts)) {
+                try {
+                    var td = new Date(opts.ts);
+                    var hh = String(td.getHours()).padStart(2, '0');
+                    var mi = String(td.getMinutes()).padStart(2, '0');
+                    timeInp.value = hh + ':' + mi;
+                } catch (_) {
+                    timeInp.value = '';
+                }
             }
             if (inp) {
                 inp.value = opts.suggestedMm != null && Number.isFinite(opts.suggestedMm)
@@ -13027,7 +13105,9 @@ window.updateStoricoButton = async function() {
             }
             window.__tankTimelineRefModalCtx = opts;
             modal.classList.add('active');
-            if (inp) {
+            if (opts.editTime && timeInp) {
+                setTimeout(function () { timeInp.focus && timeInp.focus(); }, 80);
+            } else if (inp) {
                 setTimeout(function () { inp.focus(); inp.select && inp.select(); }, 80);
             }
             function onOk() {
@@ -13038,9 +13118,13 @@ window.updateStoricoButton = async function() {
                     if (inp) inp.focus();
                     return;
                 }
+                var ts = opts.ts;
+                if (opts.editTime && timeInp && timeInp.value) {
+                    ts = window.timelineTsFromTimeInput(opts.baseTs || opts.ts, timeInp.value);
+                }
                 var ctx = window.__tankTimelineRefModalCtx;
                 window.__closeTankTimelineRefModal();
-                if (ctx && typeof ctx.onConfirm === 'function') ctx.onConfirm(mm);
+                if (ctx && typeof ctx.onConfirm === 'function') ctx.onConfirm(mm, ts);
             }
             function onCancel() {
                 var ctx = window.__tankTimelineRefModalCtx;
@@ -13051,6 +13135,11 @@ window.updateStoricoButton = async function() {
             if (btnCancel) btnCancel.onclick = onCancel;
             if (inp) {
                 inp.onkeydown = function (ev) {
+                    if (ev.key === 'Enter') { ev.preventDefault(); onOk(); }
+                };
+            }
+            if (timeInp) {
+                timeInp.onkeydown = function (ev) {
                     if (ev.key === 'Enter') { ev.preventDefault(); onOk(); }
                 };
             }
@@ -13110,6 +13199,47 @@ window.updateStoricoButton = async function() {
                 }
             }
             window.syncTankTimelineSavedRefLabels(block, model);
+        };
+
+        window.openTankTimelineInitialEditPopup = function (block) {
+            if (!block) return;
+            var svg = block.querySelector('[data-tl-svg]');
+            var model = svg && svg.__tlModel;
+            if (!model) return;
+            var startPt = typeof window.getTankTimelineStartPoint === 'function'
+                ? window.getTankTimelineStartPoint(model) : model.initialPt;
+            if (!startPt || !Number.isFinite(startPt.ts)) return;
+            window.openTankTimelineRefLevelPopup({
+                mode: 'initial',
+                title: 'Livello iniziale',
+                ts: startPt.ts,
+                baseTs: startPt.ts,
+                editTime: true,
+                suggestedMm: startPt.mm,
+                onConfirm: function (mm, ts) {
+                    if (!block.__tlInfo || !block.__tlInfo.fieldId) return;
+                    var finalTs = Number.isFinite(ts) ? ts : startPt.ts;
+                    window.saveTankTimelineManualInitial(block.__tlInfo.fieldId, { ts: finalTs, mm: mm });
+                    window.refreshTankDetailTimelineAfterRefChange(block);
+                }
+            });
+        };
+
+        window.openTankTimelineNowRefPopup = function (block) {
+            if (!block) return;
+            var svg = block.querySelector('[data-tl-svg]');
+            var model = svg && svg.__tlModel;
+            if (!model || !block.__tlInfo) return;
+            var wallTs = window.snapTankTimelineRefTs(model.wallNowTs || Date.now());
+            var suggested = typeof window.suggestTankTimelineRefMmAtTs === 'function'
+                ? window.suggestTankTimelineRefMmAtTs(model, wallTs) : model.nowMm;
+            window.openTankTimelineRefLevelPopup({
+                ts: wallTs,
+                suggestedMm: suggested,
+                onConfirm: function (mm) {
+                    window.confirmTankTimelineManualRef(block, wallTs, mm);
+                }
+            });
         };
 
         window.cancelTankTimelineRefDraft = function (block) {
@@ -13209,16 +13339,9 @@ window.updateStoricoButton = async function() {
                 '<span data-tl-start-time>' + window.formatTankTimelineClock(startPt.ts) + '</span></div>' +
                 '<div class="tank-detail-timeline-saved-ref-times" data-tl-refs-times></div>' +
                 '<div class="tank-detail-timeline-time-slot tank-detail-timeline-time-slot--pred" data-tl-time-pred style="left:50%">' +
-                '<span data-tl-pred-time>' + window.formatTankTimelineClock(model.nowTs) + '</span></div>' +
+                '<span data-tl-pred-time>' + window.formatTankTimelineClock(model.wallNowTs || model.nowTs) + '</span></div>' +
                 '</div></div>' +
                 '<svg class="tank-detail-timeline-svg" data-tl-svg viewBox="0 0 800 68" preserveAspectRatio="none" aria-hidden="true"></svg>' +
-                '<div class="tank-detail-timeline-band tank-detail-timeline-band--bottom">' +
-                '<div class="tank-detail-timeline-float tank-detail-timeline-float--actual" data-tl-metric-actual style="left:50%">' +
-                '<div class="tank-detail-timeline-time-slot tank-detail-timeline-time-slot--actual" data-tl-time-actual>' +
-                window.formatTankTimelineClock(model.actualTs != null ? model.actualTs : model.nowTs) + '</div>' +
-                '<div class="tank-detail-timeline-metric-lbl">Livello attuale</div>' +
-                '<div class="tank-detail-timeline-metric-mm" data-tl-actual-mm>' + window.__fmtTankDetailMm(model.nowMm) + ' mm</div>' +
-                '</div></div>' +
                 '</div>' +
                 '<div class="tank-detail-timeline-legend">' +
                 '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--hist">■ Storico / adesso</span>' +
@@ -13270,6 +13393,10 @@ window.updateStoricoButton = async function() {
                 var rx = toXHist(ref.ts);
                 if (rx > histPathXs[histPathXs.length - 1] + 1 && rx < nowX - 1) histPathXs.push(rx);
             });
+            var levelNowX = geom.levelNowX != null ? geom.levelNowX : nowX;
+            if (levelNowX > histPathXs[histPathXs.length - 1] + 1 && levelNowX < nowX - 1) {
+                histPathXs.push(levelNowX);
+            }
             if (nowX > histPathXs[histPathXs.length - 1] + 0.5) histPathXs.push(nowX);
             var histPath = histPathXs.map(function (x, i) {
                 return (i === 0 ? 'M' : ' L') + x.toFixed(1) + ',' + lineY.toFixed(1);
@@ -13305,7 +13432,20 @@ window.updateStoricoButton = async function() {
             var zoneHist = '<rect pointer-events="none" x="' + pad.l + '" y="' + pad.t + '" width="' + (nowX - pad.l).toFixed(1) +
                 '" height="' + plotH + '" fill="rgba(56,189,248,0.06)" />';
             var nowLine = '<line data-tl-now-line pointer-events="none" x1="' + nowX.toFixed(1) + '" y1="' + zoneTop.toFixed(1) + '" x2="' + nowX.toFixed(1) +
-                '" y2="' + zoneBottom.toFixed(1) + '" stroke="#f8fafc" stroke-width="2.5" stroke-linecap="round"/>';
+                '" y2="' + zoneBottom.toFixed(1) + '" stroke="#f8fafc" stroke-width="2.5" stroke-linecap="round"/>' +
+                '<circle data-tl-now-hit cx="' + nowX.toFixed(1) + '" cy="' + ((zoneTop + zoneBottom) / 2).toFixed(1) +
+                '" r="22" fill="transparent" pointer-events="all" style="cursor:pointer;touch-action:manipulation" title="Aggiungi livello a quest\'ora"/>';
+            var levelDot = '';
+            if (Math.abs(levelNowX - nowX) > 4 && Number.isFinite(model.nowMm)) {
+                var lvlState = window.resolveTankLevelAlarmState(model.fieldId, model.nowMm, {
+                    tankDbKey: model.tankDbKey,
+                    livMax: model.livMax
+                });
+                levelDot = '<circle data-tl-level-dot pointer-events="none" cx="' + levelNowX.toFixed(1) + '" cy="' + lineY.toFixed(1) +
+                    '" r="5" fill="' + window.timelineAlarmDotFill(lvlState) + '" stroke="#0f172a" stroke-width="1.2">' +
+                    '<title>Livello inserito ' + window.__fmtTankDetailMm(model.nowMm) + ' mm · ' +
+                    window.formatTankTimelineClock(model.nowTs) + '</title></circle>';
+            }
             var plotHit = '<rect data-tl-plot-hit x="' + pad.l.toFixed(1) + '" y="' + zoneTop.toFixed(1) +
                 '" width="' + Math.max(0, endX - pad.l).toFixed(1) + '" height="' + (zoneBottom - zoneTop).toFixed(1) +
                 '" fill="transparent" pointer-events="all" style="cursor:grab"/>';
@@ -13328,7 +13468,7 @@ window.updateStoricoButton = async function() {
                 '" y2="' + (pad.t + plotH).toFixed(1) + '" stroke="rgba(148,163,184,0.35)" stroke-width="1"/>' +
                 (histPath ? '<path pointer-events="none" d="' + histPath + '" fill="none" stroke="#38bdf8" stroke-width="2.5" stroke-linejoin="round"/>' : '') +
                 '<path data-tl-pred-path pointer-events="none" d="' + predPath + '" fill="none" stroke="#a78bfa" stroke-width="2.5" stroke-dasharray="8 5" stroke-linejoin="round"/>' +
-                dots + startHit + nowLine + plotHit + scrubber + refScrubber;
+                dots + startHit + levelDot + nowLine + plotHit + scrubber + refScrubber;
             svgEl.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
             svgEl.__tlModel = model;
             svgEl.__tlGeom = geom;
@@ -13395,27 +13535,20 @@ window.updateStoricoButton = async function() {
                 setStartLeft('[data-tl-metric-start]', startLabelX);
                 setStartLeft('[data-tl-time-start]', startLabelX);
             }
-            setLeft('[data-tl-metric-actual]', nowX);
             setLeft('[data-tl-metric-pred]', scrubX);
             setLeft('[data-tl-time-pred]', scrubX);
             var startMmEl = root.querySelector('[data-tl-start-mm]');
             var startTimeEl = root.querySelector('[data-tl-start-time]');
-            var actualMmEl = root.querySelector('[data-tl-actual-mm]');
-            var actualTimeEl = root.querySelector('[data-tl-actual-time]');
             var predMmEl = root.querySelector('[data-tl-pred-mm]');
             var predTimeEl = root.querySelector('[data-tl-pred-time]');
             if (startMmEl) startMmEl.textContent = window.__fmtTankDetailMm(startPt.mm) + ' mm';
             if (startTimeEl) startTimeEl.textContent = window.formatTankTimelineClock(startPt.ts);
-            if (actualMmEl) actualMmEl.textContent = window.__fmtTankDetailMm(model.nowMm) + ' mm';
-            if (actualTimeEl) actualTimeEl.textContent = window.formatTankTimelineClock(model.actualTs != null ? model.actualTs : model.nowTs);
             if (predMmEl) predMmEl.textContent = window.__fmtTankDetailMm(predMm) + ' mm';
             if (predTimeEl) predTimeEl.textContent = window.formatTankTimelineClock(targetTs);
             var fieldId = root.__tlInfo && root.__tlInfo.fieldId;
             var alarmOpts = { tankDbKey: model.tankDbKey, livMax: model.livMax };
             window.applyTankTimelineAlarmMetricClass(startMmEl, showStart
                 ? window.resolveTankLevelAlarmState(fieldId, startPt.mm, alarmOpts) : 'normal');
-            window.applyTankTimelineAlarmMetricClass(actualMmEl,
-                window.resolveTankLevelAlarmState(fieldId, model.nowMm, alarmOpts));
             window.applyTankTimelineAlarmMetricClass(predMmEl,
                 window.resolveTankLevelAlarmState(fieldId, predMm, alarmOpts));
         };
@@ -13430,7 +13563,8 @@ window.updateStoricoButton = async function() {
                 model.predictH || root.__tlPredictH || window.TANK_TIMELINE_PREDICT_HOURS_DEFAULT || 12,
                 Number(hoursAhead) || 0
             ));
-            var targetTs = model.nowTs + hoursAhead * 3600000;
+            var anchorTs = model.wallNowTs != null ? model.wallNowTs : model.nowTs;
+            var targetTs = anchorTs + hoursAhead * 3600000;
             var predMm = window.predictTankLevelAtTs(model, targetTs);
             var x = geom.toX(targetTs);
             if (geom.endX != null && x > geom.endX) x = geom.endX;
@@ -13513,7 +13647,7 @@ window.updateStoricoButton = async function() {
                     var startPt = typeof window.getTankTimelineStartPoint === 'function'
                         ? window.getTankTimelineStartPoint(a.model) : a.model.initialPt;
                     var minTs = (startPt && Number.isFinite(startPt.ts) ? startPt.ts : a.model.tStart) + 60000;
-                    var maxTs = a.model.nowTs - 60000;
+                    var maxTs = (a.model.wallNowTs != null ? a.model.wallNowTs : a.model.nowTs) - 60000;
                     ts = Math.max(minTs, Math.min(maxTs, ts));
                     a.block.__tlRefDraftTs = ts;
                     window.updateTankTimelineRefDraftUI(a.block, ts);
@@ -13652,12 +13786,17 @@ window.updateStoricoButton = async function() {
                 block.addEventListener('click', function (ev) {
                     if (ev.target.closest('[data-tl-start-hit]')) return;
                     var startMetric = ev.target.closest('[data-tl-metric-start], [data-tl-time-start]');
-                    var m0 = svg.__tlModel;
-                    var canStartRef = m0 && typeof window.getTankTimelineStartPoint === 'function'
-                        && window.getTankTimelineStartPoint(m0);
-                    if (startMetric && canStartRef && block.__tlRefDraftTs == null) {
+                    if (startMetric && block.__tlRefDraftTs == null) {
                         ev.preventDefault();
-                        window.beginTankTimelineRefDraft(block);
+                        ev.stopPropagation();
+                        window.openTankTimelineInitialEditPopup(block);
+                        return;
+                    }
+                    var nowHit = ev.target.closest('[data-tl-now-hit]');
+                    if (nowHit && block.__tlRefDraftTs == null) {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        window.openTankTimelineNowRefPopup(block);
                         return;
                     }
                     var clock = ev.target.closest('[data-tl-ref-clock]');
@@ -13673,8 +13812,8 @@ window.updateStoricoButton = async function() {
                     window.openTankTimelineRefLevelPopup({
                         ts: draftTs,
                         suggestedMm: suggested,
-                        onConfirm: function (mm) {
-                            window.confirmTankTimelineManualRef(block, draftTs, mm);
+                        onConfirm: function (mm, ts) {
+                            window.confirmTankTimelineManualRef(block, ts || draftTs, mm);
                         },
                         onCancel: function () {
                             window.cancelTankTimelineRefDraft(block);
@@ -13692,6 +13831,7 @@ window.updateStoricoButton = async function() {
                                 t.closest('[data-tl-ref-hit]') ||
                                 t.closest('[data-tl-ref-knob]') ||
                                 t.closest('[data-tl-start-hit]') ||
+                                t.closest('[data-tl-now-hit]') ||
                                 t.closest('#tank-timeline-ref-modal')
                             )) return;
                             window.cancelTankTimelineRefDraft(bl);
@@ -13707,6 +13847,16 @@ window.updateStoricoButton = async function() {
             }
 
             applyPredictH(block.__tlPredictH);
+
+            if (block.__tlWallClockTimer) clearInterval(block.__tlWallClockTimer);
+            block.__tlWallClockTimer = setInterval(function () {
+                if (!block.isConnected) {
+                    clearInterval(block.__tlWallClockTimer);
+                    block.__tlWallClockTimer = null;
+                    return;
+                }
+                applyPredictH(block.__tlPredictH);
+            }, 60000);
         };
 
         window.buildTankDetailHistoryTableHTML = function (series) {
@@ -13895,7 +14045,8 @@ window.updateStoricoButton = async function() {
                 '.tank-detail-timeline-time-slot--ref{color:#e2e8f0}' +
                 '.tank-detail-timeline-time-slot--pred{color:#7c3aed}' +
                 '.tank-detail-timeline-svg{width:100%;height:68px;min-height:68px;max-height:68px;flex:0 0 auto;display:block;touch-action:none;position:relative;z-index:3;pointer-events:auto;border-radius:8px;overflow:visible;cursor:default}' +
-                '.tank-detail-timeline-svg [data-tl-plot-hit],.tank-detail-timeline-svg [data-tl-drag-hit],.tank-detail-timeline-svg .tank-detail-timeline-scrub-knob{pointer-events:all;cursor:grab;touch-action:none}' +
+                '.tank-detail-timeline-svg [data-tl-plot-hit],.tank-detail-timeline-svg [data-tl-drag-hit],.tank-detail-timeline-svg [data-tl-now-hit],.tank-detail-timeline-svg .tank-detail-timeline-scrub-knob{pointer-events:all;cursor:grab;touch-action:none}' +
+                '.tank-detail-timeline-svg [data-tl-now-hit]{cursor:pointer!important}' +
                 '.tank-detail-timeline-svg [data-tl-zone-light],.tank-detail-timeline-svg [data-tl-zone-dark],.tank-detail-timeline-svg [data-tl-now-line],.tank-detail-timeline-svg .tank-detail-timeline-scrub-line,.tank-detail-timeline-svg path,.tank-detail-timeline-svg line:not([data-tl-drag-hit]){pointer-events:none}' +
                 '.tank-detail-timeline-legend{display:flex;flex-wrap:wrap;gap:8px 14px;font-size:10px;font-weight:700;color:#64748b;margin-top:2px}' +
                 '.tank-detail-timeline-legend-item--hist{color:#38bdf8}.tank-detail-timeline-legend-item--pred{color:#a78bfa}.tank-detail-timeline-legend-item--ref{color:#e2e8f0}' +
@@ -13917,6 +14068,9 @@ window.updateStoricoButton = async function() {
                 '.tank-timeline-ref-modal-sheet{background:#1e293b;border:1px solid rgba(96,165,250,0.35);border-radius:16px;padding:20px 22px;max-width:340px;width:100%;box-shadow:0 20px 50px rgba(0,0,0,0.45)}' +
                 '.tank-timeline-ref-modal-title{font-size:16px;font-weight:900;color:#f8fafc;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.06em}' +
                 '.tank-timeline-ref-modal-hint{font-size:12px;color:#94a3b8;margin:0 0 12px;line-height:1.4}' +
+                '.tank-timeline-ref-modal-time-row{display:flex;align-items:center;gap:10px;margin-bottom:10px}' +
+                '.tank-timeline-ref-modal-time-lbl{font-size:12px;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:0.06em;min-width:36px}' +
+                '.tank-timeline-ref-modal-time{flex:1;font-size:18px;font-weight:900;padding:8px 10px;border-radius:10px;border:2px solid rgba(96,165,250,0.45);background:#0f172a;color:#f8fafc}' +
                 '.tank-timeline-ref-modal-inp{width:100%;box-sizing:border-box;font-size:28px;font-weight:900;text-align:center;padding:10px;border-radius:12px;border:2px solid rgba(96,165,250,0.45);background:#0f172a;color:#f8fafc;margin-bottom:14px}' +
                 '.tank-timeline-ref-modal-actions{display:flex;gap:10px;justify-content:flex-end}' +
                 '.tank-timeline-ref-modal-btn{border:none;border-radius:10px;padding:10px 16px;font-weight:800;font-size:13px;cursor:pointer}' +

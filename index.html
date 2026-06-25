@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v361';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v362';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -13011,6 +13011,79 @@ window.updateStoricoButton = async function() {
             return model.nowMm;
         };
 
+        window.hideTankTimelinePointTip = function (block) {
+            if (!block) return;
+            var tip = block.querySelector('[data-tl-point-tip]');
+            if (tip) tip.style.display = 'none';
+            block.__tlTipTarget = null;
+        };
+
+        window.showTankTimelinePointTip = function (block, target) {
+            if (!block || !target) return;
+            var tip = block.querySelector('[data-tl-point-tip]');
+            var svg = block.querySelector('[data-tl-svg]');
+            var geom = svg && svg.__tlGeom;
+            if (!tip || !geom) return;
+            var ts = NaN;
+            var mm = NaN;
+            var svgX = NaN;
+            if (target.hasAttribute('data-tl-start-dot')) {
+                ts = parseInt(target.getAttribute('data-start-ts'), 10);
+                mm = parseFloat(target.getAttribute('data-start-mm'));
+                svgX = parseFloat(target.getAttribute('cx'));
+            } else if (target.hasAttribute('data-tl-ref-dot')) {
+                ts = parseInt(target.getAttribute('data-ref-ts'), 10);
+                mm = parseFloat(target.getAttribute('data-ref-mm'));
+                svgX = parseFloat(target.getAttribute('cx'));
+            } else if (target.hasAttribute('data-tl-now-hit')) {
+                ts = parseInt(target.getAttribute('data-now-ts'), 10);
+                mm = parseFloat(target.getAttribute('data-now-mm'));
+                svgX = parseFloat(target.getAttribute('cx'));
+            }
+            if (!Number.isFinite(ts) || !Number.isFinite(mm) || !Number.isFinite(svgX)) return;
+            var mmEl = tip.querySelector('[data-tl-tip-mm]');
+            var timeEl = tip.querySelector('[data-tl-tip-time]');
+            if (mmEl) mmEl.textContent = window.__fmtTankDetailMm(mm) + ' mm';
+            if (timeEl) timeEl.textContent = window.formatTankTimelineClock(ts);
+            tip.style.left = window.timelineFloatLeftPct(geom, svgX).toFixed(2) + '%';
+            tip.style.display = '';
+            block.__tlTipTarget = target;
+            var fieldId = block.__tlInfo && block.__tlInfo.fieldId;
+            var model = svg.__tlModel;
+            if (mmEl && fieldId && model) {
+                window.applyTankTimelineAlarmMetricClass(mmEl, window.resolveTankLevelAlarmState(fieldId, mm, {
+                    tankDbKey: model.tankDbKey,
+                    livMax: model.livMax
+                }));
+            }
+        };
+
+        window.wireTankTimelinePointTips = function (block, wrap, svg) {
+            if (!block || !wrap || block.__tlPointTipsWired) return;
+            block.__tlPointTipsWired = true;
+            var pointSel = '[data-tl-start-dot],[data-tl-ref-dot],[data-tl-now-hit]';
+            wrap.addEventListener('pointerover', function (ev) {
+                var pt = ev.target && ev.target.closest ? ev.target.closest(pointSel) : null;
+                if (!pt || !block.contains(pt)) return;
+                window.showTankTimelinePointTip(block, pt);
+            });
+            wrap.addEventListener('pointerout', function (ev) {
+                var pt = ev.target && ev.target.closest ? ev.target.closest(pointSel) : null;
+                if (!pt) return;
+                var rel = ev.relatedTarget;
+                if (rel && rel.closest && rel.closest(pointSel)) return;
+                window.hideTankTimelinePointTip(block);
+            });
+            wrap.addEventListener('pointerdown', function (ev) {
+                var pt = ev.target && ev.target.closest ? ev.target.closest(pointSel) : null;
+                if (pt && block.contains(pt)) {
+                    window.showTankTimelinePointTip(block, pt);
+                } else if (!ev.target.closest('#tank-timeline-ref-modal')) {
+                    window.hideTankTimelinePointTip(block);
+                }
+            }, true);
+        };
+
         window.syncTankTimelineSavedRefLabels = function (block, model) {
             if (!block) return;
             var metricsHost = block.querySelector('[data-tl-refs-metrics]');
@@ -13350,6 +13423,7 @@ window.updateStoricoButton = async function() {
             var manualRefs = fieldId ? window.loadTankTimelineManualRefs(fieldId) : [];
             if (block.__tlInfo) block.__tlInfo.manualRefPts = manualRefs;
             block.__tlRefDraftTs = null;
+            window.hideTankTimelinePointTip(block);
             var prevH = block.__tlHoursAhead || 0;
             var model = window.buildTankTimelineModel(block.__tlSeries, block.__tlInfo, h);
             window.renderTankDetailTimelineSvg(svg, model);
@@ -13404,7 +13478,7 @@ window.updateStoricoButton = async function() {
                 '<div class="tank-detail-timeline-canvas-wrap" data-tl-interactive="1">' +
                 '<div class="tank-detail-timeline-band tank-detail-timeline-band--top">' +
                 '<div class="tank-detail-timeline-levels-row">' +
-                '<div class="tank-detail-timeline-float tank-detail-timeline-float--start" data-tl-metric-start style="left:4%">' +
+                '<div class="tank-detail-timeline-float tank-detail-timeline-float--start tank-detail-timeline-float--hidden" data-tl-metric-start style="display:none;left:4%">' +
                 '<div class="tank-detail-timeline-metric-lbl tank-detail-timeline-metric-lbl--start">Livello iniziale</div>' +
                 '<div class="tank-detail-timeline-metric-mm" data-tl-start-mm>' + window.__fmtTankDetailMm(startPt.mm) + ' mm</div>' +
                 '</div>' +
@@ -13421,12 +13495,16 @@ window.updateStoricoButton = async function() {
                 '<div class="tank-detail-timeline-metric-mm tank-detail-timeline-pred-mm" data-tl-pred-mm>' + window.__fmtTankDetailMm(model.nowMm) + ' mm</div>' +
                 '</div></div>' +
                 '<div class="tank-detail-timeline-times-row">' +
-                '<div class="tank-detail-timeline-time-slot tank-detail-timeline-time-slot--start" data-tl-time-start style="left:4%">' +
+                '<div class="tank-detail-timeline-time-slot tank-detail-timeline-time-slot--start tank-detail-timeline-float--hidden" data-tl-time-start style="display:none;left:4%">' +
                 '<span data-tl-start-time>' + window.formatTankTimelineClock(startPt.ts) + '</span></div>' +
                 '<div class="tank-detail-timeline-saved-ref-times" data-tl-refs-times></div>' +
                 '<div class="tank-detail-timeline-time-slot tank-detail-timeline-time-slot--pred" data-tl-time-pred style="left:50%">' +
                 '<span data-tl-pred-time>' + window.formatTankTimelineClock(model.wallNowTs || model.nowTs) + '</span></div>' +
                 '</div></div>' +
+                '<div class="tank-detail-timeline-point-tip" data-tl-point-tip style="display:none">' +
+                '<div class="tank-detail-timeline-tip-mm" data-tl-tip-mm></div>' +
+                '<div class="tank-detail-timeline-tip-time" data-tl-tip-time></div>' +
+                '</div>' +
                 '<svg class="tank-detail-timeline-svg" data-tl-svg viewBox="0 0 800 68" preserveAspectRatio="none" aria-hidden="true"></svg>' +
                 '</div>' +
                 '<div class="tank-detail-timeline-legend">' +
@@ -13501,36 +13579,35 @@ window.updateStoricoButton = async function() {
                 var dotFill = isRef ? '#f8fafc' : window.timelineAlarmDotFill(dotState);
                 var dotR = isRef ? 5.5 : 5;
                 var dotTag = isRef ? 'data-tl-ref-dot' : 'data-tl-start-dot';
-                var refAttrs = '';
+                var dotAttrs = '';
                 var pe = 'none';
                 var dotStyle = '';
-                if (isRef && pt.p) {
-                    refAttrs = ' data-ref-ts="' + pt.p.ts + '" data-ref-mm="' + pt.p.mm + '"';
+                if (pt.p && Number.isFinite(pt.p.ts) && Number.isFinite(pt.p.mm)) {
+                    if (isRef) {
+                        dotAttrs = ' data-ref-ts="' + pt.p.ts + '" data-ref-mm="' + pt.p.mm + '"';
+                    } else {
+                        dotAttrs = ' data-start-ts="' + pt.p.ts + '" data-start-mm="' + pt.p.mm + '"';
+                    }
                     pe = 'all';
                     dotStyle = ' style="cursor:pointer;touch-action:manipulation"';
                 }
-                var tipLbl = window.formatTankTimelineClock(pt.p.ts) + ' · ' + mmLbl + ' mm';
-                return '<circle ' + dotTag + refAttrs + ' pointer-events="' + pe + '"' + dotStyle +
+                return '<circle ' + dotTag + dotAttrs + ' pointer-events="' + pe + '"' + dotStyle +
                     ' cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) +
-                    '" r="' + dotR + '" fill="' + dotFill + '" stroke="#0f172a" stroke-width="1.2">' +
-                    '<title>' + window.__escTankDetailHtml(tipLbl) + '</title></circle>';
+                    '" r="' + dotR + '" fill="' + dotFill + '" stroke="#0f172a" stroke-width="1.2"></circle>';
             }).join('');
             var startHit = '';
-            if (startPt && Number.isFinite(startPt.ts)) {
-                var sx0 = toXHist(startPt.ts);
-                startHit = '<circle data-tl-start-hit cx="' + sx0.toFixed(1) + '" cy="' + lineY.toFixed(1) +
-                    '" r="16" fill="transparent" pointer-events="all" style="cursor:pointer;touch-action:manipulation"/>';
-            }
-            var zonePredLight = '<rect data-tl-zone-light pointer-events="none" x="' + nowX.toFixed(1) + '" y="' + pad.t + '" width="' + Math.max(0, endX - nowX).toFixed(1) +
+            var wallTs = model.wallNowTs || Date.now(); = '<rect data-tl-zone-light pointer-events="none" x="' + nowX.toFixed(1) + '" y="' + pad.t + '" width="' + Math.max(0, endX - nowX).toFixed(1) +
                 '" height="' + plotH + '" fill="rgba(167,139,250,0.025)" />';
             var zonePredDark = '<rect data-tl-zone-dark pointer-events="none" x="' + nowX.toFixed(1) + '" y="' + pad.t + '" width="0" height="' + plotH +
                 '" fill="rgba(91,33,182,0.42)" />';
             var zoneHist = '<rect pointer-events="none" x="' + pad.l + '" y="' + pad.t + '" width="' + (nowX - pad.l).toFixed(1) +
                 '" height="' + plotH + '" fill="rgba(56,189,248,0.06)" />';
+            var wallTs = model.wallNowTs || Date.now();
+            var instantMm = Number.isFinite(model.nowMm) ? model.nowMm : 0;
             var nowLine = '<line data-tl-now-line pointer-events="none" x1="' + nowX.toFixed(1) + '" y1="' + zoneTop.toFixed(1) + '" x2="' + nowX.toFixed(1) +
                 '" y2="' + zoneBottom.toFixed(1) + '" stroke="#f8fafc" stroke-width="2.5" stroke-linecap="round"/>' +
-                '<circle data-tl-now-hit cx="' + nowX.toFixed(1) + '" cy="' + ((zoneTop + zoneBottom) / 2).toFixed(1) +
-                '" r="22" fill="transparent" pointer-events="all" style="cursor:pointer;touch-action:manipulation" title="Aggiungi livello a quest\'ora"/>';
+                '<circle data-tl-now-hit data-now-ts="' + wallTs + '" data-now-mm="' + instantMm + '" cx="' + nowX.toFixed(1) + '" cy="' + ((zoneTop + zoneBottom) / 2).toFixed(1) +
+                '" r="22" fill="transparent" pointer-events="all" style="cursor:pointer;touch-action:manipulation"/>';
             var levelDot = '';
             if (Math.abs(levelNowX - nowX) > 4 && Number.isFinite(model.nowMm)) {
                 var lvlState = window.resolveTankLevelAlarmState(model.fieldId, model.nowMm, {
@@ -13564,7 +13641,7 @@ window.updateStoricoButton = async function() {
                 '" y2="' + (pad.t + plotH).toFixed(1) + '" stroke="rgba(148,163,184,0.35)" stroke-width="1"/>' +
                 (histPath ? '<path pointer-events="none" d="' + histPath + '" fill="none" stroke="#38bdf8" stroke-width="2.5" stroke-linejoin="round"/>' : '') +
                 '<path data-tl-pred-path pointer-events="none" d="' + predPath + '" fill="none" stroke="#a78bfa" stroke-width="2.5" stroke-dasharray="8 5" stroke-linejoin="round"/>' +
-                dots + startHit + levelDot + nowLine + plotHit + scrubber + refScrubber;
+                dots + levelDot + nowLine + plotHit + scrubber + refScrubber;
             svgEl.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
             svgEl.__tlModel = model;
             svgEl.__tlGeom = geom;
@@ -13831,7 +13908,7 @@ window.updateStoricoButton = async function() {
                 if (!geom || !model) return;
                 if (ev.target && ev.target.closest && ev.target.closest('[data-tl-ref-dot], [data-tl-now-hit]')) return;
                 var sx = svgXFromEvent(ev);
-                if (ev.target && ev.target.closest && ev.target.closest('[data-tl-start-hit]')) {
+                if (ev.target && ev.target.closest && ev.target.closest('[data-tl-start-dot]')) {
                     ev.preventDefault();
                     ev.stopPropagation();
                     window.beginTankTimelineRefDraft(block);
@@ -13887,7 +13964,14 @@ window.updateStoricoButton = async function() {
             if (!block.__tlRefUiWired) {
                 block.__tlRefUiWired = true;
                 block.addEventListener('click', function (ev) {
-                    if (ev.target.closest('[data-tl-start-hit]')) return;
+                    var startDot = ev.target.closest('[data-tl-start-dot]');
+                    if (startDot) {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        window.cancelTankTimelineRefDraft(block);
+                        window.openTankTimelineInitialEditPopup(block);
+                        return;
+                    }
                     var refDot = ev.target.closest('[data-tl-ref-dot]');
                     if (refDot && block.__tlRefDraftTs == null) {
                         ev.preventDefault();
@@ -13942,7 +14026,7 @@ window.updateStoricoButton = async function() {
                                 t.closest('[data-tl-ref-draft]') ||
                                 t.closest('[data-tl-ref-hit]') ||
                                 t.closest('[data-tl-ref-knob]') ||
-                                t.closest('[data-tl-start-hit]') ||
+                                t.closest('[data-tl-start-dot]') ||
                                 t.closest('[data-tl-now-hit]') ||
                                 t.closest('[data-tl-ref-dot]') ||
                                 t.closest('#tank-timeline-ref-modal')
@@ -13957,6 +14041,9 @@ window.updateStoricoButton = async function() {
                 block.__tlWrapWired = true;
                 wrap.addEventListener('pointerdown', beginScrub, { capture: true });
                 svg.addEventListener('pointerdown', beginScrub);
+            }
+            if (typeof window.wireTankTimelinePointTips === 'function') {
+                window.wireTankTimelinePointTips(block, wrap, svg);
             }
 
             applyPredictH(block.__tlPredictH);
@@ -14061,7 +14148,7 @@ window.updateStoricoButton = async function() {
             if (typeof window.ensureDigitalRemoteGaugeCss === 'function') {
                 window.ensureDigitalRemoteGaugeCss();
             }
-            var cssVer = '226';
+            var cssVer = '227';
             var st = document.getElementById('tank-detail-styles');
             if (st && st.getAttribute('data-css-ver') !== cssVer) {
                 st.remove();
@@ -14160,8 +14247,13 @@ window.updateStoricoButton = async function() {
                 '.tank-detail-timeline-time-slot--ref{color:#e2e8f0}' +
                 '.tank-detail-timeline-time-slot--pred{color:#7c3aed}' +
                 '.tank-detail-timeline-svg{width:100%;height:68px;min-height:68px;max-height:68px;flex:0 0 auto;display:block;touch-action:none;position:relative;z-index:3;pointer-events:auto;border-radius:8px;overflow:visible;cursor:default}' +
-                '.tank-detail-timeline-svg [data-tl-plot-hit],.tank-detail-timeline-svg [data-tl-drag-hit],.tank-detail-timeline-svg [data-tl-now-hit],.tank-detail-timeline-svg [data-tl-ref-dot],.tank-detail-timeline-svg .tank-detail-timeline-scrub-knob{pointer-events:all;cursor:grab;touch-action:none}' +
-                '.tank-detail-timeline-svg [data-tl-now-hit],.tank-detail-timeline-svg [data-tl-ref-dot]{cursor:pointer!important}' +
+                '.tank-detail-timeline-canvas-wrap{position:relative}' +
+                '.tank-detail-timeline-point-tip{position:absolute;left:50%;top:0;bottom:0;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;z-index:6;gap:0;text-align:center;width:max-content;max-width:min(140px,38vw)}' +
+                '.tank-detail-timeline-tip-mm{font-size:clamp(12px,2vw,16px);font-weight:900;color:#f8fafc;font-variant-numeric:tabular-nums;line-height:1.15;margin-bottom:auto;padding-top:2px}' +
+                '.tank-detail-timeline-tip-time{font-size:11px;font-weight:800;color:#94a3b8;font-variant-numeric:tabular-nums;line-height:1.15;margin-top:auto;padding-bottom:2px}' +
+                '.tank-detail-timeline-float--hidden{display:none!important}' +
+                '.tank-detail-timeline-svg [data-tl-plot-hit],.tank-detail-timeline-svg [data-tl-drag-hit],.tank-detail-timeline-svg .tank-detail-timeline-scrub-knob{pointer-events:all;cursor:grab;touch-action:none}' +
+                '.tank-detail-timeline-svg [data-tl-now-hit],.tank-detail-timeline-svg [data-tl-ref-dot],.tank-detail-timeline-svg [data-tl-start-dot]{cursor:pointer!important;touch-action:manipulation}' +
                 '.tank-detail-timeline-svg [data-tl-zone-light],.tank-detail-timeline-svg [data-tl-zone-dark],.tank-detail-timeline-svg [data-tl-now-line],.tank-detail-timeline-svg .tank-detail-timeline-scrub-line,.tank-detail-timeline-svg path,.tank-detail-timeline-svg line:not([data-tl-drag-hit]){pointer-events:none}' +
                 '.tank-detail-timeline-legend{display:flex;flex-wrap:wrap;gap:8px 14px;font-size:10px;font-weight:700;color:#64748b;margin-top:2px}' +
                 '.tank-detail-timeline-legend-item--hist{color:#38bdf8}.tank-detail-timeline-legend-item--pred{color:#a78bfa}.tank-detail-timeline-legend-item--ref{color:#e2e8f0}' +

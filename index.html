@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v355';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v356';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -12816,6 +12816,20 @@ window.updateStoricoButton = async function() {
             }
         };
 
+        /** Punto iniziale timeline (archivio, primo salvataggio o fallback serie). */
+        window.getTankTimelineStartPoint = function (model) {
+            if (!model) return null;
+            if (model.initialPt && Number.isFinite(model.initialPt.ts)) return model.initialPt;
+            if (model.series && model.series.length) {
+                var first = model.series[0];
+                if (first && Number.isFinite(first.ts)) return first;
+            }
+            if (Number.isFinite(model.tStart)) {
+                return { ts: model.tStart, mm: model.nowMm, label: 'Inizio' };
+            }
+            return null;
+        };
+
         window.formatTankTimelineHoursAhead = function (h) {
             if (h <= 0.05) return 'Adesso';
             if (h < 1) return '+' + Math.round(h * 60) + ' min';
@@ -13106,8 +13120,10 @@ window.updateStoricoButton = async function() {
             if (!block) return;
             var svg = block.querySelector('[data-tl-svg]');
             var model = svg && svg.__tlModel;
-            if (!model || !model.initialPt) return;
-            block.__tlRefDraftTs = model.initialPt.ts;
+            var startPt = typeof window.getTankTimelineStartPoint === 'function'
+                ? window.getTankTimelineStartPoint(model) : (model && model.initialPt);
+            if (!startPt || !Number.isFinite(startPt.ts)) return;
+            block.__tlRefDraftTs = startPt.ts;
             window.updateTankTimelineRefDraftUI(block, block.__tlRefDraftTs);
         };
 
@@ -13492,7 +13508,9 @@ window.updateStoricoButton = async function() {
                 var sx = a.svgXFromEvent(ev);
                 if (a.mode === 'ref-draft') {
                     var ts = window.timelineTsFromSvgXHist(a.geom, a.model, sx);
-                    var minTs = (a.model.initialPt ? a.model.initialPt.ts : a.model.tStart) + 60000;
+                    var startPt = typeof window.getTankTimelineStartPoint === 'function'
+                        ? window.getTankTimelineStartPoint(a.model) : a.model.initialPt;
+                    var minTs = (startPt && Number.isFinite(startPt.ts) ? startPt.ts : a.model.tStart) + 60000;
                     var maxTs = a.model.nowTs - 60000;
                     ts = Math.max(minTs, Math.min(maxTs, ts));
                     a.block.__tlRefDraftTs = ts;
@@ -13578,6 +13596,19 @@ window.updateStoricoButton = async function() {
                     ev.preventDefault();
                     ev.stopPropagation();
                     window.beginTankTimelineRefDraft(block);
+                    window.__tankTimelineDragActive = {
+                        block: block,
+                        wrap: wrap,
+                        geom: geom,
+                        model: model,
+                        dragging: true,
+                        mode: 'ref-draft',
+                        svgXFromEvent: svgXFromEvent
+                    };
+                    wrap.classList.add('is-tl-dragging');
+                    var ts0 = window.timelineTsFromSvgXHist(geom, model, sx);
+                    block.__tlRefDraftTs = ts0;
+                    window.updateTankTimelineRefDraftUI(block, ts0);
                     return;
                 }
                 if (block.__tlRefDraftTs != null) {
@@ -13620,7 +13651,9 @@ window.updateStoricoButton = async function() {
                     if (ev.target.closest('[data-tl-start-hit]')) return;
                     var startMetric = ev.target.closest('[data-tl-metric-start], [data-tl-time-start]');
                     var m0 = svg.__tlModel;
-                    if (startMetric && m0 && m0.initialPt && block.__tlRefDraftTs == null) {
+                    var canStartRef = m0 && typeof window.getTankTimelineStartPoint === 'function'
+                        && window.getTankTimelineStartPoint(m0);
+                    if (startMetric && canStartRef && block.__tlRefDraftTs == null) {
                         ev.preventDefault();
                         window.beginTankTimelineRefDraft(block);
                         return;

@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v367';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v368';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -1584,20 +1584,64 @@ window.colorPreviewNumber = function(tankName, value) {
         window.migrateHiddenModulesToDeviceLocalOnce = function () {
             const map = window.loadDeviceHiddenModulesMap();
             const store = window.loadRapportiniStore && window.loadRapportiniStore();
-            if (!store || !store.items) return;
             let mapChanged = false;
-            Object.keys(store.items).forEach(function (rid) {
-                const item = store.items[rid];
-                if (!item) return;
-                if ((!map[rid] || !map[rid].length) && Array.isArray(item.hiddenModules) && item.hiddenModules.length) {
-                    map[rid] = item.hiddenModules.slice();
+            const mergeRidModules = function (rid, mods) {
+                if (!rid || !Array.isArray(mods) || !mods.length) return;
+                const cur = Array.isArray(map[rid]) ? map[rid].slice() : [];
+                mods.forEach(function (id) {
+                    if (id && cur.indexOf(id) < 0) cur.push(id);
+                });
+                if (cur.length) {
+                    map[rid] = cur;
                     mapChanged = true;
                 }
-                if (item.hiddenModules) {
-                    delete item.hiddenModules;
+            };
+            if (store && store.items) {
+                Object.keys(store.items).forEach(function (rid) {
+                    const item = store.items[rid];
+                    if (!item) return;
+                    if (Array.isArray(item.hiddenModules) && item.hiddenModules.length) {
+                        mergeRidModules(rid, item.hiddenModules);
+                    }
+                    if (item.hiddenModules) {
+                        delete item.hiddenModules;
+                    }
+                });
+            }
+            try {
+                const rawStore = localStorage.getItem(window.RAPPORTINI_STORAGE_KEY || 'servicehub_rapportini_v2');
+                if (rawStore) {
+                    const parsed = JSON.parse(rawStore);
+                    if (parsed && parsed.items) {
+                        Object.keys(parsed.items).forEach(function (rid) {
+                            const item = parsed.items[rid];
+                            if (item && Array.isArray(item.hiddenModules) && item.hiddenModules.length) {
+                                mergeRidModules(rid, item.hiddenModules);
+                            }
+                        });
+                    }
                 }
-            });
+            } catch (_) {}
+            try {
+                const rawBackup = localStorage.getItem('servicehub_rapportini_backup_local');
+                if (rawBackup) {
+                    const parsed = JSON.parse(rawBackup);
+                    if (parsed && parsed.items) {
+                        Object.keys(parsed.items).forEach(function (rid) {
+                            const item = parsed.items[rid];
+                            if (item && Array.isArray(item.hiddenModules) && item.hiddenModules.length) {
+                                mergeRidModules(rid, item.hiddenModules);
+                            }
+                        });
+                    }
+                }
+            } catch (_) {}
             if (mapChanged) window.saveDeviceHiddenModulesMap(map);
+        };
+
+        window.recoverDeviceHiddenModulesForActiveRapportino = function () {
+            window.migrateHiddenModulesToDeviceLocalOnce();
+            window.applyDeviceHiddenModulesForActiveRapportino();
         };
 
         window.stripHiddenModulesFromRapportinoStore = function (store) {
@@ -7812,7 +7856,66 @@ window.updateStoricoButton = async function() {
             if (typeof window.recordTankLevelInputTimestamp === 'function') {
                 window.recordTankLevelInputTimestamp(npt, { prevValue: window.__numpadLivePreviewOrigin });
             }
-            if (typeof window.saveData === 'function') window.saveData();
+            if (typeof window.saveData === 'function') void window.saveData(true);
+        };
+
+        window.__numpadLabelSelector = '.cell-label-main, .amb-label, .bd-label, .nott-stocc-sigla-cell';
+
+        window.resolveNumpadLabelForInput = function (inputEl) {
+            if (!inputEl) return null;
+            const row = inputEl.closest('tr, .amb-row, .bd-input-row, .nott-stocc-row');
+            if (!row) return null;
+            if (row.tagName === 'TR') {
+                const valueCell = inputEl.closest('td');
+                if (valueCell && valueCell.previousElementSibling) {
+                    const prev = valueCell.previousElementSibling;
+                    const lab = prev.querySelector('.cell-label-main')
+                        || (prev.classList.contains('cell-label-main') ? prev : null);
+                    if (lab) return lab;
+                }
+            }
+            return row.querySelector(window.__numpadLabelSelector);
+        };
+
+        window.initNumpadPanelClickDelegate = function () {
+            if (window.__numpadPanelDelegateInited) return;
+            const panel = document.getElementById('numpad-modal-panel');
+            if (!panel) return;
+            window.__numpadPanelDelegateInited = true;
+            panel.addEventListener('click', function (e) {
+                if (typeof window.__ensureNumpadClickable === 'function') window.__ensureNumpadClickable();
+                const t = e.target;
+                if (!t || !t.closest) return;
+                if (t.closest('#numpad-settings-btn, #numpad-settings-display, .numpad-alarm-row, .numpad-settings-menu')) return;
+                if (t.closest('#numpad-close-btn')) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    window.closeNumpad();
+                    return;
+                }
+                if (t.closest('.numpad-enter-btn')) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    window.confirmNumpad();
+                    return;
+                }
+                const navBtn = t.closest('.numpad-nav-btn');
+                if (navBtn) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    window.navigateNumpad(navBtn.getAttribute('aria-label') === 'Campo precedente' ? 'prev' : 'next');
+                    return;
+                }
+                const numBtn = t.closest('.numpad-btn');
+                if (numBtn) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const txt = (numBtn.textContent || '').trim();
+                    if (txt === 'Canc') window.numpadAction('DEL');
+                    else if (txt === '%') window.numpadAction('%');
+                    else window.numpadAction(txt);
+                }
+            }, true);
         };
 
         window.getNumpadLabelText = function (labelEl) {
@@ -7928,6 +8031,7 @@ window.updateStoricoButton = async function() {
             window.__numpadUiBootstrapped = true;
             if (typeof window.initNumpadDrag === 'function') window.initNumpadDrag();
             if (typeof window.initNumpadTitleDetailShortcut === 'function') window.initNumpadTitleDetailShortcut();
+            if (typeof window.initNumpadPanelClickDelegate === 'function') window.initNumpadPanelClickDelegate();
             if (typeof window.wireAllPlantNumpadHandlers === 'function') window.wireAllPlantNumpadHandlers();
         };
 
@@ -8237,6 +8341,7 @@ window.updateStoricoButton = async function() {
             numpadModal.classList.add('active');
             numpadModal.style.zIndex = '10000002';
             if (typeof window.__ensureNumpadClickable === 'function') window.__ensureNumpadClickable();
+            if (typeof window.initNumpadPanelClickDelegate === 'function') window.initNumpadPanelClickDelegate();
             setTimeout(function () {
                 if (typeof window.__ensureNumpadClickable === 'function') window.__ensureNumpadClickable();
                 if (typeof window.applyDesktopNumpadStyles === 'function') window.applyDesktopNumpadStyles();
@@ -8290,8 +8395,10 @@ window.updateStoricoButton = async function() {
         
         window.switchNumpadToInput = function (nextInput) {
             if (!nextInput || !nextInput.id) return false;
-            const nextRow = nextInput.closest('tr') || nextInput.closest('.amb-row') || nextInput.closest('.bd-input-row');
-            const nextLabel = nextRow ? nextRow.querySelector('.cell-label-main, .amb-label, .bd-label') : null;
+            const nextRow = nextInput.closest('tr') || nextInput.closest('.amb-row') || nextInput.closest('.bd-input-row') || nextInput.closest('.nott-stocc-row');
+            const nextLabel = (typeof window.resolveNumpadLabelForInput === 'function'
+                ? window.resolveNumpadLabelForInput(nextInput)
+                : null) || (nextRow ? nextRow.querySelector(window.__numpadLabelSelector || '.cell-label-main, .amb-label, .bd-label') : null);
             if (!nextLabel || typeof window.switchNumpadField !== 'function') return false;
             if (typeof window.commitNumpadFieldValue === 'function') window.commitNumpadFieldValue();
             window.__numpadCommitted = true;
@@ -8343,7 +8450,13 @@ window.updateStoricoButton = async function() {
             }
             
             if (nextRow) {
-                const nextLabel = nextRow.querySelector('.cell-label-main, .amb-label, .bd-label');
+                const nextLabel = (function () {
+                    const inp = nextRow.querySelector('input:not([readonly])');
+                    if (inp && typeof window.resolveNumpadLabelForInput === 'function') {
+                        return window.resolveNumpadLabelForInput(inp);
+                    }
+                    return nextRow.querySelector(window.__numpadLabelSelector || '.cell-label-main, .amb-label, .bd-label');
+                })();
                 if (nextLabel) {
                     if (typeof window.commitNumpadFieldValue === 'function') window.commitNumpadFieldValue();
                     window.__numpadCommitted = true;
@@ -8408,7 +8521,19 @@ window.updateStoricoButton = async function() {
                 return;
             }
 
-            if (typeof window.commitNumpadFieldValue === 'function') window.commitNumpadFieldValue();
+            const npt = typeof window.__getNumpadTarget === 'function' ? window.__getNumpadTarget() : currentNumpadTarget;
+            if (npt && numpadDisplay) {
+                const val = numpadDisplay.value;
+                if (npt.id === 'vwt-notes' && val !== '') npt.value = val + ' mc';
+                else npt.value = val;
+                window.__numpadLivePreviewOrigin = npt.value;
+            }
+
+            try {
+                if (typeof window.commitNumpadFieldValue === 'function') window.commitNumpadFieldValue();
+            } catch (err) {
+                console.warn('[ServiceHub] confirmNumpad commit:', err);
+            }
 
             if (window.isAriaNumpadSequenceActive && window.isAriaNumpadSequenceActive()) {
                 const nextInput = nextNumpadTarget;
@@ -18043,6 +18168,11 @@ window.updateStoricoButton = async function() {
             if (typeof window.migrateHiddenModulesToDeviceLocalOnce === 'function') {
                 window.migrateHiddenModulesToDeviceLocalOnce();
             }
+            if (typeof window.recoverDeviceHiddenModulesForActiveRapportino === 'function') {
+                window.recoverDeviceHiddenModulesForActiveRapportino();
+            } else if (typeof window.applyDeviceHiddenModulesForActiveRapportino === 'function') {
+                window.applyDeviceHiddenModulesForActiveRapportino();
+            }
             if (typeof window.stripHiddenModulesFromRapportinoStore === 'function') {
                 window.stripHiddenModulesFromRapportinoStore(store);
             }
@@ -22203,7 +22333,15 @@ window.updateStoricoButton = async function() {
         setTimeout(function() { window._closingSettings = false; }, 350);
     }
 };
-        window.openManagement = () => { forceBlur(); document.getElementById('settings-modal').classList.remove('active'); document.getElementById('management-modal').classList.add('active'); updateModulesVisibility(); };
+        window.openManagement = () => {
+            forceBlur();
+            if (typeof window.recoverDeviceHiddenModulesForActiveRapportino === 'function') {
+                window.recoverDeviceHiddenModulesForActiveRapportino();
+            }
+            document.getElementById('settings-modal').classList.remove('active');
+            document.getElementById('management-modal').classList.add('active');
+            updateModulesVisibility();
+        };
         window.closeManagement = () => {
             document.getElementById('management-modal').classList.remove('active');
             if (document.body.classList.contains('sh-phone-all-modules-sent')) {
@@ -30062,14 +30200,6 @@ window.convertToHtml = async () => {
             justify-content: center !important;
             z-index: 10000002 !important;
             padding: max(18px, calc(env(safe-area-inset-top, 0px) + 12px)) 14px max(18px, env(safe-area-inset-bottom, 0px)) !important;
-        }
-        #numpad-modal.active {
-            pointer-events: none !important;
-        }
-        #numpad-modal.active #numpad-modal-panel {
-            pointer-events: auto !important;
-            position: relative;
-            z-index: 2;
         }
         #numpad-modal #numpad-modal-panel.modal-content-centered {
             --numpad-tx: 0px;

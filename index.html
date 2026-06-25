@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v360';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v361';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -12729,7 +12729,7 @@ window.updateStoricoButton = async function() {
             return 0;
         };
 
-        window.buildTankTimelineHorizonHeadHTML = function (siglaTxt, activeH) {
+        window.buildTankTimelineHorizonHeadHTML = function (activeH) {
             activeH = activeH || window.TANK_TIMELINE_PREDICT_HOURS_DEFAULT || 12;
             var opts = window.TANK_TIMELINE_PREDICT_OPTIONS || [8, 12, 24];
             var btns = opts.map(function (h) {
@@ -12740,9 +12740,9 @@ window.updateStoricoButton = async function() {
             return '<div class="tank-detail-timeline-head">' +
                 '<div class="tank-detail-section-title tank-detail-timeline-title">Timeline livello · previsione</div>' +
                 '<div class="tank-detail-timeline-head-right">' +
-                (siglaTxt ? '<span class="tank-detail-timeline-sigla">' + window.__escTankDetailHtml(siglaTxt) + '</span>' : '') +
-                '<div class="tank-detail-timeline-horizon-btns" data-tl-horizon-btns>' + btns + '</div>' +
-                '</div></div>';
+                '<div class="tank-detail-timeline-horizon-btns" data-tl-horizon-btns>' +
+                '<button type="button" class="tank-detail-timeline-reset-btn" data-tl-reset title="Resetta tutti i livelli timeline">Reset</button>' +
+                btns + '</div></div></div>';
         };
 
         window.buildTankTimelineModel = function (series, info, predictH) {
@@ -12878,11 +12878,17 @@ window.updateStoricoButton = async function() {
             return refs.length ? refs[refs.length - 1] : null;
         };
 
-        window.saveTankTimelineManualRef = function (fieldId, pt) {
+        window.saveTankTimelineManualRef = function (fieldId, pt, opts) {
+            opts = opts || {};
             if (!fieldId || !pt || !Number.isFinite(pt.ts) || !Number.isFinite(pt.mm)) return;
             if (pt.ts > Date.now() - 60000) return;
             try {
                 var refs = window.loadTankTimelineManualRefs(fieldId);
+                if (Number.isFinite(opts.replaceTs)) {
+                    refs = refs.filter(function (r) {
+                        return Math.abs(r.ts - opts.replaceTs) >= 60000;
+                    });
+                }
                 var dupIdx = refs.findIndex(function (r) {
                     return Math.abs(r.ts - pt.ts) < 60000;
                 });
@@ -13006,38 +13012,11 @@ window.updateStoricoButton = async function() {
         };
 
         window.syncTankTimelineSavedRefLabels = function (block, model) {
-            if (!block || !model) return;
-            var svg = block.querySelector('[data-tl-svg]');
-            var geom = svg && svg.__tlGeom;
+            if (!block) return;
             var metricsHost = block.querySelector('[data-tl-refs-metrics]');
             var timesHost = block.querySelector('[data-tl-refs-times]');
-            if (!metricsHost || !timesHost) return;
-            var refs = (model.manualRefPts || []).slice().sort(function (a, b) { return a.ts - b.ts; });
-            var isDraft = block.__tlRefDraftTs != null && Number.isFinite(block.__tlRefDraftTs);
-            metricsHost.innerHTML = '';
-            timesHost.innerHTML = '';
-            if (!refs.length || isDraft || !geom) return;
-            refs.forEach(function (ref, idx) {
-                var refX = geom.toXHist ? geom.toXHist(ref.ts) : geom.nowX;
-                var leftPct = window.timelineFloatLeftPct(geom, refX).toFixed(2) + '%';
-                var lbl = refs.length > 1 ? 'Riferimento ' + (idx + 1) : 'Riferimento';
-                metricsHost.insertAdjacentHTML('beforeend',
-                    '<div class="tank-detail-timeline-float tank-detail-timeline-float--ref" style="left:' + leftPct + '">' +
-                    '<div class="tank-detail-timeline-metric-lbl tank-detail-timeline-metric-lbl--ref">' + lbl + '</div>' +
-                    '<div class="tank-detail-timeline-metric-mm tank-detail-timeline-ref-mm">' +
-                    window.__fmtTankDetailMm(ref.mm) + ' mm</div></div>');
-                timesHost.insertAdjacentHTML('beforeend',
-                    '<div class="tank-detail-timeline-time-slot tank-detail-timeline-time-slot--ref" style="left:' + leftPct + '">' +
-                    '<span>' + window.formatTankTimelineClock(ref.ts) + '</span></div>');
-                var mmEl = metricsHost.lastElementChild && metricsHost.lastElementChild.querySelector('.tank-detail-timeline-ref-mm');
-                var fieldId = block.__tlInfo && block.__tlInfo.fieldId;
-                if (mmEl && fieldId) {
-                    window.applyTankTimelineAlarmMetricClass(mmEl, window.resolveTankLevelAlarmState(fieldId, ref.mm, {
-                        tankDbKey: model.tankDbKey,
-                        livMax: model.livMax
-                    }));
-                }
-            });
+            if (metricsHost) metricsHost.innerHTML = '';
+            if (timesHost) timesHost.innerHTML = '';
         };
 
         window.ensureTankTimelineRefModal = function () {
@@ -13231,15 +13210,119 @@ window.updateStoricoButton = async function() {
             var model = svg && svg.__tlModel;
             if (!model || !block.__tlInfo) return;
             var wallTs = window.snapTankTimelineRefTs(model.wallNowTs || Date.now());
-            var suggested = typeof window.suggestTankTimelineRefMmAtTs === 'function'
-                ? window.suggestTankTimelineRefMmAtTs(model, wallTs) : model.nowMm;
+            var suggested = Number.isFinite(model.nowMm) ? model.nowMm
+                : (typeof window.suggestTankTimelineRefMmAtTs === 'function'
+                    ? window.suggestTankTimelineRefMmAtTs(model, wallTs) : NaN);
             window.openTankTimelineRefLevelPopup({
+                title: 'Livello istantaneo',
                 ts: wallTs,
                 suggestedMm: suggested,
-                onConfirm: function (mm) {
-                    window.confirmTankTimelineManualRef(block, wallTs, mm);
+                onConfirm: function (mm, ts) {
+                    window.applyTankTimelineInstantLevel(block, ts || wallTs, mm);
                 }
             });
+        };
+
+        window.openTankTimelineRefEditPopup = function (block, refTs, refMm) {
+            if (!block || !Number.isFinite(refTs) || !Number.isFinite(refMm)) return;
+            window.openTankTimelineRefLevelPopup({
+                title: 'Modifica punto',
+                ts: refTs,
+                baseTs: refTs,
+                editTime: true,
+                suggestedMm: refMm,
+                onConfirm: function (mm, ts) {
+                    if (!block.__tlInfo || !block.__tlInfo.fieldId) return;
+                    var finalTs = Number.isFinite(ts) ? ts : refTs;
+                    window.saveTankTimelineManualRef(block.__tlInfo.fieldId, { ts: finalTs, mm: mm }, { replaceTs: refTs });
+                    window.refreshTankDetailTimelineAfterRefChange(block);
+                }
+            });
+        };
+
+        window.applyTankTimelineInstantLevel = function (block, ts, mm) {
+            if (!block || !block.__tlInfo || !block.__tlInfo.fieldId) return;
+            if (!Number.isFinite(ts) || !Number.isFinite(mm)) return;
+            var fieldId = block.__tlInfo.fieldId;
+            var normId = typeof window.__normalizeTankInputAtKey === 'function'
+                ? window.__normalizeTankInputAtKey(fieldId) : fieldId;
+            if (typeof window.setAllPlantInputsById === 'function') {
+                window.setAllPlantInputsById(fieldId, String(Math.round(mm)));
+            }
+            window.tankLevelInputAtMs = window.tankLevelInputAtMs || {};
+            window.tankLevelInputAtMm = window.tankLevelInputAtMm || {};
+            window.tankLevelInputAtMs[normId] = ts;
+            window.tankLevelInputAtMm[normId] = mm;
+            if (typeof window.__persistTankLevelInputAt === 'function') window.__persistTankLevelInputAt();
+            block.__tlInfo.levelMm = mm;
+            block.__tlInfo.levelInputTs = ts;
+            if (typeof window.collectTankLevelHistorySeries === 'function') {
+                block.__tlSeries = window.collectTankLevelHistorySeries(fieldId, { shiftOnly: false });
+            }
+            if (typeof window.refreshAlarmVisualForField === 'function') {
+                var inp = document.getElementById(normId) || document.getElementById(fieldId);
+                if (inp) window.refreshAlarmVisualForField(inp, true);
+            }
+            window.refreshTankDetailTimelineAfterRefChange(block);
+            var page = block.closest('.tank-detail-page');
+            if (page && typeof window.refreshTankDetailPageLiveStats === 'function') {
+                window.refreshTankDetailPageLiveStats(page, fieldId);
+            }
+            if (typeof window.saveData === 'function') void window.saveData(true);
+        };
+
+        window.resetTankTimelineAllLevels = function (block) {
+            if (!block || !block.__tlInfo || !block.__tlInfo.fieldId) return;
+            var ok = window.confirm('Resettare tutti i livelli della timeline per questo serbatoio?\nVerranno rimossi riferimenti, livello iniziale modificato e livello istantaneo.');
+            if (!ok) return;
+            var fieldId = block.__tlInfo.fieldId;
+            var normId = typeof window.__normalizeTankInputAtKey === 'function'
+                ? window.__normalizeTankInputAtKey(fieldId) : fieldId;
+            if (typeof window.clearTankTimelineManualRef === 'function') window.clearTankTimelineManualRef(fieldId);
+            if (typeof window.clearTankTimelineManualInitial === 'function') window.clearTankTimelineManualInitial(fieldId);
+            window.tankLevelInputAtMs = window.tankLevelInputAtMs || {};
+            window.tankLevelInputAtMm = window.tankLevelInputAtMm || {};
+            delete window.tankLevelInputAtMs[normId];
+            delete window.tankLevelInputAtMm[normId];
+            if (typeof window.__persistTankLevelInputAt === 'function') window.__persistTankLevelInputAt();
+            if (typeof window.setAllPlantInputsById === 'function') window.setAllPlantInputsById(fieldId, '');
+            block.__tlInfo.levelMm = null;
+            block.__tlInfo.levelInputTs = null;
+            block.__tlInfo.manualRefPts = [];
+            if (typeof window.collectTankLevelHistorySeries === 'function') {
+                block.__tlSeries = window.collectTankLevelHistorySeries(fieldId, { shiftOnly: false });
+            }
+            block.__tlRefDraftTs = null;
+            window.refreshTankDetailTimelineAfterRefChange(block);
+            var page = block.closest('.tank-detail-page');
+            if (page && typeof window.refreshTankDetailPageLiveStats === 'function') {
+                window.refreshTankDetailPageLiveStats(page, fieldId);
+            }
+            if (typeof window.saveData === 'function') void window.saveData(true);
+        };
+
+        window.refreshTankDetailPageLiveStats = function (page, fieldId) {
+            if (!page || !fieldId || typeof window.resolveTankDetailInfo !== 'function') return;
+            var info = window.resolveTankDetailInfo(fieldId);
+            if (!info) return;
+            var gaugeWrap = page.querySelector('.tank-detail-gauge-wrap');
+            if (gaugeWrap && typeof window.buildDigitalTankGaugeSVG === 'function') {
+                var gaugeOpts = Object.assign({}, info.vis || {}, { detail: true, predFillPct: info.fillPct });
+                if (info.conductivity) {
+                    gaugeOpts.conductivity = info.conductivity;
+                    gaugeOpts.conductivityUnit = info.conductivityUnit;
+                }
+                gaugeWrap.innerHTML = window.buildDigitalTankGaugeSVG(info.fillPct, info.label, gaugeOpts);
+            }
+            var statVals = page.querySelectorAll('.tank-detail-stats .tank-detail-stat-val');
+            if (statVals[0]) statVals[0].innerHTML = window.__fmtTankDetailMm(info.levelMm) + ' <small>mm</small>';
+            if (statVals[1]) statVals[1].innerHTML = window.__fmtTankDetailTons(info.currentTons) + ' <small>t</small>';
+            if (statVals[4]) {
+                statVals[4].classList.toggle('tank-detail-stat-val--warn', !!info.fillOverMax);
+                statVals[4].innerHTML = (info.fillPctOfMax != null
+                    ? info.fillPctOfMax.toLocaleString('it-IT') + ' <small>%</small>' : '—') +
+                    (info.fillOverMax ? ' <small class="tank-detail-overmax-hint">sopra max</small>' : '');
+            }
         };
 
         window.cancelTankTimelineRefDraft = function (block) {
@@ -13315,7 +13398,7 @@ window.updateStoricoButton = async function() {
                 || (model.series.length ? model.series[0] : { ts: model.nowTs, mm: model.nowMm });
             var siglaTxt = info && info.label ? String(info.label).trim() : '';
             return '<div class="tank-detail-timeline-block" data-tank-timeline="1">' +
-                window.buildTankTimelineHorizonHeadHTML(siglaTxt, window.TANK_TIMELINE_PREDICT_HOURS_DEFAULT) +
+                window.buildTankTimelineHorizonHeadHTML(window.TANK_TIMELINE_PREDICT_HOURS_DEFAULT) +
                 '<div class="tank-detail-timeline-rate tank-detail-timeline-rate--' + rateCls + '">Velocità trend: <b>' +
                 window.__escTankDetailHtml(rateTxt) + '</b></div>' +
                 '<div class="tank-detail-timeline-canvas-wrap" data-tl-interactive="1">' +
@@ -13331,7 +13414,10 @@ window.updateStoricoButton = async function() {
                 '</div>' +
                 '<div class="tank-detail-timeline-saved-refs" data-tl-refs-metrics></div>' +
                 '<div class="tank-detail-timeline-float tank-detail-timeline-float--pred" data-tl-metric-pred style="left:50%">' +
-                '<div class="tank-detail-timeline-metric-lbl tank-detail-timeline-metric-lbl--pred">Previsione</div>' +
+                '<div class="tank-detail-timeline-metric-lbl tank-detail-timeline-metric-lbl--pred">' +
+                'Previsione' +
+                (siglaTxt ? ' · <span class="tank-detail-timeline-sigla" data-tl-sigla>' + window.__escTankDetailHtml(siglaTxt) + '</span>' : '') +
+                '</div>' +
                 '<div class="tank-detail-timeline-metric-mm tank-detail-timeline-pred-mm" data-tl-pred-mm>' + window.__fmtTankDetailMm(model.nowMm) + ' mm</div>' +
                 '</div></div>' +
                 '<div class="tank-detail-timeline-times-row">' +
@@ -13346,7 +13432,7 @@ window.updateStoricoButton = async function() {
                 '<div class="tank-detail-timeline-legend">' +
                 '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--hist">■ Storico / adesso</span>' +
                 '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--pred">■ Zona previsione</span>' +
-                '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--ref">○ Riferimenti manuali</span>' +
+                '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--ref">○ Punti livello</span>' +
                 '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--alarm-warn">■ Allarme giallo</span>' +
                 '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--alarm-crit">■ Allarme rosso</span>' +
                 '</div></div>';
@@ -13415,9 +13501,19 @@ window.updateStoricoButton = async function() {
                 var dotFill = isRef ? '#f8fafc' : window.timelineAlarmDotFill(dotState);
                 var dotR = isRef ? 5.5 : 5;
                 var dotTag = isRef ? 'data-tl-ref-dot' : 'data-tl-start-dot';
-                return '<circle ' + dotTag + ' pointer-events="none" cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) +
+                var refAttrs = '';
+                var pe = 'none';
+                var dotStyle = '';
+                if (isRef && pt.p) {
+                    refAttrs = ' data-ref-ts="' + pt.p.ts + '" data-ref-mm="' + pt.p.mm + '"';
+                    pe = 'all';
+                    dotStyle = ' style="cursor:pointer;touch-action:manipulation"';
+                }
+                var tipLbl = window.formatTankTimelineClock(pt.p.ts) + ' · ' + mmLbl + ' mm';
+                return '<circle ' + dotTag + refAttrs + ' pointer-events="' + pe + '"' + dotStyle +
+                    ' cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) +
                     '" r="' + dotR + '" fill="' + dotFill + '" stroke="#0f172a" stroke-width="1.2">' +
-                    '<title>' + lbl + ': ' + mmLbl + ' mm</title></circle>';
+                    '<title>' + window.__escTankDetailHtml(tipLbl) + '</title></circle>';
             }).join('');
             var startHit = '';
             if (startPt && Number.isFinite(startPt.ts)) {
@@ -13702,6 +13798,12 @@ window.updateStoricoButton = async function() {
             if (!block.__tlHorizonWired) {
                 block.__tlHorizonWired = true;
                 block.addEventListener('click', function (ev) {
+                    var resetBtn = ev.target && ev.target.closest ? ev.target.closest('[data-tl-reset]') : null;
+                    if (resetBtn && block.contains(resetBtn)) {
+                        ev.preventDefault();
+                        window.resetTankTimelineAllLevels(block);
+                        return;
+                    }
                     var btn = ev.target && ev.target.closest ? ev.target.closest('[data-tl-h]') : null;
                     if (!btn || !block.contains(btn)) return;
                     ev.preventDefault();
@@ -13727,6 +13829,7 @@ window.updateStoricoButton = async function() {
                 var geom = svg.__tlGeom;
                 var model = svg.__tlModel;
                 if (!geom || !model) return;
+                if (ev.target && ev.target.closest && ev.target.closest('[data-tl-ref-dot], [data-tl-now-hit]')) return;
                 var sx = svgXFromEvent(ev);
                 if (ev.target && ev.target.closest && ev.target.closest('[data-tl-start-hit]')) {
                     ev.preventDefault();
@@ -13785,6 +13888,15 @@ window.updateStoricoButton = async function() {
                 block.__tlRefUiWired = true;
                 block.addEventListener('click', function (ev) {
                     if (ev.target.closest('[data-tl-start-hit]')) return;
+                    var refDot = ev.target.closest('[data-tl-ref-dot]');
+                    if (refDot && block.__tlRefDraftTs == null) {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        var rts = parseInt(refDot.getAttribute('data-ref-ts'), 10);
+                        var rmm = parseFloat(refDot.getAttribute('data-ref-mm'));
+                        window.openTankTimelineRefEditPopup(block, rts, rmm);
+                        return;
+                    }
                     var startMetric = ev.target.closest('[data-tl-metric-start], [data-tl-time-start]');
                     if (startMetric && block.__tlRefDraftTs == null) {
                         ev.preventDefault();
@@ -13832,6 +13944,7 @@ window.updateStoricoButton = async function() {
                                 t.closest('[data-tl-ref-knob]') ||
                                 t.closest('[data-tl-start-hit]') ||
                                 t.closest('[data-tl-now-hit]') ||
+                                t.closest('[data-tl-ref-dot]') ||
                                 t.closest('#tank-timeline-ref-modal')
                             )) return;
                             window.cancelTankTimelineRefDraft(bl);
@@ -14004,8 +14117,10 @@ window.updateStoricoButton = async function() {
                 '.tank-detail-timeline-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:0 0 10px;padding-bottom:8px;border-bottom:1px solid rgba(96,165,250,0.28)}' +
                 '.tank-detail-timeline-title{flex:1 1 auto;min-width:0;margin:0;padding:0;border:none}' +
                 '.tank-detail-timeline-head-right{display:flex;align-items:center;gap:8px;flex-shrink:0;margin-left:auto}' +
-                '.tank-detail-timeline-sigla{font-size:11px;font-weight:900;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap}' +
+                '.tank-detail-timeline-sigla{font-size:10px;font-weight:900;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap}' +
                 '.tank-detail-timeline-horizon-btns{display:flex;align-items:center;gap:4px;flex-shrink:0}' +
+                '.tank-detail-timeline-reset-btn{border:1px solid rgba(248,113,113,0.45);background:rgba(127,29,29,0.35);color:#fecaca;font-size:9px;font-weight:900;text-transform:uppercase;letter-spacing:0.04em;padding:4px 8px;border-radius:8px;cursor:pointer;line-height:1.1;white-space:nowrap;margin-right:2px}' +
+                '.tank-detail-timeline-reset-btn:active{transform:scale(0.97)}' +
                 '.tank-detail-timeline-h-btn{border:1px solid rgba(96,165,250,0.35);background:rgba(15,23,42,0.65);color:#93c5fd;font-size:9px;font-weight:900;text-transform:uppercase;letter-spacing:0.04em;padding:4px 7px;border-radius:8px;cursor:pointer;line-height:1.1;white-space:nowrap}' +
                 '.tank-detail-timeline-h-btn.is-active{background:rgba(96,165,250,0.28);border-color:rgba(96,165,250,0.75);color:#e0f2fe;box-shadow:inset 0 0 0 1px rgba(96,165,250,0.25)}' +
                 '.tank-detail-timeline-block{margin-top:16px;padding:10px clamp(10px,2vw,14px);background:rgba(15,23,42,0.5);border:1px solid rgba(96,165,250,0.22);border-radius:14px}' +
@@ -14045,8 +14160,8 @@ window.updateStoricoButton = async function() {
                 '.tank-detail-timeline-time-slot--ref{color:#e2e8f0}' +
                 '.tank-detail-timeline-time-slot--pred{color:#7c3aed}' +
                 '.tank-detail-timeline-svg{width:100%;height:68px;min-height:68px;max-height:68px;flex:0 0 auto;display:block;touch-action:none;position:relative;z-index:3;pointer-events:auto;border-radius:8px;overflow:visible;cursor:default}' +
-                '.tank-detail-timeline-svg [data-tl-plot-hit],.tank-detail-timeline-svg [data-tl-drag-hit],.tank-detail-timeline-svg [data-tl-now-hit],.tank-detail-timeline-svg .tank-detail-timeline-scrub-knob{pointer-events:all;cursor:grab;touch-action:none}' +
-                '.tank-detail-timeline-svg [data-tl-now-hit]{cursor:pointer!important}' +
+                '.tank-detail-timeline-svg [data-tl-plot-hit],.tank-detail-timeline-svg [data-tl-drag-hit],.tank-detail-timeline-svg [data-tl-now-hit],.tank-detail-timeline-svg [data-tl-ref-dot],.tank-detail-timeline-svg .tank-detail-timeline-scrub-knob{pointer-events:all;cursor:grab;touch-action:none}' +
+                '.tank-detail-timeline-svg [data-tl-now-hit],.tank-detail-timeline-svg [data-tl-ref-dot]{cursor:pointer!important}' +
                 '.tank-detail-timeline-svg [data-tl-zone-light],.tank-detail-timeline-svg [data-tl-zone-dark],.tank-detail-timeline-svg [data-tl-now-line],.tank-detail-timeline-svg .tank-detail-timeline-scrub-line,.tank-detail-timeline-svg path,.tank-detail-timeline-svg line:not([data-tl-drag-hit]){pointer-events:none}' +
                 '.tank-detail-timeline-legend{display:flex;flex-wrap:wrap;gap:8px 14px;font-size:10px;font-weight:700;color:#64748b;margin-top:2px}' +
                 '.tank-detail-timeline-legend-item--hist{color:#38bdf8}.tank-detail-timeline-legend-item--pred{color:#a78bfa}.tank-detail-timeline-legend-item--ref{color:#e2e8f0}' +

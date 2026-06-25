@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v358';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v359';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -7184,7 +7184,7 @@ window.updateStoricoButton = async function() {
                 if (e.target && e.target.id && window.TANK_LEVEL_ARROW_INPUT_IDS && window.TANK_LEVEL_ARROW_INPUT_IDS.indexOf(e.target.id) !== -1) {
                     window.updateTankLevelArrowForInput(e.target);
                     if (typeof window.recordTankLevelInputTimestamp === 'function') {
-                        window.recordTankLevelInputTimestamp(e.target);
+                        window.recordTankLevelInputTimestamp(e.target, { preserveTimestamp: true });
                     }
                 }
             });
@@ -11402,7 +11402,7 @@ window.updateStoricoButton = async function() {
                 'data-lpignore="true" data-1p-ignore data-form-type="other" ' +
                 'name="sh-nott-stocc-' + t.fieldId + '" ' +
                 'oninput="window.__plantFieldEditMs=window.__plantFieldEditMs||{};window.__plantFieldEditMs[\'' + t.fieldId + '\']=Date.now();window.recordTankLevelInputTimestamp&&window.recordTankLevelInputTimestamp(this);window.refreshStoccaggioInternoTons();if(typeof window.refreshAlarmVisualForField===\'function\')window.refreshAlarmVisualForField(this);window.persistNotturnoStoccaggioToRapportino && window.persistNotturnoStoccaggioToRapportino()" ' +
-                'onchange="window.recordTankLevelInputTimestamp&&window.recordTankLevelInputTimestamp(this);if(typeof window.refreshAlarmVisualForField===\'function\')window.refreshAlarmVisualForField(this,true);window.saveData(); window.persistNotturnoStoccaggioToRapportino && window.persistNotturnoStoccaggioToRapportino()">' +
+                'onchange="window.recordTankLevelInputTimestamp&&window.recordTankLevelInputTimestamp(this,{preserveTimestamp:true});if(typeof window.refreshAlarmVisualForField===\'function\')window.refreshAlarmVisualForField(this,true);window.saveData(); window.persistNotturnoStoccaggioToRapportino && window.persistNotturnoStoccaggioToRapportino()">' +
                 '</div>' +
                 '<div class="nott-stocc-ton-cell">' +
                 '<span class="nott-stocc-ton-val" id="' + t.fieldId + '-ton" aria-live="polite">—</span>' +
@@ -22895,15 +22895,29 @@ window.updateStoricoButton = async function() {
                 var raw = localStorage.getItem(window.TANK_LEVEL_INPUT_AT_LS_KEY);
                 if (!raw) return;
                 var parsed = JSON.parse(raw);
-                if (parsed && typeof parsed === 'object') {
-                    Object.assign(window.tankLevelInputAtMs, parsed);
-                }
+                if (!parsed || typeof parsed !== 'object') return;
+                Object.keys(parsed).forEach(function (k) {
+                    var v = parsed[k];
+                    if (v && typeof v === 'object' && Number.isFinite(Number(v.ts)) && Number(v.ts) > 0) {
+                        window.tankLevelInputAtMs[k] = Number(v.ts);
+                        if (Number.isFinite(Number(v.mm))) window.tankLevelInputAtMm[k] = Number(v.mm);
+                    } else if (Number.isFinite(Number(v)) && Number(v) > 0) {
+                        window.tankLevelInputAtMs[k] = Number(v);
+                    }
+                });
             } catch (_) {}
         };
 
         window.__persistTankLevelInputAt = function () {
             try {
-                localStorage.setItem(window.TANK_LEVEL_INPUT_AT_LS_KEY, JSON.stringify(window.tankLevelInputAtMs));
+                var out = {};
+                Object.keys(window.tankLevelInputAtMs || {}).forEach(function (k) {
+                    var ts = Number(window.tankLevelInputAtMs[k]);
+                    if (!Number.isFinite(ts) || ts <= 0) return;
+                    var mm = Number(window.tankLevelInputAtMm[k]);
+                    out[k] = Number.isFinite(mm) ? { ts: ts, mm: mm } : { ts: ts };
+                });
+                localStorage.setItem(window.TANK_LEVEL_INPUT_AT_LS_KEY, JSON.stringify(out));
             } catch (_) {}
         };
 
@@ -22916,11 +22930,14 @@ window.updateStoricoButton = async function() {
             if (!data || !data.tankLevelInputAt || typeof data.tankLevelInputAt !== 'object') return;
             Object.keys(data.tankLevelInputAt).forEach(function (k) {
                 var norm = window.__normalizeTankInputAtKey(k);
-                var remoteTs = Number(data.tankLevelInputAt[k]);
+                var raw = data.tankLevelInputAt[k];
+                var remoteTs = Number(raw && typeof raw === 'object' ? raw.ts : raw);
                 if (!Number.isFinite(remoteTs) || remoteTs <= 0) return;
                 var localTs = Number(window.tankLevelInputAtMs[norm]);
                 if (!Number.isFinite(localTs) || remoteTs >= localTs) {
                     window.tankLevelInputAtMs[norm] = remoteTs;
+                    var remoteMm = raw && typeof raw === 'object' ? Number(raw.mm) : NaN;
+                    if (Number.isFinite(remoteMm)) window.tankLevelInputAtMm[norm] = remoteMm;
                 }
             });
             window.__persistTankLevelInputAt();
@@ -22943,12 +22960,20 @@ window.updateStoricoButton = async function() {
                 window.__persistTankLevelInputAt();
                 return;
             }
+            var existingTs = Number(window.tankLevelInputAtMs[normId]);
             var prevMm = window.tankLevelInputAtMm[normId];
             if (opts.prevValue != null) {
                 prevMm = window.parseTankLevelMm(opts.prevValue);
             }
-            if (Number.isFinite(prevMm) && Math.abs(prevMm - mm) <= 0.05 && window.tankLevelInputAtMs[normId]) {
+            var sameValue = Number.isFinite(prevMm) && Math.abs(prevMm - mm) <= 0.05;
+            if (sameValue && Number.isFinite(existingTs) && existingTs > 0) {
                 window.tankLevelInputAtMm[normId] = mm;
+                window.__persistTankLevelInputAt();
+                return;
+            }
+            if (opts.preserveTimestamp && Number.isFinite(existingTs) && existingTs > 0) {
+                window.tankLevelInputAtMm[normId] = mm;
+                window.__persistTankLevelInputAt();
                 return;
             }
             var ts = opts.atMs != null ? Number(opts.atMs) : Date.now();
@@ -22965,8 +22990,6 @@ window.updateStoricoButton = async function() {
             var normId = window.__normalizeTankInputAtKey(fieldId);
             var ts = Number(window.tankLevelInputAtMs[normId]);
             if (Number.isFinite(ts) && ts > 0) return ts;
-            var editMs = window.__plantFieldEditMs && Number(window.__plantFieldEditMs[normId]);
-            if (Number.isFinite(editMs) && editMs > 0) return editMs;
             return null;
         };
 
@@ -23069,10 +23092,11 @@ window.updateStoricoButton = async function() {
                 if (last && last.live && Number.isFinite(last.ts)) return last.ts;
             }
             if (Number.isFinite(info.levelInputTs)) return info.levelInputTs;
-            var hasArchive = fieldId && typeof window.collectTankLevelArchiveSeries === 'function'
-                && window.collectTankLevelArchiveSeries(fieldId, { shiftOnly: false }).length > 0;
-            if (hasArchive && Number.isFinite(info.levelMm)) return Date.now();
-            return series && series.length ? series[series.length - 1].ts : Date.now();
+            if (series && series.length) {
+                var lp = series[series.length - 1];
+                if (lp && Number.isFinite(lp.ts)) return lp.ts;
+            }
+            return Date.now();
         };
 
         window.__loadTankLevelInputAtFromStorage();

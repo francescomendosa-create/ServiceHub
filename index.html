@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v368';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v369';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -7861,6 +7861,84 @@ window.updateStoricoButton = async function() {
 
         window.__numpadLabelSelector = '.cell-label-main, .amb-label, .bd-label, .nott-stocc-sigla-cell';
 
+        window.isNumpadEditableInput = function (input) {
+            if (!input || !input.id) return false;
+            if (input.readOnly || input.type === 'hidden') return false;
+            if (input.style && input.style.pointerEvents === 'none') return false;
+            if (input.closest('[data-no-numpad="1"]')) return false;
+            return true;
+        };
+
+        window.buildNumpadFieldSequence = function (sectionOrRoot) {
+            const root = sectionOrRoot || document;
+            const out = [];
+            const seen = {};
+            const pushPair = function (input, label) {
+                if (!window.isNumpadEditableInput(input)) return;
+                if (seen[input.id]) return;
+                if (!label) label = typeof window.resolveNumpadLabelForInput === 'function'
+                    ? window.resolveNumpadLabelForInput(input) : null;
+                if (label && typeof window.isNumpadLabelElement === 'function' && !window.isNumpadLabelElement(label)) {
+                    return;
+                }
+                seen[input.id] = true;
+                out.push({ input: input, label: label });
+            };
+            root.querySelectorAll('tr').forEach(function (tr) {
+                const inp = tr.querySelector('input:not([readonly]):not([type="hidden"])');
+                if (!inp) return;
+                const lab = tr.querySelector('.cell-label-main') || tr.querySelector('td.cell-label-main');
+                pushPair(inp, lab);
+            });
+            root.querySelectorAll('.amb-row').forEach(function (row) {
+                const inp = row.querySelector('.amb-input-box input:not([readonly]):not([type="hidden"])');
+                const lab = row.querySelector('.amb-label');
+                pushPair(inp, lab);
+            });
+            root.querySelectorAll('.bd-input-row').forEach(function (row) {
+                const inp = row.querySelector('.bd-input-box input:not([readonly]):not([type="hidden"])');
+                const lab = row.querySelector('.bd-label');
+                pushPair(inp, lab);
+            });
+            root.querySelectorAll('.nott-stocc-row').forEach(function (row) {
+                const inp = row.querySelector('input.nott-stocc-inp[id]');
+                const lab = row.querySelector('.nott-stocc-sigla-cell');
+                pushPair(inp, lab);
+            });
+            return out;
+        };
+
+        window.getAdjacentNumpadField = function (input, direction) {
+            if (!input) return null;
+            const section = input.closest('.col-section, #stoccaggio-panel-notturno, .notturno-stoccaggio-tendina');
+            const seq = window.buildNumpadFieldSequence(section);
+            const idx = seq.findIndex(function (item) { return item.input === input; });
+            if (idx < 0) return null;
+            const nextIdx = direction === 'prev' ? idx - 1 : idx + 1;
+            return seq[nextIdx] || null;
+        };
+
+        window.advanceNumpadField = function (direction) {
+            direction = direction === 'prev' ? 'prev' : 'next';
+            const npt = typeof window.__getNumpadTarget === 'function' ? window.__getNumpadTarget() : currentNumpadTarget;
+            if (!npt) return false;
+            const adj = window.getAdjacentNumpadField(npt, direction);
+            if (!adj || !adj.input || !adj.label) return false;
+            try {
+                if (typeof window.commitNumpadFieldValue === 'function') window.commitNumpadFieldValue();
+            } catch (_) {}
+            const ok = typeof window.switchNumpadField === 'function'
+                && window.switchNumpadField(adj.label, adj.input);
+            if (ok) {
+                window.__numpadCommitted = false;
+                nextNumpadTarget = (function () {
+                    const next = window.getAdjacentNumpadField(adj.input, 'next');
+                    return next ? next.input : null;
+                })();
+            }
+            return !!ok;
+        };
+
         window.resolveNumpadLabelForInput = function (inputEl) {
             if (!inputEl) return null;
             const row = inputEl.closest('tr, .amb-row, .bd-input-row, .nott-stocc-row');
@@ -8227,7 +8305,8 @@ window.updateStoricoButton = async function() {
                 || labelEl.closest('.nott-stocc-row');
             if (!row) return null;
             if (labelEl.classList.contains('cell-label-main') && row.tagName === 'TR') {
-                const valueCell = labelEl.nextElementSibling;
+                const labelCell = labelEl.tagName === 'TD' ? labelEl : labelEl.closest('td');
+                const valueCell = labelCell && labelCell.nextElementSibling;
                 if (valueCell) {
                     const paired = valueCell.querySelector('input');
                     if (paired) return paired;
@@ -8283,9 +8362,11 @@ window.updateStoricoButton = async function() {
                 const ctxEl = document.getElementById('numpad-context');
                 if (ctxEl) ctxEl.textContent = window.__numpadSavedContext;
                 if (typeof window.updateAriaNumpadHint === 'function') window.updateAriaNumpadHint(null);
-                const allInputs = section ? Array.from(section.querySelectorAll('input:not([readonly])')) : [];
-                const currentIndex = allInputs.indexOf(input);
-                nextNumpadTarget = (currentIndex !== -1 && allInputs[currentIndex + 1]) ? allInputs[currentIndex + 1] : null;
+                const seq = typeof window.buildNumpadFieldSequence === 'function'
+                    ? window.buildNumpadFieldSequence(section) : [];
+                const currentIndex = seq.findIndex(function (item) { return item.input === input; });
+                const nextItem = currentIndex >= 0 ? seq[currentIndex + 1] : null;
+                nextNumpadTarget = nextItem ? nextItem.input : null;
             }
             const titleEl = document.getElementById('numpad-title');
             const displayEl = document.getElementById('numpad-display');
@@ -8395,14 +8476,23 @@ window.updateStoricoButton = async function() {
         
         window.switchNumpadToInput = function (nextInput) {
             if (!nextInput || !nextInput.id) return false;
-            const nextRow = nextInput.closest('tr') || nextInput.closest('.amb-row') || nextInput.closest('.bd-input-row') || nextInput.closest('.nott-stocc-row');
-            const nextLabel = (typeof window.resolveNumpadLabelForInput === 'function'
-                ? window.resolveNumpadLabelForInput(nextInput)
-                : null) || (nextRow ? nextRow.querySelector(window.__numpadLabelSelector || '.cell-label-main, .amb-label, .bd-label') : null);
-            if (!nextLabel || typeof window.switchNumpadField !== 'function') return false;
-            if (typeof window.commitNumpadFieldValue === 'function') window.commitNumpadFieldValue();
+            const npt = typeof window.__getNumpadTarget === 'function' ? window.__getNumpadTarget() : currentNumpadTarget;
+            const adj = npt && typeof window.getAdjacentNumpadField === 'function'
+                ? window.getAdjacentNumpadField(npt, 'next')
+                : null;
+            const target = (adj && adj.input === nextInput) ? adj : (function () {
+                const lab = typeof window.resolveNumpadLabelForInput === 'function'
+                    ? window.resolveNumpadLabelForInput(nextInput) : null;
+                return lab ? { input: nextInput, label: lab } : null;
+            })();
+            if (!target || !target.label || typeof window.switchNumpadField !== 'function') return false;
+            try {
+                if (typeof window.commitNumpadFieldValue === 'function') window.commitNumpadFieldValue();
+            } catch (_) {}
             window.__numpadCommitted = true;
-            return window.switchNumpadField(nextLabel, nextInput);
+            const ok = window.switchNumpadField(target.label, target.input);
+            if (ok) window.__numpadCommitted = false;
+            return ok;
         };
 
         window.navigateNumpad = (direction) => {
@@ -8420,48 +8510,9 @@ window.updateStoricoButton = async function() {
                 }
                 return;
             }
-            
-            const currentRow = npt.closest('tr') || npt.closest('.amb-row') || npt.closest('.bd-input-row');
-            if (!currentRow) return;
-            
-            let nextRow;
-            if (direction === 'next') {
-                nextRow = currentRow.nextElementSibling;
-                // Se non c'è nextRow, prova a trovare il prossimo elemento cliccabile
-                if (!nextRow) {
-                    const parent = currentRow.parentElement;
-                    const allRows = Array.from(parent.children);
-                    const currentIndex = allRows.indexOf(currentRow);
-                    if (currentIndex < allRows.length - 1) {
-                        nextRow = allRows[currentIndex + 1];
-                    }
-                }
-            } else if (direction === 'prev') {
-                nextRow = currentRow.previousElementSibling;
-                // Se non c'è previousElementSibling, prova a trovare il precedente elemento cliccabile
-                if (!nextRow) {
-                    const parent = currentRow.parentElement;
-                    const allRows = Array.from(parent.children);
-                    const currentIndex = allRows.indexOf(currentRow);
-                    if (currentIndex > 0) {
-                        nextRow = allRows[currentIndex - 1];
-                    }
-                }
-            }
-            
-            if (nextRow) {
-                const nextLabel = (function () {
-                    const inp = nextRow.querySelector('input:not([readonly])');
-                    if (inp && typeof window.resolveNumpadLabelForInput === 'function') {
-                        return window.resolveNumpadLabelForInput(inp);
-                    }
-                    return nextRow.querySelector(window.__numpadLabelSelector || '.cell-label-main, .amb-label, .bd-label');
-                })();
-                if (nextLabel) {
-                    if (typeof window.commitNumpadFieldValue === 'function') window.commitNumpadFieldValue();
-                    window.__numpadCommitted = true;
-                    if (typeof window.switchNumpadField === 'function') window.switchNumpadField(nextLabel);
-                }
+
+            if (typeof window.advanceNumpadField === 'function' && window.advanceNumpadField(direction)) {
+                return;
             }
         };
 
@@ -8547,12 +8598,10 @@ window.updateStoricoButton = async function() {
                 return;
             }
 
-            const next = nextNumpadTarget;
-            if (next) {
-                if (typeof window.switchNumpadToInput === 'function' && window.switchNumpadToInput(next)) {
-                    return;
-                }
+            if (typeof window.advanceNumpadField === 'function' && window.advanceNumpadField('next')) {
+                return;
             }
+
             window.__numpadCommitted = true;
             window.closeNumpad();
         };
@@ -22349,6 +22398,9 @@ window.updateStoricoButton = async function() {
             }
         };
         window.openDigitalFromManagement = async function () {
+            if (typeof window.recoverDeviceHiddenModulesForActiveRapportino === 'function') {
+                window.recoverDeviceHiddenModulesForActiveRapportino();
+            }
             window.closeManagement();
             if (typeof window.openDigitalPreview === 'function') {
                 await window.openDigitalPreview();
@@ -25325,6 +25377,15 @@ window.buildDigitalCardsHTML = function() {
         });
         
         orderedModules.push(...otherModules);
+
+        if (!orderedModules.length) {
+            ['sec-chpp', 'sec-well', 'sec-amb', 'sec-ambiente2', 'sec-acqua', 'sec-scam', 'sec-filtra',
+                'sec-bluedown', 'sec-aria', 'sec-azoto'].forEach(function (id) {
+                if (document.getElementById(id) && orderedModules.indexOf(id) < 0) {
+                    orderedModules.push(id);
+                }
+            });
+        }
 
         const hmStocc = window.hiddenModules || hiddenModules || [];
         if (hmStocc.includes('sec-stoccaggio-interno') && orderedModules.indexOf('sec-stoccaggio-interno') < 0) {

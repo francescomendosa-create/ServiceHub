@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v382';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v383';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -11945,6 +11945,72 @@ window.updateStoricoButton = async function() {
             return '';
         };
 
+        window.buildLetturaCaptureFieldMap = function () {
+            var fields = [];
+            var seen = {};
+            (window.LETTURE_STOCCAGGIO_CALDAIA_D_SERBATOI || []).concat(
+                window.LETTURE_STOCCAGGIO_CALDAIA_D_CALDAIA || []
+            ).forEach(function (row) {
+                if (!row.fieldId || seen[row.fieldId]) return;
+                seen[row.fieldId] = true;
+                fields.push({ id: row.fieldId, label: row.label, section: 'Letture Quad' });
+            });
+            return fields;
+        };
+
+        window.persistLetturaSlotSnapshotFromReadings = function (readings, slotIndex) {
+            var slots = window.LETTURE_QUAD_TIME_SLOTS || [];
+            var slotKey = slots[slotIndex];
+            if (!slotKey || !readings || !readings.length) return 0;
+            var allowed = {};
+            window.buildLetturaCaptureFieldMap().forEach(function (f) { allowed[f.id] = true; });
+            var dateKey = window.getLetturaDocDateKey();
+            var store = window.loadLetturaQuadStore();
+            if (!store[dateKey]) store[dateKey] = {};
+            var snap = Object.assign({}, store[dateKey][slotKey] || {});
+            var n = 0;
+            readings.forEach(function (r) {
+                if (!r || !r.id || !allowed[r.id] || r.kind === 'status') return;
+                var v = String(r.value == null ? '' : r.value).trim();
+                if (!v) return;
+                snap[r.id] = v;
+                n++;
+            });
+            if (!n) return 0;
+            snap._savedAt = Date.now();
+            snap._ocr = true;
+            store[dateKey][slotKey] = snap;
+            window.saveLetturaQuadStore(store);
+            if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
+            return n;
+        };
+
+        window.startLetturaSlotOcrCapture = function (slotIndex) {
+            var slots = window.LETTURE_QUAD_TIME_SLOTS || [];
+            if (!Number.isFinite(slotIndex) || slotIndex < 0 || slotIndex >= slots.length) return;
+            window._letturaOcrSlotIndex = slotIndex;
+            window._letturaOcrSlotLabel = slots[slotIndex];
+            window._smartCaptureLetturaMode = true;
+            window._smartCaptureTankMode = true;
+            window._smartCaptureAbort = false;
+            document.body.classList.add('lettura-ocr-active');
+            if (typeof window.ensureGeminiApiKeySaved === 'function') window.ensureGeminiApiKeySaved();
+            var settings = document.getElementById('settings-modal');
+            if (settings) settings.classList.remove('active');
+            if (typeof window.smartCaptureFromCamera === 'function') {
+                window.smartCaptureFromCamera();
+            } else if (typeof window.smartCaptureFromGallery === 'function') {
+                window.smartCaptureFromGallery();
+            }
+        };
+
+        window.clearLetturaOcrCaptureMode = function () {
+            window._smartCaptureLetturaMode = false;
+            window._letturaOcrSlotIndex = null;
+            window._letturaOcrSlotLabel = '';
+            document.body.classList.remove('lettura-ocr-active');
+        };
+
         window.getLetturaActiveSlotIndex = function () {
             var slots = window.LETTURE_QUAD_TIME_SLOTS || [];
             var now = new Date();
@@ -12078,8 +12144,19 @@ window.updateStoricoButton = async function() {
             }
             html += '<tr class="lettura-o-head-row">' + window.letturaTdOpen(0, 'lettura-o-sigla') + esc(sectionTitle) + '</td>';
             slots.forEach(function (s, i) {
-                html += window.letturaTdOpen(i + 1, 'lettura-o-time') +
-                    '<span class="lettura-o-time-txt">' + esc(s) + '</span></td>';
+                var timeInner;
+                if (opts.interactive && sectionTitle === 'SERBATOI') {
+                    timeInner = '<button type="button" class="lettura-slot-ocr-btn" onclick="window.startLetturaSlotOcrCapture(' + i + ')" ' +
+                        'title="Acquisisci foto OCR · ' + esc(s) + '" aria-label="Acquisisci OCR colonna ' + esc(s) + '">' +
+                        '<span class="lettura-o-time-txt">' + esc(s) + '</span>' +
+                        '<svg class="lettura-slot-ocr-icon" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">' +
+                        '<path fill="currentColor" d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Zm9-4.9h-1.7l-1.2-1.7a2 2 0 0 0-1.6-.8H9.5a2 2 0 0 0-1.6.8L6.7 10.3H5a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-7a2 2 0 0 0-2-2Zm-9 8.1a5.1 5.1 0 1 1 0-10.2 5.1 5.1 0 0 1 0 10.2Z"/></svg>' +
+                        '</button>';
+                } else {
+                    timeInner = '<span class="lettura-o-time-txt">' + esc(s) + '</span>';
+                }
+                html += window.letturaTdOpen(i + 1, 'lettura-o-time' + (opts.interactive && sectionTitle === 'SERBATOI' ? ' lettura-o-time--interactive' : '')) +
+                    timeInner + '</td>';
             });
             html += '</tr>';
             (rows || []).forEach(function (row) {
@@ -12121,20 +12198,23 @@ window.updateStoricoButton = async function() {
 
         window.buildLetturaStoccaggioCaldaiaDHtml = function (opts) {
             opts = opts || {};
+            var interactive = opts.interactive !== false && !opts.forShare;
             var activeCol = window.getLetturaActiveSlotIndex();
             var uniformFontPt = window.computeLetturaUniformFontPt(activeCol);
-            return '<div class="lettura-doc lettura-doc--original" id="lettura-doc-print-root">' +
+            return '<div class="lettura-doc lettura-doc--original' + (interactive ? ' lettura-doc--interactive' : '') + '" id="lettura-doc-print-root">' +
                 '<p class="lettura-doc-title-original">Letture Utilities (Quad) pag. 2</p>' +
                 '<div class="lettura-original-sheet">' +
                 window.buildLetturaOriginalTableHtml('SERBATOI', window.LETTURE_STOCCAGGIO_CALDAIA_D_SERBATOI, {
                     dateRow: true,
                     activeCol: activeCol,
-                    uniformFontPt: uniformFontPt
+                    uniformFontPt: uniformFontPt,
+                    interactive: interactive
                 }) +
                 window.buildLetturaOriginalTableHtml('CALDAIA D', window.LETTURE_STOCCAGGIO_CALDAIA_D_CALDAIA, {
                     activeCol: activeCol,
                     uniformFontPt: uniformFontPt,
-                    firmaRow: true
+                    firmaRow: true,
+                    interactive: false
                 }) +
                 '</div></div>';
         };
@@ -12209,7 +12289,7 @@ window.updateStoricoButton = async function() {
             var modal = document.getElementById('letture-doc-modal');
             var body = document.getElementById('letture-doc-body');
             if (!modal || !body) return;
-            body.innerHTML = window.buildLetturaStoccaggioCaldaiaDHtml();
+            body.innerHTML = window.buildLetturaStoccaggioCaldaiaDHtml({ interactive: true });
             modal.classList.add('active');
         };
 
@@ -12224,7 +12304,7 @@ window.updateStoricoButton = async function() {
             }
             var body = document.getElementById('letture-doc-body');
             if (!body) return;
-            body.innerHTML = window.buildLetturaStoccaggioCaldaiaDHtml();
+            body.innerHTML = window.buildLetturaStoccaggioCaldaiaDHtml({ interactive: true });
         };
 
         window.downloadLetturaShareFile = function () {
@@ -31186,6 +31266,13 @@ window.convertToHtml = async () => {
         .lettura-original-grid td.lettura-o-val { padding: 0; font-size: 6.5pt; }
         .lettura-o-val-txt, .lettura-o-time-txt { display: block; overflow: hidden; white-space: nowrap; margin: 0 auto; text-overflow: clip; }
         .lettura-original-grid tr.lettura-o-date-row td { text-align: left; font-weight: 700; font-size: 8pt; }
+        .lettura-doc--interactive .lettura-original-grid td.lettura-o-time--interactive { height: auto; max-height: none; min-height: 40px; padding: 2px 1px !important; vertical-align: middle !important; }
+        .lettura-slot-ocr-btn { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; width: 100%; min-height: 36px; border: none; background: transparent; cursor: pointer; padding: 2px 0; color: inherit; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+        .lettura-slot-ocr-btn:active { background: rgba(37, 99, 235, 0.12); border-radius: 4px; }
+        .lettura-slot-ocr-icon { color: #2563eb; flex-shrink: 0; pointer-events: none; }
+        body.lettura-ocr-active #smart-capture-camera-modal { z-index: 10095 !important; }
+        body.lettura-ocr-active #smart-capture-loading { z-index: 10096 !important; }
+        body.lettura-ocr-active #smart-capture-confirm-modal { z-index: 10097 !important; }
         .letture-doc-share { flex: 0 0 auto; padding: 12px 14px calc(12px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid rgba(148,163,184,0.35); background: rgba(248,250,252,0.98); display: flex; flex-direction: column; gap: 8px; }
         .dark .letture-doc-share { background: rgba(15,23,42,0.98); border-color: rgba(51,65,85,0.8); }
         .letture-share-btn { border: none; border-radius: 14px; padding: 14px 12px; font-weight: 900; font-size: 12px; text-transform: uppercase; cursor: pointer; color: #fff; width: 100%; letter-spacing: 0.04em; }
@@ -36762,6 +36849,9 @@ window.extractGeminiCaptureReadings = function(raw, fields) {
 };
 
 window.mergeCaptureFieldsForGemini = function(tankMode) {
+    if (window._smartCaptureLetturaMode && typeof window.buildLetturaCaptureFieldMap === 'function') {
+        return window.buildLetturaCaptureFieldMap();
+    }
     const tank = tankMode ? window.buildTankCaptureFieldMap() : window.buildSmartCaptureFieldMap();
     const dcs = window.getDcsStoccaggioCaptureFields ? window.getDcsStoccaggioCaptureFields() : [];
     const pozzi = [
@@ -38614,6 +38704,10 @@ window.closeSmartCaptureCamera = function(reopenSettings) {
     document.body.classList.remove('smart-capture-camera-open');
     window.stopSmartCaptureStream();
     window._smartCapturePhotoData = null;
+    if (window._smartCaptureLetturaMode) {
+        if (typeof window.clearLetturaOcrCaptureMode === 'function') window.clearLetturaOcrCaptureMode();
+        return;
+    }
     if (reopenSettings !== false) {
         const settings = document.getElementById('settings-modal');
         const loading = document.getElementById('smart-capture-loading');
@@ -38706,11 +38800,14 @@ window.showSmartCaptureConfirm = function(parsed) {
     if (settings) settings.classList.remove('active');
 
     const tankMode = !!window._smartCaptureTankMode;
+    const letturaMode = !!window._smartCaptureLetturaMode;
     const isDcsAcqua = parsed && (parsed.profile === 'dcs-acqua' || parsed.profile === 'dcs-stoccaggio-interno');
     const isOverview = parsed && parsed.profile === 'dcs-overview-strumenti';
     const fieldMap = {};
     let fields = tankMode ? window.mergeCaptureFieldsForGemini(true) : window.buildSmartCaptureFieldMap();
-    if (isDcsAcqua) {
+    if (letturaMode && typeof window.buildLetturaCaptureFieldMap === 'function') {
+        fields = window.buildLetturaCaptureFieldMap();
+    } else if (isDcsAcqua) {
         fields = window.getDcsAcquaCaptureFields();
     }
     fields.forEach(function(f) { fieldMap[f.id] = f; });
@@ -38764,6 +38861,9 @@ window.showSmartCaptureConfirm = function(parsed) {
         const eng = parsed.engine ? (' · motore: ' + parsed.engine) : '';
         const multi = parsed.photoCount > 1 ? (' · ' + parsed.photoCount + ' foto unite') : '';
         hint.textContent = parsed.notes + multi + eng + ' — correggi se necessario';
+    } else if (hint && letturaMode) {
+        hint.textContent = 'Letture colonna ' + (window._letturaOcrSlotLabel || '') +
+            ' — i livelli andranno nella colonna sotto l\'orario scelto';
     } else if (hint) {
         hint.textContent = isOverview
             ? ('Overview Strumenti · S-121 ignorato · 9100-LI-818 → S 818 · pozzi MARCIA/FERMO' +
@@ -38786,7 +38886,9 @@ window.closeSmartCaptureConfirm = function(reopenSettings) {
     if (typeof window.setSmartCaptureLoading === 'function') window.setSmartCaptureLoading(false);
     window._smartCapturePending = null;
     window._smartCapturePhotoData = null;
-    if (reopenSettings !== false) {
+    const wasLettura = !!window._smartCaptureLetturaMode;
+    if (typeof window.clearLetturaOcrCaptureMode === 'function') window.clearLetturaOcrCaptureMode();
+    if (reopenSettings !== false && !wasLettura) {
         const settings = document.getElementById('settings-modal');
         if (settings) settings.classList.add('active');
     }
@@ -38812,10 +38914,49 @@ window.applySmartCaptureResults = async function() {
         return;
     }
 
+    const letturaMode = !!window._smartCaptureLetturaMode;
+    const letturaSlotIdx = window._letturaOcrSlotIndex;
+    const letturaSlotLabel = window._letturaOcrSlotLabel || '';
+
     /* Chiudi subito il riquadro — i numeri vanno applicati sotto, non bloccare su Firestore. */
     window.closeSmartCaptureConfirm(false);
     const settings = document.getElementById('settings-modal');
     if (settings) settings.classList.remove('active');
+
+    if (letturaMode && Number.isFinite(letturaSlotIdx)) {
+        var allowed = {};
+        if (typeof window.buildLetturaCaptureFieldMap === 'function') {
+            window.buildLetturaCaptureFieldMap().forEach(function (f) { allowed[f.id] = true; });
+        }
+        var filtered = readings.filter(function (r) {
+            return r && r.id && allowed[r.id] && r.kind !== 'status';
+        });
+        var appliedSlot = typeof window.persistLetturaSlotSnapshotFromReadings === 'function'
+            ? window.persistLetturaSlotSnapshotFromReadings(filtered, letturaSlotIdx)
+            : 0;
+        filtered.forEach(function (r) {
+            var el = document.getElementById(r.id);
+            if (!el || el.readOnly) return;
+            el.value = String(r.value).trim();
+            try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+        });
+        window.__lastLocalPlantEditMs = Date.now();
+        if (typeof window.saveData === 'function') void window.saveData(true);
+        if (typeof window.clearLetturaOcrCaptureMode === 'function') window.clearLetturaOcrCaptureMode();
+        if (typeof window.refreshLetturaDocView === 'function') window.refreshLetturaDocView();
+        if (typeof window.__serviceHubFlashToast === 'function') {
+            window.__serviceHubFlashToast(
+                appliedSlot
+                    ? ('Colonna ' + letturaSlotLabel + ': applicati ' + appliedSlot + ' livelli.')
+                    : 'Nessun livello riconosciuto per questa colonna.',
+                false,
+                appliedSlot ? 'ok' : 'warn'
+            );
+        } else if (appliedSlot) {
+            alert('Colonna ' + letturaSlotLabel + ': applicati ' + appliedSlot + ' livelli.');
+        }
+        return;
+    }
 
     const pending = window._smartCapturePending || parsed;
     const isOverview = pending.profile === 'dcs-overview-strumenti';

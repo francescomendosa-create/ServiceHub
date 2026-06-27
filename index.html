@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v364';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v365';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -11390,6 +11390,55 @@ window.updateStoricoButton = async function() {
         ];
         window.rebuildStoccaggioFieldIdsSet();
 
+        /** Sigle serbatoio fisse — mai sovrascritte da config rapportino o sync cloud. */
+        window.rebuildCanonicalTankFieldLabels = function () {
+            var m = {};
+            (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
+                if (t.fieldId && t.label) m[t.fieldId] = t.label;
+            });
+            m['inp-s133'] = 'S 133';
+            m['tk101'] = 'TK 101';
+            window.__CANONICAL_TANK_FIELD_LABELS = m;
+        };
+        window.rebuildCanonicalTankFieldLabels();
+
+        window.getCanonicalTankFieldLabel = function (fieldId, opts) {
+            opts = opts || {};
+            if (!fieldId) return '';
+            if (!window.__CANONICAL_TANK_FIELD_LABELS) window.rebuildCanonicalTankFieldLabels();
+            if (window.__CANONICAL_TANK_FIELD_LABELS[fieldId]) {
+                return window.__CANONICAL_TANK_FIELD_LABELS[fieldId];
+            }
+            if (opts.strict) return '';
+            return typeof window.deriveLabelFromInputId === 'function'
+                ? (window.deriveLabelFromInputId(fieldId) || '') : '';
+        };
+
+        window.enforceStoccaggioInternoSigleInDom = function () {
+            var panel = document.getElementById('stoccaggio-panel-notturno');
+            if (panel) {
+                (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
+                    var row = panel.querySelector('.nott-stocc-row[data-field-for="' + t.fieldId + '"]');
+                    if (!row || !t.label) return;
+                    var txt = row.querySelector('.nott-stocc-sigla-txt');
+                    if (txt) txt.textContent = t.label;
+                    else {
+                        var sigla = row.querySelector('.nott-stocc-sigla-cell');
+                        if (sigla) sigla.textContent = t.label;
+                    }
+                });
+            }
+            document.querySelectorAll('.digital-stocc-row[data-field-id]').forEach(function (row) {
+                var fid = row.getAttribute('data-field-id');
+                var tank = (window.STOCCAGGIO_INTERNO_TANKS || []).find(function (x) { return x.fieldId === fid; });
+                if (!tank || !tank.label) return;
+                var lab = row.querySelector('.digital-stocc-sigla.digital-row-label');
+                if (lab) lab.textContent = tank.label;
+                var under = row.querySelector('.digital-stocc-sigla-under');
+                if (under) under.textContent = tank.label;
+            });
+        };
+
         window.buildStoccaggioInternoRowHtml = function(t) {
             const safe = String(t.label || '').replace(/</g, '&lt;');
             const dbKey = t.tankDbKey || '';
@@ -11422,6 +11471,9 @@ window.updateStoricoButton = async function() {
 
         window.getStoccaggioInternoInputLabel = function(inp) {
             if (!inp || !inp.id) return '';
+            var canon = typeof window.getCanonicalTankFieldLabel === 'function'
+                ? window.getCanonicalTankFieldLabel(inp.id, { strict: true }) : '';
+            if (canon) return canon;
             const row = inp.closest('.nott-stocc-row');
             if (row) {
                 const txt = row.querySelector('.nott-stocc-sigla-txt');
@@ -14643,7 +14695,12 @@ window.updateStoricoButton = async function() {
 
         window.renderStoccaggioInternoPanel = function() {
             const panel = document.getElementById('stoccaggio-panel-notturno');
-            if (!panel || panel.dataset.built === 'v12-stocc-sigle-fix') return;
+            if (!panel || panel.dataset.built === 'v13-stocc-sigle-canonical') {
+                if (panel && typeof window.enforceStoccaggioInternoSigleInDom === 'function') {
+                    window.enforceStoccaggioInternoSigleInDom();
+                }
+                return;
+            }
             const tanks = window.STOCCAGGIO_INTERNO_TANKS || [];
             const saved = window.getNotturnoStoccaggioSnapshot() || {};
             tanks.forEach(function (t) {
@@ -14660,13 +14717,16 @@ window.updateStoricoButton = async function() {
                 window.buildStoccaggioInternoColumnHtml(tanks.slice(0, splitAt)) +
                 window.buildStoccaggioInternoColumnHtml(tanks.slice(splitAt)) +
                 '</div></form>';
-            panel.dataset.built = 'v12-stocc-sigle-fix';
+            panel.dataset.built = 'v13-stocc-sigle-canonical';
             Object.keys(saved).forEach(function (fid) {
                 const el = panel.querySelector('input.nott-stocc-inp[id="' + fid + '"]');
                 if (el) el.value = saved[fid];
             });
             if (typeof window.__syncPlantLevelSharedFieldsOnPanelBuild === 'function') {
                 window.__syncPlantLevelSharedFieldsOnPanelBuild(panel);
+            }
+            if (typeof window.enforceStoccaggioInternoSigleInDom === 'function') {
+                window.enforceStoccaggioInternoSigleInDom();
             }
             window.refreshStoccaggioInternoTons();
             if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
@@ -14730,6 +14790,10 @@ window.updateStoricoButton = async function() {
         };
 
         window.normalizePlantFieldLabel = function(fieldId, label) {
+            if (typeof window.getCanonicalTankFieldLabel === 'function') {
+                var forced = window.getCanonicalTankFieldLabel(fieldId, { strict: true });
+                if (forced) return forced;
+            }
             const clean = String(label || '').replace(/\s+/g, ' ').trim();
             if (window.isBdCompressorMeasureInput && window.isBdCompressorMeasureInput(fieldId)) {
                 return window.shortBdCompressorMeasureLabel(clean, fieldId);
@@ -15313,8 +15377,12 @@ window.updateStoricoButton = async function() {
                 if (!inp.id) return;
                 if (inp.id === 'inp-vwt-notes' || inp.id === 'inp-osmosi') return;
                 let label = '';
+                if (secId === 'sec-stoccaggio-interno' && typeof window.getCanonicalTankFieldLabel === 'function') {
+                    const canon = window.getCanonicalTankFieldLabel(inp.id, { strict: true });
+                    if (canon) label = canon;
+                }
                 const stoccTr = inp.closest('.nott-stocc-row, .nott-stocc-tr');
-                if (stoccTr) {
+                if (!label && stoccTr) {
                     const txt = stoccTr.querySelector('.nott-stocc-sigla-txt');
                     if (txt) label = txt.innerText.replace(/\s+/g, ' ').trim();
                     else {
@@ -17093,11 +17161,17 @@ window.updateStoricoButton = async function() {
         };
 
         window.applyFieldLabelInDom = function(fieldId, labelText) {
+            if (!labelText && !fieldId) return;
+            var canon = typeof window.getCanonicalTankFieldLabel === 'function'
+                ? window.getCanonicalTankFieldLabel(fieldId, { strict: true }) : '';
+            if (canon) labelText = canon;
             if (!labelText) return;
             if (fieldId === 'inp-vwt-notes' || fieldId === 'inp-osmosi') return;
             const siglaEl = document.querySelector('.nott-stocc-sigla-cell[data-field-for="' + fieldId + '"], .nott-stocc-sigla[data-field-for="' + fieldId + '"]');
             if (siglaEl) {
-                siglaEl.textContent = labelText;
+                const txtEl = siglaEl.querySelector('.nott-stocc-sigla-txt');
+                if (txtEl) txtEl.textContent = labelText;
+                else siglaEl.textContent = labelText;
                 return;
             }
             const el = document.getElementById(fieldId);
@@ -17203,6 +17277,9 @@ window.updateStoricoButton = async function() {
                 if (tab.id === 'sec-stoccaggio-interno') {
                     if (typeof window.syncNotturnoStoccaggioPanel === 'function') {
                         window.syncNotturnoStoccaggioPanel();
+                    }
+                    if (typeof window.enforceStoccaggioInternoSigleInDom === 'function') {
+                        window.enforceStoccaggioInternoSigleInDom();
                     }
                     return;
                 }
@@ -35338,7 +35415,14 @@ window.resolveDcsAcquaTarget = function(siglaText, descrizioneText) {
     pool.forEach(function(t) {
         let score = 0;
         const tk = t.dcsKey || window.normalizeDcsKey(t.dcsLabel || t.label);
-        if (sigKey && tk && (sigKey === tk || sigKey.indexOf(tk) >= 0 || tk.indexOf(sigKey) >= 0)) score = Math.max(score, 85);
+        if (sigKey && tk) {
+            if (sigKey === tk) score = Math.max(score, 95);
+            else if (/^TK(9000|9201|9204|9205)$/.test(sigKey) || /^TK(9000|9201|9204|9205)$/.test(tk)) {
+                /* TK acqua/stocc: solo match esatto — mai confondere 9000 con 9201 */
+            } else if (sigKey.indexOf(tk) >= 0 || tk.indexOf(sigKey) >= 0) {
+                score = Math.max(score, 85);
+            }
+        }
         const labels = [t.description].concat(t.descriptions || []);
         labels.forEach(function(d) {
             const dn = window.normalizeSiglaKey(d);
@@ -36157,6 +36241,11 @@ window.resolveTankIdFromLabel = function(siglaText, fields) {
     const k = window.normalizeSiglaKey(siglaText).replace(/\s/g, '');
     if (!k) return null;
 
+    if (typeof window.mapDcsSiglaToFieldId === 'function') {
+        const dcsId = window.mapDcsSiglaToFieldId(siglaText);
+        if (dcsId && fields.some(function (f) { return f.id === dcsId; })) return dcsId;
+    }
+
     const map = window.getTankLabelToIdMap();
     if (map[k]) return map[k];
 
@@ -36177,6 +36266,7 @@ window.resolveTankIdFromLabel = function(siglaText, fields) {
         window.buildSiglaPatterns(f).forEach(function(p) {
             const pk = p.replace(/\s/g, '');
             if (pk.length < 4) return;
+            if (/^TK(9000|9201|9204|9205)$/.test(k) || /^TK(9000|9201|9204|9205)$/.test(pk)) return;
             if ((k.indexOf(pk) >= 0 || pk.indexOf(k) >= 0) && pk.length > bestLen) {
                 bestId = f.id;
                 bestLen = pk.length;

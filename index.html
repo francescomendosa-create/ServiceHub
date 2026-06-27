@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v366';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v367';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -22275,7 +22275,9 @@ window.updateStoricoButton = async function() {
         window.openSettings = () => { 
     forceBlur(); 
     window.setSmartCaptureLoading && window.setSmartCaptureLoading(false);
-    window._smartCaptureAbort = true;
+    if (!window._smartCaptureNativeCameraPending) {
+        window._smartCaptureAbort = true;
+    }
     if (typeof window.__unlockServiceHubUi === 'function') window.__unlockServiceHubUi();
     else if (typeof window.__clearPostLongPressShield === 'function') window.__clearPostLongPressShield();
 
@@ -22344,11 +22346,13 @@ window.updateStoricoButton = async function() {
         if (modal) modal.classList.remove('active');
         const smartMenu = document.getElementById('smart-capture-menu');
         if (smartMenu) smartMenu.classList.remove('open');
-        window._smartCaptureAbort = true;
-        if (typeof window.setSmartCaptureLoading === 'function') window.setSmartCaptureLoading(false);
-        if (typeof window.resetTesseractWorker === 'function') window.resetTesseractWorker();
-        if (typeof window.stopSmartCaptureStream === 'function') window.stopSmartCaptureStream();
-        if (typeof window.closeSmartCaptureCamera === 'function') window.closeSmartCaptureCamera(false);
+        if (!window._smartCaptureNativeCameraPending) {
+            window._smartCaptureAbort = true;
+            if (typeof window.setSmartCaptureLoading === 'function') window.setSmartCaptureLoading(false);
+            if (typeof window.resetTesseractWorker === 'function') window.resetTesseractWorker();
+            if (typeof window.stopSmartCaptureStream === 'function') window.stopSmartCaptureStream();
+            if (typeof window.closeSmartCaptureCamera === 'function') window.closeSmartCaptureCamera(false);
+        }
         if (typeof window.closeRapportiniModal === 'function') window.closeRapportiniModal();
         if (typeof window.closeRapportinoModifica === 'function') window.closeRapportinoModifica();
         const settingsSheet = document.querySelector('#settings-modal .settings-sheet');
@@ -32977,7 +32981,7 @@ window.convertToHtml = async () => {
         </div>
     </div>
     <input type="file" id="smart-capture-native-input" accept="image/jpeg,image/png,image/webp,image/*" multiple style="display:none;">
-    <input type="file" id="smart-capture-camera-input" accept="image/*" capture="environment" style="display:none;">
+    <input type="file" id="smart-capture-camera-input" accept="image/jpeg,image/png,image/webp,image/*" capture="environment" style="display:none;">
 
     <!-- Conferma letture OCR -->
     <div id="smart-capture-confirm-modal" class="modal-overlay" onclick="if(event.target === this) window.closeSmartCaptureConfirm()">
@@ -35042,8 +35046,9 @@ window.applyAlarmLevelFillToField = function (el, forceMin) {
 // --- ACQUISIZIONE INTELLIGENTE: GEMINI VISION + OCR + CONFERMA ---
 window.SMART_CAPTURE_OFFLINE_ONLY = false;
 window.SMART_CAPTURE_PREFER_GEMINI = true;
-/** true = solo Gemini per foto serbatoi (niente OCR locale se non quota). */
+/** true = solo Gemini su desktop; iPhone usa fallback OCR locale se Gemini non legge. */
 window.SMART_CAPTURE_GEMINI_ONLY = true;
+window.SMART_CAPTURE_IOS_LOCAL_FALLBACK = true;
 window._smartCaptureTankMode = false;
 
 window.TANK_CAPTURE_FIELDS = [
@@ -37337,7 +37342,11 @@ window.runSmartCaptureAnalysis = async function(imageData) {
     }
 
     if (window.SMART_CAPTURE_GEMINI_ONLY && !geminiQuotaHit) {
-        throw new Error('Gemini non ha trovato sigle/livelli nella foto. Avvicina il DCS, luce uniforme, riprova.');
+        var iosFallback = window.isIosDevice && window.isIosDevice() && window.SMART_CAPTURE_IOS_LOCAL_FALLBACK !== false;
+        if (!iosFallback) {
+            throw new Error('Gemini non ha trovato sigle/livelli nella foto. Avvicina il DCS, luce uniforme, riprova.');
+        }
+        console.warn('iOS: Gemini senza letture, fallback OCR locale');
     }
 
     if (geminiQuotaHit) {
@@ -37410,8 +37419,12 @@ window.getSmartCaptureImageFiles = function(fileList) {
         const f = fileList[i];
         if (!f) continue;
         const name = String(f.name || '').toLowerCase();
-        const isImg = (f.type && f.type.indexOf('image/') === 0) ||
+        const mime = String(f.type || '').toLowerCase();
+        let isImg = (mime && mime.indexOf('image/') === 0) ||
             /\.(jpe?g|png|webp|gif|heic|heif|bmp)$/i.test(name);
+        if (!isImg && f.size > 0 && (!mime || mime === 'application/octet-stream')) {
+            isImg = true;
+        }
         if (isImg) out.push(f);
     }
     return out;
@@ -37462,6 +37475,7 @@ window.smartCaptureFromGallery = function() {
     const menu = document.getElementById('smart-capture-menu');
     if (menu) menu.classList.remove('open');
     window._smartCaptureTankMode = true;
+    window._smartCaptureAbort = false;
     window.ensureGeminiApiKeySaved && window.ensureGeminiApiKeySaved();
     const settings = document.getElementById('settings-modal');
     if (settings) settings.classList.remove('active');
@@ -37488,14 +37502,49 @@ window.smartCaptureFromGallery = function() {
 
 window.smartCaptureFromFile = window.smartCaptureFromGallery;
 
-window.fileToSmartCaptureData = function(file) {
+window.decodeSmartCaptureFileToImageData = async function(file) {
+    if (!file) throw new Error('File non valido.');
+    const name = String(file.name || 'foto.jpg');
+    const mimeLow = String(file.type || '').toLowerCase();
+    const isHeic = /heic|heif/.test(mimeLow) || /\.heic?$/i.test(name);
+
+    if (typeof createImageBitmap === 'function') {
+        try {
+            const bitmap = await createImageBitmap(file);
+            const w = bitmap.width;
+            const h = bitmap.height;
+            if (w && h) {
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(bitmap, 0, 0, w, h);
+                if (typeof bitmap.close === 'function') bitmap.close();
+                let imageData = {
+                    data: canvas.toDataURL('image/jpeg', 0.92),
+                    type: 'image/jpeg',
+                    name: name.replace(/\.(heic|heif|png|webp)$/i, '.jpg') || 'foto.jpg'
+                };
+                if (typeof window.normalizeSmartCaptureImageForGemini === 'function') {
+                    imageData = await window.normalizeSmartCaptureImageForGemini(imageData);
+                }
+                return imageData;
+            }
+            if (typeof bitmap.close === 'function') bitmap.close();
+        } catch (bitmapErr) {
+            if (isHeic) {
+                console.warn('HEIC createImageBitmap:', bitmapErr);
+            }
+        }
+    }
+
     return new Promise(function(resolve, reject) {
         const reader = new FileReader();
         reader.onload = async function() {
             try {
                 const dataUrl = reader.result;
                 const mime = file.type || (String(file.name || '').toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/jpeg');
-                let imageData = { data: dataUrl, type: mime, name: file.name || 'foto' };
+                let imageData = { data: dataUrl, type: mime, name: name || 'foto' };
                 if (mime.indexOf('image/') === 0 && typeof window.normalizeSmartCaptureImageForGemini === 'function') {
                     imageData = await window.normalizeSmartCaptureImageForGemini(imageData);
                 }
@@ -37507,6 +37556,10 @@ window.fileToSmartCaptureData = function(file) {
         reader.onerror = function() { reject(new Error('Lettura file non riuscita.')); };
         reader.readAsDataURL(file);
     });
+};
+
+window.fileToSmartCaptureData = function(file) {
+    return window.decodeSmartCaptureFileToImageData(file);
 };
 
 window.isIosDevice = function() {
@@ -37651,22 +37704,50 @@ window.openNativeGalleryPicker = function() {
 window.openNativeCameraCapture = function() {
     window.stopSmartCaptureStream();
     window.closeSmartCaptureCamera(false);
+    window._smartCaptureAbort = false;
+    window._smartCaptureNativeCameraPending = true;
     const settings = document.getElementById('settings-modal');
     if (settings) settings.classList.remove('active');
     let input = document.getElementById('smart-capture-camera-input');
     if (!input) input = document.getElementById('smart-capture-native-input');
-    if (!input) return;
+    if (!input) {
+        window._smartCaptureNativeCameraPending = false;
+        alert('Fotocamera non disponibile su questo dispositivo.');
+        return;
+    }
+    input.setAttribute('accept', 'image/jpeg,image/png,image/webp,image/*');
     input.setAttribute('capture', 'environment');
     input.value = '';
     input.onchange = function() {
+        window._smartCaptureNativeCameraPending = false;
+        if (window._smartCaptureNativeCameraTimer) {
+            clearTimeout(window._smartCaptureNativeCameraTimer);
+            window._smartCaptureNativeCameraTimer = null;
+        }
         const file = input.files && input.files[0];
         input.value = '';
         if (!file) {
             if (settings) settings.classList.add('active');
             return;
         }
-        window.runSmartCaptureOnFile(file);
+        const list = window.getSmartCaptureImageFiles([file]);
+        if (!list.length) {
+            alert('Foto non riconosciuta. iPhone: Impostazioni → Fotocamera → Formati → Massima compatibilità (JPG).');
+            if (settings) settings.classList.add('active');
+            return;
+        }
+        window._smartCaptureAbort = false;
+        window._smartCaptureTankMode = true;
+        if (typeof window.setSmartCaptureLoading === 'function') {
+            window.setSmartCaptureLoading(true, 'Foto acquisita · analisi…');
+        }
+        window.runSmartCaptureOnFile(list[0]);
     };
+    if (window._smartCaptureNativeCameraTimer) clearTimeout(window._smartCaptureNativeCameraTimer);
+    window._smartCaptureNativeCameraTimer = setTimeout(function () {
+        window._smartCaptureNativeCameraPending = false;
+        window._smartCaptureNativeCameraTimer = null;
+    }, 120000);
     input.click();
 };
 
@@ -37674,6 +37755,7 @@ window.smartCaptureFromCamera = async function() {
     const menu = document.getElementById('smart-capture-menu');
     if (menu) menu.classList.remove('open');
     window._smartCaptureTankMode = true;
+    window._smartCaptureAbort = false;
     window.ensureGeminiApiKeySaved && window.ensureGeminiApiKeySaved();
 
     if (window.isIosDevice()) {

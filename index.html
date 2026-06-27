@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v381';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v382';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -3276,6 +3276,9 @@ window.colorPreviewNumber = function(tankName, value) {
         };
 
         window.flushPlantBackupNow = function () {
+            if (typeof window.persistLetturaActiveSlotSnapshot === 'function') {
+                window.persistLetturaActiveSlotSnapshot();
+            }
             if (typeof window.__hydrateOsmosiLabelFromRightValue === 'function') {
                 window.__hydrateOsmosiLabelFromRightValue();
             }
@@ -3410,6 +3413,12 @@ window.colorPreviewNumber = function(tankName, value) {
             });
             data.tankStatuses = window.__ensureTankStatusesObject ? window.__ensureTankStatusesObject() : (window.tankStatuses || {});
             data.tankStatusManualAD = window.__ensureTankStatusManualADObject ? window.__ensureTankStatusManualADObject() : (window.tankStatusManualAD || {});
+            if (typeof window.loadLetturaQuadStore === 'function') {
+                var lettureStore = window.loadLetturaQuadStore();
+                if (lettureStore && Object.keys(lettureStore).length) {
+                    data._lettureQuadSnapshots = lettureStore;
+                }
+            }
             if (window.tankLevelInputAtMs && typeof window.tankLevelInputAtMs === 'object') {
                 data.tankLevelInputAt = Object.assign({}, window.tankLevelInputAtMs);
             }
@@ -10813,6 +10822,12 @@ window.updateStoricoButton = async function() {
                 if (id === 'osmosi-label-text') {
                     continue;
                 }
+                if (id === '_lettureQuadSnapshots') {
+                    if (val && typeof val === 'object' && typeof window.saveLetturaQuadStore === 'function') {
+                        window.saveLetturaQuadStore(val);
+                    }
+                    continue;
+                }
                 let strVal = val != null && val !== undefined ? String(val) : '';
                 if ((id === 'inp-osmosi' || id === 'osmosi') && typeof window.__normalizeOsmosiInterfaceDisplay === 'function') {
                     strVal = window.__normalizeOsmosiInterfaceDisplay(strVal);
@@ -11807,13 +11822,127 @@ window.updateStoricoButton = async function() {
         };
 
         window.formatLetturaDateIt = function (d) {
-            d = d || new Date();
+            d = (typeof window.getLetturaDocReferenceDate === 'function')
+                ? window.getLetturaDocReferenceDate(d)
+                : (d || new Date());
             try {
                 return d.toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit', year: 'numeric' });
             } catch (_) {
                 return String(d.getDate()).padStart(2, '0') + '/' +
                     String(d.getMonth() + 1).padStart(2, '0') + '/' + d.getFullYear();
             }
+        };
+
+        window.LETTURE_QUAD_SNAPSHOT_KEY = 'servicehub_letture_quad_v1';
+
+        /** Giornata operativa letture: fino alle 07:00 resta il giorno precedente (23:00 / 02:00 / 05:00). */
+        window.getLetturaDocReferenceDate = function (d) {
+            d = d || new Date();
+            var copy = new Date(d.getTime());
+            if (copy.getHours() < 7) copy.setDate(copy.getDate() - 1);
+            return copy;
+        };
+
+        window.getLetturaDocDateKey = function (d) {
+            var ref = window.getLetturaDocReferenceDate(d);
+            return ref.getFullYear() + '-' +
+                String(ref.getMonth() + 1).padStart(2, '0') + '-' +
+                String(ref.getDate()).padStart(2, '0');
+        };
+
+        window.collectLetturaLiveSnapshot = function () {
+            var out = {};
+            var rows = (window.LETTURE_STOCCAGGIO_CALDAIA_D_SERBATOI || []).concat(
+                window.LETTURE_STOCCAGGIO_CALDAIA_D_CALDAIA || []
+            );
+            rows.forEach(function (row) {
+                if (!row.fieldId) return;
+                var val = String(window.readLetturaFieldValue(row.fieldId) || '').trim();
+                if (val) out[row.fieldId] = val;
+            });
+            return out;
+        };
+
+        window.__mergeLetturaQuadSlotSnapshots = function (base, incoming) {
+            var out = Object.assign({}, base || {});
+            Object.keys(incoming || {}).forEach(function (fieldId) {
+                if (fieldId === '_savedAt') return;
+                var val = incoming[fieldId];
+                if (val != null && String(val).trim() !== '') out[fieldId] = String(val).trim();
+            });
+            var baseTs = base && base._savedAt ? Number(base._savedAt) : 0;
+            var inTs = incoming && incoming._savedAt ? Number(incoming._savedAt) : 0;
+            out._savedAt = Math.max(baseTs, inTs, Date.now());
+            return out;
+        };
+
+        window.__mergeLetturaQuadStores = function (remote, local) {
+            var out = JSON.parse(JSON.stringify(local || {}));
+            Object.keys(remote || {}).forEach(function (dateKey) {
+                if (!out[dateKey]) out[dateKey] = {};
+                Object.keys(remote[dateKey] || {}).forEach(function (slotKey) {
+                    out[dateKey][slotKey] = window.__mergeLetturaQuadSlotSnapshots(
+                        out[dateKey][slotKey],
+                        remote[dateKey][slotKey]
+                    );
+                });
+            });
+            return out;
+        };
+
+        window.loadLetturaQuadStore = function () {
+            var store = {};
+            try {
+                var raw = localStorage.getItem(window.LETTURE_QUAD_SNAPSHOT_KEY);
+                if (raw) store = JSON.parse(raw) || {};
+            } catch (_) {
+                store = {};
+            }
+            var backup = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
+            if (backup && backup._lettureQuadSnapshots && typeof backup._lettureQuadSnapshots === 'object') {
+                store = window.__mergeLetturaQuadStores(backup._lettureQuadSnapshots, store);
+            }
+            return (store && typeof store === 'object') ? store : {};
+        };
+
+        window.saveLetturaQuadStore = function (store) {
+            try {
+                localStorage.setItem(window.LETTURE_QUAD_SNAPSHOT_KEY, JSON.stringify(store || {}));
+            } catch (_) {}
+        };
+
+        window.persistLetturaActiveSlotSnapshot = function () {
+            var slots = window.LETTURE_QUAD_TIME_SLOTS || [];
+            var slotIdx = window.getLetturaActiveSlotIndex();
+            var slotKey = slots[slotIdx];
+            if (!slotKey) return;
+            var live = window.collectLetturaLiveSnapshot();
+            if (!Object.keys(live).length) return;
+            var dateKey = window.getLetturaDocDateKey();
+            var store = window.loadLetturaQuadStore();
+            if (!store[dateKey]) store[dateKey] = {};
+            store[dateKey][slotKey] = window.__mergeLetturaQuadSlotSnapshots(
+                store[dateKey][slotKey] || {},
+                Object.assign({}, live, { _savedAt: Date.now() })
+            );
+            window.saveLetturaQuadStore(store);
+        };
+
+        window.readLetturaCellValue = function (fieldId, slotIndex) {
+            if (!fieldId) return '';
+            var slots = window.LETTURE_QUAD_TIME_SLOTS || [];
+            var slotKey = slots[slotIndex];
+            if (!slotKey) return '';
+            var dateKey = window.getLetturaDocDateKey();
+            var store = window.loadLetturaQuadStore();
+            var snap = store[dateKey] && store[dateKey][slotKey];
+            if (snap && snap[fieldId] != null && String(snap[fieldId]).trim() !== '') {
+                return String(snap[fieldId]).trim();
+            }
+            if (slotIndex === window.getLetturaActiveSlotIndex()) {
+                return String(window.readLetturaFieldValue(fieldId) || '').trim();
+            }
+            return '';
         };
 
         window.getLetturaActiveSlotIndex = function () {
@@ -11889,6 +12018,7 @@ window.updateStoricoButton = async function() {
 
         window.computeLetturaUniformFontPt = function (activeCol) {
             var target = window.LETTURE_UNIFORM_FONT_TARGET_PT;
+            var slots = window.LETTURE_QUAD_TIME_SLOTS || [];
             var colIdx = Number.isFinite(activeCol) ? activeCol + 1 : window.getLetturaActiveSlotIndex() + 1;
             var colPt = window.letturaColWidthPt(colIdx);
             var rows = (window.LETTURE_STOCCAGGIO_CALDAIA_D_SERBATOI || []).concat(
@@ -11898,13 +12028,15 @@ window.updateStoricoButton = async function() {
             var longestW = 0;
             rows.forEach(function (row) {
                 if (!row.fieldId) return;
-                var val = String(window.readLetturaFieldValue(row.fieldId) || '').trim();
-                if (!val) return;
-                var w = window.letturaEstimateTextWidthPt(val, target);
-                if (w > longestW || (w === longestW && val.length > longest.length)) {
-                    longestW = w;
-                    longest = val;
-                }
+                slots.forEach(function (_, slotIdx) {
+                    var val = String(window.readLetturaCellValue(row.fieldId, slotIdx) || '').trim();
+                    if (!val) return;
+                    var w = window.letturaEstimateTextWidthPt(val, target);
+                    if (w > longestW || (w === longestW && val.length > longest.length)) {
+                        longestW = w;
+                        longest = val;
+                    }
+                });
             });
             if (!longest) return target;
             return window.letturaMaxFontForTextPt(longest, colPt, target);
@@ -11951,12 +12083,12 @@ window.updateStoricoButton = async function() {
             });
             html += '</tr>';
             (rows || []).forEach(function (row) {
-                var val = row.fieldId ? window.readLetturaFieldValue(row.fieldId) : '';
                 html += '<tr>' + window.letturaTdOpen(0, 'lettura-o-sigla') + esc(row.label) + '</td>';
                 slots.forEach(function (_, i) {
                     var colIdx = i + 1;
-                    var cell = (i === activeCol && val)
-                        ? window.formatLetturaCellInnerHtml(val, esc, colIdx, uniformFontPt)
+                    var cellVal = row.fieldId ? window.readLetturaCellValue(row.fieldId, i) : '';
+                    var cell = cellVal
+                        ? window.formatLetturaCellInnerHtml(cellVal, esc, colIdx, uniformFontPt)
                         : '&nbsp;';
                     html += window.letturaTdOpen(colIdx, 'lettura-o-val') + cell + '</td>';
                 });
@@ -12029,10 +12161,9 @@ window.updateStoricoButton = async function() {
             function section(title, rows, withFirma) {
                 lines.push(title + '\t' + slots.join('\t'));
                 (rows || []).forEach(function (row) {
-                    var val = row.fieldId ? window.readLetturaFieldValue(row.fieldId) : '';
                     var cells = [row.label];
                     slots.forEach(function (_, i) {
-                        cells.push(i === activeCol && val ? val : '');
+                        cells.push(row.fieldId ? (window.readLetturaCellValue(row.fieldId, i) || '') : '');
                     });
                     lines.push(cells.join('\t'));
                 });
@@ -12050,6 +12181,9 @@ window.updateStoricoButton = async function() {
         };
 
         window.buildLetturaShareFile = function () {
+            if (typeof window.persistLetturaActiveSlotSnapshot === 'function') {
+                window.persistLetturaActiveSlotSnapshot();
+            }
             var dateStr = window.formatLetturaDateIt(new Date());
             var safeDate = dateStr.replace(/\//g, '-');
             var html = window.buildLetturaStoccaggioCaldaiaDShareDocument();
@@ -12069,6 +12203,9 @@ window.updateStoricoButton = async function() {
 
         window.openLetturaStoccaggioCaldaiaD = function () {
             window.closeLettureRapportiniModal();
+            if (typeof window.persistLetturaActiveSlotSnapshot === 'function') {
+                window.persistLetturaActiveSlotSnapshot();
+            }
             var modal = document.getElementById('letture-doc-modal');
             var body = document.getElementById('letture-doc-body');
             if (!modal || !body) return;
@@ -12082,6 +12219,9 @@ window.updateStoricoButton = async function() {
         };
 
         window.refreshLetturaDocView = function () {
+            if (typeof window.persistLetturaActiveSlotSnapshot === 'function') {
+                window.persistLetturaActiveSlotSnapshot();
+            }
             var body = document.getElementById('letture-doc-body');
             if (!body) return;
             body.innerHTML = window.buildLetturaStoccaggioCaldaiaDHtml();

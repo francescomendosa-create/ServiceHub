@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v379';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v380';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -4829,13 +4829,21 @@ window.colorPreviewNumber = function(tankName, value) {
                 btn.className = "status-cell-btn bg-fermo";
             });
 
-            // 3. Ripristina header compatti
-            document.querySelectorAll('.status-header.compact').forEach(h => {
-                const id = h.id.replace('h', '');
-                const sigla = h.innerText.split('\n')[0];
-                h.className = "status-header compact bg-fermo";
-                h.innerHTML = `${sigla}<br><small id="t${id}" class="text-[10px] tracking-wide">FERMO</small>`;
-            });
+            // 3. Ripristina header compatti Blowdown
+            if (typeof window.repairBluedownUi === 'function') {
+                (window.BLOWDOWN_COMPRESSORS || []).forEach(function (comp) {
+                    window.setBluedownCompressorHeader(comp, 'FERMO');
+                });
+                window.syncBluedownBdLabels();
+            } else {
+                document.querySelectorAll('.status-header.compact').forEach(h => {
+                    const id = h.id.replace('h', '');
+                    const sigla = h.querySelector('.bd-comp-name')?.textContent?.trim() || h.innerText.split('\n')[0];
+                    h.className = "status-header compact bg-fermo";
+                    h.innerHTML = '<span class="bd-comp-name">' + sigla + '</span>' +
+                        '<small id="t' + id + '" class="bd-comp-status text-[10px] tracking-wide">FERMO</small>';
+                });
+            }
 
             // 4. Reset Etichette Speciali
             const vwtLabel = document.getElementById('vwt-label-text');
@@ -5059,12 +5067,20 @@ window.colorPreviewNumber = function(tankName, value) {
                     btn.className = "status-cell-btn bg-fermo";
                 });
 
-                document.querySelectorAll('.status-header.compact').forEach(h => {
-                    const id = h.id.replace('h', '');
-                    const sigla = h.innerText.split('\n')[0];
-                    h.className = "status-header compact bg-fermo";
-                    h.innerHTML = `${sigla}<br><small id="t${id}" class="text-[10px] tracking-wide">FERMO</small>`;
-                });
+                if (typeof window.repairBluedownUi === 'function') {
+                    (window.BLOWDOWN_COMPRESSORS || []).forEach(function (comp) {
+                        window.setBluedownCompressorHeader(comp, 'FERMO');
+                    });
+                    window.syncBluedownBdLabels();
+                } else {
+                    document.querySelectorAll('.status-header.compact').forEach(h => {
+                        const id = h.id.replace('h', '');
+                        const sigla = h.querySelector('.bd-comp-name')?.textContent?.trim() || h.innerText.split('\n')[0];
+                        h.className = "status-header compact bg-fermo";
+                        h.innerHTML = '<span class="bd-comp-name">' + sigla + '</span>' +
+                            '<small id="t' + id + '" class="bd-comp-status text-[10px] tracking-wide">FERMO</small>';
+                    });
+                }
 
                 const vwtLabel = document.getElementById('vwt-label-text');
                 if (vwtLabel) { window.__resetVwtInterfaceLabel && window.__resetVwtInterfaceLabel(); }
@@ -6977,6 +6993,7 @@ window.updateStoricoButton = async function() {
             if (typeof window.stripTankDetailChipsFromDom === 'function') window.stripTankDetailChipsFromDom();
             if (typeof window.initNumpadTitleDetailShortcut === 'function') window.initNumpadTitleDetailShortcut();
             if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
+            if (typeof window.repairBluedownUi === 'function') window.repairBluedownUi();
             // CARICAMENTO DATABASE CENTRALE - PRIMA DI TUTTO!
             window.loadDB();
             window.alarmConfig = window.APP_DB.alarms || {};
@@ -10860,7 +10877,11 @@ window.updateStoricoButton = async function() {
                 window.__persistOsmosiToDedicatedStorage();
             }
 
-            updateBoilerInputs(); 
+            if (typeof window.repairBluedownUi === 'function') {
+                window.repairBluedownUi();
+            }
+
+            updateBoilerInputs();
             
             // Applica i colori agli input SCAM dopo aver caricato i dati
             if (window.colorScamInputs) {
@@ -15424,6 +15445,63 @@ window.updateStoricoButton = async function() {
             return !!(store && store.activeId === 'generale');
         };
 
+        window.BLOWDOWN_COMPRESSORS = [
+            { toggleId: '105A', headerId: 'h105A', statusId: 't105A', sigla: 'MK 10500A', inputs: ['v105A_fic', 'v105A_pc', 'v105A_lc'] },
+            { toggleId: '105B', headerId: 'h105B', statusId: 't105B', sigla: 'MK 10500B', inputs: ['v105B_fic', 'v105B_pc', 'v105B_lc'] },
+            { toggleId: 'mk10600', headerId: 'hmk10600', statusId: 'tmk10600', sigla: 'MK 10600', inputs: ['vmk10600_fic', 'vmk10600_pc', 'vmk10600_lc'] }
+        ];
+        window.BLOWDOWN_MEASURE_LABELS = ['FIC', 'PIC', 'LIC'];
+
+        window.readBluedownCompressorState = function (headerEl) {
+            if (!headerEl) return 'FERMO';
+            const statusEl = headerEl.querySelector('small[id^="t"]');
+            if (statusEl) {
+                return String(statusEl.textContent || '').trim().toUpperCase() === 'MARCIA' ? 'MARCIA' : 'FERMO';
+            }
+            return headerEl.classList.contains('bg-marcia') ? 'MARCIA' : 'FERMO';
+        };
+
+        window.setBluedownCompressorHeader = function (comp, state) {
+            if (!comp) return;
+            const h = document.getElementById(comp.headerId);
+            if (!h) return;
+            const st = state === 'MARCIA' ? 'MARCIA' : 'FERMO';
+            h.className = 'status-header compact ' + (st === 'MARCIA' ? 'bg-marcia' : 'bg-fermo');
+            h.innerHTML = '<span class="bd-comp-name">' + comp.sigla + '</span>' +
+                '<small id="' + comp.statusId + '" class="bd-comp-status text-[10px] tracking-wide">' + st + '</small>';
+            h.setAttribute('onclick', "window.toggleComp('" + comp.toggleId + "', '" + comp.sigla + "')");
+        };
+
+        window.syncBluedownBdLabels = function () {
+            (window.BLOWDOWN_COMPRESSORS || []).forEach(function (comp) {
+                const header = document.getElementById(comp.headerId);
+                const col = header && header.closest('.bd-column');
+                if (!col) return;
+                const rows = col.querySelectorAll('.bd-input-row');
+                (window.BLOWDOWN_MEASURE_LABELS || []).forEach(function (lab, i) {
+                    const row = rows[i];
+                    if (!row) return;
+                    const bdLab = row.querySelector('.bd-label');
+                    if (bdLab) bdLab.textContent = lab;
+                });
+            });
+        };
+
+        window.repairBluedownUi = function () {
+            (window.BLOWDOWN_COMPRESSORS || []).forEach(function (comp) {
+                const h = document.getElementById(comp.headerId);
+                if (!h) return;
+                const raw = String(h.textContent || '').replace(/\s+/g, '');
+                const corrupted = /FERMOFERMO|MK10500[AB]FERMO/i.test(raw) ||
+                    !h.querySelector('.bd-comp-name') ||
+                    !document.getElementById(comp.statusId);
+                if (corrupted) {
+                    window.setBluedownCompressorHeader(comp, window.readBluedownCompressorState(h));
+                }
+            });
+            window.syncBluedownBdLabels();
+        };
+
         window.isBdCompressorMeasureInput = function (fieldId) {
             return /^v(105a|105b|mk10600)_(fic|pc|lc)$/i.test(String(fieldId || ''));
         };
@@ -15781,6 +15859,8 @@ window.updateStoricoButton = async function() {
         };
 
         window.syncBluedownCompressorShortLabels = function () {
+            if (typeof window.syncBluedownBdLabels === 'function') window.syncBluedownBdLabels();
+            if (typeof window.repairBluedownUi === 'function') window.repairBluedownUi();
             if (!window.isGeneraleRapportinoActive || !window.isGeneraleRapportinoActive()) return;
             const sec = document.getElementById('sec-bluedown');
             if (!sec) return;
@@ -15822,7 +15902,7 @@ window.updateStoricoButton = async function() {
             const col = inp.closest('.bd-column');
             const head = col && col.querySelector('.status-header');
             const bdLab = row.querySelector('.bd-label');
-            let headPart = head ? head.innerHTML.split('<br>')[0].trim() : '';
+            let headPart = head ? (head.querySelector('.bd-comp-name')?.textContent || head.innerText.split('\n')[0]).trim() : '';
             const mkMatch = headPart.match(/(\d+)([A-Z])/);
             if (mkMatch) headPart = 'MK ' + mkMatch[1] + '/' + mkMatch[2];
             const labPart = bdLab ? bdLab.innerText.replace(/\s+/g, ' ').trim() : '';
@@ -16047,7 +16127,8 @@ window.updateStoricoButton = async function() {
                 add(btn.id, lab ? lab.innerText.replace(/\s+/g, ' ').trim() : btn.innerText.trim(), 'status');
             });
             section.querySelectorAll('.status-header.compact[id]').forEach(function(h) {
-                add(h.id, h.innerText.split('\n')[0].trim(), 'compressor');
+                const nameEl = h.querySelector('.bd-comp-name');
+                add(h.id, nameEl ? nameEl.textContent.trim() : h.innerText.split('\n')[0].trim(), 'compressor');
             });
             if (secId === 'sec-amb') {
                 const vwt = document.getElementById('vwt-label-text');
@@ -18507,10 +18588,21 @@ window.updateStoricoButton = async function() {
             });
             document.querySelectorAll('.status-header.compact').forEach(function(h) {
                 if (!h.id) return;
+                const comp = (window.BLOWDOWN_COMPRESSORS || []).find(function (c) { return c.headerId === h.id; });
+                if (comp) {
+                    data[h.id] = {
+                        text: '<span class="bd-comp-name">' + comp.sigla + '</span>' +
+                            '<small id="' + comp.statusId + '" class="bd-comp-status text-[10px] tracking-wide">FERMO</small>',
+                        class: 'status-header compact bg-fermo',
+                        style: ''
+                    };
+                    return;
+                }
                 const compId = h.id.replace('h', '');
-                const sigla = h.innerText.split('\n')[0];
+                const sigla = h.querySelector('.bd-comp-name')?.textContent?.trim() || h.innerText.split('\n')[0];
                 data[h.id] = {
-                    text: sigla + '<br><small id="t' + compId + '" class="text-[10px] tracking-wide">FERMO</small>',
+                    text: '<span class="bd-comp-name">' + sigla + '</span>' +
+                        '<small id="t' + compId + '" class="bd-comp-status text-[10px] tracking-wide">FERMO</small>',
                     class: 'status-header compact bg-fermo',
                     style: ''
                 };
@@ -22654,92 +22746,67 @@ window.updateStoricoButton = async function() {
 
         window.toggleComp = (id, sigla) => {
             if (globalInteractionLock) return;
-            
-            // Cerca gli elementi prima nel DOM normale, poi nei moduli nascosti
-            let t = document.getElementById(`t${id}`);
-            let h = document.getElementById(`h${id}`);
-            
-            // Se non li trova, cerca nell'elenco dei moduli nascosti
-            if (!t || !h) {
-                const hiddenModules = window.hiddenModules || [];
-                for (const moduleId of hiddenModules) {
-                    const hiddenSection = document.getElementById(moduleId);
-                    if (hiddenSection) {
-                        if (!t) t = hiddenSection.querySelector(`#t${id}`);
-                        if (!h) h = hiddenSection.querySelector(`#h${id}`);
-                        if (t && h) break;
-                    }
-                }
-            }
-            
-            // Se ancora non li trova, cerca in tutto il documento
-            if (!t) t = document.querySelector(`#t${id}`);
-            if (!h) h = document.querySelector(`#h${id}`);
-            
-            if (!t || !h) return;
-            
-            const active = t.innerText.trim() === "FERMO";
-            t.innerText = active ? "MARCIA" : "FERMO";
-            h.className = `status-header compact ${active ? 'bg-marcia' : 'bg-fermo'}`;
-            h.innerHTML = `${sigla}<br><small id="t${id}" class="text-[10px] tracking-wide">${active ? 'MARCIA' : 'FERMO'}</small>`;
-            
-            // Funzione helper per trovare gli input anche nei moduli nascosti
-            const findInput = (inputId) => {
-                let input = document.getElementById(inputId);
-                if (!input) {
+
+            const comp = (window.BLOWDOWN_COMPRESSORS || []).find(function (c) { return c.toggleId === id; });
+            const statusId = comp ? comp.statusId : ('t' + id);
+            const headerId = comp ? comp.headerId : ('h' + id);
+
+            const findElement = (elementId) => {
+                let el = document.getElementById(elementId);
+                if (!el) {
                     const hiddenModules = window.hiddenModules || [];
                     for (const moduleId of hiddenModules) {
                         const hiddenSection = document.getElementById(moduleId);
                         if (hiddenSection) {
-                            input = hiddenSection.querySelector(`#${inputId}`);
-                            if (input) break;
+                            el = hiddenSection.querySelector('#' + elementId);
+                            if (el) break;
                         }
                     }
                 }
-                if (!input) input = document.querySelector(`#${inputId}`);
-                return input;
+                if (!el) el = document.querySelector('#' + elementId);
+                return el;
             };
-            
-            // Funzione helper per trovare le label anche nei moduli nascosti
-            const findLabel = (headerId, labelText) => {
-                const header = document.getElementById(headerId) || document.querySelector(`#${headerId}`);
-                if (!header) return null;
-                
-                const column = header.closest('.bd-column');
-                if (column) {
-                    const labelEl = Array.from(column.querySelectorAll('.bd-label')).find(el => el.innerText === labelText);
-                    if (labelEl) return labelEl;
-                }
-                return null;
-            };
-            
-            // Gestione INPUT FIC/PIC/LC per compressori
-            const inputs = [
-                { id: `${id === '105A' ? 'v105A' : (id === '105B' ? 'v105B' : 'vmk10600')}_fic` },
-                { id: `${id === '105A' ? 'v105A' : (id === '105B' ? 'v105B' : 'vmk10600')}_pc` },
-                { id: `${id === '105A' ? 'v105A' : (id === '105B' ? 'v105B' : 'vmk10600')}_lc` }
+
+            let h = findElement(headerId);
+            let t = findElement(statusId);
+            if (!h || !t) return;
+
+            const active = String(t.textContent || '').trim() === 'FERMO';
+            const nextState = active ? 'MARCIA' : 'FERMO';
+            if (comp && typeof window.setBluedownCompressorHeader === 'function') {
+                window.setBluedownCompressorHeader(comp, nextState);
+                h = findElement(headerId);
+            } else {
+                t.textContent = nextState;
+                h.className = 'status-header compact ' + (active ? 'bg-marcia' : 'bg-fermo');
+            }
+
+            const inputIds = comp ? comp.inputs : [
+                (id === '105A' ? 'v105A' : (id === '105B' ? 'v105B' : 'vmk10600')) + '_fic',
+                (id === '105A' ? 'v105A' : (id === '105B' ? 'v105B' : 'vmk10600')) + '_pc',
+                (id === '105A' ? 'v105A' : (id === '105B' ? 'v105B' : 'vmk10600')) + '_lc'
             ];
-            
-            inputs.forEach(input => {
-                const inputEl = findInput(input.id);
+
+            inputIds.forEach(function (inputId) {
+                const inputEl = findElement(inputId);
                 if (inputEl) {
-                    inputEl.style.opacity = active ? "1" : "0.3";
-                    inputEl.style.pointerEvents = active ? "auto" : "none";
+                    inputEl.style.opacity = active ? '1' : '0.3';
+                    inputEl.style.pointerEvents = active ? 'auto' : 'none';
                     inputEl.readOnly = !active;
-                    if(!active) inputEl.value = "";
+                    if (!active) inputEl.value = '';
                 }
             });
-            
-            // Gestione ETICHETTE FIC/PIC/LC
-            const labels = ['FIC', 'PIC', 'LIC'];
-            labels.forEach(labelText => {
-                const headerId = id === '105A' ? 'h105A' : (id === '105B' ? 'h105B' : 'hmk10600');
-                const labelEl = findLabel(headerId, labelText);
-                if (labelEl) {
-                    labelEl.style.opacity = active ? "1" : "0.3";
-                }
-            });
-            
+
+            const column = h.closest('.bd-column');
+            if (column) {
+                (window.BLOWDOWN_MEASURE_LABELS || ['FIC', 'PIC', 'LIC']).forEach(function (labelText) {
+                    const labelEl = Array.from(column.querySelectorAll('.bd-label')).find(function (el) {
+                        return el.textContent.trim() === labelText;
+                    });
+                    if (labelEl) labelEl.style.opacity = active ? '1' : '0.3';
+                });
+            }
+
             window.saveData();
             if (typeof window.flushPublicDigitalSnapshotNow === 'function') {
                 window.flushPublicDigitalSnapshotNow();
@@ -23308,27 +23375,25 @@ window.updateStoricoButton = async function() {
             });
 
             // AGGIUNTA GESTIONE COMPRESSORI BLOWDOWN
-            const compressors = [
-                { statusId: 'h105A', inputs: ['v105A_fic', 'v105A_pc', 'v105A_lc'], labels: ['FIC', 'PIC', 'LIC'] },
-                { statusId: 'h105B', inputs: ['v105B_fic', 'v105B_pc', 'v105B_lc'], labels: ['FIC', 'PIC', 'LIC'] },
-                { statusId: 'hmk10600', inputs: ['vmk10600_fic', 'vmk10600_pc', 'vmk10600_lc'], labels: ['FIC', 'PIC', 'LIC'] }
-            ];
-            compressors.forEach(c => {
-                const statusEl = findElement(c.statusId);
+            (window.BLOWDOWN_COMPRESSORS || [
+                { statusId: 'h105A', inputs: ['v105A_fic', 'v105A_pc', 'v105A_lc'] },
+                { statusId: 'h105B', inputs: ['v105B_fic', 'v105B_pc', 'v105B_lc'] },
+                { statusId: 'hmk10600', inputs: ['vmk10600_fic', 'vmk10600_pc', 'vmk10600_lc'] }
+            ]).forEach(function (c) {
+                const statusEl = findElement(c.headerId || c.statusId);
                 if (!statusEl) return;
-                const isRunning = statusEl.innerText.includes('MARCIA');
-                c.inputs.forEach(inputId => {
+                const isRunning = statusEl.innerText.includes('MARCIA') || statusEl.classList.contains('bg-marcia');
+                c.inputs.forEach(function (inputId) {
                     const inputEl = findElement(inputId);
                     if (inputEl) {
-                        inputEl.style.opacity = isRunning ? "1" : "0.3";
-                        inputEl.style.pointerEvents = isRunning ? "auto" : "none";
+                        inputEl.style.opacity = isRunning ? '1' : '0.3';
+                        inputEl.style.pointerEvents = isRunning ? 'auto' : 'none';
                         inputEl.readOnly = !isRunning;
-                        if(!isRunning) inputEl.value = "";
+                        if (!isRunning) inputEl.value = '';
                     }
                 });
-                
-                // Gestione ETICHETTE FIC/PIC/LC
-                c.labels.forEach((labelText, index) => {
+
+                (window.BLOWDOWN_MEASURE_LABELS || ['FIC', 'PIC', 'LIC']).forEach(function (labelText, index) {
                     const inputId = c.inputs[index];
                     const inputEl = findElement(inputId);
                     if (inputEl) {
@@ -23336,7 +23401,8 @@ window.updateStoricoButton = async function() {
                         if (row) {
                             const labelEl = row.querySelector('.bd-label');
                             if (labelEl) {
-                                labelEl.style.opacity = isRunning ? "1" : "0.3";
+                                labelEl.textContent = labelText;
+                                labelEl.style.opacity = isRunning ? '1' : '0.3';
                             }
                         }
                     }
@@ -30093,8 +30159,14 @@ window.convertToHtml = async () => {
         .tank-status-single.accumulo { background-color: #dc2626; color: white; border-color: #b91c1c; }
         .tank-status-single.drenaggio { background-color: #16a34a; color: white; border-color: #15803d; }
         .tank-status-single.parallelo { background-color: #2563eb; color: white; border-color: #1d4ed8; }
-        .bd-column { flex: 1; min-width: 0; border-right: 1px solid var(--border-main); display: flex; flex-direction: column; }
-        .status-header.compact { font-size: 9px !important; padding: 6px 4px !important; line-height: 1.0 !important; white-space: nowrap !important; word-break: keep-all !important; }
+        .bd-column { flex: 1 1 0; min-width: 0; border-right: 1px solid var(--border-main); display: flex; flex-direction: column; }
+        #sec-bluedown .flex.flex-row.grow { display: flex; flex: 1 1 auto; min-width: 0; width: 100%; }
+        #sec-bluedown .bd-column:last-child { border-right: none; }
+        .status-header.compact { font-size: 9px !important; padding: 6px 4px !important; line-height: 1.1 !important; gap: 2px; white-space: normal !important; word-break: keep-all !important; overflow: hidden; }
+        .status-header.compact .bd-comp-name,
+        .status-header.compact .bd-comp-status { display: block; width: 100%; line-height: 1.1; }
+        .status-header.compact .bd-comp-name { font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .status-header.compact .bd-comp-status { font-size: 10px; letter-spacing: 0.04em; }
         .bd-input-row { display: flex; align-items: stretch; flex: 1; border-bottom: 1px solid var(--border-main); }
         .bd-label { width: 50%; background: #f8fafc; font-size: 10px; font-weight: 800; display: flex; align-items: center; justify-content: center; border-right: 1px solid var(--border-main); cursor: pointer; }
         .dark .bd-label { background: #1e293b; }
@@ -33255,19 +33327,19 @@ window.convertToHtml = async () => {
                 <div class="v-label-container" style="background-color: #1e293b;" ontouchstart="window.startPress(event, 'sec-bluedown')" ontouchmove="window.movePress(event)" ontouchend="window.endPress(event, 'sec-bluedown')" onmousedown="window.startPress(event, 'sec-bluedown')" onmouseup="window.endPress(event, 'sec-bluedown')"><span class="v-label-text" id="lbl-sec-bluedown">BLOWDOWN</span></div>
                 <div class="flex flex-row grow">
                     <div class="bd-column">
-                        <div id="h105A" class="status-header compact bg-fermo" onclick="window.toggleComp('105A', 'MK 10500A')">MK 10500A<br><small id="t105A" class="text-[10px] tracking-wide">FERMO</small></div>
+                        <div id="h105A" class="status-header compact bg-fermo" onclick="window.toggleComp('105A', 'MK 10500A')"><span class="bd-comp-name">MK 10500A</span><small id="t105A" class="bd-comp-status text-[10px] tracking-wide">FERMO</small></div>
                         <div class="bd-input-row"><div class="bd-label">FIC</div><div class="bd-input-box"><input type="tel" id="v105A_fic" onchange="window.saveData()"></div></div>
                         <div class="bd-input-row"><div class="bd-label">PIC</div><div class="bd-input-box"><input type="tel" id="v105A_pc" onchange="window.saveData()"></div></div>
                         <div class="bd-input-row"><div class="bd-label">LIC</div><div class="bd-input-box"><input type="tel" id="v105A_lc" onchange="window.saveData()"></div></div>
                     </div>
                     <div class="bd-column">
-                        <div id="h105B" class="status-header compact bg-fermo" onclick="window.toggleComp('105B', 'MK 10500B')">MK 10500B<br><small id="t105B" class="text-[10px] tracking-wide">FERMO</small></div>
+                        <div id="h105B" class="status-header compact bg-fermo" onclick="window.toggleComp('105B', 'MK 10500B')"><span class="bd-comp-name">MK 10500B</span><small id="t105B" class="bd-comp-status text-[10px] tracking-wide">FERMO</small></div>
                         <div class="bd-input-row"><div class="bd-label">FIC</div><div class="bd-input-box"><input type="tel" id="v105B_fic" onchange="window.saveData()"></div></div>
                         <div class="bd-input-row"><div class="bd-label">PIC</div><div class="bd-input-box"><input type="tel" id="v105B_pc" onchange="window.saveData()"></div></div>
                         <div class="bd-input-row"><div class="bd-label">LIC</div><div class="bd-input-box"><input type="tel" id="v105B_lc" onchange="window.saveData()"></div></div>
                     </div>
                     <div class="bd-column">
-                        <div id="hmk10600" class="status-header compact bg-fermo" onclick="window.toggleComp('mk10600', 'MK 10600')">MK 10600<br><small id="tmk10600" class="text-[10px] tracking-wide">FERMO</small></div>
+                        <div id="hmk10600" class="status-header compact bg-fermo" onclick="window.toggleComp('mk10600', 'MK 10600')"><span class="bd-comp-name">MK 10600</span><small id="tmk10600" class="bd-comp-status text-[10px] tracking-wide">FERMO</small></div>
                         <div class="bd-input-row"><div class="bd-label">FIC</div><div class="bd-input-box"><input type="tel" id="vmk10600_fic" onchange="window.saveData()"></div></div>
                         <div class="bd-input-row"><div class="bd-label">PIC</div><div class="bd-input-box"><input type="tel" id="vmk10600_pc" onchange="window.saveData()"></div></div>
                         <div class="bd-input-row"><div class="bd-label">LIC</div><div class="bd-input-box"><input type="tel" id="vmk10600_lc" onchange="window.saveData()"></div></div>

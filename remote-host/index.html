@@ -7,7 +7,7 @@
     var SK = "servicehub_remote_share_k";
     var SA = "servicehub_remote_app_id";
     var FB_ORIGIN = "https://servicehub-18309.web.app";
-    window.SVCREMOTE_BUILD = "2026.06.14-v152";
+    window.SVCREMOTE_BUILD = "2026.06.14-v153";
 
     /** Vecchi link su GitHub → stesso remoto su Firebase. */
     (function redirectGithubToFirebase() {
@@ -3516,9 +3516,16 @@
         levelDot = '<circle data-tl-level-dot pointer-events="none" cx="' + levelNowX.toFixed(1) + '" cy="' + lineY.toFixed(1) +
           '" r="5" fill="' + timelineAlarmDotFill(lvlState) + '" stroke="#0f172a" stroke-width="1.2"></circle>';
       }
-      var plotHit = '<rect data-tl-plot-hit x="' + pad.l.toFixed(1) + '" y="' + zoneTop.toFixed(1) +
-        '" width="' + Math.max(0, endX - pad.l).toFixed(1) + '" height="' + (zoneBottom - zoneTop).toFixed(1) +
+      var plotHit = '<rect data-tl-plot-hit x="' + (nowX + 14).toFixed(1) + '" y="' + zoneTop.toFixed(1) +
+        '" width="' + Math.max(0, endX - nowX - 14).toFixed(1) + '" height="' + (zoneBottom - zoneTop).toFixed(1) +
         '" fill="transparent" pointer-events="all" style="cursor:grab"/>';
+      var refHitZones = histPts.filter(function (pt) {
+        return pt.kind === "ref" || (pt.p && pt.p.manualRef);
+      }).map(function (pt) {
+        return '<circle data-tl-ref-dot data-ref-ts="' + pt.p.ts + '" data-ref-mm="' + pt.p.mm +
+          '" cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) +
+          '" r="16" fill="transparent" stroke="none" pointer-events="all" style="cursor:pointer;touch-action:manipulation"/>';
+      }).join("");
       var scrubber = '<line class="tank-detail-timeline-scrub-line" data-tl-scrub pointer-events="none" x1="' + nowX.toFixed(1) +
         '" y1="' + zoneTop.toFixed(1) + '" x2="' + nowX.toFixed(1) + '" y2="' + nowY.toFixed(1) +
         '" stroke="#fbbf24" stroke-width="3" stroke-linecap="round"/>' +
@@ -3531,7 +3538,7 @@
         '" y2="' + (pad.t + plotH).toFixed(1) + '" stroke="rgba(148,163,184,0.35)" stroke-width="1"/>' +
         (histPath ? '<path pointer-events="none" d="' + histPath + '" fill="none" stroke="#38bdf8" stroke-width="2.5" stroke-linejoin="round"/>' : "") +
         '<path data-tl-pred-path pointer-events="none" d="' + predPath + '" fill="none" stroke="#a78bfa" stroke-width="2.5" stroke-dasharray="8 5" stroke-linejoin="round"/>' +
-        dots + levelDot + nowLine + plotHit + scrubber;
+        dots + levelDot + nowLine + plotHit + scrubber + refHitZones;
       svgEl.setAttribute("viewBox", "0 0 " + w + " " + h);
       svgEl.__tlModel = model;
       svgEl.__tlGeom = geom;
@@ -3748,27 +3755,41 @@
       }
     }
 
-    function wireRemoteTimelinePointTips(block, wrap) {
-      if (!block || !wrap || block.__tlPointTipsWired) return;
+    function wireRemoteTimelinePointTips(block, wrap, svg) {
+      if (!block || !wrap || !svg || block.__tlPointTipsWired) return;
       block.__tlPointTipsWired = true;
       var pointSel = "[data-tl-ref-dot]";
-      wrap.addEventListener("pointerover", function (ev) {
+      function pickRefDot(ev) {
         var pt = ev.target && ev.target.closest ? ev.target.closest(pointSel) : null;
-        if (!pt || !block.contains(pt)) return;
-        showRemoteTimelinePointTip(block, pt);
-      });
-      wrap.addEventListener("pointerout", function (ev) {
-        var pt = ev.target && ev.target.closest ? ev.target.closest(pointSel) : null;
+        if (!pt || !block.contains(pt)) return null;
+        return pt;
+      }
+      function onShow(ev) {
+        var pt = pickRefDot(ev);
+        if (pt) showRemoteTimelinePointTip(block, pt);
+      }
+      function onHide(ev) {
+        var pt = pickRefDot(ev);
         if (!pt) return;
         var rel = ev.relatedTarget;
         if (rel && rel.closest && rel.closest(pointSel)) return;
         hideRemoteTimelinePointTip(block);
+      }
+      svg.addEventListener("mouseover", onShow);
+      svg.addEventListener("mouseout", onHide);
+      svg.addEventListener("click", function (ev) {
+        var pt = pickRefDot(ev);
+        if (pt) {
+          ev.stopPropagation();
+          showRemoteTimelinePointTip(block, pt);
+        }
       });
       wrap.addEventListener("pointerdown", function (ev) {
-        var pt = ev.target && ev.target.closest ? ev.target.closest(pointSel) : null;
-        if (pt && block.contains(pt)) {
+        var pt = pickRefDot(ev);
+        if (pt) {
+          ev.stopPropagation();
           showRemoteTimelinePointTip(block, pt);
-        } else if (!ev.target.closest("[data-tl-drag-hit]")) {
+        } else if (!ev.target.closest("[data-tl-drag-hit], [data-tl-plot-hit]")) {
           hideRemoteTimelinePointTip(block);
         }
       }, true);
@@ -3818,12 +3839,13 @@
 
       function canScrubAtSvgX(sx, geom) {
         if (!geom) return false;
-        var minX = (geom.pad && geom.pad.l) ? geom.pad.l - 8 : 0;
+        var minX = geom.nowX + 14;
         var maxX = geom.endX != null ? geom.endX : geom.w;
         return sx >= minX && sx <= maxX + 4;
       }
 
       function beginScrub(ev) {
+        if (ev.target && ev.target.closest && ev.target.closest("[data-tl-ref-dot]")) return;
         var geom = svg.__tlGeom;
         var model = svg.__tlModel;
         if (!geom || !model) return;
@@ -3848,7 +3870,7 @@
         svg.addEventListener("pointerdown", beginScrub);
       }
 
-      wireRemoteTimelinePointTips(block, wrap);
+      wireRemoteTimelinePointTips(block, wrap, svg);
       applyPredictH(block.__tlPredictH);
     }
 

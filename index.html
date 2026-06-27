@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v367';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v368';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -6981,6 +6981,7 @@ window.updateStoricoButton = async function() {
             window.loadDB();
             window.alarmConfig = window.APP_DB.alarms || {};
             if (typeof window.loadGeminiKeySettings === 'function') window.loadGeminiKeySettings();
+            if (typeof window.ensureGeminiKeysNeverLost === 'function') window.ensureGeminiKeysNeverLost();
             if (typeof window.loadLocalDarkMode === 'function') window.loadLocalDarkMode();
             if (typeof updateThemeUI === 'function') updateThemeUI();
 
@@ -17871,6 +17872,9 @@ window.updateStoricoButton = async function() {
                 if (typeof window.loadServiceWatchConfig === 'function') {
                     payload.serviceWatch = window.loadServiceWatchConfig();
                 }
+                if (typeof window.packGeminiKeysForCloud === 'function') {
+                    payload.geminiKeysPack = window.packGeminiKeysForCloud();
+                }
                 await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'rapportini'), payload);
             } catch (e) {
                 console.warn('[ServiceHub] push rapportini cloud:', e && e.message);
@@ -17882,6 +17886,9 @@ window.updateStoricoButton = async function() {
             opts = opts || {};
             if (remoteStore.serviceWatch && typeof window.applyServiceWatchConfigFromCloud === 'function') {
                 window.applyServiceWatchConfigFromCloud(remoteStore.serviceWatch);
+            }
+            if (remoteStore.geminiKeysPack && typeof window.applyGeminiKeysFromCloud === 'function') {
+                window.applyGeminiKeysFromCloud(remoteStore.geminiKeysPack);
             }
             const local = window.loadRapportiniStore();
             let remoteWon = false;
@@ -38077,7 +38084,16 @@ window.applySmartCaptureResults = async function() {
 };
 
 // --- INTEGRAZIONE GEMINI AI (fino a 3 chiavi con rotazione automatica) ---
+/** Fallback nel bundle: ripristino se localStorage/cloud vuoti (temporaneo). */
+window.GEMINI_BUILTIN_KEYS = [
+    'AIzaSyCx80ru6-RXeTi3GvqkFsMVyMf-vpgIoVw',
+    'AIzaSyBSsRE_1Os04-bxpd5JTLIniy3UK4OqKys',
+    ''
+];
 window.GEMINI_KEYS_STORAGE = 'servicehub_gemini_api_keys_v1';
+window.GEMINI_KEYS_BACKUP_STORAGE = 'servicehub_gemini_api_keys_v1_backup';
+window.GEMINI_KEYS_MIRROR_STORAGE = 'servicehub_gemini_api_keys_v1_mirror';
+window.GEMINI_KEYS_CLOUD_CACHE = 'servicehub_gemini_api_keys_cloud_cache';
 
 /** Timeout centralizzati (rete lenta / più chiavi: evitare falsi fallimenti). */
 window.GEMINI_TIMING = {
@@ -38094,36 +38110,187 @@ window.GEMINI_TIMING = {
     cooldownNetworkMs: 90 * 1000
 };
 
-window.loadGeminiKeysConfig = function() {
-    let cfg = { keys: ['', '', ''], activeIndex: 0, keyMeta: {} };
-    try {
-        const raw = localStorage.getItem(window.GEMINI_KEYS_STORAGE);
-        if (raw) {
-            const parsed = JSON.parse(raw);
-            if (parsed && Array.isArray(parsed.keys)) cfg = parsed;
-        }
-    } catch (e) {}
+window.__normalizeGeminiKeysCfg = function(cfg) {
+    cfg = cfg || { keys: ['', '', ''], activeIndex: 0, keyMeta: {} };
     if (!cfg.keys || !cfg.keys.length) cfg.keys = ['', '', ''];
     while (cfg.keys.length < 3) cfg.keys.push('');
     if (cfg.keys.length > 3) cfg.keys = cfg.keys.slice(0, 3);
-    cfg.keyMeta = cfg.keyMeta || {};
-    const legacy = (localStorage.getItem('servicehub_gemini_api_key') || '').trim();
-    if (legacy && !cfg.keys[0]) cfg.keys[0] = legacy;
     cfg.keys = cfg.keys.map(function(k) { return String(k || '').trim(); });
+    cfg.keyMeta = cfg.keyMeta || {};
     if (cfg.activeIndex == null || cfg.activeIndex < 0 || cfg.activeIndex > 2) cfg.activeIndex = 0;
     return cfg;
 };
 
-window.saveGeminiKeysConfig = function(cfg) {
-    cfg = cfg || window.loadGeminiKeysConfig();
-    cfg.keys = (cfg.keys || []).map(function(k) { return String(k || '').trim(); });
-    while (cfg.keys.length < 3) cfg.keys.push('');
+window.__parseGeminiKeysCfgRaw = function(raw) {
+    if (!raw) return null;
     try {
-        localStorage.setItem(window.GEMINI_KEYS_STORAGE, JSON.stringify(cfg));
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.keys)) return window.__normalizeGeminiKeysCfg(parsed);
     } catch (e) {}
+    return null;
+};
+
+window.__geminiCfgHasKeys = function(cfg) {
+    cfg = window.__normalizeGeminiKeysCfg(cfg);
+    return cfg.keys.some(function(k) { return k && k.length > 8; });
+};
+
+window.__geminiCfgFromBuiltin = function() {
+    const built = (window.GEMINI_BUILTIN_KEYS || []).map(function(k) { return String(k || '').trim(); });
+    while (built.length < 3) built.push('');
+    if (!built.some(function(k) { return k.length > 8; })) return null;
+    return window.__normalizeGeminiKeysCfg({ keys: built.slice(0, 3), activeIndex: 0, keyMeta: {} });
+};
+
+window.__readGeminiKeysCfgFromStorageKey = function(storageKey) {
+    try {
+        return window.__parseGeminiKeysCfgRaw(localStorage.getItem(storageKey));
+    } catch (e) {}
+    return null;
+};
+
+window.__mergeGeminiKeysCfgPreferFilled = function(base, incoming) {
+    base = window.__normalizeGeminiKeysCfg(base);
+    incoming = window.__normalizeGeminiKeysCfg(incoming);
+    for (let i = 0; i < 3; i++) {
+        if (incoming.keys[i] && incoming.keys[i].length > 8) base.keys[i] = incoming.keys[i];
+    }
+    if (incoming.activeIndex != null && base.keys[incoming.activeIndex]) base.activeIndex = incoming.activeIndex;
+    else if (!base.keys[base.activeIndex]) {
+        for (let j = 0; j < 3; j++) {
+            if (base.keys[j]) { base.activeIndex = j; break; }
+        }
+    }
+    base.keyMeta = Object.assign({}, base.keyMeta || {}, incoming.keyMeta || {});
+    return base;
+};
+
+window.recoverGeminiKeysFromAllSources = function() {
+    let cfg = window.__readGeminiKeysCfgFromStorageKey(window.GEMINI_KEYS_STORAGE);
+    const sources = [
+        window.GEMINI_KEYS_BACKUP_STORAGE,
+        window.GEMINI_KEYS_MIRROR_STORAGE,
+        window.GEMINI_KEYS_CLOUD_CACHE,
+        'servicehub_gemini_api_keys_v1_backup2'
+    ];
+    sources.forEach(function(sk) {
+        const hit = window.__readGeminiKeysCfgFromStorageKey(sk);
+        if (hit) cfg = window.__mergeGeminiKeysCfgPreferFilled(cfg || window.__normalizeGeminiKeysCfg({}), hit);
+    });
+    const legacy = (localStorage.getItem('servicehub_gemini_api_key') || '').trim();
+    if (legacy) {
+        cfg = window.__mergeGeminiKeysCfgPreferFilled(cfg || window.__normalizeGeminiKeysCfg({}), {
+            keys: [legacy, '', ''], activeIndex: 0, keyMeta: {}
+        });
+    }
+    const built = window.__geminiCfgFromBuiltin();
+    if (built) cfg = window.__mergeGeminiKeysCfgPreferFilled(cfg || window.__normalizeGeminiKeysCfg({}), built);
+    return window.__geminiCfgHasKeys(cfg) ? window.__normalizeGeminiKeysCfg(cfg) : null;
+};
+
+window.persistGeminiKeysLocalAll = function(cfg) {
+    cfg = window.__normalizeGeminiKeysCfg(cfg);
+    const raw = JSON.stringify(cfg);
+    const keys = [
+        window.GEMINI_KEYS_STORAGE,
+        window.GEMINI_KEYS_BACKUP_STORAGE,
+        window.GEMINI_KEYS_MIRROR_STORAGE
+    ];
+    keys.forEach(function(k) {
+        try { localStorage.setItem(k, raw); } catch (e) {}
+    });
     const active = cfg.keys[cfg.activeIndex] || cfg.keys.find(function(k) { return !!k; }) || '';
-    if (active) localStorage.setItem('servicehub_gemini_api_key', active);
-    else localStorage.removeItem('servicehub_gemini_api_key');
+    try {
+        if (active) localStorage.setItem('servicehub_gemini_api_key', active);
+    } catch (e2) {}
+};
+
+window.packGeminiKeysForCloud = function(cfg) {
+    cfg = window.__normalizeGeminiKeysCfg(cfg || window.loadGeminiKeysConfig());
+    if (!window.__geminiCfgHasKeys(cfg)) return null;
+    try {
+        return btoa(unescape(encodeURIComponent(JSON.stringify({
+            keys: cfg.keys,
+            activeIndex: cfg.activeIndex,
+            updatedAt: new Date().toISOString()
+        }))));
+    } catch (e) {
+        return null;
+    }
+};
+
+window.unpackGeminiKeysFromCloud = function(pack) {
+    if (!pack) return null;
+    try {
+        const json = decodeURIComponent(escape(atob(String(pack))));
+        const parsed = JSON.parse(json);
+        if (parsed && Array.isArray(parsed.keys)) return window.__normalizeGeminiKeysCfg(parsed);
+    } catch (e) {}
+    return null;
+};
+
+window.applyGeminiKeysFromCloud = function(pack) {
+    if (window.__geminiApplyingFromCloud) return;
+    const remote = window.unpackGeminiKeysFromCloud(pack);
+    if (!remote || !window.__geminiCfgHasKeys(remote)) return;
+    try { localStorage.setItem(window.GEMINI_KEYS_CLOUD_CACHE, JSON.stringify(remote)); } catch (e) {}
+    const local = window.recoverGeminiKeysFromAllSources();
+    let merged;
+    if (local && window.__geminiCfgHasKeys(local)) {
+        merged = window.__mergeGeminiKeysCfgPreferFilled(local, remote);
+    } else {
+        merged = remote;
+    }
+    if (!window.__geminiCfgHasKeys(merged)) return;
+    window.__geminiApplyingFromCloud = true;
+    try {
+        window.persistGeminiKeysLocalAll(merged);
+        if (typeof window.loadGeminiKeySettings === 'function') window.loadGeminiKeySettings();
+        if (typeof window.updateGeminiKeyStatus === 'function') window.updateGeminiKeyStatus();
+    } finally {
+        window.__geminiApplyingFromCloud = false;
+    }
+};
+
+window.ensureGeminiKeysNeverLost = function() {
+    const current = window.__readGeminiKeysCfgFromStorageKey(window.GEMINI_KEYS_STORAGE);
+    if (window.__geminiCfgHasKeys(current)) {
+        window.persistGeminiKeysLocalAll(current);
+        return current;
+    }
+    const recovered = window.recoverGeminiKeysFromAllSources();
+    if (recovered) {
+        window.persistGeminiKeysLocalAll(recovered);
+        if (typeof window.loadGeminiKeySettings === 'function') window.loadGeminiKeySettings();
+        if (typeof window.flushRapportiniPushToCloudNow === 'function') {
+            setTimeout(function() { void window.flushRapportiniPushToCloudNow(); }, 600);
+        }
+        console.log('[ServiceHub] Chiavi Gemini ripristinate da backup/cloud/bundle.');
+        return recovered;
+    }
+    return window.__normalizeGeminiKeysCfg({});
+};
+
+window.loadGeminiKeysConfig = function() {
+    let cfg = window.__readGeminiKeysCfgFromStorageKey(window.GEMINI_KEYS_STORAGE);
+    if (!window.__geminiCfgHasKeys(cfg)) {
+        const recovered = window.recoverGeminiKeysFromAllSources();
+        if (recovered) cfg = recovered;
+    }
+    cfg = window.__normalizeGeminiKeysCfg(cfg || {});
+    const legacy = (localStorage.getItem('servicehub_gemini_api_key') || '').trim();
+    if (legacy && !cfg.keys[0]) cfg.keys[0] = legacy;
+    return cfg;
+};
+
+window.saveGeminiKeysConfig = function(cfg) {
+    cfg = window.__normalizeGeminiKeysCfg(cfg);
+    if (!window.__geminiCfgHasKeys(cfg)) {
+        const recovered = window.recoverGeminiKeysFromAllSources();
+        if (recovered) cfg = window.__mergeGeminiKeysCfgPreferFilled(recovered, cfg);
+    }
+    window.persistGeminiKeysLocalAll(cfg);
+    if (window.__geminiApplyingFromCloud) return;
     if (typeof window.flushRapportiniPushToCloudNow === 'function') {
         setTimeout(function() { void window.flushRapportiniPushToCloudNow(); }, 400);
     }
@@ -38237,8 +38404,9 @@ window.saveGeminiKeysFromInputs = function() {
         const v = el.value.trim();
         if (v) {
             cfg.keys[i - 1] = v;
-        } else if (el.dataset.geminiHydrated === '1') {
-            cfg.keys[i - 1] = '';
+        } else if (el.dataset.geminiHydrated === '1' && prev[i - 1]) {
+            cfg.keys[i - 1] = prev[i - 1];
+            el.value = prev[i - 1];
         }
     }
     let changed = false;
@@ -38299,6 +38467,7 @@ window.updateGeminiKeyStatus = function() {
         } else if (keys.length) {
             statusEl.classList.add('text-emerald-600', 'dark:text-emerald-400');
             let msg = keys.length + ' chiave' + (keys.length > 1 ? 'i' : '') + ' salvata' + (keys.length > 1 ? 'e' : '') + '. Rotazione automatica attiva.';
+            msg += ' Backup locale + cloud attivi.';
             if (window.__lastGeminiKeyLabel) msg += ' Ultima OK: ' + window.__lastGeminiKeyLabel + '.';
             if (window.__lastGeminiKeySwitch && window.__lastGeminiKeySwitch.fromKey) {
                 const sw = window.__lastGeminiKeySwitch;

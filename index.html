@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v378';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v379';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -11840,29 +11840,65 @@ window.updateStoricoButton = async function() {
             return html + '</colgroup>';
         };
 
-        window.letturaValFontSizePt = function (val, colIdx) {
-            var len = String(val == null ? '' : val).trim().length;
-            var colPt = parseFloat(window.letturaColWidthPt(colIdx || 1));
-            var fs = 9;
-            if (len <= 3) fs = 9;
-            else if (len <= 4) fs = 8.5;
-            else if (len <= 5) fs = 7.5;
-            else if (len <= 6) fs = 6.5;
-            else if (len <= 7) fs = 5.5;
-            else if (len <= 8) fs = 5;
-            else fs = 4.5;
-            if (colPt < 44 && len >= 6) fs = Math.min(fs, 5.5);
-            return fs;
+        window.LETTURE_UNIFORM_FONT_TARGET_PT = 6.5;
+        window.LETTURE_UNIFORM_FONT_MIN_PT = 5.5;
+
+        window.letturaEstimateTextWidthPt = function (text, fontPt) {
+            var s = String(text == null ? '' : text);
+            var w = 0;
+            for (var i = 0; i < s.length; i++) {
+                var c = s.charAt(i);
+                if (c === '.' || c === ',') w += fontPt * 0.28;
+                else if (c === '-') w += fontPt * 0.35;
+                else w += fontPt * 0.54;
+            }
+            return w;
         };
 
-        window.formatLetturaCellInnerHtml = function (val, esc, colIdx) {
+        window.letturaMaxFontForTextPt = function (text, colPt, maxFontPt) {
+            var minFont = window.LETTURE_UNIFORM_FONT_MIN_PT;
+            var fs = maxFontPt || window.LETTURE_UNIFORM_FONT_TARGET_PT;
+            var avail = parseFloat(colPt) - 1.5;
+            if (!Number.isFinite(avail) || avail <= 0) return fs;
+            while (fs > minFont && window.letturaEstimateTextWidthPt(text, fs) > avail) {
+                fs -= 0.25;
+            }
+            return Math.max(minFont, Math.round(fs * 4) / 4);
+        };
+
+        window.computeLetturaUniformFontPt = function (activeCol) {
+            var target = window.LETTURE_UNIFORM_FONT_TARGET_PT;
+            var colIdx = Number.isFinite(activeCol) ? activeCol + 1 : window.getLetturaActiveSlotIndex() + 1;
+            var colPt = window.letturaColWidthPt(colIdx);
+            var rows = (window.LETTURE_STOCCAGGIO_CALDAIA_D_SERBATOI || []).concat(
+                window.LETTURE_STOCCAGGIO_CALDAIA_D_CALDAIA || []
+            );
+            var longest = '';
+            var longestW = 0;
+            rows.forEach(function (row) {
+                if (!row.fieldId) return;
+                var val = String(window.readLetturaFieldValue(row.fieldId) || '').trim();
+                if (!val) return;
+                var w = window.letturaEstimateTextWidthPt(val, target);
+                if (w > longestW || (w === longestW && val.length > longest.length)) {
+                    longestW = w;
+                    longest = val;
+                }
+            });
+            if (!longest) return target;
+            return window.letturaMaxFontForTextPt(longest, colPt, target);
+        };
+
+        window.formatLetturaCellInnerHtml = function (val, esc, colIdx, uniformFontPt) {
             var s = String(val == null ? '' : val).trim();
             if (!s) return '&nbsp;';
-            var fs = window.letturaValFontSizePt(s, colIdx);
+            var fs = Number.isFinite(uniformFontPt)
+                ? uniformFontPt
+                : window.LETTURE_UNIFORM_FONT_TARGET_PT;
             var pt = window.letturaColWidthPt(colIdx);
             return '<span class="lettura-o-val-txt" style="font-size:' + fs + 'pt;line-height:1;display:block;' +
                 'width:' + pt + 'pt;max-width:' + pt + 'pt;overflow:hidden;white-space:nowrap;text-overflow:clip;' +
-                'letter-spacing:-0.03em;">' + esc(s) + '</span>';
+                'letter-spacing:-0.02em;">' + esc(s) + '</span>';
         };
 
         window.buildLetturaOriginalTableHtml = function (sectionTitle, rows, opts) {
@@ -11872,6 +11908,9 @@ window.updateStoricoButton = async function() {
             };
             var slots = window.LETTURE_QUAD_TIME_SLOTS || [];
             var activeCol = Number.isFinite(opts.activeCol) ? opts.activeCol : window.getLetturaActiveSlotIndex();
+            var uniformFontPt = Number.isFinite(opts.uniformFontPt)
+                ? opts.uniformFontPt
+                : window.computeLetturaUniformFontPt(activeCol);
             var tableW = window.LETTURE_ORIGINAL_TABLE_WIDTH_PT;
             var html = '<table class="lettura-original-grid" cellspacing="0" cellpadding="0" width="' + tableW + '" ' +
                 'style="width:' + tableW + 'pt;max-width:' + tableW + 'pt;table-layout:fixed;mso-table-layout-alt:fixed;border-collapse:collapse;">' +
@@ -11896,7 +11935,7 @@ window.updateStoricoButton = async function() {
                 slots.forEach(function (_, i) {
                     var colIdx = i + 1;
                     var cell = (i === activeCol && val)
-                        ? window.formatLetturaCellInnerHtml(val, esc, colIdx)
+                        ? window.formatLetturaCellInnerHtml(val, esc, colIdx, uniformFontPt)
                         : '&nbsp;';
                     html += window.letturaTdOpen(colIdx, 'lettura-o-val') + cell + '</td>';
                 });
@@ -11922,7 +11961,7 @@ window.updateStoricoButton = async function() {
             '.lettura-original-grid td{border:1px solid #000;padding:0 1pt;height:12pt;max-height:12pt;vertical-align:middle;text-align:center;line-height:1;overflow:hidden!important;word-wrap:normal;word-break:keep-all}' +
             '.lettura-original-grid td.lettura-o-sigla{text-align:left;font-weight:700;white-space:nowrap;font-size:8pt;padding:0 2pt}' +
             '.lettura-original-grid td.lettura-o-time{font-weight:700;font-size:7pt;padding:0 1pt}' +
-            '.lettura-original-grid td.lettura-o-val{padding:0;font-size:8pt}' +
+            '.lettura-original-grid td.lettura-o-val{padding:0;font-size:6.5pt}' +
             '.lettura-o-val-txt,.lettura-o-time-txt{display:block;overflow:hidden;white-space:nowrap;margin:0 auto;text-overflow:clip}' +
             '.lettura-original-grid tr.lettura-o-date-row td{text-align:left;font-weight:700;font-size:8pt}' +
             '@page{size:A4 portrait;margin:12mm 10mm}';
@@ -11930,15 +11969,18 @@ window.updateStoricoButton = async function() {
         window.buildLetturaStoccaggioCaldaiaDHtml = function (opts) {
             opts = opts || {};
             var activeCol = window.getLetturaActiveSlotIndex();
+            var uniformFontPt = window.computeLetturaUniformFontPt(activeCol);
             return '<div class="lettura-doc lettura-doc--original" id="lettura-doc-print-root">' +
                 '<p class="lettura-doc-title-original">Letture Utilities (Quad) pag. 2</p>' +
                 '<div class="lettura-original-sheet">' +
                 window.buildLetturaOriginalTableHtml('SERBATOI', window.LETTURE_STOCCAGGIO_CALDAIA_D_SERBATOI, {
                     dateRow: true,
-                    activeCol: activeCol
+                    activeCol: activeCol,
+                    uniformFontPt: uniformFontPt
                 }) +
                 window.buildLetturaOriginalTableHtml('CALDAIA D', window.LETTURE_STOCCAGGIO_CALDAIA_D_CALDAIA, {
                     activeCol: activeCol,
+                    uniformFontPt: uniformFontPt,
                     firmaRow: true
                 }) +
                 '</div></div>';
@@ -30912,7 +30954,7 @@ window.convertToHtml = async () => {
         .lettura-original-grid td { border: 1px solid #000; padding: 0 1px; height: 18px; max-height: 18px; vertical-align: middle; text-align: center; line-height: 1; color: #000; background: #fff; overflow: hidden !important; word-break: keep-all; }
         .lettura-original-grid td.lettura-o-sigla { text-align: left; font-weight: 700; white-space: nowrap; overflow: hidden; font-size: 8pt; }
         .lettura-original-grid td.lettura-o-time { font-weight: 700; font-size: 7pt; padding: 0 1px; }
-        .lettura-original-grid td.lettura-o-val { padding: 0; font-size: 8pt; }
+        .lettura-original-grid td.lettura-o-val { padding: 0; font-size: 6.5pt; }
         .lettura-o-val-txt, .lettura-o-time-txt { display: block; overflow: hidden; white-space: nowrap; margin: 0 auto; text-overflow: clip; }
         .lettura-original-grid tr.lettura-o-date-row td { text-align: left; font-weight: 700; font-size: 8pt; }
         .letture-doc-share { flex: 0 0 auto; padding: 12px 14px calc(12px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid rgba(148,163,184,0.35); background: rgba(248,250,252,0.98); display: flex; flex-direction: column; gap: 8px; }

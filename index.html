@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v365';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v366';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -3232,6 +3232,9 @@ window.colorPreviewNumber = function(tankName, value) {
             if (typeof window.__mergeOsmosiFieldsFromSources === 'function') {
                 d = window.__mergeOsmosiFieldsFromSources(d);
             }
+            if (typeof window.__applyRemoteTotalResetIfNeeded === 'function') {
+                window.__applyRemoteTotalResetIfNeeded(d);
+            }
             const rev = __plantPayloadRevision(d);
             if (!opts.force && rev > 0 && rev < (window.__appliedPlantSyncRevision || 0)) return;
             if (rev > 0) window.__appliedPlantSyncRevision = rev;
@@ -4918,6 +4921,131 @@ window.colorPreviewNumber = function(tankName, value) {
             }
         };
 
+        window.__lastAppliedTotalResetAt = window.__lastAppliedTotalResetAt || 0;
+
+        window.clearTimelineLocalStorageAll = function () {
+            try {
+                var rm = [];
+                for (var i = 0; i < localStorage.length; i++) {
+                    var k = localStorage.key(i);
+                    if (k && k.indexOf('sh-tl-manual-') === 0) rm.push(k);
+                }
+                rm.forEach(function (k) { localStorage.removeItem(k); });
+            } catch (_) {}
+        };
+
+        window.clearTankLevelInputAtAll = function () {
+            window.tankLevelInputAtMs = {};
+            window.tankLevelInputAtMm = {};
+            try {
+                localStorage.removeItem(window.TANK_LEVEL_INPUT_AT_LS_KEY || 'servicehub_tank_level_input_at');
+            } catch (_) {}
+        };
+
+        window.clearNotturnoStoccLocalSnapshots = function () {
+            try { localStorage.removeItem('servicehub_nott_stocc_snapshot'); } catch (_) {}
+        };
+
+        window.clearAllRapportiniDataForTotalReset = function (store) {
+            if (!store || !store.items) return store;
+            Object.keys(store.items).forEach(function (rid) {
+                var item = store.items[rid];
+                if (!item) return;
+                item.data = {};
+                item.updatedAt = new Date().toISOString();
+            });
+            store.lastUpdate = new Date().toISOString();
+            return store;
+        };
+
+        window.__applyTotalResetLocalSideEffects = function () {
+            window.clearTankLevelInputAtAll();
+            window.clearTimelineLocalStorageAll();
+            window.clearNotturnoStoccLocalSnapshots();
+            try { localStorage.removeItem('stabileArchives'); } catch (_) {}
+            if (window.savedHistory) window.savedHistory = [];
+            window.tankStatuses = {};
+            window.tankStatusManualAD = {};
+            if (typeof window.__ensureTankStatusesObject === 'function') window.__ensureTankStatusesObject();
+            if (typeof window.__ensureTankStatusManualADObject === 'function') window.__ensureTankStatusManualADObject();
+            var store = window.loadRapportiniStore && window.loadRapportiniStore();
+            if (store) {
+                window.clearAllRapportiniDataForTotalReset(store);
+                window.saveRapportiniStore(store, { pushCloud: true, flushCloud: true });
+            }
+            var panel = document.getElementById('stoccaggio-panel-notturno');
+            if (panel && panel.dataset) delete panel.dataset.built;
+            if (typeof window.renderStoccaggioInternoPanel === 'function') window.renderStoccaggioInternoPanel();
+            if (typeof window.refreshStoccaggioInternoTons === 'function') window.refreshStoccaggioInternoTons();
+        };
+
+        window.__pushTotalResetToCloud = async function () {
+            if (!user || !user.uid || !db) return false;
+            if (typeof window.buildPlantPayloadFromDOM !== 'function') return false;
+            var payload = window.buildPlantPayloadFromDOM({ bumpRevision: true });
+            var baseline = window.__plantSyncBaseline || {};
+            Object.keys(baseline).forEach(function (k) {
+                if (['shift', 'lastUpdate', 'syncRevision', 'manualShift'].indexOf(k) >= 0) return;
+                if (k === 'tankStatuses' || k === 'tankStatusManualAD' || k === 'tankLevelInputAt' || k === 'totalResetAt') return;
+                payload[k] = '';
+            });
+            payload.tankStatuses = {};
+            payload.tankStatusManualAD = {};
+            payload.tankLevelInputAt = {};
+            payload.totalResetAt = Date.now();
+            window.__lastAppliedTotalResetAt = payload.totalResetAt;
+            try {
+                var plantRef = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
+                await setDoc(plantRef, payload, { merge: true });
+                var rev = __plantPayloadRevision(payload);
+                if (rev > 0) window.__appliedPlantSyncRevision = rev;
+                window.__cloudPlantHydrated = true;
+                window.__lastLocalPlantSaveMs = Date.now();
+                if (typeof window.__setPlantSyncBaseline === 'function') window.__setPlantSyncBaseline(payload);
+                if (typeof __writePlantLocalBackup === 'function') __writePlantLocalBackup(payload);
+                if (typeof cacheCloudPlantPayload === 'function') cacheCloudPlantPayload(payload);
+                return true;
+            } catch (e) {
+                console.error('[ServiceHub] total reset cloud:', e && e.message);
+                return false;
+            }
+        };
+
+        window.__applyRemoteTotalResetIfNeeded = function (payload) {
+            if (!payload || payload.totalResetAt == null) return false;
+            var remoteTs = Number(payload.totalResetAt);
+            if (!Number.isFinite(remoteTs) || remoteTs <= 0) return false;
+            if (remoteTs <= (window.__lastAppliedTotalResetAt || 0)) return false;
+            window.__lastAppliedTotalResetAt = remoteTs;
+            window.clearTankLevelInputAtAll();
+            window.clearTimelineLocalStorageAll();
+            window.clearNotturnoStoccLocalSnapshots();
+            try { localStorage.removeItem('stabileArchives'); } catch (_) {}
+            if (window.savedHistory) window.savedHistory = [];
+            if (!window.__rapportiniApplyingFromCloud) {
+                var store = window.loadRapportiniStore && window.loadRapportiniStore();
+                if (store) {
+                    window.clearAllRapportiniDataForTotalReset(store);
+                    window.saveRapportiniStore(store, { pushCloud: false });
+                }
+            }
+            document.querySelectorAll('input').forEach(function (input) {
+                input.value = '';
+            });
+            document.querySelectorAll('.status-cell-btn').forEach(function (btn) {
+                btn.innerText = 'FERMO';
+                btn.className = 'status-cell-btn bg-fermo';
+            });
+            window.tankStatuses = {};
+            window.tankStatusManualAD = {};
+            var stoccPanel = document.getElementById('stoccaggio-panel-notturno');
+            if (stoccPanel && stoccPanel.dataset) delete stoccPanel.dataset.built;
+            if (typeof window.renderStoccaggioInternoPanel === 'function') window.renderStoccaggioInternoPanel();
+            if (typeof window.refreshStoccaggioInternoTons === 'function') window.refreshStoccaggioInternoTons();
+            if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
+            return true;
+        };
+
         // Funzione per eseguire il reset totale completo
         window.executeTotalReset = async () => {
             try {
@@ -4951,6 +5079,8 @@ window.colorPreviewNumber = function(tankName, value) {
                 currentMatches = {};
                 updateBoilerInputs();
 
+                window.__applyTotalResetLocalSideEffects();
+
                 // 2. Elimina archivio storico completo
                 if (user && user.uid) {
                     const archiveRef = collection(db, "artifacts", appId, "sharedDial", "plant", "snapshots");
@@ -4964,14 +5094,21 @@ window.colorPreviewNumber = function(tankName, value) {
                     if (window.savedHistory) {
                         window.savedHistory = [];
                     }
+                } else {
+                    if (window.savedHistory) window.savedHistory = [];
                 }
 
                 // 3. Reset serbatoi (come in gestione serbatoi)
                 window.tankStatuses = {};
                 window.tankStatusManualAD = {};
 
-                // 4. Salva lo stato pulito
-                await window.saveData();
+                // 4. Propaga reset a cloud + backup locale (tutti i dispositivi)
+                if (typeof window.flushRapportiniPushToCloudNow === 'function') {
+                    await window.flushRapportiniPushToCloudNow();
+                }
+                await window.__pushTotalResetToCloud();
+                if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
+                await window.saveData(true);
 
                 // 5. Chiudi la modale e mostra feedback
                 closeResetModal();
@@ -23385,6 +23522,11 @@ window.updateStoricoButton = async function() {
 
         window.__mergeTankLevelInputAtFromPlant = function (data) {
             if (!data || !data.tankLevelInputAt || typeof data.tankLevelInputAt !== 'object') return;
+            if (!Object.keys(data.tankLevelInputAt).length && data.totalResetAt &&
+                typeof window.clearTankLevelInputAtAll === 'function') {
+                window.clearTankLevelInputAtAll();
+                return;
+            }
             Object.keys(data.tankLevelInputAt).forEach(function (k) {
                 var norm = window.__normalizeTankInputAtKey(k);
                 var raw = data.tankLevelInputAt[k];

@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v368';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v370';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -13058,7 +13058,7 @@ window.updateStoricoButton = async function() {
                 if (!raw) return [];
                 var parsed = JSON.parse(raw);
                 var list = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);
-                var nowCap = Date.now() - 60000;
+                var nowCap = Date.now() + 60000;
                 return list.filter(function (o) {
                     return o && Number.isFinite(o.ts) && Number.isFinite(o.mm) && o.ts <= nowCap;
                 }).map(function (o) {
@@ -13077,7 +13077,7 @@ window.updateStoricoButton = async function() {
         window.saveTankTimelineManualRef = function (fieldId, pt, opts) {
             opts = opts || {};
             if (!fieldId || !pt || !Number.isFinite(pt.ts) || !Number.isFinite(pt.mm)) return;
-            if (pt.ts > Date.now() - 60000) return;
+            if (pt.ts > Date.now() + 60000) return;
             try {
                 var refs = window.loadTankTimelineManualRefs(fieldId);
                 if (Number.isFinite(opts.replaceTs)) {
@@ -13096,6 +13096,9 @@ window.updateStoricoButton = async function() {
                     return { ts: r.ts, mm: r.mm };
                 })));
             } catch (_) {}
+            if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
+                window.schedulePublicDigitalSnapshotSync();
+            }
         };
 
         window.clearTankTimelineManualRef = function (fieldId) {
@@ -13121,6 +13124,9 @@ window.updateStoricoButton = async function() {
             try {
                 localStorage.setItem('sh-tl-manual-initial:' + fieldId, JSON.stringify({ ts: pt.ts, mm: pt.mm }));
             } catch (_) {}
+            if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
+                window.schedulePublicDigitalSnapshotSync();
+            }
         };
 
         /** Primo livello inserito → livello iniziale timeline (se non c'è già archivio o iniziale salvato). */
@@ -13542,12 +13548,18 @@ window.updateStoricoButton = async function() {
                 var inp = document.getElementById(normId) || document.getElementById(fieldId);
                 if (inp) window.refreshAlarmVisualForField(inp, true);
             }
+            if (typeof window.saveTankTimelineManualRef === 'function') {
+                window.saveTankTimelineManualRef(fieldId, { ts: ts, mm: mm });
+            }
             window.refreshTankDetailTimelineAfterRefChange(block);
             var page = block.closest('.tank-detail-page');
             if (page && typeof window.refreshTankDetailPageLiveStats === 'function') {
                 window.refreshTankDetailPageLiveStats(page, fieldId);
             }
             if (typeof window.saveData === 'function') void window.saveData(true);
+            if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
+                window.schedulePublicDigitalSnapshotSync();
+            }
         };
 
         window.resetTankTimelineAllLevels = function (block) {
@@ -14750,17 +14762,42 @@ window.updateStoricoButton = async function() {
                 });
             }
             var tankConductivity = {};
+            var timelineManualInitial = {};
+            var timelineManualRefs = {};
             Object.keys(meta).forEach(function (fid) {
                 if (typeof window.tankFieldHasConductivity === 'function' && window.tankFieldHasConductivity(fid)) {
                     var cv = typeof window.readTankConductivityValue === 'function'
                         ? window.readTankConductivityValue(fid) : '';
                     if (cv && String(cv).trim() !== '') tankConductivity[fid] = String(cv).trim();
                 }
+                if (typeof window.loadTankTimelineManualInitial === 'function') {
+                    var mi = window.loadTankTimelineManualInitial(fid);
+                    if (mi && Number.isFinite(mi.ts) && Number.isFinite(mi.mm)) {
+                        timelineManualInitial[fid] = { ts: mi.ts, mm: mi.mm };
+                    }
+                }
+                if (typeof window.loadTankTimelineManualRefs === 'function') {
+                    var refs = window.loadTankTimelineManualRefs(fid);
+                    if (refs && refs.length) {
+                        timelineManualRefs[fid] = refs.map(function (r) {
+                            return { ts: r.ts, mm: r.mm };
+                        });
+                    }
+                }
+            });
+            var tankLevelInputAt = {};
+            Object.keys(window.tankLevelInputAtMs || {}).forEach(function (k) {
+                var ts = Number(window.tankLevelInputAtMs[k]);
+                if (!Number.isFinite(ts) || ts <= 0) return;
+                var mm = Number(window.tankLevelInputAtMm[k]);
+                tankLevelInputAt[k] = Number.isFinite(mm) ? { ts: ts, mm: mm } : { ts: ts };
             });
             return {
                 tankDetailMeta: meta,
                 tankLevelHistory: history,
-                tankLevelInputAt: Object.assign({}, window.tankLevelInputAtMs || {}),
+                tankLevelInputAt: tankLevelInputAt,
+                tankTimelineManualInitial: timelineManualInitial,
+                tankTimelineManualRefs: timelineManualRefs,
                 tankLevelCompareBaseline: baseline,
                 tankConductivity: tankConductivity
             };
@@ -27459,6 +27496,8 @@ window.pushPublicDigitalSnapshotQuiet = async function (opts) {
         tankDetailMeta: tankDetailRemote.tankDetailMeta || {},
         tankLevelHistory: tankDetailRemote.tankLevelHistory || {},
         tankLevelInputAt: tankDetailRemote.tankLevelInputAt || {},
+        tankTimelineManualInitial: tankDetailRemote.tankTimelineManualInitial || {},
+        tankTimelineManualRefs: tankDetailRemote.tankTimelineManualRefs || {},
         tankLevelCompareBaseline: tankDetailRemote.tankLevelCompareBaseline || {},
         tankConductivity: tankDetailRemote.tankConductivity || {}
     };
@@ -30404,6 +30443,12 @@ window.convertToHtml = async () => {
         
         .preview-screen { position: fixed; inset: 0; background: #cbd5e1; z-index: 20000; visibility: hidden; opacity: 0; transition: all 0.4s ease-in-out; display: flex; flex-direction: column; }
         .preview-screen.active { visibility: visible; opacity: 1; }
+        #preview-screen #preview-back-btn {
+            background: linear-gradient(135deg, #facc15, #eab308);
+            color: #1c1917;
+            border: 1px solid rgba(234, 179, 8, 0.55);
+            box-shadow: 0 4px 10px rgba(234, 179, 8, 0.35);
+        }
         .preview-scroll-area {
             overflow-y: auto;
             overflow-x: hidden;
@@ -31110,6 +31155,12 @@ window.convertToHtml = async () => {
                 flex: 1 1 30%;
                 min-width: 88px;
                 touch-action: manipulation;
+            }
+            #preview-screen #preview-back-btn {
+                background: linear-gradient(135deg, #facc15, #eab308) !important;
+                color: #1c1917 !important;
+                border: 1px solid rgba(234, 179, 8, 0.55);
+                box-shadow: 0 4px 10px rgba(234, 179, 8, 0.35);
             }
             /* Digital Report HD — solo smartphone: moduli centrati, scroll verticale */
             #digital-preview-container {
@@ -33148,8 +33199,8 @@ window.convertToHtml = async () => {
         <div class="preview-toolbar p-4 bg-black flex justify-between items-center text-white shrink-0 shadow-lg">
             <h2 id="preview-toolbar-title" class="font-black uppercase italic text-base preview-toolbar-title-toggle" onclick="window.togglePreviewViewMode()" title="Tocca per passare tra Report e Note">PREVIEW REPORT</h2>
             <div class="preview-toolbar-actions flex gap-3">
+                <button type="button" id="preview-back-btn" onclick="window.closePreview()" class="px-4 py-2 rounded-lg font-black text-[10px] uppercase shadow-lg outline-none" title="Torna all'app" aria-label="Torna indietro">← TORNA</button>
                 <button type="button" id="preview-mode-toggle-btn" onclick="window.togglePreviewViewMode()" class="bg-indigo-600 px-4 py-2 rounded-lg font-black text-[10px] uppercase shadow-lg outline-none" title="Anteprima appunti per WhatsApp">NOTE</button>
-                <button onclick="window.closePreview()" class="bg-slate-800 px-4 py-2 rounded-lg font-black text-[10px] uppercase outline-none">Torna</button>
                 <button onclick="window.sharePreview()" class="bg-emerald-600 px-6 py-2 rounded-lg font-black text-[10px] uppercase shadow-lg outline-none"><span id="share-btn-text">INVIA REPORT</span></button>
                 <button onclick="window.openDigitalPreview()" class="bg-gradient-to-r from-blue-500 to-blue-600 px-4 py-2 rounded-lg font-black text-[10px] uppercase shadow-lg outline-none" style="background:linear-gradient(135deg,#0ea5e9,#2563eb);">DIGITAL</button>
             </div>

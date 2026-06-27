@@ -3126,6 +3126,40 @@
       }
     }
 
+    function loadRemoteTimelineManualInitial(fieldId) {
+      var p = window.__remoteDigitalPayload || {};
+      var hit = p.tankTimelineManualInitial && p.tankTimelineManualInitial[fieldId];
+      if (hit && Number.isFinite(hit.ts) && Number.isFinite(hit.mm)) return hit;
+      return null;
+    }
+
+    function loadRemoteTimelineManualRefs(fieldId) {
+      var p = window.__remoteDigitalPayload || {};
+      var list = (p.tankTimelineManualRefs && p.tankTimelineManualRefs[fieldId]) || [];
+      return (list || []).filter(function (r) {
+        return r && Number.isFinite(r.ts) && Number.isFinite(r.mm);
+      }).map(function (r) {
+        return { ts: r.ts, mm: r.mm, label: "Riferimento", manualRef: true };
+      }).sort(function (a, b) { return a.ts - b.ts; });
+    }
+
+    function getRemoteTimelineStartPoint(model) {
+      if (!model) return null;
+      if (model.initialPt && Number.isFinite(model.initialPt.ts)) return model.initialPt;
+      if (model.fieldId) {
+        var mi = loadRemoteTimelineManualInitial(model.fieldId);
+        if (mi) return { ts: mi.ts, mm: mi.mm, label: "Livello iniziale", manualInitial: true };
+      }
+      if (model.series && model.series.length) {
+        var first = model.series[0];
+        if (first && Number.isFinite(first.ts)) return first;
+      }
+      if (Number.isFinite(model.tStart)) {
+        return { ts: model.tStart, mm: model.nowMm, label: "Inizio" };
+      }
+      return null;
+    }
+
     function buildTimelineSvgGeom(model, pad, plotW, plotH) {
       var zoneTop = pad.t;
       var zoneBottom = pad.t + plotH;
@@ -3138,12 +3172,16 @@
         if (ts >= model.tEnd) return pad.l + plotW;
         return pad.l + plotW * ((ts - model.tStart) / tSpan);
       };
-      var nowX = toX(model.nowTs);
+      var wallNowTs = Number.isFinite(model.wallNowTs) ? model.wallNowTs : (model.nowTs || Date.now());
+      var levelTs = model.nowTs;
+      var nowX = toX(wallNowTs);
+      var levelNowX = toX(levelTs);
       var endX = toX(model.tEnd);
       var w = Math.ceil(Math.max(endX, pad.l + plotW)) + 1;
       return {
         w: w, h: pad.t + plotH + pad.b, pad: pad, plotW: plotW, plotH: plotH,
-        tSpan: tSpan, lineY: lineY, nowX: nowX, endX: endX,
+        tSpan: tSpan, lineY: lineY, nowX: nowX, levelNowX: levelNowX,
+        wallNowTs: wallNowTs, levelTs: levelTs, endX: endX,
         zoneTop: zoneTop, zoneBottom: zoneBottom,
         toX: toX, toXHist: toX, toXPred: toX,
         nowTs: model.nowTs, tEnd: model.tEnd
@@ -3203,9 +3241,25 @@
       info = info || {};
       series = series || [];
       var initial = getRemoteTimelineInitialPoint(series);
+      if (!initial && info.fieldId) {
+        var mi = loadRemoteTimelineManualInitial(info.fieldId);
+        if (mi) initial = mi;
+      }
       var currentTs = resolveRemoteCurrentLevelTs(info.fieldId, series, info);
-      var currentMm = Number.isFinite(info.levelMm) ? info.levelMm
-        : (series.length ? series[series.length - 1].mm : NaN);
+      var currentMm = resolveRemoteCurrentLevelMm(info.fieldId, series, info);
+      var manualRefs = info.manualRefPts || loadRemoteTimelineManualRefs(info.fieldId);
+      if (manualRefs.length && Number.isFinite(currentTs) && Number.isFinite(currentMm)) {
+        var lastRef = null;
+        manualRefs.forEach(function (r) {
+          if (r && Number.isFinite(r.ts) && Number.isFinite(r.mm) && r.ts <= currentTs + 60000) {
+            if (!lastRef || r.ts >= lastRef.ts) lastRef = r;
+          }
+        });
+        if (lastRef) {
+          var dtRefH = (currentTs - lastRef.ts) / 3600000;
+          if (dtRefH >= 0.08) return (currentMm - lastRef.mm) / dtRefH;
+        }
+      }
       if (initial && Number.isFinite(currentTs) && Number.isFinite(currentMm)) {
         var dtInitH = (currentTs - initial.ts) / 3600000;
         if (dtInitH >= 0.08) return (currentMm - initial.mm) / dtInitH;
@@ -3235,7 +3289,8 @@
     function resolveRemoteCurrentLevelTs(fieldId, series, info) {
       info = info || {};
       var inputAt = (window.__remoteDigitalPayload && window.__remoteDigitalPayload.tankLevelInputAt) || {};
-      var ts = Number(inputAt[fieldId]);
+      var raw = inputAt[fieldId];
+      var ts = Number(raw && typeof raw === "object" ? raw.ts : raw);
       if (!Number.isFinite(ts) || ts <= 0) ts = Number(info.levelInputTs);
       if (Number.isFinite(ts) && ts > 0) return ts;
       if (series && series.length) {
@@ -3245,6 +3300,17 @@
         }
       }
       return null;
+    }
+
+    function resolveRemoteCurrentLevelMm(fieldId, series, info) {
+      info = info || {};
+      var inputAt = (window.__remoteDigitalPayload && window.__remoteDigitalPayload.tankLevelInputAt) || {};
+      var raw = inputAt[fieldId];
+      var mm = Number(raw && typeof raw === "object" ? raw.mm : NaN);
+      if (Number.isFinite(mm)) return mm;
+      if (Number.isFinite(info.levelMm)) return info.levelMm;
+      if (series && series.length) return series[series.length - 1].mm;
+      return NaN;
     }
 
     function appendRemoteLiveLevel(series, fieldId, liveMm, inputAt) {
@@ -3283,22 +3349,33 @@
           series = [{ ts: bootTs, mm: info.levelMm, label: "Livello attuale", live: true }];
         }
       }
+      var manualRefPts = info.manualRefPts || (info.fieldId ? loadRemoteTimelineManualRefs(info.fieldId) : []);
+      info.manualRefPts = manualRefPts;
       var rate = computeRemoteTimelineRate(series, info);
-      var nowMm = Number.isFinite(info.levelMm) ? info.levelMm : (series.length ? series[series.length - 1].mm : 0);
+      var nowMm = resolveRemoteCurrentLevelMm(info.fieldId, series, info);
+      if (!Number.isFinite(nowMm) && series.length) nowMm = series[series.length - 1].mm;
       var actualTs = resolveRemoteCurrentLevelTs(info.fieldId, series, info);
       var nowTs = actualTs != null ? actualTs : (series.length ? series[series.length - 1].ts : Date.now());
-      var initialPt = getRemoteTimelineInitialPoint(series);
-      if (!initialPt && info && info.fieldId) {
-        var archOnly = getRemoteArchiveSeries(series);
-        if (archOnly.length) initialPt = archOnly[0];
+      var archiveSeries = getRemoteArchiveSeries(series);
+      var initialPt = archiveSeries.length ? archiveSeries[0] : null;
+      if (!initialPt) initialPt = getRemoteTimelineInitialPoint(series);
+      var manualInitial = info.fieldId ? loadRemoteTimelineManualInitial(info.fieldId) : null;
+      if (manualInitial) {
+        initialPt = { ts: manualInitial.ts, mm: manualInitial.mm, label: "Livello iniziale", manualInitial: true };
       }
       var tStart = initialPt ? initialPt.ts
         : (series.length ? series[0].ts : nowTs - 3600000);
+      var wallNowTs = Date.now();
       var predH = predictH || TANK_TIMELINE_PREDICT_H_DEFAULT;
       if (TANK_TIMELINE_PREDICT_OPTIONS.indexOf(predH) < 0) predH = TANK_TIMELINE_PREDICT_H_DEFAULT;
-      var tEnd = nowTs + predH * 3600000;
+      var tEnd = wallNowTs + predH * 3600000;
       if (tEnd <= tStart) tEnd = tStart + predH * 3600000;
-      return { series: series, rateMmH: rate, nowTs: nowTs, actualTs: actualTs, nowMm: nowMm, initialPt: initialPt, tStart: tStart, tEnd: tEnd, predictH: predH, livMax: info.livMax, tankDbKey: info.tankDbKey, fieldId: info.fieldId };
+      return {
+        series: series, rateMmH: rate, nowTs: nowTs, actualTs: actualTs, wallNowTs: wallNowTs,
+        nowMm: nowMm, initialPt: initialPt, manualRefPts: manualRefPts,
+        tStart: tStart, tEnd: tEnd, predictH: predH,
+        livMax: info.livMax, tankDbKey: info.tankDbKey, fieldId: info.fieldId
+      };
     }
 
     function predictRemoteLevelAt(model, targetTs) {
@@ -3323,7 +3400,7 @@
       var model = buildRemoteTimelineModel(series, info);
       var rateSign = model.rateMmH > 0 ? "+" : "";
       var rateCls = model.rateMmH > 0.05 ? "up" : model.rateMmH < -0.05 ? "down" : "flat";
-      var startPt = model.initialPt
+      var startPt = getRemoteTimelineStartPoint(model)
         || (model.series.length ? model.series[0] : { ts: model.nowTs, mm: model.nowMm });
       var siglaTxt = info && info.label ? String(info.label).trim() : "";
       return '<div class="tank-detail-timeline-block" data-tank-timeline="1">' +
@@ -3337,27 +3414,29 @@
         '<div class="tank-detail-timeline-metric-lbl tank-detail-timeline-metric-lbl--start">Livello iniziale</div>' +
         '<div class="tank-detail-timeline-metric-mm" data-tl-start-mm>' + fmtTankMm(startPt.mm) + " mm</div>" +
         "</div>" +
+        '<div class="tank-detail-timeline-saved-refs" data-tl-refs-metrics></div>' +
         '<div class="tank-detail-timeline-float tank-detail-timeline-float--pred" data-tl-metric-pred style="left:50%">' +
-        '<div class="tank-detail-timeline-metric-lbl tank-detail-timeline-metric-lbl--pred">Previsione</div>' +
+        '<div class="tank-detail-timeline-metric-lbl tank-detail-timeline-metric-lbl--pred">Previsione' +
+        (siglaTxt ? ' · <span class="tank-detail-timeline-sigla">' + esc(siglaTxt) + "</span>" : "") +
+        "</div>" +
         '<div class="tank-detail-timeline-metric-mm tank-detail-timeline-pred-mm" data-tl-pred-mm>' + fmtTankMm(model.nowMm) + " mm</div>" +
         "</div></div>" +
         '<div class="tank-detail-timeline-times-row">' +
         '<div class="tank-detail-timeline-time-slot tank-detail-timeline-time-slot--start" data-tl-time-start style="left:4%">' +
         '<span data-tl-start-time>' + fmtTimelineClock(startPt.ts) + "</span></div>" +
+        '<div class="tank-detail-timeline-saved-ref-times" data-tl-refs-times></div>' +
         '<div class="tank-detail-timeline-time-slot tank-detail-timeline-time-slot--pred" data-tl-time-pred style="left:50%">' +
-        '<span data-tl-pred-time>' + fmtTimelineClock(model.nowTs) + "</span></div>" +
+        '<span data-tl-pred-time>' + fmtTimelineClock(model.wallNowTs || model.nowTs) + "</span></div>" +
         "</div></div>" +
+        '<div class="tank-detail-timeline-point-tip" data-tl-point-tip style="display:none">' +
+        '<div class="tank-detail-timeline-tip-mm" data-tl-tip-mm></div>' +
+        '<div class="tank-detail-timeline-tip-time" data-tl-tip-time></div>' +
+        "</div>" +
         '<svg class="tank-detail-timeline-svg" data-tl-svg viewBox="0 0 800 68" preserveAspectRatio="none" aria-hidden="true"></svg>' +
-        '<div class="tank-detail-timeline-band tank-detail-timeline-band--bottom">' +
-        '<div class="tank-detail-timeline-float tank-detail-timeline-float--actual" data-tl-metric-actual style="left:50%">' +
-        '<div class="tank-detail-timeline-time-slot tank-detail-timeline-time-slot--actual" data-tl-time-actual>' +
-        fmtTimelineClock(model.actualTs != null ? model.actualTs : model.nowTs) + "</div>" +
-        '<div class="tank-detail-timeline-metric-lbl">Livello attuale</div>' +
-        '<div class="tank-detail-timeline-metric-mm" data-tl-actual-mm>' + fmtTankMm(model.nowMm) + " mm</div>" +
-        "</div></div>" +
         "</div>" +
         '<div class="tank-detail-timeline-legend"><span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--hist">■ Storico / adesso</span>' +
         '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--pred">■ Zona previsione</span>' +
+        '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--ref">○ Punti livello</span>' +
         '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--alarm-warn">■ Allarme giallo</span>' +
         '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--alarm-crit">■ Allarme rosso</span></div></div>';
     }
@@ -3367,8 +3446,13 @@
       var startPt = model.initialPt;
       var pts = [];
       if (startPt && Number.isFinite(startPt.ts)) {
-        pts.push({ x: toXHist(startPt.ts), y: lineY, p: startPt });
+        pts.push({ x: toXHist(startPt.ts), y: lineY, p: startPt, kind: "start" });
       }
+      (model.manualRefPts || []).forEach(function (ref) {
+        if (ref && Number.isFinite(ref.ts)) {
+          pts.push({ x: toXHist(ref.ts), y: lineY, p: ref, kind: "ref" });
+        }
+      });
       return pts;
     }
 
@@ -3378,10 +3462,23 @@
       var geom = buildTimelineSvgGeom(model, pad, plotW, plotH);
       var zoneTop = geom.zoneTop, zoneBottom = geom.zoneBottom, lineY = geom.lineY;
       var nowX = geom.nowX, endX = geom.endX, w = geom.w, toXHist = geom.toXHist;
+      var levelNowX = geom.levelNowX != null ? geom.levelNowX : nowX;
       var startPt = model.initialPt || (model.series && model.series.length ? model.series[0] : null);
       var startX = startPt && Number.isFinite(startPt.ts) ? toXHist(startPt.ts) : pad.l;
       var histPts = buildRemoteTimelineHistPts(model, toXHist, lineY, nowX);
-      var histPath = "M" + startX.toFixed(1) + "," + lineY.toFixed(1) + " L" + nowX.toFixed(1) + "," + lineY.toFixed(1);
+      var histPathXs = [startX];
+      (model.manualRefPts || []).slice().sort(function (a, b) { return a.ts - b.ts; }).forEach(function (ref) {
+        if (!ref || !Number.isFinite(ref.ts)) return;
+        var rx = toXHist(ref.ts);
+        if (rx > histPathXs[histPathXs.length - 1] + 1 && rx < nowX - 1) histPathXs.push(rx);
+      });
+      if (levelNowX > histPathXs[histPathXs.length - 1] + 1 && levelNowX < nowX - 1) {
+        histPathXs.push(levelNowX);
+      }
+      if (nowX > histPathXs[histPathXs.length - 1] + 0.5) histPathXs.push(nowX);
+      var histPath = histPathXs.map(function (x, i) {
+        return (i === 0 ? "M" : " L") + x.toFixed(1) + "," + lineY.toFixed(1);
+      }).join("");
       var predPath = "M" + nowX.toFixed(1) + "," + lineY.toFixed(1) + " L" + endX.toFixed(1) + "," + lineY.toFixed(1);
       var nowY = lineY;
       var dots = histPts.map(function (pt) {
@@ -3389,11 +3486,39 @@
           tankDbKey: model.tankDbKey,
           livMax: model.livMax
         });
-        var dotFill = timelineAlarmDotFill(dotState);
-        var dot = '<circle data-tl-start-dot pointer-events="none" cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) + '" r="5" fill="' + dotFill + '" stroke="#0f172a" stroke-width="1.2">' +
-          '<title>' + esc(String(pt.p.label || fmtTimelineClock(pt.p.ts))) + ": " + fmtTankMm(pt.p.mm) + " mm</title></circle>";
-        return dot;
+        var isRef = pt.kind === "ref" || pt.p.manualRef;
+        var dotFill = isRef ? "#f8fafc" : timelineAlarmDotFill(dotState);
+        var dotR = isRef ? 5.5 : 5;
+        var dotTag = isRef ? "data-tl-ref-dot" : "data-tl-start-dot";
+        var dotAttrs = isRef
+          ? (' data-ref-ts="' + pt.p.ts + '" data-ref-mm="' + pt.p.mm + '"')
+          : (' data-start-ts="' + pt.p.ts + '" data-start-mm="' + pt.p.mm + '"');
+        return '<circle ' + dotTag + dotAttrs + ' pointer-events="all" style="cursor:pointer;touch-action:manipulation"' +
+          ' cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) +
+          '" r="' + dotR + '" fill="' + dotFill + '" stroke="#0f172a" stroke-width="1.2"></circle>';
       }).join("");
+      var zonePredLight = '<rect data-tl-zone-light pointer-events="none" x="' + nowX.toFixed(1) + '" y="' + pad.t + '" width="' + Math.max(0, endX - nowX).toFixed(1) +
+        '" height="' + plotH + '" fill="rgba(167,139,250,0.025)" />';
+      var zonePredDark = '<rect data-tl-zone-dark pointer-events="none" x="' + nowX.toFixed(1) + '" y="' + pad.t + '" width="0" height="' + plotH +
+        '" fill="rgba(91,33,182,0.42)" />';
+      var zoneHist = '<rect pointer-events="none" x="' + pad.l + '" y="' + pad.t + '" width="' + (nowX - pad.l).toFixed(1) +
+        '" height="' + plotH + '" fill="rgba(56,189,248,0.06)" />';
+      var wallTs = model.wallNowTs || Date.now();
+      var instantMm = Number.isFinite(model.nowMm) ? model.nowMm : 0;
+      var nowLine = '<line data-tl-now-line pointer-events="none" x1="' + nowX.toFixed(1) + '" y1="' + zoneTop.toFixed(1) + '" x2="' + nowX.toFixed(1) +
+        '" y2="' + zoneBottom.toFixed(1) + '" stroke="#f8fafc" stroke-width="2.5" stroke-linecap="round"/>';
+      var levelDot = "";
+      if (Math.abs(levelNowX - nowX) > 4 && Number.isFinite(model.nowMm)) {
+        var lvlState = resolveTankLevelAlarmState(model.fieldId, model.nowMm, {
+          tankDbKey: model.tankDbKey,
+          livMax: model.livMax
+        });
+        levelDot = '<circle data-tl-level-dot pointer-events="none" cx="' + levelNowX.toFixed(1) + '" cy="' + lineY.toFixed(1) +
+          '" r="5" fill="' + timelineAlarmDotFill(lvlState) + '" stroke="#0f172a" stroke-width="1.2"></circle>';
+      }
+      var plotHit = '<rect data-tl-plot-hit x="' + pad.l.toFixed(1) + '" y="' + zoneTop.toFixed(1) +
+        '" width="' + Math.max(0, endX - pad.l).toFixed(1) + '" height="' + (zoneBottom - zoneTop).toFixed(1) +
+        '" fill="transparent" pointer-events="all" style="cursor:grab"/>';
       var scrubber = '<line class="tank-detail-timeline-scrub-line" data-tl-scrub pointer-events="none" x1="' + nowX.toFixed(1) +
         '" y1="' + zoneTop.toFixed(1) + '" x2="' + nowX.toFixed(1) + '" y2="' + nowY.toFixed(1) +
         '" stroke="#fbbf24" stroke-width="3" stroke-linecap="round"/>' +
@@ -3401,21 +3526,12 @@
         '" cy="' + nowY.toFixed(1) + '" r="8" fill="#fbbf24" stroke="#0f172a" stroke-width="1.5" pointer-events="all" style="cursor:grab"/>' +
         '<circle data-tl-drag-hit cx="' + nowX.toFixed(1) + '" cy="' + ((zoneTop + zoneBottom) / 2).toFixed(1) +
         '" r="28" fill="transparent" pointer-events="all" style="cursor:grab;touch-action:none"/>';
-      var zonePredLight = '<rect data-tl-zone-light pointer-events="none" x="' + nowX.toFixed(1) + '" y="' + pad.t + '" width="' + Math.max(0, endX - nowX).toFixed(1) +
-        '" height="' + plotH + '" fill="rgba(167,139,250,0.025)" />';
-      var zonePredDark = '<rect data-tl-zone-dark pointer-events="none" x="' + nowX.toFixed(1) + '" y="' + pad.t + '" width="0" height="' + plotH +
-        '" fill="rgba(91,33,182,0.42)" />';
-      var nowLine = '<line data-tl-now-line pointer-events="none" x1="' + nowX.toFixed(1) + '" y1="' + zoneTop.toFixed(1) + '" x2="' + nowX.toFixed(1) +
-        '" y2="' + zoneBottom.toFixed(1) + '" stroke="#f8fafc" stroke-width="2.5" stroke-linecap="round"/>';
-      var plotHit = '<rect data-tl-plot-hit x="' + pad.l.toFixed(1) + '" y="' + zoneTop.toFixed(1) +
-        '" width="' + Math.max(0, endX - pad.l).toFixed(1) + '" height="' + (zoneBottom - zoneTop).toFixed(1) +
-        '" fill="transparent" pointer-events="all" style="cursor:grab"/>';
-      svgEl.innerHTML = '<rect pointer-events="none" x="' + pad.l + '" y="' + pad.t + '" width="' + (nowX - pad.l).toFixed(1) + '" height="' + plotH + '" fill="rgba(56,189,248,0.06)"/>' +
-        zonePredDark + zonePredLight +
+      svgEl.innerHTML = zoneHist + zonePredDark + zonePredLight +
         '<line pointer-events="none" x1="' + pad.l + '" y1="' + (pad.t + plotH).toFixed(1) + '" x2="' + endX.toFixed(1) +
         '" y2="' + (pad.t + plotH).toFixed(1) + '" stroke="rgba(148,163,184,0.35)" stroke-width="1"/>' +
         (histPath ? '<path pointer-events="none" d="' + histPath + '" fill="none" stroke="#38bdf8" stroke-width="2.5" stroke-linejoin="round"/>' : "") +
-        '<path data-tl-pred-path pointer-events="none" d="' + predPath + '" fill="none" stroke="#a78bfa" stroke-width="2.5" stroke-dasharray="8 5" stroke-linejoin="round"/>' + dots + nowLine + plotHit + scrubber;
+        '<path data-tl-pred-path pointer-events="none" d="' + predPath + '" fill="none" stroke="#a78bfa" stroke-width="2.5" stroke-dasharray="8 5" stroke-linejoin="round"/>' +
+        dots + levelDot + nowLine + plotHit + scrubber;
       svgEl.setAttribute("viewBox", "0 0 " + w + " " + h);
       svgEl.__tlModel = model;
       svgEl.__tlGeom = geom;
@@ -3432,7 +3548,7 @@
       var predW = endX - nowX;
       if (predW <= 0) return 0;
       var frac = (svgX - nowX) / predW;
-      var predSpan = model.tEnd - model.nowTs;
+      var predSpan = model.tEnd - (model.wallNowTs != null ? model.wallNowTs : model.nowTs);
       if (predSpan <= 0) return 0;
       return (frac * predSpan) / 3600000;
     }
@@ -3461,10 +3577,10 @@
     function positionRemoteTimelineMetrics(block, geom, model, scrubX, targetTs, predMm) {
       if (!block || !geom || !model) return;
       var nowX = geom.nowX;
-      var initialPt = model.initialPt;
-      var startPt = initialPt || (model.series.length ? model.series[0] : { ts: model.nowTs, mm: model.nowMm });
+      var startPt = getRemoteTimelineStartPoint(model)
+        || (model.series.length ? model.series[0] : { ts: model.nowTs, mm: model.nowMm });
       var startX = geom.toXHist ? geom.toXHist(startPt.ts) : geom.toX(startPt.ts);
-      var showStart = !!initialPt;
+      var showStart = !!(startPt && Number.isFinite(startPt.ts) && Number.isFinite(startPt.mm));
       function setLeft(sel, svgX) {
         var el = block.querySelector(sel);
         if (el) el.style.left = timelineFloatLeftPct(geom, svgX).toFixed(2) + "%";
@@ -3482,27 +3598,20 @@
         setStartLeft("[data-tl-metric-start]", startLabelX);
         setStartLeft("[data-tl-time-start]", startLabelX);
       }
-      setLeft("[data-tl-metric-actual]", nowX);
       setLeft("[data-tl-metric-pred]", scrubX);
       setLeft("[data-tl-time-pred]", scrubX);
       var startMmEl = block.querySelector("[data-tl-start-mm]");
       var startTimeEl = block.querySelector("[data-tl-start-time]");
-      var actualMmEl = block.querySelector("[data-tl-actual-mm]");
-      var actualTimeEl = block.querySelector("[data-tl-actual-time]");
       var predMmEl = block.querySelector("[data-tl-pred-mm]");
       var predTimeEl = block.querySelector("[data-tl-pred-time]");
       if (startMmEl) startMmEl.textContent = fmtTankMm(startPt.mm) + " mm";
       if (startTimeEl) startTimeEl.textContent = fmtTimelineClock(startPt.ts);
-      if (actualMmEl) actualMmEl.textContent = fmtTankMm(model.nowMm) + " mm";
-      if (actualTimeEl) actualTimeEl.textContent = fmtTimelineClock(model.actualTs != null ? model.actualTs : model.nowTs);
       if (predMmEl) predMmEl.textContent = fmtTankMm(predMm) + " mm";
       if (predTimeEl) predTimeEl.textContent = fmtTimelineClock(targetTs);
       var fieldId = block.__tlInfo && block.__tlInfo.fieldId;
       var alarmOpts = { tankDbKey: model.tankDbKey, livMax: model.livMax };
       applyTankTimelineAlarmMetricClass(startMmEl, showStart
         ? resolveTankLevelAlarmState(fieldId, startPt.mm, alarmOpts) : "normal");
-      applyTankTimelineAlarmMetricClass(actualMmEl,
-        resolveTankLevelAlarmState(fieldId, model.nowMm, alarmOpts));
       applyTankTimelineAlarmMetricClass(predMmEl,
         resolveTankLevelAlarmState(fieldId, predMm, alarmOpts));
     }
@@ -3516,7 +3625,8 @@
         model.predictH || block.__tlPredictH || TANK_TIMELINE_PREDICT_H_DEFAULT,
         Number(hoursAhead) || 0
       ));
-      var targetTs = model.nowTs + hoursAhead * 3600000;
+      var anchorTs = model.wallNowTs != null ? model.wallNowTs : model.nowTs;
+      var targetTs = anchorTs + hoursAhead * 3600000;
       var predMm = predictRemoteLevelAt(model, targetTs);
       var x = geom.toX(targetTs);
       if (geom.endX != null && x > geom.endX) x = geom.endX;
@@ -3613,6 +3723,7 @@
       if (!svg || !wrap) return;
       block.__tlSeries = series;
       block.__tlInfo = info;
+      if (info && info.fieldId) info.manualRefPts = loadRemoteTimelineManualRefs(info.fieldId);
       if (!block.__tlPredictH) block.__tlPredictH = TANK_TIMELINE_PREDICT_H_DEFAULT;
 
       function applyPredictH(h) {
@@ -3752,6 +3863,7 @@
         series = appendRemoteLiveLevel(series, fieldId, info.levelMm, payload.tankLevelInputAt || {});
         info.levelInputTs = resolveRemoteCurrentLevelTs(fieldId, series, info);
       }
+      info.manualRefPts = loadRemoteTimelineManualRefs(fieldId);
       var overlay = ensureRemoteTankDetailOverlay();
       var content = overlay.querySelector("#tank-detail-content");
       content.innerHTML = buildRemoteTankDetailPageHTML(info, series);

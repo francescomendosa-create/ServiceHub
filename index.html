@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v398';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v400';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -3274,6 +3274,9 @@ window.colorPreviewNumber = function(tankName, value) {
             if (typeof window.__persistOsmosiToDedicatedStorage === 'function') {
                 window.__persistOsmosiToDedicatedStorage();
             }
+            if (typeof window.hydrateConducibilitaInputsFromDom === 'function') {
+                window.hydrateConducibilitaInputsFromDom();
+            }
         };
 
         window.flushPlantBackupNow = function () {
@@ -3349,16 +3352,21 @@ window.colorPreviewNumber = function(tankName, value) {
                 }
             });
             (window.DCS_ACQUA_SHARED_FIELD_IDS || ['inp-tk9000', 'inp-tk9201']).forEach(function (fid) {
-                var acquaInp = document.querySelector('#conducibilita-panel input.cond-tendina-inp[id="' + fid + '"]')
-                    || document.querySelector('#sec-conducibilita-vertical input.cond-vert-inp[id="' + fid + '"]')
-                    || document.querySelector('#sec-acqua input[id="' + fid + '"]');
+                var acquaInp = document.querySelector('#sec-acqua input[id="' + fid + '"]');
+                var stoccInp = document.querySelector('#stoccaggio-panel-notturno input.nott-stocc-inp[id="' + fid + '"]');
                 if (acquaInp) data[fid] = acquaInp.value;
+                else if (stoccInp) data[fid] = stoccInp.value;
             });
             (window.CONDUCTIVITY_SHARED_FIELD_IDS || []).forEach(function (fid) {
+                var key = typeof window.getConductivityPlantStorageKey === 'function'
+                    ? window.getConductivityPlantStorageKey(fid)
+                    : fid;
                 var val = typeof window.readConducibilitaFieldValue === 'function'
                     ? window.readConducibilitaFieldValue(fid)
                     : '';
-                if (val) data[fid] = val;
+                if (val != null && String(val).trim() !== '') {
+                    data[key] = String(val).trim();
+                }
             });
             if (window.__chemCountsLive) {
                 data.chemPass = Math.max(0, window.__chemCountsLive.pass | 0);
@@ -4577,6 +4585,9 @@ window.colorPreviewNumber = function(tankName, value) {
                 return;
             }
             if (!window.__cloudPlantHydrated) {
+                if (!(window.isEditingArchive && window.editingArchiveId)) {
+                    if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
+                }
                 return;
             }
             
@@ -10829,6 +10840,21 @@ window.updateStoricoButton = async function() {
                     }
                     continue;
                 }
+                if (window.isConductivityPlantStorageKey && window.isConductivityPlantStorageKey(id)) {
+                    const condFieldId = window.resolveConductivityFieldIdFromStorageKey(id);
+                    const condVal = val != null && val !== undefined ? String(val).trim() : '';
+                    if (!condVal) continue;
+                    const condInputs = window.queryConducibilitaDomInputs
+                        ? window.queryConducibilitaDomInputs(condFieldId)
+                        : [];
+                    condInputs.forEach(function (el) {
+                        if (forcePlant && window.__shouldSkipInputForPlantPayload && window.__shouldSkipInputForPlantPayload(el)) return;
+                        if (forcePlant && !window.__shouldApplyRemoteValueToInput(el)) return;
+                        if (!forcePlant && document.activeElement === el) return;
+                        el.value = condVal;
+                    });
+                    continue;
+                }
                 let strVal = val != null && val !== undefined ? String(val) : '';
                 if ((id === 'inp-osmosi' || id === 'osmosi') && typeof window.__normalizeOsmosiInterfaceDisplay === 'function') {
                     strVal = window.__normalizeOsmosiInterfaceDisplay(strVal);
@@ -10891,6 +10917,9 @@ window.updateStoricoButton = async function() {
             }
             if (typeof window.__persistOsmosiToDedicatedStorage === 'function') {
                 window.__persistOsmosiToDedicatedStorage();
+            }
+            if (typeof window.hydrateConducibilitaInputsFromDom === 'function') {
+                window.hydrateConducibilitaInputsFromDom();
             }
 
             if (typeof window.repairBluedownUi === 'function') {
@@ -11084,6 +11113,52 @@ window.updateStoricoButton = async function() {
         /** Sigle presenti sia come livello (mm) in stoccaggio/acqua sia come conducibilità (µS/cm): non sincronizzare tra contesti. */
         window.CONDUCTIVITY_LEVEL_OVERLAP_FIELD_IDS = ['inp-tk9000', 'inp-tk9201', 'inp-tk9204'];
 
+        window.getConductivityPlantStorageKey = function (fieldId) {
+            var overlap = window.CONDUCTIVITY_LEVEL_OVERLAP_FIELD_IDS || [];
+            if (overlap.indexOf(fieldId) >= 0) return fieldId + '__cond';
+            return fieldId;
+        };
+
+        window.isConductivityPlantStorageKey = function (key) {
+            return typeof key === 'string' && key.length > 6 && key.slice(-6) === '__cond';
+        };
+
+        window.resolveConductivityFieldIdFromStorageKey = function (key) {
+            if (!window.isConductivityPlantStorageKey(key)) return key;
+            return key.slice(0, -6);
+        };
+
+        window.readStoredConductivityPlantValue = function (fieldId) {
+            if (!fieldId) return '';
+            var key = window.getConductivityPlantStorageKey(fieldId);
+            var sources = [];
+            if (window.__cloudPlantCache && window.__cloudPlantCache[key] != null) {
+                sources.push(window.__cloudPlantCache[key]);
+            }
+            if (typeof window.__readPlantBackupLocal === 'function') {
+                var backup = window.__readPlantBackupLocal();
+                if (backup && backup[key] != null) sources.push(backup[key]);
+            }
+            for (var i = 0; i < sources.length; i++) {
+                var v = String(sources[i] == null ? '' : sources[i]).trim();
+                if (v) return v;
+            }
+            var overlap = window.CONDUCTIVITY_LEVEL_OVERLAP_FIELD_IDS || [];
+            if (overlap.indexOf(fieldId) < 0) return '';
+            if (window.__cloudPlantCache && window.__cloudPlantCache[fieldId] != null) {
+                var legacy = String(window.__cloudPlantCache[fieldId]).trim();
+                if (legacy) return legacy;
+            }
+            if (typeof window.__readPlantBackupLocal === 'function') {
+                var b2 = window.__readPlantBackupLocal();
+                if (b2 && b2[fieldId] != null) {
+                    var legacyB = String(b2[fieldId]).trim();
+                    if (legacyB) return legacyB;
+                }
+            }
+            return '';
+        };
+
         window.rebuildStoccaggioFieldIdsSet = function() {
             window.__STOCCAGGIO_FIELD_IDS = new Set(
                 (window.STOCCAGGIO_INTERNO_TANKS || []).map(function (t) { return t.fieldId; })
@@ -11130,7 +11205,9 @@ window.updateStoricoButton = async function() {
                     return String(inputs[i].value).trim();
                 }
             }
-            return '';
+            return typeof window.readStoredConductivityPlantValue === 'function'
+                ? window.readStoredConductivityPlantValue(fieldId)
+                : '';
         };
         window.CONTATORI_FIELDS_META = [
             { id: 'cnt-tk9000', label: 'TK 9000' }
@@ -11412,6 +11489,7 @@ window.updateStoricoButton = async function() {
 
         window.isRapportinoOnlyDataKey = function (key) {
             if (!key || typeof key !== 'string') return false;
+            if (window.isConductivityPlantStorageKey && window.isConductivityPlantStorageKey(key)) return false;
             if (key.indexOf('_nott') === 0) return true;
             if (window.isNotturnoStoccaggioFieldKey && window.isNotturnoStoccaggioFieldKey(key)) return true;
             var acquaPlant = window.DCS_ACQUA_SHARED_FIELD_IDS || ['inp-tk9000', 'inp-tk9201'];
@@ -11522,7 +11600,13 @@ window.updateStoricoButton = async function() {
             if (!input || !input.id) return true;
             if (input.id === 'ai-chat-input' || input.id === 'conv-chat-input') return true;
             var condShared = window.CONDUCTIVITY_SHARED_FIELD_IDS || [];
+            var overlap = window.CONDUCTIVITY_LEVEL_OVERLAP_FIELD_IDS || [];
             if (condShared.indexOf(input.id) >= 0) {
+                if (overlap.indexOf(input.id) >= 0) {
+                    if (input.closest && (input.closest('#conducibilita-panel') || input.closest('#sec-conducibilita-vertical'))) {
+                        return true;
+                    }
+                }
                 if (window.isStoccaggioInternoLevelInput && window.isStoccaggioInternoLevelInput(input)) return true;
                 if (input.closest && (input.closest('#conducibilita-panel') || input.closest('#sec-conducibilita-vertical'))) return false;
                 if (window.isActiveRapportinoConducibilitaModuleActive && window.isActiveRapportinoConducibilitaModuleActive()) return true;
@@ -12967,22 +13051,34 @@ window.updateStoricoButton = async function() {
 
         /** Larghezza colonna sigla nel Report Preview (riferimento: MK 10500/A). */
         window.REPORT_PREVIEW_SIGLA_REF = 'MK 10500/A';
+        window.REPORT_PREVIEW_SIGLA_MIN_CH = 14;
         window.REPORT_PREVIEW_SIGLA_GAP_CH = 3;
 
+        window.stripReportPreviewLabelText = function (label) {
+            return String(label == null ? '' : label)
+                .replace(/<br\s*\/?>/gi, ' ')
+                .replace(/<[^>]+>/g, '')
+                .replace(/\s+/g, ' ')
+                .trim();
+        };
+
         window.getReportPreviewSiglaWidthCh = function (label) {
-            var maxLen = String(window.REPORT_PREVIEW_SIGLA_REF || 'MK 10500/A').length;
+            var maxLen = Math.max(
+                String(window.REPORT_PREVIEW_SIGLA_REF || 'MK 10500/A').length,
+                Number(window.REPORT_PREVIEW_SIGLA_MIN_CH) || 14
+            );
             if (label) {
-                var len = String(label).length;
-                if (len > maxLen) maxLen = len;
+                var stripped = window.stripReportPreviewLabelText(label);
+                if (stripped.length > maxLen) maxLen = stripped.length;
             }
             return maxLen;
         };
 
         window.getReportPreviewSiglaWidthChFromRows = function (rows) {
-            var maxLen = String(window.REPORT_PREVIEW_SIGLA_REF || 'MK 10500/A').length;
+            var maxLen = window.getReportPreviewSiglaWidthCh();
             (rows || []).forEach(function (r) {
-                var len = String(r && r.label || '').length;
-                if (len > maxLen) maxLen = len;
+                var stripped = window.stripReportPreviewLabelText(r && r.label);
+                if (stripped.length > maxLen) maxLen = stripped.length;
             });
             return maxLen;
         };
@@ -12997,13 +13093,16 @@ window.updateStoricoButton = async function() {
             var valColor = opts.valColor || '#000';
             var gapCh = Number.isFinite(opts.gapCh) ? opts.gapCh : window.REPORT_PREVIEW_SIGLA_GAP_CH;
             var siglaCh = opts.siglaCh || window.getReportPreviewSiglaWidthCh(label);
+            var safeLabel = window.escRapportinoHtml
+                ? window.escRapportinoHtml(window.stripReportPreviewLabelText(label))
+                : window.stripReportPreviewLabelText(label);
             var rowStyle = 'display:flex; align-items:baseline; justify-content:flex-start; gap:0; border-bottom:0.1px solid #eee; padding:3px 0;';
             if (opts.borderTop) rowStyle += ' border-top:0.6px solid #000; padding:4px 0;';
             var valTransform = opts.noValUppercase ? 'none' : 'uppercase';
             return (
                 '<div class="report-preview-row" style="' + rowStyle + '">' +
                 '<span class="report-preview-sigla" style="display:inline-block; width:' + siglaCh + 'ch; min-width:' + siglaCh + 'ch; max-width:' + siglaCh + 'ch; flex:0 0 auto; font-size:' + labelFs + 'px; font-weight:600; text-transform:uppercase; text-align:left; white-space:nowrap; overflow:visible;">' +
-                label +
+                safeLabel +
                 '</span>' +
                 '<span class="report-preview-gap" style="display:inline-block; width:' + gapCh + 'ch; min-width:' + gapCh + 'ch; flex-shrink:0;" aria-hidden="true"></span>' +
                 '<span class="report-preview-val" style="flex:0 0 auto; font-size:' + valFs + 'px; font-weight:600; text-transform:' + valTransform + '; text-align:left; color:' + valColor + '; font-variant-numeric:tabular-nums; white-space:nowrap; line-height:1.2;">' +
@@ -16707,6 +16806,20 @@ window.updateStoricoButton = async function() {
         };
 
         /** Etichetta Zona Nord / Ambiente 2 per report e Digital HD. */
+        window.formatAmbiente2ReportPreviewLabel = function (label, fieldId) {
+            if (fieldId && typeof window.formatTrendDisplayLabel === 'function') {
+                var fromId = window.formatTrendDisplayLabel(fieldId, false);
+                if (fromId) return fromId;
+            }
+            if (fieldId && typeof window.deriveLabelFromInputId === 'function') {
+                var derived = window.deriveLabelFromInputId(fieldId);
+                if (derived) return derived;
+            }
+            return window.stripReportPreviewLabelText
+                ? window.stripReportPreviewLabelText(label)
+                : String(label || '').replace(/\s+/g, ' ').trim();
+        };
+
         window.formatAmbiente2ReportLabel = function (label, fieldId) {
             let out = String(label || '').replace(/\s+/g, ' ').trim();
             if (!out && fieldId && window.deriveLabelFromInputId) {
@@ -16749,7 +16862,9 @@ window.updateStoricoButton = async function() {
          * Risolve la sigla riga per Report Preview e Digital HD.
          * @param {HTMLInputElement} inp
          * @param {string} moduleId
-         * @param {{ shortBdMeasures?: boolean }} opts shortBdMeasures=true solo per report breve Blowdown
+         * @param {{ shortBdMeasures?: boolean, forReportPreview?: boolean }} opts
+         *   shortBdMeasures=true solo per report breve Blowdown;
+         *   forReportPreview=true usa sigle su una riga (allineamento anteprima report)
          */
         window.resolveReportRowLabel = function (inp, moduleId, opts) {
             opts = opts || {};
@@ -16792,7 +16907,6 @@ window.updateStoricoButton = async function() {
                             label = (labelDiv.innerText || '').replace(/\s+/g, ' ').trim();
                         }
                     }
-                    label = window.formatAmbiente2ReportLabel(label, id);
                 } else {
                     const td = inp.closest('td');
                     if (td && row.tagName === 'TR') {
@@ -16825,7 +16939,9 @@ window.updateStoricoButton = async function() {
                 label = window.deriveLabelFromInputId(id) || '';
             }
             if (moduleId === 'sec-ambiente2' && label) {
-                label = window.formatAmbiente2ReportLabel(label, id);
+                label = opts.forReportPreview
+                    ? window.formatAmbiente2ReportPreviewLabel(label, id)
+                    : window.formatAmbiente2ReportLabel(label, id);
             }
             return label || 'VALORE';
         };
@@ -19725,6 +19841,9 @@ window.updateStoricoButton = async function() {
                 if (typeof window.applyRigenerazioneFieldValues === 'function') {
                     window.applyRigenerazioneFieldValues(item.data || {});
                 }
+                if (typeof window.hydrateConducibilitaInputsFromDom === 'function') {
+                    window.hydrateConducibilitaInputsFromDom();
+                }
                 if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
                 if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
                 if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
@@ -20953,8 +21072,14 @@ window.updateStoricoButton = async function() {
 
         window.renderConducibilitaPanel = function() {
             const panel = document.getElementById('conducibilita-panel');
-            const renderVer = 'v3-lbl-only';
+            const renderVer = 'v4-cond-persist';
             if (!panel || panel.dataset.rendered === renderVer) return;
+            const preserved = {};
+            (window.CONDUCTIVITY_SHARED_FIELD_IDS || []).forEach(function (fid) {
+                preserved[fid] = typeof window.readConducibilitaFieldValue === 'function'
+                    ? window.readConducibilitaFieldValue(fid)
+                    : '';
+            });
             const fields = window.CONDUCTIVITY_FIELDS_META || [];
             const defaultUnit = window.CONDUCTIVITY_UNIT || 'µS/cm';
             let html = '<div class="cond-tendina-grid">';
@@ -20968,16 +21093,26 @@ window.updateStoricoButton = async function() {
             html += '</div>';
             panel.innerHTML = html;
             panel.dataset.rendered = renderVer;
+            Object.keys(preserved).forEach(function (fid) {
+                const val = preserved[fid];
+                if (!val) return;
+                window.queryConducibilitaDomInputs(fid).forEach(function (el) {
+                    if (el.value !== val) el.value = val;
+                });
+            });
             window.hydrateConducibilitaInputsFromDom();
         };
 
         window.hydrateConducibilitaInputsFromDom = function() {
             (window.CONDUCTIVITY_SHARED_FIELD_IDS || []).forEach(function(fid) {
-                const allInputs = window.queryConducibilitaDomInputs(fid);
-                let val = '';
-                allInputs.forEach(function(s) { if (s.value) val = s.value; });
+                let val = typeof window.readConducibilitaFieldValue === 'function'
+                    ? window.readConducibilitaFieldValue(fid)
+                    : '';
+                if (!val && typeof window.readStoredConductivityPlantValue === 'function') {
+                    val = window.readStoredConductivityPlantValue(fid);
+                }
                 if (!val) return;
-                allInputs.forEach(function(el) {
+                window.queryConducibilitaDomInputs(fid).forEach(function(el) {
                     if (el.value !== val) el.value = val;
                 });
             });
@@ -22559,9 +22694,9 @@ window.updateStoricoButton = async function() {
             const data = window.getConducibilitaReportData();
             if (!data.rows.length) return '';
             const fs = parseInt(previewFont, 10) || 9;
-            const siglaCh = window.getReportPreviewSiglaWidthChFromRows
-                ? window.getReportPreviewSiglaWidthChFromRows(data.rows, 'SG 9400 A')
-                : window.getReportPreviewSiglaWidthCh('SG 9400 A');
+            const siglaCh = window.getReportPreviewSiglaWidthCh
+                ? window.getReportPreviewSiglaWidthCh()
+                : 14;
             let rowsHtml = '';
             data.rows.forEach(function(r) {
                 const valHtml = window.buildConducibilitaReportValueHtml(r.num, r.unit, fs);
@@ -25655,6 +25790,10 @@ if (hiddenModules.length === 0) {
         return printableSet.has(id);
     });
 
+    const globalReportPreviewSiglaCh = window.getReportPreviewSiglaWidthCh
+        ? window.getReportPreviewSiglaWidthCh()
+        : 14;
+
     orderedModules.forEach(id => {
         if (isNotesMode && (id === 'TREND_SERBATOI' || id === 'TREND_ANALISI')) return;
         // GESTIONE_SERBATOI_SPECIAL è un modulo virtuale, non ha un elemento DOM
@@ -26175,7 +26314,7 @@ if (hiddenModules.length === 0) {
                         return;
                     }
                     const label = window.resolveReportRowLabel
-                        ? window.resolveReportRowLabel(inp, id, { shortBdMeasures: true })
+                        ? window.resolveReportRowLabel(inp, id, { shortBdMeasures: true, forReportPreview: true })
                         : 'VALORE';
                     let val = inp.value;
                     if (inp.id === 'inp-osmosi' && inp.getAttribute('data-report-value')) {
@@ -26200,10 +26339,7 @@ if (hiddenModules.length === 0) {
                         
                         // AGGIUNGI I TITOLI "SERBATOI" E "LIVELLI" SOLO PER I SERBATOI REALI IN AMBIENTE 1
                         let titoliMostrati = false;
-                        const moduleSiglaCh = window.getReportPreviewSiglaWidthChFromRows
-                            ? window.getReportPreviewSiglaWidthChFromRows(rows)
-                            : window.getReportPreviewSiglaWidthCh('');
-                        rows.forEach(r => { let color = r.isStatus ? (r.active ? '#059669' : '#dc2626') : '#000'; 
+                        rows.forEach(r => { let color = r.isStatus ? (r.active ? '#059669' : '#dc2626') : '#000';
                             
                             // CONTROLLA SE È UN SERBATOIO REALE// IDENTIFICA I SERBATOI REALI PER APPLICARE COLORI
                             const isSerbatoioReale = r.label && (
@@ -26302,7 +26438,7 @@ if (hiddenModules.length === 0) {
                                     previewFont: previewFont,
                                     valColor: color,
                                     isStatus: !!r.isStatus,
-                                    siglaCh: moduleSiglaCh,
+                                    siglaCh: globalReportPreviewSiglaCh,
                                     gapCh: window.REPORT_PREVIEW_SIGLA_GAP_CH
                                 };
                                 if (r.label === 'SG 9400D' || r.label === 'POZZO 2') rowOpts.borderTop = true;

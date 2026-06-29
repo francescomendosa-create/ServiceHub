@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v408';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v409';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -12215,15 +12215,10 @@ window.updateStoricoButton = async function() {
             var contentW = root.scrollWidth || root.offsetWidth;
             var contentH = root.scrollHeight || root.offsetHeight;
             if (window.__letturaDocKind === 'notturno-giornaliero') {
-                var scaleW = contentW > availW ? availW / contentW : 1;
-                var scaleH = contentH > availH ? availH / contentH : 1;
-                var scale = Math.max(0.28, Math.min(scaleW, scaleH, 1));
-                if (scale < 1 || contentW > availW || contentH > availH) {
-                    root.style.transform = 'scale(' + scale + ')';
-                    root.style.transformOrigin = 'top left';
-                    host.style.height = Math.ceil(contentH * scale) + 'px';
-                    host.style.width = Math.ceil(contentW * scale) + 'px';
-                }
+                root.style.transform = '';
+                root.style.transformOrigin = '';
+                host.style.height = '';
+                host.style.width = '';
                 return;
             }
             if (contentW > availW) {
@@ -13519,20 +13514,77 @@ window.updateStoricoButton = async function() {
             return s ? esc(s) : '&nbsp;';
         };
 
-        window.buildRapportinoNotturnoBlockHtml = function (block, esc, forWord) {
+        window.escRapportinoAttr = function (s) {
+            return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+        };
+
+        window.saveRapportinoNotturnoPreviewCell = function (key, fieldId, value) {
+            var dateKey = window.getLetturaDocDateKey();
+            var store = window.loadRapportinoNotturnoGiornalieroSnapshot();
+            if (!store[dateKey]) store[dateKey] = {};
+            var v = String(value == null ? '' : value).trim();
+            if (key) store[dateKey][key] = v;
+            if (fieldId) store[dateKey][fieldId] = v;
+            store[dateKey]._savedAt = Date.now();
+            window.saveRapportinoNotturnoGiornalieroSnapshot(store);
+            if (fieldId) {
+                var el = document.getElementById(fieldId);
+                if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && !el.readOnly) {
+                    el.value = v;
+                    try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
+                }
+                if (typeof window.saveData === 'function') window.saveData(true);
+            }
+        };
+
+        window.bindRapportinoNotturnoPreviewInputs = function () {
+            var root = document.getElementById('letture-doc-body');
+            if (!root) return;
+            var commit = function (inp) {
+                window.saveRapportinoNotturnoPreviewCell(
+                    inp.getAttribute('data-rg-key') || '',
+                    inp.getAttribute('data-rg-field') || '',
+                    inp.value
+                );
+            };
+            root.querySelectorAll('.rg-inp, .rg-notes-ta').forEach(function (inp) {
+                if (inp.__rgBound) return;
+                inp.__rgBound = true;
+                inp.addEventListener('change', function () { commit(inp); });
+                inp.addEventListener('blur', function () { commit(inp); });
+            });
+        };
+
+        window.buildRapportinoNotturnoValueHtml = function (row, val, esc, interactive, fieldIdOverride) {
+            if (!interactive) return window.formatRapportinoNotturnoCell(val, esc);
+            var storageKey = (row && row.key) ? row.key : '';
+            var fieldId = fieldIdOverride != null ? fieldIdOverride : ((row && row.fieldId) ? row.fieldId : '');
+            return '<input type="text" inputmode="decimal" class="rg-inp" autocomplete="off" spellcheck="false" ' +
+                'data-rg-key="' + window.escRapportinoAttr(storageKey) + '" ' +
+                'data-rg-field="' + window.escRapportinoAttr(fieldId) + '" ' +
+                'value="' + window.escRapportinoAttr(String(val == null ? '' : val).trim()) + '">';
+        };
+
+        window.buildRapportinoNotturnoBlockHtml = function (block, esc, forWord, interactive) {
             if (block.type === 'notes') {
                 var noteVal = window.readRapportinoNotturnoCellValue({ key: block.key, fieldId: block.fieldId });
-                var minH = forWord ? 68 : ((block.minRows || 8) * 9);
+                var minH = forWord ? 68 : (interactive ? 120 : ((block.minRows || 8) * 9));
+                var noteInner = interactive
+                    ? ('<textarea class="rg-notes-ta" rows="8" data-rg-key="' + window.escRapportinoAttr(block.key || 'note-streams') + '" ' +
+                        'data-rg-field="' + window.escRapportinoAttr(block.fieldId || 'rg-notte-note-streams') + '">' +
+                        esc(String(noteVal || '')) + '</textarea>')
+                    : window.formatRapportinoNotturnoCell(noteVal, esc);
                 return '<table class="rg-block rg-block--notes" cellspacing="0" cellpadding="0"' + (forWord ? ' width="100%"' : '') + '><tr>' +
                     '<td class="rg-th rg-th-full"' + (forWord ? ' bgcolor="#DCDCDC"' : '') + ' colspan="2">' + esc(block.title) + '</td></tr>' +
                     '<tr><td class="rg-notes" colspan="2" style="min-height:' + minH + 'pt;height:' + minH + 'pt;">' +
-                    window.formatRapportinoNotturnoCell(noteVal, esc) + '</td></tr></table>';
+                    noteInner + '</td></tr></table>';
             }
             if (block.type === 'sg9400') {
                 var gHtml = (block.groups || []).map(function (g) {
                     var rows = (g.rows || []).map(function (r) {
+                        var cellVal = window.readRapportinoNotturnoCellValue(r);
                         return '<tr><td class="rg-lbl">' + esc(r.label) + '</td><td class="rg-val">' +
-                            window.formatRapportinoNotturnoCell(window.readRapportinoNotturnoCellValue(r), esc) + '</td></tr>';
+                            window.buildRapportinoNotturnoValueHtml(r, cellVal, esc, interactive) + '</td></tr>';
                     }).join('');
                     return '<table class="rg-block rg-block--sg" cellspacing="0" cellpadding="0"' + (forWord ? ' width="100%"' : '') + '><tr><td class="rg-th rg-th-full"' + (forWord ? ' bgcolor="#DCDCDC"' : '') + ' colspan="2">' +
                         esc(g.title) + '</td></tr>' + rows + '</table>';
@@ -13551,19 +13603,26 @@ window.updateStoricoButton = async function() {
                 html += '<tr>';
                 html += '<td class="rg-lbl">' + esc(row.label) + '</td>';
                 if (block.multi) {
-                    html += '<td class="rg-val">' + window.formatRapportinoNotturnoCell(
-                        row.fieldIds && row.fieldIds[0] ? window.readLetturaFieldValue(row.fieldIds[0]) : '', esc) + '</td>';
+                    var oreVal = row.fieldIds && row.fieldIds[0] ? window.readLetturaFieldValue(row.fieldIds[0]) : '';
+                    html += '<td class="rg-val">' + window.buildRapportinoNotturnoValueHtml(
+                        { key: row.key + '-ore', fieldId: row.fieldIds && row.fieldIds[0] }, oreVal, esc, interactive,
+                        row.fieldIds && row.fieldIds[0]) + '</td>';
                     for (var mi = 1; mi < 4; mi++) {
                         var fid = row.fieldIds && row.fieldIds[mi];
-                        html += '<td class="rg-val">' + window.formatRapportinoNotturnoCell(fid ? window.readLetturaFieldValue(fid) : '', esc) + '</td>';
+                        var fval = fid ? window.readLetturaFieldValue(fid) : '';
+                        html += '<td class="rg-val">' + window.buildRapportinoNotturnoValueHtml(
+                            { key: row.key + '-c' + mi, fieldId: fid }, fval, esc, interactive, fid) + '</td>';
                     }
                 } else if (block.quad) {
                     html += '<td class="rg-um">' + esc(row.um || '') + '</td>';
-                    html += '<td class="rg-val">' + window.formatRapportinoNotturnoCell(window.readRapportinoNotturnoCellValue(row), esc) + '</td>';
-                    html += '<td class="rg-val rg-val-alt">&nbsp;</td>';
+                    html += '<td class="rg-val">' + window.buildRapportinoNotturnoValueHtml(
+                        row, window.readRapportinoNotturnoCellValue(row), esc, interactive) + '</td>';
+                    html += '<td class="rg-val rg-val-alt">' + (interactive ? '&nbsp;' :
+                        window.formatRapportinoNotturnoCell('', esc)) + '</td>';
                 } else {
                     html += '<td class="rg-um">' + esc(row.um || '') + '</td>';
-                    html += '<td class="rg-val">' + window.formatRapportinoNotturnoCell(window.readRapportinoNotturnoCellValue(row), esc) + '</td>';
+                    html += '<td class="rg-val">' + window.buildRapportinoNotturnoValueHtml(
+                        row, window.readRapportinoNotturnoCellValue(row), esc, interactive) + '</td>';
                 }
                 html += '</tr>';
             });
@@ -13577,16 +13636,17 @@ window.updateStoricoButton = async function() {
         window.buildLetturaNotturnoGiornalieroHtml = function (opts) {
             opts = opts || {};
             var forWord = !!opts.forWord || !!opts.forShare;
+            var interactive = !forWord && opts.interactive !== false;
             var esc = window.escRapportinoHtml || function (s) {
                 return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             };
             var cols = (window.LETTURE_NOTTURNO_GIORNALIERO_COLUMNS || []).map(function (col) {
                 return (col || []).map(function (b) {
-                    return window.buildRapportinoNotturnoBlockHtml(b, esc, forWord);
+                    return window.buildRapportinoNotturnoBlockHtml(b, esc, forWord, interactive);
                 }).join('');
             });
             var layoutHtml;
-            if (forWord) {
+            if (forWord || interactive) {
                 layoutHtml = '<table class="rg-a3-layout" cellspacing="0" cellpadding="0" width="100%"><tr valign="top">' +
                     cols.map(function (blocks, i) {
                         return '<td class="rg-a3-td" width="33%" valign="top"' +
@@ -13598,7 +13658,8 @@ window.updateStoricoButton = async function() {
                     cols.map(function (blocks) { return '<div class="rg-a3-col">' + blocks + '</div>'; }).join('') +
                     '</div>';
             }
-            return '<div class="lettura-doc lettura-doc--rapportino-notturno' + (forWord ? ' lettura-doc--word' : '') + '" id="lettura-doc-print-root">' +
+            var previewCls = interactive ? ' lettura-doc--rapportino-preview' : '';
+            return '<div class="lettura-doc lettura-doc--rapportino-notturno' + previewCls + (forWord ? ' lettura-doc--word' : '') + '" id="lettura-doc-print-root">' +
                 window.buildRapportinoNotturnoHeaderHtml(forWord) +
                 layoutHtml + '</div>';
         };
@@ -13675,6 +13736,7 @@ window.updateStoricoButton = async function() {
             var body = document.getElementById('letture-doc-body');
             if (!body) return;
             body.innerHTML = window.buildLetturaNotturnoGiornalieroHtml({ interactive: true });
+            window.bindRapportinoNotturnoPreviewInputs && window.bindRapportinoNotturnoPreviewInputs();
             requestAnimationFrame(function () {
                 window.fitLetturaDocToViewport && window.fitLetturaDocToViewport();
             });
@@ -32914,17 +32976,76 @@ window.convertToHtml = async () => {
         .letture-doc-ocr-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
         .letture-share-btn--ocr-cam { background: #059669; }
         .letture-share-btn--ocr-file { background: #10b981; }
-        .letture-doc-sheet--a3 { max-width: min(98vw, 1280px); width: min(98vw, 1280px); }
-        .letture-doc-body .lettura-doc--rapportino-notturno {
+        .letture-doc-sheet--a3 { max-width: min(99vw, 1400px); width: min(99vw, 1400px); }
+        .letture-doc-sheet--a3 .letture-doc-body {
+            overflow: auto;
+            -webkit-overflow-scrolling: touch;
+            padding: 10px 8px;
+            background: #e2e8f0;
+        }
+        .dark .letture-doc-sheet--a3 .letture-doc-body { background: #1e293b; }
+        .letture-doc-body .lettura-doc--rapportino-preview {
             font-family: Arial, Helvetica, sans-serif;
-            width: 1190.55pt;
-            max-width: 1190.55pt;
-            min-height: 841.89pt;
+            width: 100%;
+            min-width: 1180px;
+            max-width: none;
+            min-height: auto;
+            height: auto;
+            padding: 10px 12px;
             background: #fff;
             color: #000;
-            box-shadow: 0 0 0 1px rgba(148,163,184,0.35);
+            box-shadow: 0 2px 12px rgba(15, 23, 42, 0.12);
+            transform: none !important;
         }
-        .letture-doc-body .lettura-doc-scale-host { margin: 0 auto; }
+        .letture-doc-body .lettura-doc--rapportino-preview .rg-header { margin-bottom: 8px; font-size: 9pt; }
+        .letture-doc-body .lettura-doc--rapportino-preview .rg-header-center { font-size: 18pt; }
+        .letture-doc-body .lettura-doc--rapportino-preview .rg-block { font-size: 8.5pt; margin-bottom: 4px; }
+        .letture-doc-body .lettura-doc--rapportino-preview .rg-block td {
+            height: auto;
+            min-height: 24px;
+            padding: 3px 5px;
+            line-height: 1.2;
+            font-size: 8.5pt;
+        }
+        .letture-doc-body .lettura-doc--rapportino-preview .rg-th {
+            background: #dcdcdc;
+            font-size: 8.5pt;
+            font-weight: 700;
+        }
+        .letture-doc-body .lettura-doc--rapportino-preview .rg-lbl { font-size: 8.5pt; }
+        .letture-doc-body .lettura-doc--rapportino-preview .rg-um { font-size: 8pt; }
+        .letture-doc-body .lettura-doc--rapportino-preview .rg-inp {
+            width: 100%;
+            box-sizing: border-box;
+            border: 1px solid #cbd5e1;
+            border-radius: 4px;
+            background: #fffbeb;
+            color: #0f172a;
+            text-align: center;
+            font-weight: 700;
+            font-size: 11px;
+            padding: 4px 3px;
+            min-height: 22px;
+        }
+        .letture-doc-body .lettura-doc--rapportino-preview .rg-inp:focus {
+            outline: 2px solid #2563eb;
+            border-color: #2563eb;
+            background: #fff;
+        }
+        .letture-doc-body .lettura-doc--rapportino-preview .rg-notes-ta {
+            width: 100%;
+            box-sizing: border-box;
+            min-height: 110px;
+            border: 1px solid #cbd5e1;
+            border-radius: 4px;
+            background: #fffbeb;
+            color: #0f172a;
+            font-size: 11px;
+            padding: 6px;
+            resize: vertical;
+            font-family: Arial, Helvetica, sans-serif;
+        }
+        .letture-doc-body .lettura-doc-scale-host { margin: 0 auto; width: 100%; }
         @media (min-width: 768px) {
             #letture-doc-modal.active { align-items: center; padding: 16px; }
             .letture-doc-sheet { max-height: calc(100vh - 32px); border-radius: 16px; }
@@ -38731,7 +38852,32 @@ window.isPlausibleCaptureLevel = function(fieldId, value) {
     return true;
 };
 
+window.filterNotturnoOcrReadings = function(readings) {
+    return (readings || []).filter(function(r) {
+        if (!r || !r.id || r.value == null) return false;
+        if (r.id === 'inp-s121') return false;
+        if (r.kind === 'status') {
+            var st = window.normalizeDcsStatus(r.value);
+            return st === 'MARCIA' || st === 'FERMO';
+        }
+        var vTotal = window.fixTotalizerOcrValue ? window.fixTotalizerOcrValue(r.value) : window.fixOcrDigitValue(r.value);
+        if (window.isValidTotalizerOcrValue && window.isValidTotalizerOcrValue(vTotal)) return true;
+        var v = window.fixOcrDigitValue(r.value);
+        return window.isValidOcrValue(v) && window.isPlausibleCaptureLevel(r.id, v);
+    }).map(function(r) {
+        if (r.kind === 'status') {
+            return Object.assign({}, r, { value: window.normalizeDcsStatus(r.value) });
+        }
+        var v = window.fixTotalizerOcrValue ? window.fixTotalizerOcrValue(r.value) : window.fixOcrDigitValue(r.value);
+        if (!window.isValidTotalizerOcrValue(v)) v = window.fixOcrDigitValue(r.value);
+        return Object.assign({}, r, { value: v });
+    });
+};
+
 window.filterGeminiCaptureReadings = function(readings) {
+    if (window._smartCaptureNotturnoGiornalieroMode && typeof window.filterNotturnoOcrReadings === 'function') {
+        return window.filterNotturnoOcrReadings(readings);
+    }
     return (readings || []).filter(function(r) {
         if (!r || !r.id || r.value == null) return false;
         if (r.id === 'inp-s121') return false;
@@ -38852,9 +38998,86 @@ window.buildGeminiUnifiedCapturePrompt = function(fields) {
         '],"stati_pozzi":[{"pozzo":3,"stato":"FERMO","campo_id":"stat-well-3"},{"pozzo":5,"stato":"MARCIA","campo_id":"stat-well-5"}]}\n';
 };
 
+window.buildGeminiNotturnoCapturePrompt = function(fields) {
+    fields = fields || [];
+    var uiLines = fields.filter(function(f) { return f && f.id !== 'inp-s121'; }).map(function(f) {
+        return '- "' + f.label + '" → ' + f.id + (f.section ? ' (' + f.section + ')' : '');
+    }).join('\n');
+    var consumiHint = typeof window.buildGeminiConsumiProduzionePrompt === 'function'
+        ? window.buildGeminiConsumiProduzionePrompt() : '';
+    return 'Sei un operatore che legge schermi DCS per il RAPPORTINO GIORNALIERO NOTTURNO.\n\n' +
+        'TIPO SCHERMO (campo tipo nel JSON):\n' +
+        '- "consumi-produzione" se titolo Report Consumi e Produzione (TOTALIZZATORI | OGGI)\n' +
+        '- "stoccaggio-interno" se STOCCAGGIO INTERNO (SERBATOIO | LIVELLO mm)\n' +
+        '- "dcs-overview-strumenti" se OVERVIEW STRUMENTI\n\n' +
+        consumiHint + '\n\n' +
+        'CAMPI RAPPORTINO (campo_id o rapportino_key):\n' + uiLines + '\n\n' +
+        'Per totalizzatori usa colonna OGGI. Per serbatoi usa LIVELLO mm.\n' +
+        'JSON: {"tipo":"consumi-produzione","righe":[{"totalizzatore":"9121FQI5","oggi":"26266.07","campo_id":"inp-tg","rapportino_key":"chpp-metano-tg"}]}\n';
+};
+
+window.runGeminiNotturnoMultiCapture = async function(imageData, fields) {
+    fields = fields || window.mergeCaptureFieldsForGemini(false);
+    var merged = [];
+    var engines = [];
+
+    if (typeof window.runConsumiProduzioneCapture === 'function') {
+        try {
+            window.setSmartCaptureLoadingMessage('Gemini: Consumi e Produzione…');
+            var cr = await window.runConsumiProduzioneCapture(imageData);
+            if (cr && cr.readings && cr.readings.length) {
+                merged = window.mergeOcrReadingLists(merged, cr.readings);
+                engines.push('consumi');
+            }
+        } catch (e1) { console.warn('Notturno OCR consumi:', e1); }
+    }
+
+    if (typeof window.runStoccaggioInternoCapture === 'function') {
+        try {
+            window.setSmartCaptureLoadingMessage('Gemini: Stoccaggio interno…');
+            var sr = await window.runStoccaggioInternoCapture(imageData);
+            if (sr && sr.readings && sr.readings.length) {
+                merged = window.mergeOcrReadingLists(merged, sr.readings);
+                engines.push('stoccaggio');
+            }
+        } catch (e2) { console.warn('Notturno OCR stoccaggio:', e2); }
+    }
+
+    try {
+        window.setSmartCaptureLoadingMessage('Gemini: altri schermi rapportino…');
+        var prompt = window.buildGeminiNotturnoCapturePrompt(fields);
+        var raw = await window.withOcrTimeout(
+            window.callGeminiTankOcr(prompt, imageData),
+            65000,
+            'Gemini rapportino in timeout.'
+        );
+        if (!window.isLikelyGeminiFailureRaw(raw)) {
+            var extra = window.extractGeminiCaptureReadings(raw, fields);
+            if (extra && extra.length) {
+                merged = window.mergeOcrReadingLists(merged, extra);
+                engines.push('gemini');
+            }
+        }
+    } catch (e3) { console.warn('Notturno OCR gemini:', e3); }
+
+    merged = window.filterNotturnoOcrReadings(merged);
+    return {
+        readings: merged,
+        engine: engines.length ? ('notturno-' + engines.join('+')) : 'notturno-none',
+        profile: 'rapportino-notturno',
+        catalogSize: merged.length,
+        rawTextPreview: '',
+        notes: merged.length
+            ? ('Rapportino notturno · ' + merged.length + ' valori letti — correggi in anteprima')
+            : 'Rapportino notturno · nessun valore estratto — inserisci manualmente in anteprima'
+    };
+};
+
 window.runGeminiPrimaryCapture = async function(imageData, fields) {
     fields = fields || window.mergeCaptureFieldsForGemini(!!window._smartCaptureTankMode);
-    const prompt = window.buildGeminiUnifiedCapturePrompt(fields);
+    const prompt = window._smartCaptureNotturnoGiornalieroMode && typeof window.buildGeminiNotturnoCapturePrompt === 'function'
+        ? window.buildGeminiNotturnoCapturePrompt(fields)
+        : window.buildGeminiUnifiedCapturePrompt(fields);
     const t = window.GEMINI_TIMING || {};
     let raw = '';
     try {

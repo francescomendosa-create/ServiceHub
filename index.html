@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v404';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v405';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -7060,6 +7060,7 @@ window.updateStoricoButton = async function() {
                 buildTagEl.textContent = 'Build ' + window.SERVICEHUB_BUILD;
             }
             if (typeof window.renderStoccaggioInternoPanel === 'function') window.renderStoccaggioInternoPanel();
+            if (typeof window.enforceAcquaLevelSigleInDom === 'function') window.enforceAcquaLevelSigleInDom();
             if (typeof window.stripTankDetailChipsFromDom === 'function') window.stripTankDetailChipsFromDom();
             if (typeof window.initNumpadTitleDetailShortcut === 'function') window.initNumpadTitleDetailShortcut();
             if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
@@ -12119,6 +12120,16 @@ window.updateStoricoButton = async function() {
                 var st = window.getStoccaggioInternoFieldRaw(fieldId);
                 if (st) return String(st).trim();
             }
+            if (fieldId === 'chemPass' || fieldId === 'chemHp') {
+                if (window.__chemCountsLive) {
+                    var n = fieldId === 'chemPass' ? window.__chemCountsLive.pass : window.__chemCountsLive.hp;
+                    if (n != null && Number(n) > 0) return String(n);
+                }
+                var backupChem = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
+                if (backupChem && backupChem[fieldId] != null && String(backupChem[fieldId]).trim() !== '') {
+                    return String(backupChem[fieldId]).trim();
+                }
+            }
             var el = document.getElementById(fieldId);
             if (el && el.value != null && String(el.value).trim() !== '') {
                 return String(el.value).trim();
@@ -12176,6 +12187,9 @@ window.updateStoricoButton = async function() {
         window.buildLetturaShareFile = function () {
             if (typeof window.persistLetturaActiveSlotSnapshot === 'function') {
                 window.persistLetturaActiveSlotSnapshot();
+            }
+            if (window.__letturaDocKind === 'notturno-giornaliero') {
+                return window.buildLetturaNotturnoGiornalieroShareFile();
             }
             return window.buildLetturaUtilitiesPag1ShareFile();
         };
@@ -13053,8 +13067,11 @@ window.updateStoricoButton = async function() {
 
         window.openLetturaStoccaggioCaldaiaD = function () {
             window.closeLettureRapportiniModal();
+            window.setLetturaDocKind('stoccaggio');
             var modal = document.getElementById('letture-doc-modal');
             if (!modal) return;
+            var ocrBtn = document.getElementById('letture-doc-ocr-btn');
+            if (ocrBtn) ocrBtn.style.display = 'none';
             window.renderLetturaStoccaggioDocView();
             modal.classList.add('active');
         };
@@ -13069,7 +13086,11 @@ window.updateStoricoButton = async function() {
         };
 
         window.refreshLetturaDocView = function () {
-            window.renderLetturaStoccaggioDocView();
+            if (window.__letturaDocKind === 'notturno-giornaliero') {
+                window.renderLetturaNotturnoGiornalieroDocView();
+            } else {
+                window.renderLetturaStoccaggioDocView();
+            }
         };
 
         window.downloadLetturaShareFile = function () {
@@ -13098,9 +13119,14 @@ window.updateStoricoButton = async function() {
 
         window.shareLetturaDoc = function () {
             var dateStr = window.formatLetturaDateIt(new Date());
-            var title = 'LETTURE PAG 1 (UTILITIES) — ' + dateStr;
+            var isNotturno = window.__letturaDocKind === 'notturno-giornaliero';
+            var title = isNotturno
+                ? ('RAPPORTINO GIORNALIERO — ' + dateStr)
+                : ('LETTURE PAG 1 (UTILITIES) — ' + dateStr);
             var file = window.buildLetturaShareFile && window.buildLetturaShareFile();
-            var downloadedMsg = 'Documento scaricato. Aprilo con Word e condividilo da lì.';
+            var downloadedMsg = isNotturno
+                ? 'Rapportino scaricato (A3). Aprilo con Word e stampa.'
+                : 'Documento scaricato. Aprilo con Word e condividilo da lì.';
 
             function notifyDownloaded() {
                 if (typeof window.__serviceHubFlashToast === 'function') {
@@ -13118,6 +13144,459 @@ window.updateStoricoButton = async function() {
             }
 
             if (window.downloadLetturaShareFile()) notifyDownloaded();
+        };
+
+        window.__letturaDocKind = window.__letturaDocKind || 'stoccaggio';
+
+        window.setLetturaDocKind = function (kind) {
+            window.__letturaDocKind = kind || 'stoccaggio';
+            var titleEl = document.getElementById('letture-doc-toolbar-title');
+            var sheet = document.querySelector('#letture-doc-modal .letture-doc-sheet');
+            if (titleEl) {
+                titleEl.textContent = kind === 'notturno-giornaliero'
+                    ? 'Nuovo rapportino notturno'
+                    : 'Letture stoccaggio e caldaia D';
+            }
+            if (sheet) {
+                sheet.classList.toggle('letture-doc-sheet--a3', kind === 'notturno-giornaliero');
+            }
+        };
+
+        window.LETTURE_NOTTURNO_GIORNALIERO_SNAPSHOT_KEY = 'servicehub_rapportino_notturno_giornaliero_v1';
+
+        window.loadRapportinoNotturnoGiornalieroSnapshot = function () {
+            try {
+                var raw = localStorage.getItem(window.LETTURE_NOTTURNO_GIORNALIERO_SNAPSHOT_KEY);
+                return raw ? (JSON.parse(raw) || {}) : {};
+            } catch (_) {
+                return {};
+            }
+        };
+
+        window.saveRapportinoNotturnoGiornalieroSnapshot = function (store) {
+            try {
+                localStorage.setItem(window.LETTURE_NOTTURNO_GIORNALIERO_SNAPSHOT_KEY, JSON.stringify(store || {}));
+            } catch (_) {}
+        };
+
+        window.readRapportinoNotturnoCellValue = function (row) {
+            if (!row) return '';
+            var dateKey = window.getLetturaDocDateKey();
+            var store = window.loadRapportinoNotturnoGiornalieroSnapshot();
+            var snap = store[dateKey] || {};
+            if (row.key && snap[row.key] != null && String(snap[row.key]).trim() !== '') {
+                return String(snap[row.key]).trim();
+            }
+            if (row.fieldId && snap[row.fieldId] != null && String(snap[row.fieldId]).trim() !== '') {
+                return String(snap[row.fieldId]).trim();
+            }
+            if (row.key === 'note-streams' || row.fieldId === 'rg-notte-note-streams') {
+                var notesEl = document.getElementById('report-notes');
+                if (notesEl && notesEl.value && String(notesEl.value).trim()) {
+                    return String(notesEl.value).trim();
+                }
+            }
+            if (row.fieldIds && row.fieldIds.length) {
+                var parts = [];
+                row.fieldIds.forEach(function (fid) {
+                    var v = window.readLetturaFieldValue(fid);
+                    if (v) parts.push(v);
+                });
+                if (parts.length) return parts.join(' \\ ');
+            }
+            if (row.fieldId) return String(window.readLetturaFieldValue(row.fieldId) || '').trim();
+            return '';
+        };
+
+        window.flattenRapportinoNotturnoRows = function () {
+            var out = [];
+            (window.LETTURE_NOTTURNO_GIORNALIERO_COLUMNS || []).forEach(function (col) {
+                (col || []).forEach(function (block) {
+                    if (!block) return;
+                    if (block.type === 'notes') {
+                        out.push({ key: block.key || 'note-streams', label: block.title, fieldId: block.fieldId || null });
+                        return;
+                    }
+                    if (block.type === 'sg9400') {
+                        (block.groups || []).forEach(function (g) {
+                            (g.rows || []).forEach(function (r) {
+                                out.push(r);
+                            });
+                        });
+                        return;
+                    }
+                    (block.rows || []).forEach(function (r) { out.push(r); });
+                });
+            });
+            return out;
+        };
+
+        window.buildLetturaNotturnoGiornalieroCaptureFieldMap = function () {
+            var fields = [];
+            var seen = {};
+            window.flattenRapportinoNotturnoRows().forEach(function (row) {
+                var ids = [];
+                if (row.fieldId) ids.push(row.fieldId);
+                if (row.fieldIds) ids = ids.concat(row.fieldIds);
+                ids.forEach(function (fid) {
+                    if (!fid || seen[fid]) return;
+                    seen[fid] = true;
+                    fields.push({ id: fid, label: row.label || fid, section: 'Rapportino notturno' });
+                });
+            });
+            return fields;
+        };
+
+        window.persistNotturnoGiornalieroFromReadings = function (readings) {
+            if (!readings || !readings.length) return 0;
+            var allowed = {};
+            window.buildLetturaNotturnoGiornalieroCaptureFieldMap().forEach(function (f) { allowed[f.id] = true; });
+            var dateKey = window.getLetturaDocDateKey();
+            var store = window.loadRapportinoNotturnoGiornalieroSnapshot();
+            if (!store[dateKey]) store[dateKey] = {};
+            var n = 0;
+            readings.forEach(function (r) {
+                if (!r || !r.id || !allowed[r.id] || r.kind === 'status') return;
+                var v = String(r.value == null ? '' : r.value).trim();
+                if (!v) return;
+                store[dateKey][r.id] = v;
+                n++;
+            });
+            if (n) {
+                store[dateKey]._savedAt = Date.now();
+                window.saveRapportinoNotturnoGiornalieroSnapshot(store);
+            }
+            return n;
+        };
+
+        window.startLetturaNotturnoGiornalieroOcrCapture = function () {
+            window._smartCaptureLetturaMode = false;
+            window._smartCaptureNotturnoGiornalieroMode = true;
+            window._smartCaptureTankMode = false;
+            window._smartCaptureAbort = false;
+            document.body.classList.add('lettura-ocr-active');
+            if (typeof window.ensureGeminiApiKeySaved === 'function') window.ensureGeminiApiKeySaved();
+            var settings = document.getElementById('settings-modal');
+            if (settings) settings.classList.remove('active');
+            if (typeof window.smartCaptureFromCamera === 'function') window.smartCaptureFromCamera();
+            else if (typeof window.smartCaptureFromGallery === 'function') window.smartCaptureFromGallery();
+        };
+
+        window.clearLetturaNotturnoGiornalieroOcrMode = function () {
+            window._smartCaptureNotturnoGiornalieroMode = false;
+            document.body.classList.remove('lettura-ocr-active');
+        };
+
+        window.LETTURE_NOTTURNO_GIORNALIERO_COLUMNS = [
+            [
+                { title: 'CHPP', head: ['CHPP', 'Um', 'Totalizzatore'], rows: [
+                    { key: 'chpp-est-vap-sasol', label: 'Est. Vapore a Sasol', um: 'Ton', fieldId: 'inp-vap' },
+                    { key: 'chpp-vap-bp', label: 'Vapore BP', um: 'Ton', fieldId: null },
+                    { key: 'chpp-h2o-demi', label: 'H2O Demi', um: 'Ton', fieldId: null },
+                    { key: 'chpp-aria-str', label: 'Aria strumenti', um: 'Nmc', fieldId: null },
+                    { key: 'chpp-metano-tg', label: 'Metano Chpp (TG)', um: 'mc', fieldId: 'inp-tg' },
+                    { key: 'chpp-azoto', label: 'Azoto', um: 'Nmc', fieldId: 'val-az-n2' },
+                    { key: 'chpp-offgas', label: 'Off Gas Chpp', um: 'Kg', fieldId: 'inp-off' }
+                ]},
+                { title: 'H2O DEMI', head: ['H2O DEMI', 'Um', 'Livello'], rows: [
+                    { key: 'hd-tk9201', label: 'TK 9201', um: 'mm', fieldId: 'inp-tk9201' },
+                    { key: 'hd-s133', label: 'S133', um: 'mm', fieldId: 'inp-s133' },
+                    { key: 'hd-prod', label: 'Produzione', um: 'mc', fieldId: null },
+                    { key: 'hd-h2o-grezza-rig', label: 'H2O grezza di rigen.', um: 'mc', fieldId: null },
+                    { key: 'hd-h2o-demi-rig', label: 'H2O demi di rigen.', um: 'mc', fieldId: null }
+                ]},
+                { title: 'TORRE SCAM', head: ['TORRE SCAM', 'Um', 'Totalizzatore'], rows: [
+                    { key: 'scam-in-out', label: 'Ingresso \\ Uscita', um: 'T °C', fieldIds: ['ph', 'cloro'] },
+                    { key: 'scam-reint', label: 'Reintegro Scam', um: 'mc/g', fieldId: 'reintegro' },
+                    { key: 'scam-z-nord', label: 'Portata Zona Nord', um: 'mc/g', fieldId: null },
+                    { key: 'scam-z-sud', label: 'Portata Zona Sud', um: 'mc/g', fieldId: null }
+                ]},
+                { title: 'UTENZE', head: ['UTENZE', 'ore', 'Contatore'], rows: [
+                    { key: 'ut-mp9003a', label: 'MP 9003A', um: '', fieldId: null },
+                    { key: 'ut-mp9003b', label: 'MP 9003B', um: '', fieldId: null },
+                    { key: 'ut-mp9003c', label: 'MP 9003C', um: '', fieldId: null },
+                    { key: 'ut-mp9003d', label: 'MP 9003D', um: '', fieldId: null },
+                    { key: 'ut-mtcw9000a', label: 'MTCW 9000A', um: '', fieldId: null },
+                    { key: 'ut-mtcw9000b', label: 'MTCW 9000B', um: '', fieldId: null },
+                    { key: 'ut-mtcw9000c', label: 'MTCW 9000C', um: '', fieldId: null },
+                    { key: 'ut-mtcw9000d', label: 'MTCW 9000D', um: '', fieldId: null },
+                    { key: 'ut-media24h', label: 'MEDIA 24 H', um: '', fieldId: null }
+                ]},
+                { title: 'SODA', head: ['SODA', 'Um', 'Livello \\ Consumi'], rows: [
+                    { key: 'soda-tk9205', label: 'TK 9205', um: 'mm', fieldId: 'inp-tk9205' },
+                    { key: 'soda-v9202', label: 'V9202', um: '%', fieldId: null },
+                    { key: 'soda-atb', label: 'ATB', um: 'Ton', fieldId: null },
+                    { key: 'soda-filtra1', label: 'Filtra1 h', um: 'Lt', fieldId: null },
+                    { key: 'soda-filtra2', label: 'Filtra2 h', um: 'Lt', fieldId: null },
+                    { key: 'soda-neutr', label: 'Neutralizzazione', um: 'Lt', fieldId: null },
+                    { key: 'soda-ecol', label: 'Ecologia', um: 'Ton', fieldId: null }
+                ]},
+                { title: 'ACIDO SOLFORICO', head: ['ACIDO SOLFORICO', 'Um', 'Livello \\ Consumi'], rows: [
+                    { key: 'ac-v172c', label: 'V 172C', um: 'mm', fieldId: 'inp-v172c' },
+                    { key: 'ac-v9203', label: 'V9203', um: 'mm', fieldId: 'inp-v9203' },
+                    { key: 'ac-atb', label: 'ATB', um: 'Ton', fieldId: null },
+                    { key: 'ac-filtra1', label: 'Filtra1', um: 'Lt', fieldId: null },
+                    { key: 'ac-filtra2', label: 'Filtra2', um: 'Lt', fieldId: null },
+                    { key: 'ac-scam', label: 'SCAM', um: 'Ton', fieldId: null },
+                    { key: 'ac-oxo', label: 'OXO', um: 'Ton', fieldId: null }
+                ]}
+            ],
+            [
+                { title: 'RECUPERO STREAMS \\ COMB. LIQUIDO', head: ['Serbatoio', 'Um', 'Livello', 'Giacenza Ieri \\ Oggi'], quad: true, rows: [
+                    { key: 'rs-tk10605', label: 'TK-10605', um: 'mm\\Ton', fieldId: 'inp-tk10605' },
+                    { key: 'rs-tk10606a', label: 'TK-10606/A', um: 'mm\\Ton', fieldId: 'inp-tk10606a' },
+                    { key: 'rs-tk10606b', label: 'TK-10606/B', um: 'mm\\Ton', fieldId: 'inp-tk10606b' }
+                ]},
+                { title: 'PREVISIONI ASSETTO CHPP', head: ['PREVISIONI ASSETTO CHPP', 'Um', 'Valore'], rows: [
+                    { key: 'pa-tg', label: 'TG', um: 'Mw', fieldId: 'inp-tg' },
+                    { key: 'pa-tv', label: 'TV', um: 'Mw', fieldId: 'inp-tv' },
+                    { key: 'pa-estr', label: 'ESTRAZIONE', um: 't/h', fieldId: 'inp-est' },
+                    { key: 'pa-metano', label: 'METANO (CH4)', um: '', fieldId: null },
+                    { key: 'pa-en-stab', label: 'EN. STABILIMENTO', um: 'Mw', fieldId: 'inp-enel' },
+                    { key: 'pa-en-sol', label: 'EN. SOL', um: 'Mw', fieldId: null }
+                ]},
+                { title: 'COMBUSTIBILE LIQUIDO', head: ['Serbatoio', 'Um', 'Livello', 'Giacenza Ieri \\ Oggi'], quad: true, rows: [
+                    { key: 'cl-tk10000', label: 'TK-10000', um: 'mm\\Ton', fieldId: 'inp-tk10000' },
+                    { key: 'cl-tk10604', label: 'TK-10604', um: 'mm\\Ton', fieldId: 'inp-tk10604' },
+                    { key: 'cl-tk10607', label: 'TK-10607 (T.P.)', um: 'mm\\Ton', fieldId: 'inp-tk10607' }
+                ]},
+                { title: 'OFF GAS BLOW DOWN', head: ['Compressori', 'Um', 'Totalizzatore'], rows: [
+                    { key: 'og-10500a', label: 'MK 10500A H:', um: 'Mw', fieldId: 'v105A_fic' },
+                    { key: 'og-10500b', label: 'MK 10500B H:', um: 'Mw', fieldId: 'v105B_fic' },
+                    { key: 'og-10600a', label: 'MK 10600A H:', um: 'Mw', fieldId: 'vmk10600_fic' },
+                    { key: 'og-rec-gas', label: 'Recupero gas B.D.', um: 'Smc', fieldId: null }
+                ]},
+                { title: 'H2O GREZZA', head: ['Serbatoio', 'Um', 'Livello'], rows: [
+                    { key: 'hg-s121', label: 'S 121', um: 'mm', fieldId: 'inp-s121' },
+                    { key: 'hg-tk9000', label: 'TK 9000', um: 'mm', fieldId: 'inp-tk9000' }
+                ]},
+                { type: 'sg9400', groups: [
+                    { title: 'Sg 9400 A', rows: [
+                        { key: 'sga-ore', label: 'ORE', um: '', fieldId: null },
+                        { key: 'sga-vap', label: 'Vapore', um: '', fieldId: 'inp-a-prod' },
+                        { key: 'sga-h2o', label: 'H2O', um: '', fieldId: null },
+                        { key: 'sga-ch4', label: 'CH4', um: '', fieldId: null },
+                        { key: 'sga-fo', label: 'F.O.', um: '', fieldId: null }
+                    ]},
+                    { title: 'Sg 9400 D', rows: [
+                        { key: 'sgd-ore', label: 'ORE', um: '', fieldId: null },
+                        { key: 'sgd-vap', label: 'Vapore', um: '', fieldId: 'inp-d-prod' },
+                        { key: 'sgd-h2o', label: 'H2O', um: '', fieldId: null },
+                        { key: 'sgd-ch4', label: 'CH4', um: '', fieldId: null }
+                    ]}
+                ]},
+                { title: 'ENERGIA ELETTRICA / Portale', head: ['ENERGIA ELETTRICA / Portale', 'Kw', 'Valore'], rows: [
+                    { key: 'ee-stab-agg1', label: 'Stab. AGG 1', um: 'Kw', fieldId: 'inp-pote' },
+                    { key: 'ee-interr', label: 'Interrompibile', um: 'Kw', fieldId: null },
+                    { key: 'ee-pontile', label: 'Pontile', um: 'Kw', fieldId: null },
+                    { key: 'ee-sol-utf12', label: 'Sol- UTF12', um: 'Kw', fieldId: null },
+                    { key: 'ee-f1', label: 'Fascia 1 (1.6.1)', um: 'Kw', fieldId: null },
+                    { key: 'ee-f2', label: 'Fascia 2 (1.6.2)', um: 'Kw', fieldId: null },
+                    { key: 'ee-f3', label: 'Fascia 3 (1.6.3)', um: 'Kw', fieldId: null },
+                    { key: 'ee-f4', label: 'Fascia 4 (1.6.4)', um: 'Kw', fieldId: null }
+                ]}
+            ],
+            [
+                { type: 'notes', title: 'NOTE STREAMS', key: 'note-streams', fieldId: 'rg-notte-note-streams', minRows: 10 },
+                { title: 'ARIA STRUMENTI', head: ['ARIA STRUMENTI', 'Um', 'Totalizzatore'], rows: [
+                    { key: 'as-sio', label: 'Aria SIO', um: 'Nmc', fieldId: null },
+                    { key: 'as-str', label: 'Aria strumenti', um: 'Nmc', fieldId: null }
+                ]},
+                { title: 'Compressori', head: ['Compressori', 'ORE', 'Nm³/h', 'T °C', 'P'], multi: true, rows: [
+                    { key: 'cmp-9600a', label: 'MK 9600A', fieldIds: [null, 'sa-A-portata', 'sa-A-temp', 'sa-A-press'] },
+                    { key: 'cmp-9600b', label: 'MK 9600B', fieldIds: [null, 'sa-B-portata', 'sa-B-temp', 'sa-B-press'] },
+                    { key: 'cmp-9600c', label: 'MK 9600C', fieldIds: [null, 'sa-C-portata', 'sa-C-temp', 'sa-C-press'] },
+                    { key: 'cmp-151', label: 'MK 151', fieldIds: [null, 'sa-151-portata', 'sa-151-temp', 'sa-151-press'] }
+                ]},
+                { title: 'AZOTO', head: ['AZOTO', 'Um', 'Totalizzatore'], rows: [
+                    { key: 'az-prod-gas', label: 'Produzione gas', um: 'Nmc', fieldId: null },
+                    { key: 'az-prod-liq', label: 'Produzione liquido', um: 'Lt', fieldId: null },
+                    { key: 'az-d10200a', label: 'D 10200 A', um: 'Lt', fieldId: 'val-az-102a' },
+                    { key: 'az-d10200b', label: 'D 10200 B', um: 'Lt', fieldId: 'val-az-102b' },
+                    { key: 'az-acq-pipe', label: 'Acquisti via pipeline (Sol)', um: 'Nmc', fieldId: null },
+                    { key: 'az-cons-serv', label: 'Consumo Servizi', um: 'Nmc', fieldId: 'val-az-n2' },
+                    { key: 'az-cons-pon', label: 'Consumo Pontile', um: 'Nmc', fieldId: 'val-az-pon' },
+                    { key: 'az-vap-imp', label: 'Vaporizz. per impianti', um: 'Nmc', fieldId: null }
+                ]},
+                { title: 'SOL', head: ['SOL', 'Um', 'Valore'], rows: [
+                    { key: 'sol-o2', label: 'Portata O2 (Sol)', um: 'Kg', fieldId: null },
+                    { key: 'sol-h2o-raf', label: 'H2O Raff. Ingresso (Sol)', um: 'm³', fieldId: null },
+                    { key: 'sol-h2o-umano', label: 'H2O Uso umano (Sol)', um: 'm³', fieldId: null },
+                    { key: 'sol-reint-scam', label: 'Reintegro Scam (Sol)', um: 'm³', fieldId: null }
+                ]},
+                { title: 'CHEMICALS', head: ['CHEMICALS', 'Soluz.'], rows: [
+                    { key: 'chem-pass', label: 'Pas 4440', um: '', fieldId: 'chemPass' },
+                    { key: 'chem-hp', label: 'Hp 5490', um: '', fieldId: 'chemHp' }
+                ]},
+                { title: 'Ipoclorito "SCAM"', head: ['Ipoclorito "SCAM"', 'Valore'], rows: [
+                    { key: 'ipo-v9005a', label: 'V 9005A', um: '', fieldId: null }
+                ]}
+            ]
+        ];
+
+        window.buildRapportinoNotturnoHeaderHtml = function (forWord) {
+            var esc = window.escRapportinoHtml || function (s) {
+                return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            };
+            var mol = window.letturaSasolImgSrc && window.letturaSasolImgSrc('molecule');
+            var wm = window.letturaSasolImgSrc && window.letturaSasolImgSrc('wordmark');
+            var dateStr = window.formatLetturaDateIt(new Date());
+            if (forWord) {
+                return '<table border="0" cellspacing="0" cellpadding="0" width="100%" style="border-collapse:collapse;margin:0 0 3pt;">' +
+                    '<tr><td style="font-size:7pt;font-family:Arial,sans-serif;font-weight:bold;vertical-align:top;">Sasol Italy S.p.A.<br>Stabilimento di Augusta</td>' +
+                    '<td align="center" style="vertical-align:middle;"><b><span style="font-size:11pt;font-family:Arial,sans-serif;">RAPPORTINO GIORNALIERO</span></b></td>' +
+                    '<td align="right" style="font-size:7pt;font-family:Arial,sans-serif;vertical-align:top;">' +
+                    '<table border="1" cellspacing="0" cellpadding="2" style="border-collapse:collapse;border:1px solid #000;margin-left:auto;">' +
+                    '<tr><td style="font-weight:bold;">REPARTO: SERV</td></tr>' +
+                    '<tr><td>Giorno ' + esc(dateStr) + '</td></tr></table></td></tr></table>' +
+                    (mol ? '<div style="height:2pt;"></div>' : '');
+            }
+            return '<div class="rg-header">' +
+                '<div class="rg-header-left"><div>Sasol Italy S.p.A.</div><div>Stabilimento di Augusta</div></div>' +
+                '<div class="rg-header-center">RAPPORTINO GIORNALIERO</div>' +
+                '<div class="rg-header-right"><div class="rg-reparto-box"><div class="rg-reparto-title">REPARTO: SERV</div><div>Giorno ' + esc(dateStr) + '</div></div></div>' +
+                '</div>';
+        };
+
+        window.formatRapportinoNotturnoCell = function (val, esc) {
+            var s = String(val == null ? '' : val).trim();
+            return s ? esc(s) : '&nbsp;';
+        };
+
+        window.buildRapportinoNotturnoBlockHtml = function (block, esc, forWord) {
+            if (block.type === 'notes') {
+                var noteVal = window.readRapportinoNotturnoCellValue({ key: block.key, fieldId: block.fieldId });
+                var minH = (block.minRows || 8) * 11;
+                return '<table class="rg-block rg-block--notes" cellspacing="0" cellpadding="0"><tr>' +
+                    '<td class="rg-th rg-th-full" colspan="2">' + esc(block.title) + '</td></tr>' +
+                    '<tr><td class="rg-notes" colspan="2" style="min-height:' + minH + 'pt;height:' + minH + 'pt;">' +
+                    window.formatRapportinoNotturnoCell(noteVal, esc) + '</td></tr></table>';
+            }
+            if (block.type === 'sg9400') {
+                var gHtml = (block.groups || []).map(function (g) {
+                    var rows = (g.rows || []).map(function (r) {
+                        return '<tr><td class="rg-lbl">' + esc(r.label) + '</td><td class="rg-val">' +
+                            window.formatRapportinoNotturnoCell(window.readRapportinoNotturnoCellValue(r), esc) + '</td></tr>';
+                    }).join('');
+                    return '<table class="rg-block rg-block--sg" cellspacing="0" cellpadding="0"><tr><td class="rg-th rg-th-full" colspan="2">' +
+                        esc(g.title) + '</td></tr>' + rows + '</table>';
+                }).join('');
+                return '<div class="rg-sg9400-wrap">' + gHtml + '</div>';
+            }
+            var heads = block.head || ['', 'Um', 'Valore'];
+            var html = '<table class="rg-block" cellspacing="0" cellpadding="0">';
+            html += '<tr>';
+            heads.forEach(function (h, i) {
+                html += '<td class="rg-th' + (i === 0 ? ' rg-th-first' : '') + '">' + esc(h) + '</td>';
+            });
+            html += '</tr>';
+            (block.rows || []).forEach(function (row) {
+                html += '<tr>';
+                html += '<td class="rg-lbl">' + esc(row.label) + '</td>';
+                if (block.multi) {
+                    html += '<td class="rg-val">' + window.formatRapportinoNotturnoCell(
+                        row.fieldIds && row.fieldIds[0] ? window.readLetturaFieldValue(row.fieldIds[0]) : '', esc) + '</td>';
+                    for (var mi = 1; mi < 4; mi++) {
+                        var fid = row.fieldIds && row.fieldIds[mi];
+                        html += '<td class="rg-val">' + window.formatRapportinoNotturnoCell(fid ? window.readLetturaFieldValue(fid) : '', esc) + '</td>';
+                    }
+                } else if (block.quad) {
+                    html += '<td class="rg-um">' + esc(row.um || '') + '</td>';
+                    html += '<td class="rg-val">' + window.formatRapportinoNotturnoCell(window.readRapportinoNotturnoCellValue(row), esc) + '</td>';
+                    html += '<td class="rg-val rg-val-alt">&nbsp;</td>';
+                } else {
+                    html += '<td class="rg-um">' + esc(row.um || '') + '</td>';
+                    html += '<td class="rg-val">' + window.formatRapportinoNotturnoCell(window.readRapportinoNotturnoCellValue(row), esc) + '</td>';
+                }
+                html += '</tr>';
+            });
+            html += '</table>';
+            return html;
+        };
+
+        window.buildLetturaNotturnoGiornalieroHtml = function (opts) {
+            opts = opts || {};
+            var forWord = !!opts.forWord || !!opts.forShare;
+            var esc = window.escRapportinoHtml || function (s) {
+                return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            };
+            var colsHtml = (window.LETTURE_NOTTURNO_GIORNALIERO_COLUMNS || []).map(function (col) {
+                var blocks = (col || []).map(function (b) {
+                    return window.buildRapportinoNotturnoBlockHtml(b, esc, forWord);
+                }).join('');
+                return '<div class="rg-a3-col">' + blocks + '</div>';
+            }).join('');
+            return '<div class="lettura-doc lettura-doc--rapportino-notturno' + (forWord ? ' lettura-doc--word' : '') + '" id="lettura-doc-print-root">' +
+                window.buildRapportinoNotturnoHeaderHtml(forWord) +
+                '<div class="rg-a3-columns">' + colsHtml + '</div></div>';
+        };
+
+        window.LETTURE_NOTTURNO_A3_DOC_CSS =
+            'body{margin:0;padding:0;background:#fff;color:#000;font-family:Arial,Helvetica,sans-serif}' +
+            '.lettura-doc--rapportino-notturno{background:#fff;color:#000;width:1120pt;max-width:1120pt}' +
+            '.rg-header{display:flex;align-items:flex-start;justify-content:space-between;margin:0 0 4pt;font-size:7pt;font-weight:700;line-height:1.15}' +
+            '.rg-header-center{flex:1;text-align:center;font-size:11pt;font-weight:700;padding:0 6pt}' +
+            '.rg-reparto-box{border:1px solid #000;padding:2pt 6pt;text-align:left;font-size:7pt;line-height:1.2}' +
+            '.rg-reparto-title{font-weight:700;margin-bottom:1pt}' +
+            '.rg-a3-columns{display:flex;align-items:flex-start;gap:3pt}' +
+            '.rg-a3-col{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:2pt}' +
+            '.rg-block{width:100%;border-collapse:collapse;table-layout:fixed;font-size:6.5pt;margin:0}' +
+            '.rg-block td{border:1px solid #000;padding:0 2pt;height:11pt;vertical-align:middle;line-height:1.05;overflow:hidden}' +
+            '.rg-th{background:#fff;font-weight:700;text-align:center;font-size:6.5pt}' +
+            '.rg-th-first{text-align:left;padding-left:3pt}' +
+            '.rg-th-full{text-align:center}' +
+            '.rg-lbl{text-align:left;font-weight:700;font-size:6.5pt;white-space:nowrap;overflow:hidden}' +
+            '.rg-um{text-align:center;font-size:6pt}' +
+            '.rg-val{text-align:center;font-weight:700;font-size:6.5pt}' +
+            '.rg-val-alt{border-left:1px solid #000}' +
+            '.rg-notes{text-align:left;vertical-align:top!important;height:auto!important;min-height:80pt;padding:3pt!important;font-size:7pt;white-space:pre-wrap}' +
+            '.rg-sg9400-wrap{display:flex;gap:2pt}.rg-block--sg{flex:1}' +
+            '@page{size:841.9pt 1190.55pt landscape;margin:6mm 5mm}';
+
+        window.LETTURE_NOTTURNO_A3_WORD_CSS =
+            '@page Section1{size:841.9pt 1190.55pt landscape;margin:6mm 5mm;mso-page-orientation:landscape;}' +
+            'div.Section1{page:Section1;}' +
+            'body{margin:0;padding:0;background:#fff;color:#000;font-family:Arial,sans-serif;}' +
+            'table{border-collapse:collapse;mso-table-layout-alt:fixed;}' +
+            'td{mso-line-height-rule:exactly;border:solid windowtext 1.0pt;mso-border-alt:solid windowtext .5pt;font-size:6.5pt;padding:0 1.4pt;vertical-align:middle;}';
+
+        window.renderLetturaNotturnoGiornalieroDocView = function () {
+            var body = document.getElementById('letture-doc-body');
+            if (!body) return;
+            body.innerHTML = window.buildLetturaNotturnoGiornalieroHtml({ interactive: true });
+            requestAnimationFrame(function () {
+                window.fitLetturaDocToViewport && window.fitLetturaDocToViewport();
+            });
+        };
+
+        window.buildLetturaNotturnoGiornalieroShareDocument = function () {
+            var dateStr = window.formatLetturaDateIt(new Date());
+            var body = window.buildLetturaNotturnoGiornalieroHtml({ forShare: true, forWord: true });
+            return '<!DOCTYPE html><html xmlns:o="urn:schemas-microsoft-com:office:office" ' +
+                'xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40" lang="it"><head><meta charset="utf-8">' +
+                '<meta name="ProgId" content="Word.Document"><title>RAPPORTINO GIORNALIERO — ' + dateStr + '</title>' +
+                '<style>' + window.LETTURE_NOTTURNO_A3_WORD_CSS + window.LETTURE_NOTTURNO_A3_DOC_CSS + '</style></head><body>' +
+                '<div class="Section1">' + body + '</div></body></html>';
+        };
+
+        window.buildLetturaNotturnoGiornalieroShareFile = function () {
+            var dateStr = window.formatLetturaDateIt(new Date()).replace(/\//g, '-');
+            return new File(
+                [window.buildLetturaNotturnoGiornalieroShareDocument()],
+                'RAPPORTINO GIORNALIERO ' + dateStr + '.doc',
+                { type: 'application/msword' }
+            );
+        };
+
+        window.openLetturaNotturnoGiornaliero = function () {
+            window.closeLettureRapportiniModal();
+            window.setLetturaDocKind('notturno-giornaliero');
+            var modal = document.getElementById('letture-doc-modal');
+            if (!modal) return;
+            var ocrBtn = document.getElementById('letture-doc-ocr-btn');
+            if (ocrBtn) ocrBtn.style.display = '';
+            window.renderLetturaNotturnoGiornalieroDocView();
+            modal.classList.add('active');
         };
 
         window.hydrateNotturnoStoccaggioInputsFromStore = function(opts) {
@@ -32327,9 +32806,13 @@ window.convertToHtml = async () => {
         .letture-share-btn { border: none; border-radius: 14px; padding: 14px 12px; font-weight: 900; font-size: 12px; text-transform: uppercase; cursor: pointer; color: #fff; width: 100%; letter-spacing: 0.04em; }
         .letture-share-btn--main { background: #2563eb; }
         .letture-share-btn--refresh { background: #6366f1; }
+        .letture-share-btn--ocr { background: #059669; }
+        .letture-doc-sheet--a3 { max-width: min(98vw, 1240px); }
+        .letture-doc-body .lettura-doc--rapportino-notturno { font-family: Arial, Helvetica, sans-serif; }
         @media (min-width: 768px) {
             #letture-doc-modal.active { align-items: center; padding: 16px; }
             .letture-doc-sheet { max-height: calc(100vh - 32px); border-radius: 16px; }
+            .letture-doc-sheet--a3 { max-height: calc(100vh - 24px); }
         }
         #settings-modal.active { display: flex !important; background: rgba(0,0,0,0.45); }
         #settings-modal.active .settings-sheet-body {
@@ -34993,8 +35476,11 @@ window.convertToHtml = async () => {
                 </div>
                 <button type="button" class="bg-black text-white rounded-2xl w-10 h-10 font-black" onclick="window.closeLettureRapportiniModal && window.closeLettureRapportiniModal()" aria-label="Chiudi">X</button>
             </div>
-            <button type="button" class="w-full text-left bg-slate-100 dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-indigo-950 border-2 border-slate-200 dark:border-slate-700 rounded-2xl p-4 font-black uppercase text-sm active:scale-[0.99] transition-all" onclick="window.openLetturaStoccaggioCaldaiaD && window.openLetturaStoccaggioCaldaiaD()">
+            <button type="button" class="w-full text-left bg-slate-100 dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-indigo-950 border-2 border-slate-200 dark:border-slate-700 rounded-2xl p-4 font-black uppercase text-sm active:scale-[0.99] transition-all mb-3" onclick="window.openLetturaStoccaggioCaldaiaD && window.openLetturaStoccaggioCaldaiaD()">
                 Letture stoccaggio e caldaia D
+            </button>
+            <button type="button" class="w-full text-left bg-slate-100 dark:bg-slate-800 hover:bg-emerald-50 dark:hover:bg-emerald-950 border-2 border-slate-200 dark:border-slate-700 rounded-2xl p-4 font-black uppercase text-sm active:scale-[0.99] transition-all" onclick="window.openLetturaNotturnoGiornaliero && window.openLetturaNotturnoGiornaliero()">
+                Nuovo rapportino notturno
             </button>
         </div>
     </div>
@@ -35008,7 +35494,8 @@ window.convertToHtml = async () => {
             </div>
             <div id="letture-doc-body" class="letture-doc-body"></div>
             <div class="letture-doc-share">
-                <button type="button" class="letture-share-btn letture-share-btn--main" onclick="window.shareLetturaDoc && window.shareLetturaDoc()">Condividi</button>
+                <button type="button" id="letture-doc-ocr-btn" class="letture-share-btn letture-share-btn--ocr" style="display:none;" onclick="window.startLetturaNotturnoGiornalieroOcrCapture && window.startLetturaNotturnoGiornalieroOcrCapture()">Acquisisci OCR</button>
+                <button type="button" class="letture-share-btn letture-share-btn--main" onclick="window.shareLetturaDoc && window.shareLetturaDoc()">Condividi / Stampa</button>
                 <button type="button" class="letture-share-btn letture-share-btn--refresh" onclick="window.refreshLetturaDocView && window.refreshLetturaDocView()">Aggiorna valori</button>
             </div>
         </div>
@@ -37897,6 +38384,9 @@ window.extractGeminiCaptureReadings = function(raw, fields) {
 };
 
 window.mergeCaptureFieldsForGemini = function(tankMode) {
+    if (window._smartCaptureNotturnoGiornalieroMode && typeof window.buildLetturaNotturnoGiornalieroCaptureFieldMap === 'function') {
+        return window.buildLetturaNotturnoGiornalieroCaptureFieldMap();
+    }
     if (window._smartCaptureLetturaMode && typeof window.buildLetturaCaptureFieldMap === 'function') {
         return window.buildLetturaCaptureFieldMap();
     }
@@ -39963,6 +40453,7 @@ window.applySmartCaptureResults = async function() {
     }
 
     const letturaMode = !!window._smartCaptureLetturaMode;
+    const notturnoGiorMode = !!window._smartCaptureNotturnoGiornalieroMode;
     const letturaSlotIdx = window._letturaOcrSlotIndex;
     const letturaSlotLabel = window._letturaOcrSlotLabel || '';
 
@@ -39970,6 +40461,39 @@ window.applySmartCaptureResults = async function() {
     window.closeSmartCaptureConfirm(false);
     const settings = document.getElementById('settings-modal');
     if (settings) settings.classList.remove('active');
+
+    if (notturnoGiorMode) {
+        var allowedNg = {};
+        if (typeof window.buildLetturaNotturnoGiornalieroCaptureFieldMap === 'function') {
+            window.buildLetturaNotturnoGiornalieroCaptureFieldMap().forEach(function (f) { allowedNg[f.id] = true; });
+        }
+        var filteredNg = readings.filter(function (r) {
+            return r && r.id && allowedNg[r.id] && r.kind !== 'status';
+        });
+        var appliedNg = typeof window.persistNotturnoGiornalieroFromReadings === 'function'
+            ? window.persistNotturnoGiornalieroFromReadings(filteredNg)
+            : 0;
+        filteredNg.forEach(function (r) {
+            var el = document.getElementById(r.id);
+            if (!el || el.readOnly) return;
+            el.value = String(r.value).trim();
+            try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+        });
+        window.__lastLocalPlantEditMs = Date.now();
+        if (typeof window.saveData === 'function') void window.saveData(true);
+        if (typeof window.clearLetturaNotturnoGiornalieroOcrMode === 'function') window.clearLetturaNotturnoGiornalieroOcrMode();
+        if (typeof window.refreshLetturaDocView === 'function') window.refreshLetturaDocView();
+        if (typeof window.__serviceHubFlashToast === 'function') {
+            window.__serviceHubFlashToast(
+                appliedNg
+                    ? ('Rapportino notturno: applicati ' + appliedNg + ' valori.')
+                    : 'Nessun valore riconosciuto per il rapportino notturno.',
+                false,
+                appliedNg ? 'ok' : 'warn'
+            );
+        }
+        return;
+    }
 
     if (letturaMode && Number.isFinite(letturaSlotIdx)) {
         var allowed = {};

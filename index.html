@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v401';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v402';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -3173,9 +3173,18 @@ window.colorPreviewNumber = function(tankName, value) {
         const cacheCloudPlantPayload = function (remote) {
             if (!remote || typeof remote !== 'object') return;
             try {
-                window.__cloudPlantCache = JSON.parse(JSON.stringify(remote));
+                var chunk = JSON.parse(JSON.stringify(remote));
+                if (!window.__cloudPlantCache || typeof window.__cloudPlantCache !== 'object') {
+                    window.__cloudPlantCache = chunk;
+                } else {
+                    window.__cloudPlantCache = Object.assign({}, window.__cloudPlantCache, chunk);
+                }
             } catch (_) {
-                window.__cloudPlantCache = remote;
+                if (!window.__cloudPlantCache || typeof window.__cloudPlantCache !== 'object') {
+                    window.__cloudPlantCache = remote;
+                } else {
+                    window.__cloudPlantCache = Object.assign({}, window.__cloudPlantCache, remote);
+                }
             }
         };
 
@@ -3241,13 +3250,23 @@ window.colorPreviewNumber = function(tankName, value) {
             if (rev > 0) window.__appliedPlantSyncRevision = rev;
             window.__cloudPlantHydrated = true;
             applyData(d, { forceRemotePlant: true });
+            cacheCloudPlantPayload(d);
+            if (typeof window.hydrateConducibilitaInputsFromDom === 'function') {
+                window.hydrateConducibilitaInputsFromDom();
+            }
             if (typeof window.__setPlantSyncBaseline === 'function') window.__setPlantSyncBaseline(d);
             if (typeof window.__writePlantLocalBackupFromDOM === 'function') {
-                window.__writePlantLocalBackupFromDOM({ syncRevision: d.syncRevision, lastUpdate: d.lastUpdate });
+                var snap = window.__writePlantLocalBackupFromDOM({ syncRevision: d.syncRevision, lastUpdate: d.lastUpdate });
+                if (typeof window.__mergeConductivityKeysIntoPlantPayload === 'function') {
+                    window.__mergeConductivityKeysIntoPlantPayload(snap, d);
+                    __writePlantLocalBackup(snap);
+                }
             } else {
-                __writePlantLocalBackup(d);
+                var backupPayload = typeof window.__mergeConductivityKeysIntoPlantPayload === 'function'
+                    ? window.__mergeConductivityKeysIntoPlantPayload(Object.assign({}, d), d)
+                    : d;
+                __writePlantLocalBackup(backupPayload);
             }
-            cacheCloudPlantPayload(d);
             if (!opts.quick && typeof window.__verifyRemotePlantFieldsApplied === 'function') {
                 window.__verifyRemotePlantFieldsApplied(d);
             }
@@ -3368,6 +3387,9 @@ window.colorPreviewNumber = function(tankName, value) {
                     data[key] = String(val).trim();
                 }
             });
+            if (typeof window.__mergeConductivityKeysIntoPlantPayload === 'function') {
+                window.__mergeConductivityKeysIntoPlantPayload(data, window.__cloudPlantCache || null);
+            }
             if (window.__chemCountsLive) {
                 data.chemPass = Math.max(0, window.__chemCountsLive.pass | 0);
                 data.chemHp = Math.max(0, window.__chemCountsLive.hp | 0);
@@ -3539,6 +3561,9 @@ window.colorPreviewNumber = function(tankName, value) {
             }
             if (typeof window.buildPlantPayloadFromDOM !== 'function') return;
             const snap = window.buildPlantPayloadFromDOM({ bumpRevision: false });
+            if (typeof window.__mergeConductivityKeysIntoPlantPayload === 'function') {
+                window.__mergeConductivityKeysIntoPlantPayload(snap, window.__cloudPlantCache || null);
+            }
             if (syncMeta) {
                 if (syncMeta.syncRevision) snap.syncRevision = syncMeta.syncRevision;
                 if (syncMeta.lastUpdate) snap.lastUpdate = syncMeta.lastUpdate;
@@ -11158,6 +11183,28 @@ window.updateStoricoButton = async function() {
                 }
             }
             return '';
+        };
+
+        /** Mantiene le chiavi conducibilità (__cond) nel backup anche se il pannello non è ancora nel DOM. */
+        window.__mergeConductivityKeysIntoPlantPayload = function (target, source) {
+            if (!target || typeof target !== 'object') return target;
+            var src = source && typeof source === 'object' ? source : {};
+            (window.CONDUCTIVITY_SHARED_FIELD_IDS || []).forEach(function (fid) {
+                var key = typeof window.getConductivityPlantStorageKey === 'function'
+                    ? window.getConductivityPlantStorageKey(fid)
+                    : fid;
+                var fromSrc = src[key];
+                if (fromSrc != null && String(fromSrc).trim() !== '') {
+                    target[key] = String(fromSrc).trim();
+                    return;
+                }
+                if ((!target[key] || !String(target[key]).trim()) &&
+                    typeof window.readStoredConductivityPlantValue === 'function') {
+                    var stored = window.readStoredConductivityPlantValue(fid);
+                    if (stored) target[key] = stored;
+                }
+            });
+            return target;
         };
 
         window.rebuildStoccaggioFieldIdsSet = function() {
@@ -21074,7 +21121,7 @@ window.updateStoricoButton = async function() {
 
         window.renderConducibilitaPanel = function() {
             const panel = document.getElementById('conducibilita-panel');
-            const renderVer = 'v5-s133';
+            const renderVer = 'v6-s133-persist';
             if (!panel || panel.dataset.rendered === renderVer) return;
             const preserved = {};
             (window.CONDUCTIVITY_SHARED_FIELD_IDS || []).forEach(function (fid) {
@@ -21107,11 +21154,13 @@ window.updateStoricoButton = async function() {
 
         window.hydrateConducibilitaInputsFromDom = function() {
             (window.CONDUCTIVITY_SHARED_FIELD_IDS || []).forEach(function(fid) {
-                let val = typeof window.readConducibilitaFieldValue === 'function'
-                    ? window.readConducibilitaFieldValue(fid)
-                    : '';
-                if (!val && typeof window.readStoredConductivityPlantValue === 'function') {
+                var overlap = window.CONDUCTIVITY_LEVEL_OVERLAP_FIELD_IDS || [];
+                var val = '';
+                if (overlap.indexOf(fid) >= 0 && typeof window.readStoredConductivityPlantValue === 'function') {
                     val = window.readStoredConductivityPlantValue(fid);
+                }
+                if (!val && typeof window.readConducibilitaFieldValue === 'function') {
+                    val = window.readConducibilitaFieldValue(fid);
                 }
                 if (!val) return;
                 window.queryConducibilitaDomInputs(fid).forEach(function(el) {
@@ -30617,25 +30666,33 @@ window.convertToHtml = async () => {
         .cond-tendina-body { overflow: hidden; max-height: 200px; transition: max-height 0.35s ease, padding 0.3s ease; padding: 10px 12px 12px; }
         .rapportino-conducibilita-tendina-collapsed .cond-tendina-body { max-height: 0; padding-top: 0; padding-bottom: 0; }
         .cond-tendina-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; width: 100%; }
+        /* Smartphone: griglia 3 colonne (7 sigle → 3+3+1), input grandi come prima */
         #conducibilita-panel .cond-tendina-grid.cond-tendina-grid--conductivity {
-            grid-template-columns: repeat(7, minmax(0, 1fr));
-            gap: 4px;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
         }
-        #conducibilita-panel .cond-tendina-grid.cond-tendina-grid--conductivity .cond-tendina-cell { gap: 3px; }
-        #conducibilita-panel .cond-tendina-grid.cond-tendina-grid--conductivity .cond-tendina-lbl {
-            font-size: 8px;
-            letter-spacing: 0.02em;
-            line-height: 1.1;
-        }
-        #conducibilita-panel .cond-tendina-grid.cond-tendina-grid--conductivity input.cond-tendina-inp {
-            min-height: 34px;
-            padding: 3px 2px;
-            font-size: 12px;
-            border-width: 1.5px;
-            border-radius: 6px;
-        }
-        .rapportino-conducibilita-tendina:not(.rapportino-conducibilita-tendina-collapsed) .cond-tendina-body {
-            padding: 8px 5px 10px;
+        /* PC e tablet: tutte e 7 le sigle sulla stessa riga */
+        @media (min-width: 901px) {
+            #conducibilita-panel .cond-tendina-grid.cond-tendina-grid--conductivity {
+                grid-template-columns: repeat(7, minmax(0, 1fr));
+                gap: 4px;
+            }
+            #conducibilita-panel .cond-tendina-grid.cond-tendina-grid--conductivity .cond-tendina-cell { gap: 3px; }
+            #conducibilita-panel .cond-tendina-grid.cond-tendina-grid--conductivity .cond-tendina-lbl {
+                font-size: 8px;
+                letter-spacing: 0.02em;
+                line-height: 1.1;
+            }
+            #conducibilita-panel .cond-tendina-grid.cond-tendina-grid--conductivity input.cond-tendina-inp {
+                min-height: 34px;
+                padding: 3px 2px;
+                font-size: 12px;
+                border-width: 1.5px;
+                border-radius: 6px;
+            }
+            .rapportino-conducibilita-tendina:not(.rapportino-conducibilita-tendina-collapsed) .cond-tendina-body {
+                padding: 8px 5px 10px;
+            }
         }
         .cond-tendina-cell { display: flex; flex-direction: column; align-items: stretch; gap: 6px; min-width: 0; }
         .cond-tendina-lbl { font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.04em; text-align: center; line-height: 1.15; }
@@ -30654,28 +30711,12 @@ window.convertToHtml = async () => {
         .dark #conducibilita-panel input.cond-tendina-inp,
         .dark .rapportino-cond-vertical-section input.cond-vert-inp { background: #083344; color: #ecfeff; border-color: #22d3ee; }
         @media (max-width: 900px) {
-            .cond-tendina-grid:not(.cond-tendina-grid--conductivity) { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-            #conducibilita-panel .cond-tendina-grid.cond-tendina-grid--conductivity {
-                grid-template-columns: repeat(7, minmax(0, 1fr));
-                gap: 3px;
-            }
-            #conducibilita-panel .cond-tendina-grid.cond-tendina-grid--conductivity .cond-tendina-lbl { font-size: 7px; }
-            #conducibilita-panel .cond-tendina-grid.cond-tendina-grid--conductivity input.cond-tendina-inp {
-                min-height: 30px;
-                font-size: 11px;
-            }
+            .cond-tendina-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
         }
         @media (max-width: 520px) {
-            .cond-tendina-grid:not(.cond-tendina-grid--conductivity) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .cond-tendina-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             #conducibilita-panel .cond-tendina-grid.cond-tendina-grid--conductivity {
-                grid-template-columns: repeat(7, minmax(0, 1fr));
-                gap: 2px;
-            }
-            #conducibilita-panel .cond-tendina-grid.cond-tendina-grid--conductivity .cond-tendina-lbl { font-size: 6.5px; }
-            #conducibilita-panel .cond-tendina-grid.cond-tendina-grid--conductivity input.cond-tendina-inp {
-                min-height: 28px;
-                font-size: 10px;
-                padding: 2px 1px;
+                grid-template-columns: repeat(3, minmax(0, 1fr));
             }
         }
         /* Smartphone: corpo Conducibilità per intero (evita taglio a metà) */

@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v397';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v398';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -11076,6 +11076,11 @@ window.updateStoricoButton = async function() {
             { id: 'inp-a-cond', label: 'SG 9400 A', placeholder: 'µS/cm', unit: 'µS/cm' },
             { id: 'inp-d-cond', label: 'SG 9400 D', placeholder: 'µS/cm', unit: 'µS/cm' }
         ];
+        /** In Conducibilità: sigla caldaia (non la scritta COND della tabella caldaie). */
+        window.CONDUCTIVITY_CALDAIA_COND_LABELS = {
+            'inp-a-cond': 'SG 9400 A',
+            'inp-d-cond': 'SG 9400 D'
+        };
         /** Sigle presenti sia come livello (mm) in stoccaggio/acqua sia come conducibilità (µS/cm): non sincronizzare tra contesti. */
         window.CONDUCTIVITY_LEVEL_OVERLAP_FIELD_IDS = ['inp-tk9000', 'inp-tk9201', 'inp-tk9204'];
 
@@ -22456,26 +22461,52 @@ window.updateStoricoButton = async function() {
                 safeUnit + '</span></span>';
         };
 
+        window.isConducibilitaCaldaiaFieldId = function(fieldId) {
+            return fieldId === 'inp-a-cond' || fieldId === 'inp-d-cond';
+        };
+
         window.resolveConducibilitaReportLabel = function(fieldId, fallbackLabel) {
             if (!fieldId) return String(fallbackLabel || '').trim();
+            var caldaiaMap = window.CONDUCTIVITY_CALDAIA_COND_LABELS || {};
+            if (caldaiaMap[fieldId]) return caldaiaMap[fieldId];
             var metaList = window.CONDUCTIVITY_FIELDS_META || [];
             for (var i = 0; i < metaList.length; i++) {
                 if (metaList[i] && metaList[i].id === fieldId && metaList[i].label) {
                     return metaList[i].label;
                 }
             }
-            var inp = document.getElementById(fieldId);
+            var inputs = typeof window.queryConducibilitaDomInputs === 'function'
+                ? window.queryConducibilitaDomInputs(fieldId)
+                : [];
+            var inp = null;
+            for (var j = 0; j < inputs.length; j++) {
+                if (inputs[j] && inputs[j].closest && (
+                    inputs[j].closest('#conducibilita-panel') ||
+                    inputs[j].closest('#sec-conducibilita-vertical')
+                )) {
+                    inp = inputs[j];
+                    break;
+                }
+            }
+            if (!inp) inp = document.getElementById(fieldId);
             if (inp) {
                 var tendinaCell = inp.closest('.cond-tendina-cell');
                 if (tendinaCell) {
                     var tendinaLbl = tendinaCell.querySelector('.cond-tendina-lbl');
                     if (tendinaLbl && tendinaLbl.textContent.trim()) return tendinaLbl.textContent.trim();
                 }
-                var vertRow = inp.closest('.cond-vert-row, tr, .amb-row');
-                if (vertRow) {
-                    var vertLbl = vertRow.querySelector('.cond-vert-lbl, .cell-label-main, .amb-label');
-                    if (vertLbl && vertLbl.textContent.trim()) return vertLbl.textContent.replace(/\s+/g, ' ').trim();
+                if (inp.closest('#sec-conducibilita-vertical')) {
+                    var vertRow = inp.closest('tr');
+                    if (vertRow) {
+                        var vertLbl = vertRow.querySelector('.cell-label-main');
+                        if (vertLbl && vertLbl.textContent.trim()) {
+                            return vertLbl.textContent.replace(/\s+/g, ' ').trim();
+                        }
+                    }
                 }
+            }
+            if (window.isConducibilitaCaldaiaFieldId(fieldId)) {
+                return caldaiaMap[fieldId] || String(fallbackLabel || fieldId).trim();
             }
             return String(fallbackLabel || fieldId || '').trim();
         };
@@ -22503,12 +22534,14 @@ window.updateStoricoButton = async function() {
                 });
             const rows = [];
             configFields.forEach(function(f) {
-                const meta = metaById[f.id] || f;
-                const raw = window.readConducibilitaFieldValueFromDom(f.id);
+                const fieldId = f.id || f.fieldId;
+                if (!fieldId) return;
+                const meta = metaById[fieldId] || f;
+                const raw = window.readConducibilitaFieldValueFromDom(fieldId);
                 if (!raw) return;
                 const parts = window.parseConducibilitaReportValue(raw, meta);
                 rows.push({
-                    label: window.resolveConducibilitaReportLabel(f.id, f.label || meta.label || f.id),
+                    label: window.resolveConducibilitaReportLabel(fieldId, f.label || meta.label || fieldId),
                     num: parts.num,
                     unit: parts.unit,
                     val: window.formatConducibilitaReportValue(raw, meta)

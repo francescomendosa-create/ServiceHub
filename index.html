@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v409';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v410';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -13096,6 +13096,9 @@ window.updateStoricoButton = async function() {
 
         window.refreshLetturaDocView = function () {
             if (window.__letturaDocKind === 'notturno-giornaliero') {
+                if (typeof window.syncRapportinoNotturnoSnapshotFromPlant === 'function') {
+                    window.syncRapportinoNotturnoSnapshotFromPlant();
+                }
                 window.renderLetturaNotturnoGiornalieroDocView();
             } else {
                 window.renderLetturaStoccaggioDocView();
@@ -13198,33 +13201,214 @@ window.updateStoricoButton = async function() {
             } catch (_) {}
         };
 
-        window.readRapportinoNotturnoCellValue = function (row) {
+        window.RAPPORTINO_NOTTURNO_LINKED_KEYS = {
+            'chpp-aria-str': ['as-str'],
+            'as-str': ['chpp-aria-str'],
+            'chpp-azoto': ['az-cons-serv'],
+            'az-cons-serv': ['chpp-azoto'],
+            'chpp-metano-tg': ['pa-tg'],
+            'pa-tg': ['chpp-metano-tg'],
+            'chpp-offgas': ['inp-off'],
+            'chpp-est-vap-sasol': ['sga-vap'],
+            'sga-vap': ['chpp-est-vap-sasol'],
+            'sgd-vap': ['inp-d-prod'],
+            'scam-reint': ['reintegro', 'sol-reint-scam'],
+            'reintegro': ['scam-reint'],
+            'sol-reint-scam': ['scam-reint', 'reintegro'],
+            'az-cons-pon': ['val-az-pon'],
+            'pa-en-stab': ['inp-enel', 'ee-stab-agg1'],
+            'ee-stab-agg1': ['inp-enel', 'pa-en-stab']
+        };
+
+        window.RAPPORTINO_NOTTURNO_ROW_SOURCES = {
+            'chpp-est-vap-sasol': ['inp-a-prod'],
+            'hd-prod': ['cfil-produzione'],
+            'scam-in-out': ['ph', 'cloro'],
+            'og-10500b': ['v105B_fic'],
+            'og-10600a': ['vmk10600_fic'],
+            'ee-stab-agg1': ['inp-pote', 'inp-enel']
+        };
+
+        window.RAPPORTINO_NOTTURNO_FIELD_TO_KEYS = {
+            'inp-tg': ['chpp-metano-tg', 'pa-tg'],
+            'inp-tv': ['pa-tv'],
+            'inp-est': ['pa-estr'],
+            'inp-off': ['chpp-offgas'],
+            'inp-enel': ['pa-en-stab', 'ee-stab-agg1'],
+            'inp-pote': ['ee-stab-agg1'],
+            'inp-vap': ['chpp-est-vap-sasol'],
+            'inp-a-prod': ['sga-vap', 'chpp-est-vap-sasol'],
+            'inp-d-prod': ['sgd-vap'],
+            'val-az-n2': ['chpp-azoto', 'az-cons-serv'],
+            'val-az-pon': ['az-cons-pon'],
+            'val-az-102a': ['az-d10200a'],
+            'val-az-102b': ['az-d10200b'],
+            'reintegro': ['scam-reint', 'sol-reint-scam'],
+            'ph': ['scam-in-out'],
+            'cloro': ['scam-in-out'],
+            'chemPass': ['chem-pass'],
+            'chemHp': ['chem-hp'],
+            'v105A_fic': ['og-10500a'],
+            'v105B_fic': ['og-10500b'],
+            'vmk10600_fic': ['og-10600a'],
+            'sa-A-portata': ['cmp-9600a-c1'],
+            'sa-A-temp': ['cmp-9600a-c2'],
+            'sa-A-press': ['cmp-9600a-c3'],
+            'sa-B-portata': ['cmp-9600b-c1'],
+            'sa-B-temp': ['cmp-9600b-c2'],
+            'sa-B-press': ['cmp-9600b-c3'],
+            'sa-C-portata': ['cmp-9600c-c1'],
+            'sa-C-temp': ['cmp-9600c-c2'],
+            'sa-C-press': ['cmp-9600c-c3'],
+            'sa-151-portata': ['cmp-151-c1'],
+            'sa-151-temp': ['cmp-151-c2'],
+            'sa-151-press': ['cmp-151-c3']
+        };
+
+        window.readRapportinoPlantFieldValue = function (fieldId) {
+            if (!fieldId) return '';
+            var v = window.readLetturaFieldValue(fieldId);
+            if (v) return v;
+            try {
+                var store = window.loadRapportiniStore && window.loadRapportiniStore();
+                var rid = (typeof window.getStoccaggioRapportinoId === 'function')
+                    ? window.getStoccaggioRapportinoId() : 'notturno';
+                var d = store && store.items && store.items[rid] && store.items[rid].data;
+                if (d && d[fieldId] != null && String(d[fieldId]).trim() !== '') {
+                    return String(d[fieldId]).trim();
+                }
+                if (store && store.items) {
+                    Object.keys(store.items).forEach(function (rid2) {
+                        if (v) return;
+                        var d2 = store.items[rid2] && store.items[rid2].data;
+                        if (d2 && d2[fieldId] != null && String(d2[fieldId]).trim() !== '') {
+                            v = String(d2[fieldId]).trim();
+                        }
+                    });
+                }
+            } catch (_) {}
+            if (v) return v;
+            var el = document.getElementById(fieldId);
+            if (el) {
+                if (el.value != null && String(el.value).trim() !== '') return String(el.value).trim();
+                if (el.innerText && String(el.innerText).trim() !== '' &&
+                    !/^FERMO$|^MARCIA$/i.test(String(el.innerText).trim())) {
+                    return String(el.innerText).trim();
+                }
+            }
+            var stoccInp = document.querySelector('#stoccaggio-panel-notturno input.nott-stocc-inp[id="' + fieldId + '"]');
+            if (stoccInp && stoccInp.value && String(stoccInp.value).trim() !== '') {
+                return String(stoccInp.value).trim();
+            }
+            return '';
+        };
+
+        window.readRapportinoNotturnoSnapValue = function (snap, id) {
+            if (!id || !snap || snap[id] == null) return '';
+            return String(snap[id]).trim();
+        };
+
+        window.readRapportinoNotturnoCellValue = function (row, opts) {
+            opts = opts || {};
             if (!row) return '';
             var dateKey = window.getLetturaDocDateKey();
             var store = window.loadRapportinoNotturnoGiornalieroSnapshot();
             var snap = store[dateKey] || {};
-            if (row.key && snap[row.key] != null && String(snap[row.key]).trim() !== '') {
-                return String(snap[row.key]).trim();
+
+            function pick() {
+                for (var i = 0; i < arguments.length; i++) {
+                    var v = arguments[i];
+                    if (v != null && String(v).trim() !== '') return String(v).trim();
+                }
+                return '';
             }
-            if (row.fieldId && snap[row.fieldId] != null && String(snap[row.fieldId]).trim() !== '') {
-                return String(snap[row.fieldId]).trim();
+
+            if (opts.subKey || (opts.fieldId && row && row.fieldIds)) {
+                var subKey = opts.subKey || '';
+                var fid = opts.fieldId || null;
+                return pick(
+                    window.readRapportinoNotturnoSnapValue(snap, subKey),
+                    fid ? window.readRapportinoNotturnoSnapValue(snap, fid) : '',
+                    fid ? window.readRapportinoPlantFieldValue(fid) : ''
+                );
             }
+
             if (row.key === 'note-streams' || row.fieldId === 'rg-notte-note-streams') {
                 var notesEl = document.getElementById('report-notes');
-                if (notesEl && notesEl.value && String(notesEl.value).trim()) {
-                    return String(notesEl.value).trim();
-                }
+                return pick(
+                    window.readRapportinoNotturnoSnapValue(snap, row.key || 'note-streams'),
+                    window.readRapportinoNotturnoSnapValue(snap, row.fieldId || 'rg-notte-note-streams'),
+                    notesEl && notesEl.value ? String(notesEl.value).trim() : ''
+                );
             }
-            if (row.fieldIds && row.fieldIds.length) {
+
+            if (row.fieldIds && row.fieldIds.length && !opts.subKey) {
                 var parts = [];
-                row.fieldIds.forEach(function (fid) {
-                    var v = window.readLetturaFieldValue(fid);
-                    if (v) parts.push(v);
+                row.fieldIds.forEach(function (fid, idx) {
+                    var sk = row.key + (idx === 0 ? '-ore' : '-c' + idx);
+                    var part = window.readRapportinoNotturnoCellValue(row, { subKey: sk, fieldId: fid });
+                    if (part) parts.push(part);
                 });
                 if (parts.length) return parts.join(' \\ ');
             }
-            if (row.fieldId) return String(window.readLetturaFieldValue(row.fieldId) || '').trim();
-            return '';
+
+            var linked = (window.RAPPORTINO_NOTTURNO_LINKED_KEYS && row.key &&
+                window.RAPPORTINO_NOTTURNO_LINKED_KEYS[row.key]) || [];
+            var linkedVals = linked.map(function (k) {
+                return window.readRapportinoNotturnoSnapValue(snap, k);
+            });
+            var extraFields = (window.RAPPORTINO_NOTTURNO_ROW_SOURCES && row.key &&
+                window.RAPPORTINO_NOTTURNO_ROW_SOURCES[row.key]) || [];
+            var extraPlant = extraFields.map(function (fid) {
+                return window.readRapportinoPlantFieldValue(fid);
+            });
+
+            return pick.apply(null, [
+                window.readRapportinoNotturnoSnapValue(snap, row.key),
+                row.fieldId ? window.readRapportinoNotturnoSnapValue(snap, row.fieldId) : ''
+            ].concat(linkedVals).concat([
+                row.fieldId ? window.readRapportinoPlantFieldValue(row.fieldId) : ''
+            ]).concat(extraPlant));
+        };
+
+        window.syncRapportinoNotturnoSnapshotFromPlant = function () {
+            var dateKey = window.getLetturaDocDateKey();
+            var store = window.loadRapportinoNotturnoGiornalieroSnapshot();
+            if (!store[dateKey]) store[dateKey] = {};
+            var snap = store[dateKey];
+            var changed = false;
+
+            function fillIfEmpty(key, val) {
+                if (!key || val == null || String(val).trim() === '') return;
+                if (snap[key] != null && String(snap[key]).trim() !== '') return;
+                snap[key] = String(val).trim();
+                changed = true;
+            }
+
+            window.flattenRapportinoNotturnoRows().forEach(function (row) {
+                if (!row) return;
+                if (row.key === 'note-streams') {
+                    fillIfEmpty(row.key, window.readRapportinoNotturnoCellValue(row));
+                    return;
+                }
+                if (row.fieldIds && row.fieldIds.length) {
+                    row.fieldIds.forEach(function (fid, idx) {
+                        if (!fid) return;
+                        var sk = row.key + (idx === 0 ? '-ore' : '-c' + idx);
+                        fillIfEmpty(sk, window.readRapportinoPlantFieldValue(fid));
+                        fillIfEmpty(fid, window.readRapportinoPlantFieldValue(fid));
+                    });
+                    return;
+                }
+                var live = window.readRapportinoNotturnoCellValue(row);
+                if (row.key) fillIfEmpty(row.key, live);
+                if (row.fieldId) fillIfEmpty(row.fieldId, live);
+            });
+
+            if (changed) {
+                snap._savedAt = Date.now();
+                window.saveRapportinoNotturnoGiornalieroSnapshot(store);
+            }
         };
 
         window.flattenRapportinoNotturnoRows = function () {
@@ -13300,6 +13484,11 @@ window.updateStoricoButton = async function() {
                 var v = String(r.value == null ? '' : r.value).trim();
                 if (!v) return;
                 store[dateKey][r.id] = v;
+                var mirrorKeys = (window.RAPPORTINO_NOTTURNO_FIELD_TO_KEYS &&
+                    window.RAPPORTINO_NOTTURNO_FIELD_TO_KEYS[r.id]) || [];
+                mirrorKeys.forEach(function (mk) {
+                    if (allowed[mk]) store[dateKey][mk] = v;
+                });
                 n++;
             });
             if (n) {
@@ -13353,7 +13542,7 @@ window.updateStoricoButton = async function() {
                 { title: 'H2O DEMI', head: ['H2O DEMI', 'Um', 'Livello'], rows: [
                     { key: 'hd-tk9201', label: 'TK 9201', um: 'mm', fieldId: 'inp-tk9201' },
                     { key: 'hd-s133', label: 'S133', um: 'mm', fieldId: 'inp-s133' },
-                    { key: 'hd-prod', label: 'Produzione', um: 'mc', fieldId: null },
+                    { key: 'hd-prod', label: 'Produzione', um: 'mc', fieldId: 'cfil-produzione' },
                     { key: 'hd-h2o-grezza-rig', label: 'H2O grezza di rigen.', um: 'mc', fieldId: null },
                     { key: 'hd-h2o-demi-rig', label: 'H2O demi di rigen.', um: 'mc', fieldId: null }
                 ]},
@@ -13525,6 +13714,15 @@ window.updateStoricoButton = async function() {
             var v = String(value == null ? '' : value).trim();
             if (key) store[dateKey][key] = v;
             if (fieldId) store[dateKey][fieldId] = v;
+            var linked = (key && window.RAPPORTINO_NOTTURNO_LINKED_KEYS &&
+                window.RAPPORTINO_NOTTURNO_LINKED_KEYS[key]) || [];
+            linked.forEach(function (lk) { store[dateKey][lk] = v; });
+            if (fieldId && window.RAPPORTINO_NOTTURNO_FIELD_TO_KEYS &&
+                window.RAPPORTINO_NOTTURNO_FIELD_TO_KEYS[fieldId]) {
+                window.RAPPORTINO_NOTTURNO_FIELD_TO_KEYS[fieldId].forEach(function (mk) {
+                    store[dateKey][mk] = v;
+                });
+            }
             store[dateKey]._savedAt = Date.now();
             window.saveRapportinoNotturnoGiornalieroSnapshot(store);
             if (fieldId) {
@@ -13603,15 +13801,12 @@ window.updateStoricoButton = async function() {
                 html += '<tr>';
                 html += '<td class="rg-lbl">' + esc(row.label) + '</td>';
                 if (block.multi) {
-                    var oreVal = row.fieldIds && row.fieldIds[0] ? window.readLetturaFieldValue(row.fieldIds[0]) : '';
-                    html += '<td class="rg-val">' + window.buildRapportinoNotturnoValueHtml(
-                        { key: row.key + '-ore', fieldId: row.fieldIds && row.fieldIds[0] }, oreVal, esc, interactive,
-                        row.fieldIds && row.fieldIds[0]) + '</td>';
-                    for (var mi = 1; mi < 4; mi++) {
+                    for (var mi = 0; mi < 4; mi++) {
                         var fid = row.fieldIds && row.fieldIds[mi];
-                        var fval = fid ? window.readLetturaFieldValue(fid) : '';
+                        var sk = row.key + (mi === 0 ? '-ore' : '-c' + mi);
+                        var fval = window.readRapportinoNotturnoCellValue(row, { subKey: sk, fieldId: fid });
                         html += '<td class="rg-val">' + window.buildRapportinoNotturnoValueHtml(
-                            { key: row.key + '-c' + mi, fieldId: fid }, fval, esc, interactive, fid) + '</td>';
+                            { key: sk, fieldId: fid }, fval, esc, interactive, fid) + '</td>';
                     }
                 } else if (block.quad) {
                     html += '<td class="rg-um">' + esc(row.um || '') + '</td>';
@@ -13733,6 +13928,9 @@ window.updateStoricoButton = async function() {
         };
 
         window.renderLetturaNotturnoGiornalieroDocView = function () {
+            if (typeof window.syncRapportinoNotturnoSnapshotFromPlant === 'function') {
+                window.syncRapportinoNotturnoSnapshotFromPlant();
+            }
             var body = document.getElementById('letture-doc-body');
             if (!body) return;
             body.innerHTML = window.buildLetturaNotturnoGiornalieroHtml({ interactive: true });
@@ -32976,7 +33174,7 @@ window.convertToHtml = async () => {
         .letture-doc-ocr-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
         .letture-share-btn--ocr-cam { background: #059669; }
         .letture-share-btn--ocr-file { background: #10b981; }
-        .letture-doc-sheet--a3 { max-width: min(99vw, 1400px); width: min(99vw, 1400px); }
+        .letture-doc-sheet--a3 { max-width: 99vw; width: 99vw; }
         .letture-doc-sheet--a3 .letture-doc-body {
             overflow: auto;
             -webkit-overflow-scrolling: touch;
@@ -32987,7 +33185,7 @@ window.convertToHtml = async () => {
         .letture-doc-body .lettura-doc--rapportino-preview {
             font-family: Arial, Helvetica, sans-serif;
             width: 100%;
-            min-width: 1180px;
+            min-width: 0;
             max-width: none;
             min-height: auto;
             height: auto;
@@ -32996,23 +33194,27 @@ window.convertToHtml = async () => {
             color: #000;
             box-shadow: 0 2px 12px rgba(15, 23, 42, 0.12);
             transform: none !important;
+            box-sizing: border-box;
         }
+        .letture-doc-body .lettura-doc--rapportino-preview .rg-a3-layout { width: 100%; table-layout: fixed; }
         .letture-doc-body .lettura-doc--rapportino-preview .rg-header { margin-bottom: 8px; font-size: 9pt; }
-        .letture-doc-body .lettura-doc--rapportino-preview .rg-header-center { font-size: 18pt; }
-        .letture-doc-body .lettura-doc--rapportino-preview .rg-block { font-size: 8.5pt; margin-bottom: 4px; }
+        .letture-doc-body .lettura-doc--rapportino-preview .rg-header-center { font-size: 17pt; }
+        .letture-doc-body .lettura-doc--rapportino-preview .rg-block { font-size: 9pt; margin-bottom: 4px; width: 100%; }
         .letture-doc-body .lettura-doc--rapportino-preview .rg-block td {
             height: auto;
-            min-height: 24px;
-            padding: 3px 5px;
-            line-height: 1.2;
-            font-size: 8.5pt;
+            min-height: 26px;
+            padding: 4px 5px;
+            line-height: 1.25;
+            font-size: 9pt;
+            word-break: break-word;
+            white-space: normal;
         }
         .letture-doc-body .lettura-doc--rapportino-preview .rg-th {
             background: #dcdcdc;
-            font-size: 8.5pt;
+            font-size: 9pt;
             font-weight: 700;
         }
-        .letture-doc-body .lettura-doc--rapportino-preview .rg-lbl { font-size: 8.5pt; }
+        .letture-doc-body .lettura-doc--rapportino-preview .rg-lbl { font-size: 8.5pt; white-space: normal; }
         .letture-doc-body .lettura-doc--rapportino-preview .rg-um { font-size: 8pt; }
         .letture-doc-body .lettura-doc--rapportino-preview .rg-inp {
             width: 100%;
@@ -33023,9 +33225,9 @@ window.convertToHtml = async () => {
             color: #0f172a;
             text-align: center;
             font-weight: 700;
-            font-size: 11px;
-            padding: 4px 3px;
-            min-height: 22px;
+            font-size: 12px;
+            padding: 5px 3px;
+            min-height: 26px;
         }
         .letture-doc-body .lettura-doc--rapportino-preview .rg-inp:focus {
             outline: 2px solid #2563eb;
@@ -33035,12 +33237,12 @@ window.convertToHtml = async () => {
         .letture-doc-body .lettura-doc--rapportino-preview .rg-notes-ta {
             width: 100%;
             box-sizing: border-box;
-            min-height: 110px;
+            min-height: 120px;
             border: 1px solid #cbd5e1;
             border-radius: 4px;
             background: #fffbeb;
             color: #0f172a;
-            font-size: 11px;
+            font-size: 12px;
             padding: 6px;
             resize: vertical;
             font-family: Arial, Helvetica, sans-serif;

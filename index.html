@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v391';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v392';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -12958,6 +12958,60 @@ window.updateStoricoButton = async function() {
             }
             store.items[rid].updatedAt = new Date().toISOString();
             window.saveRapportiniStore(store);
+        };
+
+        /** Larghezza colonna sigla nel Report Preview (riferimento: MK 10500/A). */
+        window.REPORT_PREVIEW_SIGLA_REF = 'MK 10500/A';
+
+        window.getReportPreviewSiglaWidthCh = function (label) {
+            var maxLen = String(window.REPORT_PREVIEW_SIGLA_REF || 'MK 10500/A').length;
+            if (label) {
+                var len = String(label).length;
+                if (len > maxLen) maxLen = len;
+            }
+            return maxLen;
+        };
+
+        window.buildReportPreviewRowHtml = function (label, val, opts) {
+            opts = opts || {};
+            var pf = parseInt(opts.previewFont, 10);
+            if (!Number.isFinite(pf)) pf = 9;
+            var isStatus = !!opts.isStatus;
+            var labelFs = isStatus ? (pf - 1) : (pf - 2);
+            var valFs = pf - 1;
+            var siglaCh = opts.siglaCh || window.getReportPreviewSiglaWidthCh(label);
+            var valColor = opts.valColor || '#000';
+            var rowStyle = 'display:flex; align-items:baseline; border-bottom:0.1px solid #eee; padding:3px 0; white-space:nowrap;';
+            if (opts.borderTop) rowStyle += ' border-top:0.6px solid #000; padding:4px 0;';
+            return (
+                '<div class="report-preview-row" style="' + rowStyle + '">' +
+                '<span class="report-preview-sigla" style="display:inline-block; width:' + siglaCh + 'ch; min-width:' + siglaCh + 'ch; max-width:' + siglaCh + 'ch; font-size:' + labelFs + 'px; font-weight:600; text-transform:uppercase; text-align:left; flex-shrink:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' +
+                label +
+                '</span>' +
+                '<span class="report-preview-gap" style="display:inline-block; width:2ch; min-width:2ch; flex-shrink:0;" aria-hidden="true"></span>' +
+                '<span class="report-preview-val" style="font-size:' + valFs + 'px; font-weight:' + (isStatus ? '650' : '850') + '; text-transform:uppercase; text-align:left; color:' + valColor + '; font-variant-numeric:tabular-nums; white-space:nowrap; flex:0 1 auto; line-height:1.2;">' +
+                val +
+                '</span></div>'
+            );
+        };
+
+        window.formatBluedownPreviewSigla = function (raw) {
+            var sigla = String(raw || '').replace(/\s+/g, ' ').trim();
+            if (!sigla) return '';
+            var m = sigla.match(/^MK\s*(\d+)\s*([A-Z])?$/i);
+            if (m && m[2]) return 'MK ' + m[1] + '/' + m[2].toUpperCase();
+            if (m) return 'MK ' + m[1];
+            var m2 = sigla.match(/(\d+)([A-Z])/);
+            if (m2) return 'MK ' + m2[1] + '/' + m2[2];
+            return sigla;
+        };
+
+        window.readBluedownPreviewCompressorLabel = function (header) {
+            if (!header) return '';
+            var nameEl = header.querySelector('.bd-comp-name');
+            if (nameEl) return window.formatBluedownPreviewSigla(nameEl.textContent);
+            var raw = String(header.textContent || '').replace(/\s+/g, ' ').trim();
+            return window.formatBluedownPreviewSigla(raw);
         };
 
         /** Larghezza colonna sigla nel Report Preview (riferimento: TK 10602 A). */
@@ -25805,23 +25859,21 @@ if (hiddenModules.length === 0) {
 
         // LOGICA SPECIFICA PER BLOWDOWN
         if (id === 'sec-bluedown') {
-            // Raggruppa per compressore
             const compressors = sec.querySelectorAll('.bd-column');
             compressors.forEach(comp => {
                 const header = comp.querySelector('.status-header.compact');
                 if (header) {
-                    let sigla = header.innerHTML.split('<br>')[0].trim();
-                    const match = sigla.match(/(\d+)([A-Z])/);
-                    if (match) {
-                        sigla = `MK ${match[1]}/${match[2]}`;
-                    }
-                    
-                    // Stato del compressore
-                    rows.push({ 
+                    const sigla = window.readBluedownPreviewCompressorLabel
+                        ? window.readBluedownPreviewCompressorLabel(header)
+                        : (header.querySelector('.bd-comp-name')?.textContent || '').trim();
+                    const inMarcia = typeof window.readBluedownCompressorState === 'function'
+                        ? window.readBluedownCompressorState(header) === 'MARCIA'
+                        : header.innerText.includes('MARCIA');
+                    rows.push({
                         label: sigla,
-                        val: header.innerText.includes('MARCIA') ? 'MARCIA' : 'FERMO',
+                        val: inMarcia ? 'MARCIA' : 'FERMO',
                         isStatus: true,
-                        active: header.innerText.includes('MARCIA')
+                        active: inMarcia
                     });
                     
                     // Valori di questo compressore in ordine
@@ -26149,15 +26201,15 @@ if (hiddenModules.length === 0) {
                                     </div>
                                 </div>`;
                             } else {
-                                // LINEE DIVISORIE PIÙ SPESSE SOPRA LE SIGLE DIVISORIE
-                                if (r.label === 'SG 9400D') {
-                                    html += `<div style="display: flex; align-items: center; border-top: 0.6px solid #000; border-bottom: 0.1px solid #e5e7eb; padding: 4px 0; margin-bottom: 0px;"><span style="font-size: ${parseInt(previewFont) - 2}px; font-weight: 600; text-transform: uppercase; color: #000; width: 40px; flex-shrink: 0;">${r.label}</span><span style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: ${color}; text-align: left;">${r.val}</span></div>`;
-                                } else if (r.label === 'POZZO 2') {
-                                    html += `<div style="display: flex; align-items: center; border-top: 0.6px solid #000; border-bottom: 0.1px solid #e5e7eb; padding: 4px 0; margin-bottom: 0px;"><span style="font-size: ${parseInt(previewFont) - 2}px; font-weight: 600; text-transform: uppercase; color: #000; width: 40px; flex-shrink: 0;">${r.label}</span><span style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: ${color}; text-align: left;">${r.val}</span></div>`;
-                                } else {
-                                    // Per ZONA NORD ED ALTRI, riduci larghezza label per avvicinare valori
-                                    html += `<div style="display: flex; align-items: center; border-bottom: 0.1px solid #e5e7eb; padding:4px 0; margin-bottom: 0px;"><span style="font-size: ${parseInt(previewFont) - 2}px; font-weight: 600; text-transform: uppercase; color: #000; width: 40px; flex-shrink: 0; white-space: nowrap;">${r.label}</span><span style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: ${color}; text-align: left; margin-left: 0px !important; margin-right: 0px !important; padding-left: 0px !important; padding-right: 0px !important;">${r.val}</span></div>`;
-                                }
+                                const rowOpts = {
+                                    previewFont: previewFont,
+                                    valColor: color,
+                                    isStatus: !!r.isStatus
+                                };
+                                if (r.label === 'SG 9400D' || r.label === 'POZZO 2') rowOpts.borderTop = true;
+                                html += window.buildReportPreviewRowHtml
+                                    ? window.buildReportPreviewRowHtml(r.label, r.val, rowOpts)
+                                    : ('<div style="display:flex;align-items:baseline;padding:3px 0;"><span>' + r.label + '</span><span>' + r.val + '</span></div>');
                             } 
                         });
                         html += `</div></div>`;
@@ -26790,23 +26842,21 @@ window.buildDigitalCardsHTML = function() {
                     
                     // LOGICA SPECIFICA PER BLOWDOWN (come nel Report Preview)
                     if (moduleId === 'sec-bluedown') {
-                        // Raggruppa per compressore
                         const compressors = sec.querySelectorAll('.bd-column');
                         compressors.forEach(comp => {
                             const header = comp.querySelector('.status-header.compact');
                             if (header) {
-                                let sigla = header.innerHTML.split('<br>')[0].trim();
-                                const match = sigla.match(/(\d+)([A-Z])/);
-                                if (match) {
-                                    sigla = `MK ${match[1]}/${match[2]}`;
-                                }
-                                
-                                // Stato del compressore
-                                rows.push({ 
+                                const sigla = window.readBluedownPreviewCompressorLabel
+                                    ? window.readBluedownPreviewCompressorLabel(header)
+                                    : (header.querySelector('.bd-comp-name')?.textContent || '').trim();
+                                const inMarcia = typeof window.readBluedownCompressorState === 'function'
+                                    ? window.readBluedownCompressorState(header) === 'MARCIA'
+                                    : header.innerText.includes('MARCIA');
+                                rows.push({
                                     label: sigla,
-                                    val: header.innerText.includes('MARCIA') ? 'MARCIA' : 'FERMO',
+                                    val: inMarcia ? 'MARCIA' : 'FERMO',
                                     isStatus: true,
-                                    active: header.innerText.includes('MARCIA')
+                                    active: inMarcia
                                 });
                             }
                             
@@ -30138,6 +30188,25 @@ window.convertToHtml = async () => {
             display: flex;
             align-items: baseline;
             white-space: nowrap;
+        }
+        #capture-content .report-preview-row,
+        #preview-screen .report-preview-row {
+            display: flex;
+            align-items: baseline;
+            white-space: nowrap;
+        }
+        #capture-content .report-preview-sigla,
+        #preview-screen .report-preview-sigla {
+            text-align: left;
+            flex-shrink: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        #capture-content .report-preview-val,
+        #preview-screen .report-preview-val {
+            text-align: left !important;
+            font-variant-numeric: tabular-nums;
+            flex-shrink: 0;
         }
         #capture-content .stocc-report-preview-sigla,
         #preview-screen .stocc-report-preview-sigla {

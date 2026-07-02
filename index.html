@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v428';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v429';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -11973,7 +11973,74 @@ window.updateStoricoButton = async function() {
             return rid || 'notturno';
         };
 
+        window.__mergeNottStoccIntoItemData = function (lData, rData, lMs, rMs, baseData) {
+            baseData = baseData || {};
+            lData = lData || {};
+            rData = rData || {};
+            const lSt = (lData._nottStocc && typeof lData._nottStocc === 'object') ? lData._nottStocc : {};
+            const rSt = (rData._nottStocc && typeof rData._nottStocc === 'object') ? rData._nottStocc : {};
+            const olderSt = lMs >= rMs ? rSt : lSt;
+            const newerSt = lMs >= rMs ? lSt : rSt;
+            const mergedSt = Object.assign({}, olderSt, newerSt);
+            (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
+                const lv = lData[t.fieldId] != null ? String(lData[t.fieldId]).trim() : '';
+                const rv = rData[t.fieldId] != null ? String(rData[t.fieldId]).trim() : '';
+                if (lMs >= rMs && lv) mergedSt[t.fieldId] = lv;
+                else if (rMs > lMs && rv) mergedSt[t.fieldId] = rv;
+                else if (!mergedSt[t.fieldId]) {
+                    if (lv) mergedSt[t.fieldId] = lv;
+                    else if (rv) mergedSt[t.fieldId] = rv;
+                }
+            });
+            if (Object.keys(mergedSt).length) baseData._nottStocc = mergedSt;
+            else delete baseData._nottStocc;
+            (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
+                if (mergedSt[t.fieldId]) baseData[t.fieldId] = mergedSt[t.fieldId];
+                else delete baseData[t.fieldId];
+            });
+            return baseData;
+        };
+
+        window.getMergedStoccaggioSnapshotFromStore = function () {
+            const snap = {};
+            const fieldMs = {};
+            const store = window.loadRapportiniStore && window.loadRapportiniStore();
+            if (store && store.items) {
+                Object.keys(store.items).forEach(function (rid) {
+                    const item = store.items[rid];
+                    const d = item && item.data;
+                    if (!d) return;
+                    const itemMs = window.parseRapportinoUpdatedMs(item.updatedAt);
+                    const st = (d._nottStocc && typeof d._nottStocc === 'object') ? d._nottStocc : {};
+                    Object.keys(st).forEach(function (fid) {
+                        const v = st[fid] != null ? String(st[fid]).trim() : '';
+                        if (!v) return;
+                        if (!fieldMs[fid] || itemMs >= fieldMs[fid]) {
+                            snap[fid] = v;
+                            fieldMs[fid] = itemMs;
+                        }
+                    });
+                    (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
+                        const v = d[t.fieldId] != null ? String(d[t.fieldId]).trim() : '';
+                        if (!v) return;
+                        if (!fieldMs[t.fieldId] || itemMs >= fieldMs[t.fieldId]) {
+                            snap[t.fieldId] = v;
+                            fieldMs[t.fieldId] = itemMs;
+                        }
+                    });
+                });
+            }
+            if (!Object.keys(snap).length) {
+                const local = window.loadNotturnoStoccLocalSnapshot && window.loadNotturnoStoccLocalSnapshot();
+                if (local) Object.assign(snap, local);
+            }
+            return Object.keys(snap).length ? snap : null;
+        };
+
         window.getNotturnoStoccaggioSnapshot = function() {
+            const merged = typeof window.getMergedStoccaggioSnapshotFromStore === 'function'
+                ? window.getMergedStoccaggioSnapshotFromStore() : null;
+            if (merged && Object.keys(merged).length) return merged;
             const snap = {};
             const store = window.loadRapportiniStore && window.loadRapportiniStore();
             const rid = window.getStoccaggioRapportinoId ? window.getStoccaggioRapportinoId() : 'notturno';
@@ -20464,39 +20531,31 @@ window.updateStoricoButton = async function() {
                 if (local.schedeConfigUpdatedAt) base.schedeConfigUpdatedAt = local.schedeConfigUpdatedAt;
             }
             if (!base.name && weaker && weaker.name) base.name = weaker.name;
-            if (rapportinoId === 'notturno') {
+            if (rapportinoId === 'notturno' || rapportinoId === 'fuochista') {
                 base.data = base.data || {};
                 const lData = local.data || {};
                 const rData = remote.data || {};
-                const lSt = (lData._nottStocc && typeof lData._nottStocc === 'object') ? lData._nottStocc : {};
-                const rSt = (rData._nottStocc && typeof rData._nottStocc === 'object') ? rData._nottStocc : {};
-                const olderSt = lMs >= rMs ? rSt : lSt;
-                const newerSt = lMs >= rMs ? lSt : rSt;
-                const mergedSt = Object.assign({}, olderSt, newerSt);
-                if (Object.keys(mergedSt).length) base.data._nottStocc = mergedSt;
-                else delete base.data._nottStocc;
-                (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
-                    if (mergedSt[t.fieldId]) base.data[t.fieldId] = mergedSt[t.fieldId];
-                    else delete base.data[t.fieldId];
-                });
-                const olderFiltra = lMs >= rMs ? rData : lData;
-                const newerFiltra = lMs >= rMs ? lData : rData;
-                const filtraKeys = {};
-                [olderFiltra, newerFiltra].forEach(function (src) {
-                    Object.keys(src || {}).forEach(function (k) {
-                        if (!window.isNotturnoFiltraStorageKey || !window.isNotturnoFiltraStorageKey(k)) return;
-                        const v = src[k];
-                        if (v == null || String(v).trim() === '') return;
-                        filtraKeys[k] = v;
+                window.__mergeNottStoccIntoItemData(lData, rData, lMs, rMs, base.data);
+                if (rapportinoId === 'notturno') {
+                    const olderFiltra = lMs >= rMs ? rData : lData;
+                    const newerFiltra = lMs >= rMs ? lData : rData;
+                    const filtraKeys = {};
+                    [olderFiltra, newerFiltra].forEach(function (src) {
+                        Object.keys(src || {}).forEach(function (k) {
+                            if (!window.isNotturnoFiltraStorageKey || !window.isNotturnoFiltraStorageKey(k)) return;
+                            const v = src[k];
+                            if (v == null || String(v).trim() === '') return;
+                            filtraKeys[k] = v;
+                        });
                     });
-                });
-                Object.keys(filtraKeys).forEach(function (k) {
-                    base.data[k] = filtraKeys[k];
-                });
-                if (filtraKeys._nottFiltraSteps) {
-                    const a = parseInt(lData._nottFiltraSteps, 10) || 1;
-                    const b = parseInt(rData._nottFiltraSteps, 10) || 1;
-                    base.data._nottFiltraSteps = Math.max(a, b, parseInt(filtraKeys._nottFiltraSteps, 10) || 1);
+                    Object.keys(filtraKeys).forEach(function (k) {
+                        base.data[k] = filtraKeys[k];
+                    });
+                    if (filtraKeys._nottFiltraSteps) {
+                        const a = parseInt(lData._nottFiltraSteps, 10) || 1;
+                        const b = parseInt(rData._nottFiltraSteps, 10) || 1;
+                        base.data._nottFiltraSteps = Math.max(a, b, parseInt(filtraKeys._nottFiltraSteps, 10) || 1);
+                    }
                 }
             }
             return base;
@@ -24457,7 +24516,7 @@ window.updateStoricoButton = async function() {
             return Promise.all([p1, p2]);
         };
 
-        /** Impostazioni: sync Firestore — scarica dal cloud se indietro, invia solo se locale più recente. */
+        /** Impostazioni: sync Firestore — tasto aggiornamento = scarica dal cloud (fonte di verità). */
         window.forceFirestoreSyncNow = async function () {
             const btn = document.getElementById('btn-force-firestore-sync');
             if (window.__forceFirestoreSyncBusy) return;
@@ -24467,7 +24526,7 @@ window.updateStoricoButton = async function() {
                 btn.disabled = true;
                 btn.classList.add('settings-force-sync-btn--busy');
             }
-            const finish = function (ok) {
+            const finish = function (ok, msg) {
                 window.__forceFirestoreSyncBusy = false;
                 window.__forceSyncInProgress = false;
                 if (btn) {
@@ -24477,10 +24536,13 @@ window.updateStoricoButton = async function() {
                 if (ok && navigator.vibrate) {
                     try { navigator.vibrate(30); } catch (_) {}
                 }
+                if (msg && typeof window.__serviceHubFlashToast === 'function') {
+                    window.__serviceHubFlashToast(msg, false, ok ? 'ok' : 'warn');
+                }
             };
             try {
                 if (window.__firestoreQuotaBlocked || !user || !user.uid || !db) {
-                    finish(false);
+                    finish(false, 'Cloud non disponibile (login o quota).');
                     return;
                 }
 
@@ -24496,10 +24558,6 @@ window.updateStoricoButton = async function() {
                 window.__cloudPlantHydrated = true;
                 window.__rapportiniCloudHydrated = true;
 
-                if (typeof window.saveActiveRapportinoFromUI === 'function') window.saveActiveRapportinoFromUI();
-                if (typeof window.persistNotturnoStoccaggioToRapportino === 'function') window.persistNotturnoStoccaggioToRapportino();
-                if (typeof window.flushRapportiniBackupNow === 'function') window.flushRapportiniBackupNow();
-
                 const plantRef = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
                 const rapportiniRef = doc(db, 'artifacts', appId, 'sharedDial', 'rapportini');
                 const fetchFromServer = function (ref) {
@@ -24512,57 +24570,50 @@ window.updateStoricoButton = async function() {
                 ]);
 
                 let pulledPlant = false;
-                let pushedPlant = false;
+                let pulledRapportini = false;
 
                 if (plantSnap && plantSnap.exists()) {
                     let serverStripped = window.__stripRapportinoKeysFromPlantPayload(plantSnap.data());
-                    const serverRev = __plantPayloadRevision(serverStripped);
-                    const serverMs = __plantLastUpdateMs(serverStripped.lastUpdate);
-                    const localPayload = typeof window.buildPlantPayloadFromDOM === 'function'
-                        ? window.buildPlantPayloadFromDOM({ bumpRevision: false }) : {};
-                    const localRev = __plantPayloadRevision(localPayload);
-                    const localBackup = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
-                    const localMs = __plantLastUpdateMs(localPayload.lastUpdate)
-                        || (localBackup ? __plantLastUpdateMs(localBackup.lastUpdate) : null);
-
-                    const serverIsNewer = serverRev > localRev
-                        || (serverMs != null && localMs != null && serverMs > localMs + 200);
-                    const localIsNewer = localRev > serverRev
-                        || (localMs != null && serverMs != null && localMs > serverMs + 200);
-
-                    if (localIsNewer && !serverIsNewer) {
-                        if (typeof window.__forcePushPlantToCloudNow === 'function') {
-                            await window.__forcePushPlantToCloudNow();
-                            pushedPlant = true;
-                        }
-                    } else {
-                        if (typeof window.__mergeOsmosiFieldsFromSources === 'function') {
-                            serverStripped = window.__mergeOsmosiFieldsFromSources(serverStripped);
-                        }
-                        __applyRemotePlantPayload(serverStripped, { force: true, quick: true });
-                        pulledPlant = true;
+                    if (typeof window.__mergeOsmosiFieldsFromSources === 'function') {
+                        serverStripped = window.__mergeOsmosiFieldsFromSources(serverStripped);
                     }
+                    __applyRemotePlantPayload(serverStripped, { force: true, quick: false });
+                    pulledPlant = true;
                 }
 
                 if (rappSnap && rappSnap.exists()) {
                     const serverStore = rappSnap.data();
-                    const localStore = typeof window.loadRapportiniStore === 'function'
-                        ? window.loadRapportiniStore() : null;
-                    const serverMs = typeof window.parseRapportinoUpdatedMs === 'function'
-                        ? window.parseRapportinoUpdatedMs(serverStore.lastUpdate) : 0;
-                    const localMs = localStore && typeof window.parseRapportinoUpdatedMs === 'function'
-                        ? window.parseRapportinoUpdatedMs(localStore.lastUpdate) : 0;
-
-                    if (localMs > serverMs + 200) {
-                        if (typeof window.flushRapportiniPushToCloudNow === 'function') {
-                            await window.flushRapportiniPushToCloudNow();
-                        }
-                    } else if (typeof window.applyRapportiniStoreFromCloud === 'function') {
+                    if (typeof window.applyRapportiniStoreFromCloud === 'function') {
                         window.applyRapportiniStoreFromCloud(serverStore, { force: true });
                         if (window.__rapportiniStore && typeof window.saveRapportiniStore === 'function') {
                             window.saveRapportiniStore(window.__rapportiniStore, { pushCloud: false });
                         }
+                        if (typeof window.flushRapportiniBackupNow === 'function') {
+                            window.flushRapportiniBackupNow();
+                        }
+                        pulledRapportini = true;
                     }
+                }
+
+                if (typeof window.hydrateNotturnoStoccaggioInputsFromStore === 'function') {
+                    window.hydrateNotturnoStoccaggioInputsFromStore({ force: true });
+                }
+                if (typeof window.getMergedStoccaggioSnapshotFromStore === 'function' &&
+                    typeof window.setAllPlantInputsById === 'function') {
+                    const mergedSt = window.getMergedStoccaggioSnapshotFromStore();
+                    if (mergedSt) {
+                        Object.keys(mergedSt).forEach(function (fid) {
+                            window.setAllPlantInputsById(fid, mergedSt[fid], { skipChangeEvent: true });
+                        });
+                    }
+                }
+                if (typeof window.__copyStoccSharedLevelsToAcqua === 'function') {
+                    window.__copyStoccSharedLevelsToAcqua();
+                }
+                if (typeof window.saveNotturnoStoccLocalSnapshot === 'function' &&
+                    typeof window.getMergedStoccaggioSnapshotFromStore === 'function') {
+                    const mergedSt = window.getMergedStoccaggioSnapshotFromStore();
+                    if (mergedSt) window.saveNotturnoStoccLocalSnapshot(mergedSt);
                 }
 
                 if (pulledPlant && typeof window.__verifyRemotePlantFieldsApplied === 'function'
@@ -24577,23 +24628,29 @@ window.updateStoricoButton = async function() {
                 if (typeof window.syncChemCountsFromFirestore === 'function') {
                     setTimeout(function () { window.syncChemCountsFromFirestore({ pushCloud: false }); }, 0);
                 }
-                if (pushedPlant && typeof window.schedulePublicDigitalSnapshotSync === 'function') {
-                    window.schedulePublicDigitalSnapshotSync();
-                }
-                if (pulledPlant) {
-                    requestAnimationFrame(function () {
-                        if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
-                        if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
-                        if (typeof window.syncFiltraPanelForActiveRapportino === 'function') {
-                            window.syncFiltraPanelForActiveRapportino();
-                        }
-                    });
-                }
+                requestAnimationFrame(function () {
+                    if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
+                    if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
+                    if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
+                    if (typeof window.syncFiltraPanelForActiveRapportino === 'function') {
+                        window.syncFiltraPanelForActiveRapportino();
+                    }
+                    if (typeof window.syncNotturnoStoccaggioPanel === 'function') {
+                        window.syncNotturnoStoccaggioPanel();
+                    }
+                });
 
-                finish(true);
+                if (!pulledPlant && !pulledRapportini) {
+                    finish(false, 'Nessun dato trovato sul cloud.');
+                    return;
+                }
+                var parts = [];
+                if (pulledPlant) parts.push('impianto');
+                if (pulledRapportini) parts.push('rapportini e stoccaggio');
+                finish(true, 'Scaricato dal cloud: ' + parts.join(' + ') + '.');
             } catch (e) {
                 console.warn('[ServiceHub] forceFirestoreSyncNow:', e && e.message);
-                finish(false);
+                finish(false, 'Errore aggiornamento dal cloud.');
             }
         };
 
@@ -36216,7 +36273,7 @@ window.convertToHtml = async () => {
                     <p id="app-build-tag" class="text-[9px] font-bold text-emerald-600 dark:text-emerald-400 uppercase mt-1" onclick="window.applyAppUpdate()" title="Tocca per aggiornare all'ultima versione" style="cursor:pointer;text-decoration:underline;text-underline-offset:2px;">Build …</p>
                 </div>
                 <div class="settings-header-actions flex items-center gap-2 shrink-0">
-                    <button type="button" id="btn-force-firestore-sync" class="settings-force-sync-btn" onclick="window.forceFirestoreSyncNow()" aria-label="Allinea con Firestore" title="Scarica gli ultimi dati da Firestore; invia solo se questo dispositivo ha dati più recenti">
+                    <button type="button" id="btn-force-firestore-sync" class="settings-force-sync-btn" onclick="window.forceFirestoreSyncNow()" aria-label="Scarica dal cloud" title="Scarica dal cloud impianto, rapportini e stoccaggio (serbatoi) — aggiorna questo dispositivo">
                         <svg class="settings-force-sync-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
                             <path d="M4.5 14A7.5 7.5 0 0 1 12 4.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"></path>
                             <path d="M4.5 14V9h5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"></path>

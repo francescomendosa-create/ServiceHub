@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v429';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v430';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -3215,10 +3215,17 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!backupData || typeof backupData !== 'object') return serverData;
             const sMs = __plantLastUpdateMs(serverData.lastUpdate);
             const bMs = __plantLastUpdateMs(backupData.lastUpdate);
+            let picked;
             if (sMs != null && bMs != null) {
-                return bMs >= sMs ? backupData : serverData;
+                picked = bMs >= sMs ? backupData : serverData;
+            } else {
+                picked = __plantPayloadRevision(backupData) >= __plantPayloadRevision(serverData) ? backupData : serverData;
             }
-            return __plantPayloadRevision(backupData) >= __plantPayloadRevision(serverData) ? backupData : serverData;
+            const alt = picked === serverData ? backupData : serverData;
+            if (typeof window.__mergeMissingPlantStatusFromAlt === 'function') {
+                picked = window.__mergeMissingPlantStatusFromAlt(picked, alt);
+            }
+            return picked;
         };
 
         const __writePlantLocalBackup = function (data) {
@@ -4588,6 +4595,105 @@ window.colorPreviewNumber = function(tankName, value) {
             for (var gi = 0; gi < guardKeys.length; gi++) {
                 var last = window.__plantFieldEditMs[guardKeys[gi]];
                 if (last && Date.now() - last < window.__PLANT_REMOTE_GUARD_MS) return false;
+            }
+            return true;
+        };
+
+        window.__touchPlantStatusEdit = function (id) {
+            if (!id) return;
+            window.__plantFieldEditMs = window.__plantFieldEditMs || {};
+            window.__plantFieldEditMs[id] = Date.now();
+        };
+
+        window.__shouldApplyRemoteStatusValue = function (id) {
+            if (!id) return true;
+            var last = window.__plantFieldEditMs && window.__plantFieldEditMs[id];
+            if (last && Date.now() - last < window.__PLANT_REMOTE_GUARD_MS) return false;
+            return true;
+        };
+
+        window.__isPlantStatusStorageKey = function (k, v) {
+            if (!k || v == null) return false;
+            if (k === 'vwt-label-text' || k === 'osmosi-label-text') return false;
+            if (typeof v === 'object') {
+                return v.text != null && (
+                    v.class != null ||
+                    k.indexOf('stat-') === 0 ||
+                    k.indexOf('sa-') === 0 ||
+                    /^h(105A|105B|mk10600)$/i.test(k)
+                );
+            }
+            if (typeof v === 'string') {
+                return /^(FERMO|MARCIA|FERMA)$/i.test(String(v).trim()) && (
+                    k.indexOf('stat-') === 0 ||
+                    k.indexOf('sa-') === 0 ||
+                    /^h(105A|105B|mk10600)$/i.test(k)
+                );
+            }
+            return false;
+        };
+
+        window.__mergeMissingPlantStatusFromAlt = function (primary, secondary) {
+            if (!primary || !secondary) return primary;
+            const out = Object.assign({}, primary);
+            Object.keys(secondary).forEach(function (k) {
+                if (out[k] !== undefined && out[k] !== null) return;
+                if (window.__isPlantStatusStorageKey(k, secondary[k])) out[k] = secondary[k];
+            });
+            return out;
+        };
+
+        window.__applyPlantStatusFromStored = function (el, val, opts) {
+            opts = opts || {};
+            if (!el || val == null) return false;
+            const id = el.id;
+            const force = opts.force === true;
+            if (!force && id && typeof window.__shouldApplyRemoteStatusValue === 'function' &&
+                !window.__shouldApplyRemoteStatusValue(id)) {
+                return false;
+            }
+            let html = null;
+            let className = null;
+            let state = null;
+            if (typeof val === 'object') {
+                if (val.text != null) {
+                    const txt = String(val.text);
+                    if (txt.indexOf('<') >= 0) html = txt;
+                    else state = txt.trim().toUpperCase();
+                }
+                if (val.class) className = val.class;
+                if (val.style != null) {
+                    if (val.style) el.setAttribute('style', val.style);
+                    else el.removeAttribute('style');
+                }
+            } else if (typeof val === 'string') {
+                state = val.trim().toUpperCase();
+            }
+            if (html) {
+                el.innerHTML = html;
+                if (className) el.className = className;
+            } else if (state) {
+                const isMarcia = state.indexOf('MARCIA') >= 0;
+                if (el.classList && el.classList.contains('status-cell-btn')) {
+                    el.innerText = isMarcia ? 'MARCIA' : 'FERMO';
+                    el.className = 'status-cell-btn ' + (isMarcia ? 'bg-marcia' : 'bg-fermo');
+                } else if (el.classList && el.classList.contains('status-header')) {
+                    const comp = (window.BLOWDOWN_COMPRESSORS || []).find(function (c) { return c.headerId === id; });
+                    if (comp && typeof window.setBluedownCompressorHeader === 'function') {
+                        window.setBluedownCompressorHeader(comp, isMarcia ? 'MARCIA' : 'FERMO');
+                    } else {
+                        el.innerText = isMarcia ? 'MARCIA' : 'FERMO';
+                        if (className) el.className = className;
+                    }
+                } else {
+                    el.innerText = isMarcia ? 'MARCIA' : 'FERMO';
+                    if (className) el.className = className;
+                }
+            } else if (className) {
+                el.className = className;
+            }
+            if (id === 'stat-f' && typeof window.rigenUpdateFaseLabels === 'function') {
+                window.rigenUpdateFaseLabels();
             }
             return true;
         };
@@ -10939,12 +11045,19 @@ window.updateStoricoButton = async function() {
                         el.value = strVal;
                         if ((fieldId === 'inp-osmosi' || id === 'osmosi') && typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(el);
                     }
+                } else if (el.classList && (el.classList.contains('status-cell-btn') || el.classList.contains('status-header'))) {
+                    if (typeof window.__applyPlantStatusFromStored === 'function') {
+                        window.__applyPlantStatusFromStored(el, val, { force: forcePlant });
+                    }
                 }
                 else if (typeof val === 'object') {
                     if (id === 'vwt-label-text' && typeof window.__applyVwtLabelFromStored === 'function') {
                         window.__applyVwtLabelFromStored(el, val);
                     } else if (id === 'osmosi-label-text') {
                         /* gestito sopra / in reconcile */
+                    } else if (typeof window.__applyPlantStatusFromStored === 'function' &&
+                        (el.classList.contains('status-cell-btn') || el.classList.contains('status-header'))) {
+                        window.__applyPlantStatusFromStored(el, val, { force: forcePlant });
                     } else {
                         el.innerHTML = val.text;
                         el.className = val.class;
@@ -25184,11 +25297,15 @@ window.updateStoricoButton = async function() {
             const active = el.innerText.trim() === "FERMO";
             el.innerText = active ? "MARCIA" : "FERMO";
             el.className = `status-cell-btn ${active ? 'bg-marcia' : 'bg-fermo'}`;
+            if (typeof window.__touchPlantStatusEdit === 'function') window.__touchPlantStatusEdit(id);
             if (typeof window.updateBoilerInputs === 'function') window.updateBoilerInputs();
             if (id === 'stat-f' && typeof window.rigenUpdateFaseLabels === 'function') {
                 window.rigenUpdateFaseLabels();
             }
             window.saveData();
+            if (typeof window.__flushPlantCloudSaveNow === 'function') {
+                void window.__flushPlantCloudSaveNow(true);
+            }
             if (typeof window.flushPublicDigitalSnapshotNow === 'function') {
                 window.flushPublicDigitalSnapshotNow();
             }
@@ -25258,6 +25375,10 @@ window.updateStoricoButton = async function() {
             }
 
             window.saveData();
+            if (typeof window.__touchPlantStatusEdit === 'function') window.__touchPlantStatusEdit(headerId);
+            if (typeof window.__flushPlantCloudSaveNow === 'function') {
+                void window.__flushPlantCloudSaveNow(true);
+            }
             if (typeof window.flushPublicDigitalSnapshotNow === 'function') {
                 window.flushPublicDigitalSnapshotNow();
             }

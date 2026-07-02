@@ -877,7 +877,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v438';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v442';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -13850,6 +13850,11 @@ window.updateStoricoButton = async function() {
                     window.RAPPORTINO_NOTTURNO_FIELD_TO_KEYS[r.id]) || [];
                 mirrorKeys.forEach(function (mk) {
                     if (allowed[mk]) store[dateKey][mk] = v;
+                });
+                var linkedKeys = (window.RAPPORTINO_NOTTURNO_LINKED_KEYS &&
+                    window.RAPPORTINO_NOTTURNO_LINKED_KEYS[r.id]) || [];
+                linkedKeys.forEach(function (lk) {
+                    if (allowed[lk]) store[dateKey][lk] = v;
                 });
                 n++;
             });
@@ -39059,8 +39064,11 @@ window.CONSUMI_PRODUZIONE_DCS_ROWS = [
     { riga: 8, dcsCode: '9121FQI32', description: 'Metano Fiscale SG-9400A', valueCol: 'oggi', targets: [] },
     { riga: 9, dcsCode: 'FQI10502', description: 'TOT. GIORN. GAS A RETE M', valueCol: 'ieri', notturnoIeri: true,
         targets: [{ rapportinoKey: 'og-rec-gas', label: 'Recupero gas B.D. (Offgas)' }] },
-    { riga: 10, dcsCode: 'FQ-102', description: 'PORTATA GASDOTTO N2', valueCol: 'ieri', notturnoIeri: true,
-        targets: [{ rapportinoKey: 'az-prod-gas', label: 'Produzione gas azoto' }] },
+    { riga: 10, dcsCode: 'FQ-102', description: 'PORTATA GASDOTTO N2',
+        dcsCodeAliases: ['FQ102', 'FQ 102', 'FQ-I02'],
+        descriptionAliases: ['PORTATA GASDOTTO N2', 'GASDOTTO N2', 'PORTATA GASDOTTO N 2', 'GASDOTTO AZOTO'],
+        valueCol: 'ieri', notturnoIeri: true,
+        targets: [{ rapportinoKey: 'az-acq-pipe', label: 'Acquisti via pipeline (Sol)' }] },
     { riga: 11, dcsCode: 'FQ-202', description: 'PORTATA GASDOTTO O2', valueCol: 'ieri', notturnoIeri: true,
         targets: [{ rapportinoKey: 'sol-o2', label: 'Portata O2 (Sol)' }] },
     { riga: 12, dcsCode: 'FQ-901', description: 'PORTATA H2O RAFFR. INGR.', valueCol: 'ieri', notturnoIeri: true,
@@ -39082,10 +39090,12 @@ window.CONSUMI_PRODUZIONE_DCS_ROWS = [
         targets: [
             { fieldId: 'reintegro', rapportinoKey: 'scam-reint', label: 'Reintegro Scam (Torre Scam)' }
         ] },
-    { riga: 20, dcsCode: '9102-FQI-2', description: 'AZOTO AD S.A.2', valueCol: 'ieri', notturnoIeri: true,
+    { riga: 20, dcsCode: '9102-FQI-2', description: 'AZOTO AD S.A.2',
+        dcsCodeAliases: ['9102FQI2', '9102-FQI2', '9102 FQI 2', '9102-FQ1-2'],
+        descriptionAliases: ['AZOTO AD S.A.2', 'AZOTO AD SA2', 'AZOTO AD S A 2', 'AZOTO S.A.2'],
+        valueCol: 'ieri', notturnoIeri: true,
         targets: [
-            { fieldId: 'val-az-n2', rapportinoKey: 'chpp-azoto', label: 'Azoto CHPP' },
-            { rapportinoKey: 'az-cons-serv', label: 'Consumo Servizi azoto' }
+            { rapportinoKey: 'az-cons-serv', fieldId: 'val-az-n2', label: 'Consumo Servizi (Azoto AD S.A.2)' }
         ] },
     { riga: 21, dcsCode: 'NW-TOT-STAB-UPDC', dcsCodeAliases: ['NW-TOT-STAB-UPDCNUOVO', 'NW-TOT-STAB-UPDCVIRTUALE'],
         description: 'NUOVO TOT.DI STAB.UPDC VIRTUALE', valueCol: 'ieri', notturnoIeri: true,
@@ -39117,6 +39127,57 @@ window.normalizeConsumiTotalizzatoreKey = function(code) {
     return String(code || '').toUpperCase().replace(/\s+/g, '').replace(/-/g, '');
 };
 
+window.consumiTotalizzatoreMatchesLine = function(codeNorm, lineNorm) {
+    if (!codeNorm || !lineNorm) return false;
+    var idx = lineNorm.indexOf(codeNorm);
+    if (idx < 0) return false;
+    var after = lineNorm.charAt(idx + codeNorm.length);
+    if (after && /\d/.test(after)) return false;
+    return true;
+};
+
+window.findConsumiProduzioneRowChunk = function(text, lines, rowDef) {
+    if (!rowDef) return '';
+    var code = rowDef.dcsCode;
+    var aliases = [code].concat(rowDef.dcsCodeAliases || []);
+    var aliasNorms = aliases.map(function(a) { return window.normalizeConsumiTotalizzatoreKey(a); }).filter(Boolean);
+    var stripOpts = { code: code, aliases: rowDef.dcsCodeAliases || [] };
+    var li;
+
+    for (li = 0; li < lines.length; li++) {
+        var lineNorm = window.normalizeConsumiTotalizzatoreKey(lines[li]);
+        var hit = aliasNorms.some(function(an) {
+            return window.consumiTotalizzatoreMatchesLine(an, lineNorm);
+        });
+        if (!hit) continue;
+        return typeof window.buildConsumiProduzioneRowChunk === 'function'
+            ? window.buildConsumiProduzioneRowChunk(lines, li, aliasNorms, stripOpts)
+            : lines[li];
+    }
+
+    var descPats = [rowDef.description].concat(rowDef.descriptionAliases || []).filter(Boolean);
+    for (var di = 0; di < descPats.length; di++) {
+        var pat = String(descPats[di]).toUpperCase().replace(/\s+/g, ' ').trim();
+        if (!pat) continue;
+        for (li = 0; li < lines.length; li++) {
+            if (lines[li].toUpperCase().replace(/\s+/g, ' ').indexOf(pat) < 0) continue;
+            var chunkByDesc = typeof window.buildConsumiProduzioneRowChunk === 'function'
+                ? window.buildConsumiProduzioneRowChunk(lines, li, aliasNorms, stripOpts)
+                : lines[li];
+            var numsDesc = window.extractConsumiRowDailyNumbers(chunkByDesc, stripOpts);
+            if (numsDesc.length >= 3) return chunkByDesc;
+        }
+        var reDesc = new RegExp(pat.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+') + '[\\s\\S]{0,160}', 'i');
+        var mDesc = String(text || '').match(reDesc);
+        if (mDesc) return mDesc[0];
+    }
+
+    var esc = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/-/g, '[-\\s]?');
+    var re = new RegExp(esc + '[\\s\\S]{0,160}', 'i');
+    var m = String(text || '').match(re);
+    return m ? m[0] : '';
+};
+
 window.getConsumiProduzioneRowByCode = function(code) {
     var k = window.normalizeConsumiTotalizzatoreKey(code);
     if (!k) return null;
@@ -39141,23 +39202,96 @@ window.extractNumbersFromConsumiOcrLine = function(line) {
     return out;
 };
 
+/** Rimuove codici totalizzatore dal testo riga prima dell'estrazione numeri (evita 9121 da 9121FQI5). */
+window.stripConsumiTotalizzatoreFromChunk = function(chunk, code, aliases) {
+    var s = String(chunk || '');
+    [code].concat(aliases || []).forEach(function(a) {
+        if (!a) return;
+        var esc = String(a).replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/-/g, '[-\\s]?');
+        s = s.replace(new RegExp(esc, 'gi'), ' ');
+    });
+    return s.replace(/\s+/g, ' ').trim();
+};
+
+/** Primi numeri di riga: VALORE | OGGI | IERI | MESE ATT | MESE PREC (esclude ANNO). */
+window.extractConsumiRowDailyNumbers = function(line, opts) {
+    opts = opts || {};
+    var text = String(line || '');
+    if (opts.code) {
+        text = window.stripConsumiTotalizzatoreFromChunk(text, opts.code, opts.aliases);
+    }
+    return window.extractNumbersFromConsumiOcrLine(text).slice(0, 5);
+};
+
 window.pickConsumiProduzioneColumnValue = function(nums, valueCol) {
     if (!nums || !nums.length) return null;
     var col = valueCol || 'ieri';
+    var daily = nums.slice(0, 5);
     if (col === 'ieri') {
-        if (nums.length >= 3) return nums[2];
-        if (nums.length === 2) return nums[1];
-        return nums[0];
+        if (daily.length >= 3) return daily[2];
+        return null;
     }
     if (col === 'oggi') {
-        if (nums.length >= 2) return nums[1];
-        return nums[nums.length - 1];
+        if (daily.length >= 2) return daily[1];
+        return daily[daily.length - 1];
     }
-    return nums[nums.length - 1];
+    return daily[daily.length - 1];
 };
 
-window.pushConsumiProduzioneTargets = function(readings, used, allowed, rowDef, val, code, valCol, confidence) {
+/** Rapportino notturno: solo colonna IERI — rifiuta OGGI, portata (VALORE) e valori ambigui. */
+window.isConsumiProduzioneWrongNotturnoColumn = function(val, ctx) {
+    ctx = ctx || {};
+    if (val == null || val === '') return true;
+    var fixed = window.fixTotalizerOcrValue(val);
+    if (!window.isValidTotalizerOcrValue(fixed)) return true;
+    var item = ctx.item;
+    if (item) {
+        if (item.oggi != null && fixed === window.fixTotalizerOcrValue(item.oggi)) return true;
+        if (item.valore != null && fixed === window.fixTotalizerOcrValue(item.valore)) return true;
+        if (item.value != null && fixed === window.fixTotalizerOcrValue(item.value)) return true;
+    }
+    var nums = ctx.nums || [];
+    if (nums.length >= 2 && fixed === window.fixTotalizerOcrValue(nums[1])) return true;
+    if (nums.length >= 1 && fixed === window.fixTotalizerOcrValue(nums[0])) return true;
+    return false;
+};
+
+window.resolveConsumiProduzioneNotturnoValue = function(ctx) {
+    ctx = ctx || {};
+    var val = null;
+    if (ctx.item) {
+        if (ctx.item.ieri == null || String(ctx.item.ieri).trim() === '') return null;
+        val = ctx.item.ieri;
+    } else if (ctx.nums && ctx.nums.length) {
+        val = window.pickConsumiProduzioneColumnValue(ctx.nums, 'ieri');
+    }
+    if (val == null) return null;
+    if (typeof val === 'number') val = String(val);
+    val = window.fixTotalizerOcrValue(val);
+    if (!window.isValidTotalizerOcrValue(val)) return null;
+    if (window.isConsumiProduzioneWrongNotturnoColumn(val, ctx)) return null;
+    return val;
+};
+
+window.buildConsumiProduzioneRowChunk = function(lines, startIdx, aliasNorms, stripOpts) {
+    if (!lines || startIdx < 0 || startIdx >= lines.length) return '';
+    var chunk = lines[startIdx];
+    for (var li = startIdx + 1; li < Math.min(lines.length, startIdx + 4); li++) {
+        if (aliasNorms.some(function(an) {
+            return an && window.normalizeConsumiTotalizzatoreKey(lines[li]).indexOf(an) >= 0;
+        })) break;
+        var nums = window.extractConsumiRowDailyNumbers
+            ? window.extractConsumiRowDailyNumbers(chunk, stripOpts || {})
+            : window.extractNumbersFromConsumiOcrLine(chunk);
+        if (nums.length >= 3) break;
+        chunk += ' ' + lines[li];
+    }
+    return chunk;
+};
+
+window.pushConsumiProduzioneTargets = function(readings, used, allowed, rowDef, val, code, valCol, confidence, ctx) {
     if (!rowDef || !val || !window.isValidTotalizerOcrValue(val)) return;
+    if (valCol === 'ieri' && window.isConsumiProduzioneWrongNotturnoColumn(val, ctx || {})) return;
     var colLabel = valCol === 'ieri' ? 'IERI' : 'OGGI';
     (rowDef.targets || []).forEach(function(t) {
         [t.fieldId, t.rapportinoKey].forEach(function(id) {
@@ -39184,7 +39318,7 @@ window.matchConsumiProduzioneFromOcrText = function(ocrText, fields, opts) {
     var rows = notturnoOnly ? window.getNotturnoConsumiProduzioneDcsRows() : window.getConsumiProduzioneDcsRows();
     if (!rows.length) return [];
     var looksLike = window.isDcsConsumiProduzioneScreen(text, null) ||
-        /9121FQI5|FQI10502|992[-\s]?FQI|996[-\s]?FQI|9102[-\s]?FQI|FQI-M3-ATTUA|SSL_ELENCO_TOT/i.test(text);
+        /9121FQI5|FQI10502|992[-\s]?FQI|996[-\s]?FQI|9102[-\s]?FQI|FQ[-\s]?102|FQ[-\s]?202|FQI-M3-ATTUA|SSL_ELENCO_TOT/i.test(text);
     if (!looksLike) return [];
     var allowed = {};
     (fields || []).forEach(function(f) { if (f && f.id) allowed[f.id] = true; });
@@ -39195,35 +39329,22 @@ window.matchConsumiProduzioneFromOcrText = function(ocrText, fields, opts) {
     rows.forEach(function(rowDef) {
         if (!rowDef || !(rowDef.targets || []).length) return;
         var code = rowDef.dcsCode;
-        var codeNorm = window.normalizeConsumiTotalizzatoreKey(code);
-        var aliases = [code].concat(rowDef.dcsCodeAliases || []);
-        var aliasNorms = aliases.map(function(a) { return window.normalizeConsumiTotalizzatoreKey(a); }).filter(Boolean);
-        var chunk = '';
-        for (var li = 0; li < lines.length; li++) {
-            var lineNorm = window.normalizeConsumiTotalizzatoreKey(lines[li]);
-            var hit = aliasNorms.some(function(an) { return an && lineNorm.indexOf(an) >= 0; });
-            if (!hit) continue;
-            chunk = lines[li];
-            if (li + 1 < lines.length && !aliasNorms.some(function(an) {
-                return window.normalizeConsumiTotalizzatoreKey(lines[li + 1]).indexOf(an) >= 0;
-            })) {
-                chunk += ' ' + lines[li + 1];
-            }
-            break;
-        }
-        if (!chunk) {
-            var esc = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/-/g, '[-\\s]?');
-            var re = new RegExp(esc + '[\\s\\S]{0,120}', 'i');
-            var m = text.match(re);
-            if (m) chunk = m[0];
-        }
+        var chunk = typeof window.findConsumiProduzioneRowChunk === 'function'
+            ? window.findConsumiProduzioneRowChunk(text, lines, rowDef)
+            : '';
         if (!chunk) return;
-        var nums = window.extractNumbersFromConsumiOcrLine(chunk);
+        var nums = window.extractConsumiRowDailyNumbers
+            ? window.extractConsumiRowDailyNumbers(chunk, { code: code, aliases: rowDef.dcsCodeAliases })
+            : window.extractNumbersFromConsumiOcrLine(
+                window.stripConsumiTotalizzatoreFromChunk(chunk, code, rowDef.dcsCodeAliases)
+            );
         var valCol = window.getConsumiProduzioneValueColumn
             ? window.getConsumiProduzioneValueColumn(rowDef, notturnoOnly)
             : (notturnoOnly ? 'ieri' : (rowDef.valueCol || 'oggi'));
-        var val = window.pickConsumiProduzioneColumnValue(nums, valCol);
-        window.pushConsumiProduzioneTargets(readings, used, allowed, rowDef, val, code, valCol, 'media');
+        var val = notturnoOnly
+            ? window.resolveConsumiProduzioneNotturnoValue({ nums: nums, item: null })
+            : window.pickConsumiProduzioneColumnValue(nums, valCol);
+        window.pushConsumiProduzioneTargets(readings, used, allowed, rowDef, val, code, valCol, 'media', { nums: nums });
     });
     return readings;
 };
@@ -39234,7 +39355,7 @@ window.isDcsConsumiProduzioneScreen = function(raw, json) {
     if (!t) return false;
     if (/REPORT\s*CONSUMI\s*E\s*PRODUZIONE/.test(t)) return true;
     if (/SSL_ELENCO_TOT/.test(t) && /TOTALIZZATORI/.test(t)) return true;
-    if (/TOTALIZZATORI/.test(t) && /DESCRIZIONE/.test(t) && /9121FQI5|FQI10502|992-FQI-1G|996-FQI-14A|9102-FQI|FQI-M3-ATTUA/.test(t)) return true;
+    if (/TOTALIZZATORI/.test(t) && /DESCRIZIONE/.test(t) && /9121FQI5|FQI10502|992-FQI-1G|996-FQI-14A|9102-FQI|FQ-102|FQ-202|FQI-M3-ATTUA/.test(t)) return true;
     return false;
 };
 
@@ -39258,7 +39379,7 @@ window.buildGeminiConsumiProduzionePrompt = function(opts) {
         'LAYOUT COLONNE (sinistra → destra):\n' +
         'TOTALIZZATORI | DESCRIZIONE | VALORE | U.M. | OGGI | IERI | U.M. | MESE ATT. | MESE PREC. | ANNO ATT. | ANNO PREC.\n\n' +
         'REGOLE CRITICHE:\n' +
-        '1) Per il rapportino notturno usa SEMPRE e SOLO la colonna IERI (totalizzatore di ieri). MAI OGGI, MAI VALORE (portata istantanea Sm3/h, t/h, kg/h).\n' +
+        '1) TUTTE le righe mappate al rapportino notturno devono usare SOLO la colonna IERI (totalizzatore di ieri). MAI OGGI, MAI VALORE (portata istantanea Sm3/h, t/h, kg/h). Nessuna eccezione.\n' +
         '2) Ogni valore appartiene alla STESSA riga orizzontale del codice TOTALIZZATORI.\n' +
         '3) Segui l\'ordine righe dall\'alto verso il basso (riga 1 = prima riga dati sotto intestazione).\n' +
         '4) Conferma ogni riga con codice TOTALIZZATORE + DESCRIZIONE prima di assegnare il numero.\n' +
@@ -39268,12 +39389,17 @@ window.buildGeminiConsumiProduzionePrompt = function(opts) {
         'MAPPATURA RIGHE → RAPPORTINO NOTTURNO (colonna IERI):\n' + tableLines + '\n\n' +
         'JSON (senza markdown):\n' +
         '{"tipo":"consumi-produzione","righe":[' +
-        '{"riga":1,"totalizzatore":"9121FQI5","descrizione":"Metano A","ieri":"23734.96","rapportino_key":"sga-ch4"},' +
-        '{"riga":4,"totalizzatore":"9121FQI21","descrizione":"Acqua alim A","ieri":"406.84","rapportino_key":"sga-h2o"},' +
-        '{"riga":5,"totalizzatore":"9121FQI22","descrizione":"Vapore A","ieri":"303.61","rapportino_key":"sga-vap"},' +
-        '{"riga":9,"totalizzatore":"FQI10502","descrizione":"TOT. GIORN. GAS A RETE M","ieri":"3166.44","rapportino_key":"og-rec-gas"},' +
-        '{"riga":19,"totalizzatore":"992-FQI-1G","descrizione":"REINTEGRO SCAM","ieri":"375.28","rapportino_key":"scam-reint"}' +
+        '{"riga":1,"totalizzatore":"9121FQI5","descrizione":"Metano A","valore":"770.34","oggi":"143.02","ieri":"19558.98","rapportino_key":"sga-ch4"},' +
+        '{"riga":4,"totalizzatore":"9121FQI21","descrizione":"Acqua alim A","ieri":"405.96","rapportino_key":"sga-h2o"},' +
+        '{"riga":5,"totalizzatore":"9121FQI22","descrizione":"Vapore A","ieri":"238.24","rapportino_key":"sga-vap"},' +
+        '{"riga":9,"totalizzatore":"FQI10502","descrizione":"TOT. GIORN. GAS A RETE M","ieri":"36628.81","rapportino_key":"og-rec-gas"},' +
+        '{"riga":10,"totalizzatore":"FQ-102","descrizione":"PORTATA GASDOTTO N2","ieri":"5678.90","rapportino_key":"az-acq-pipe"},' +
+        '{"riga":19,"totalizzatore":"992-FQI-1G","descrizione":"REINTEGRO SCAM","ieri":"363.62","rapportino_key":"scam-reint"},' +
+        '{"riga":20,"totalizzatore":"9102-FQI-2","descrizione":"AZOTO AD S.A.2","ieri":"1234.56","rapportino_key":"az-cons-serv"}' +
         ']}\n' +
+        'Per Metano A (9121FQI5) il campo ieri DEVE essere 19558.98 (colonna IERI), NON 143.02 (OGGI) né 770.34 (portata).\n' +
+        'Per Azoto AD S.A.2 (9102-FQI-2) usa colonna IERI → rapportino_key "az-cons-serv" (Consumo Servizi nel riquadro AZOTO). NON confondere con 9102-FQI-1 (Consumo Pontile → az-cons-pon).\n' +
+        'Per Portata Gasdotto N2 (FQ-102) usa colonna IERI → rapportino_key "az-acq-pipe" (Acquisti via pipeline Sol nel riquadro AZOTO). NON confondere con FQ-202 (Portata O2 → sol-o2).\n' +
         'Includi solo righe visibili. ieri obbligatorio se leggibile. campo_id e rapportino_key dalla tabella sopra.';
 };
 
@@ -39332,14 +39458,17 @@ window.parseConsumiProduzioneFromJson = function(json, fields, opts) {
         if (notturnoOnly && rowDef && !(rowDef.targets || []).length) return;
         var valCol = window.getConsumiProduzioneValueColumn
             ? window.getConsumiProduzioneValueColumn(rowDef, notturnoOnly)
-            : (notturnoOnly ? 'ieri' : (rowDef && rowDef.valueCol ? rowDef.valueCol : 'oggi'));
-        var val = item[valCol];
-        if (val == null && valCol === 'ieri') val = item.ieri;
-        if (val == null && valCol === 'oggi') val = item.oggi;
-        if (notturnoOnly && val == null) val = item.ieri;
-        if (!notturnoOnly && val == null && valCol === 'oggi') val = item.oggi;
-        if (notturnoOnly && val != null && item.oggi != null && item.ieri == null && val === item.oggi) return;
-        if (val == null) val = item.valore != null ? item.valore : item.value;
+            : (notturnoOnly ? 'ieri' : (rowDef.valueCol || 'oggi'));
+        var val = null;
+        if (notturnoOnly) {
+            val = window.resolveConsumiProduzioneNotturnoValue({ item: item, nums: null });
+        } else {
+            val = item[valCol];
+            if (val == null && valCol === 'ieri') val = item.ieri;
+            if (val == null && valCol === 'oggi') val = item.oggi;
+            if (val == null) val = item.valore != null ? item.valore : item.value;
+        }
+        if (val == null) return;
         if (val != null && typeof val === 'number') val = String(val);
         val = window.fixTotalizerOcrValue(val);
         if (!window.isValidTotalizerOcrValue(val)) return;
@@ -39397,7 +39526,8 @@ window.filterConsumiProduzioneReadings = function(readings) {
 window.runConsumiProduzioneCapture = async function(imageData) {
     var fields = typeof window.buildLetturaNotturnoGiornalieroCaptureFieldMap === 'function'
         ? window.buildLetturaNotturnoGiornalieroCaptureFieldMap() : [];
-    var prompt = window.buildGeminiConsumiProduzionePrompt();
+    var consumiOpts = { notturnoOnly: true };
+    var prompt = window.buildGeminiConsumiProduzionePrompt(consumiOpts);
     var raw = '';
     var engine = 'gemini-consumi-produzione';
     var geminiOk = false;
@@ -39428,7 +39558,7 @@ window.runConsumiProduzioneCapture = async function(imageData) {
     }
 
     var readings = geminiOk ? window.filterConsumiProduzioneReadings(
-        window.extractConsumiProduzioneReadings(raw, fields)
+        window.extractConsumiProduzioneReadings(raw, fields, consumiOpts)
     ) : [];
 
     if (geminiOk && readings.length < 2) {
@@ -39441,7 +39571,7 @@ window.runConsumiProduzioneCapture = async function(imageData) {
             if (raw2 && !window.isLikelyGeminiFailureRaw(raw2)) {
                 raw = raw2;
                 readings = window.filterConsumiProduzioneReadings(
-                    window.extractConsumiProduzioneReadings(raw2, fields)
+                    window.extractConsumiProduzioneReadings(raw2, fields, consumiOpts)
                 );
                 engine = 'gemini-consumi-retry';
             }
@@ -40273,8 +40403,8 @@ window.buildGeminiNotturnoCapturePrompt = function(fields) {
         '- "dcs-overview-strumenti" se OVERVIEW STRUMENTI\n\n' +
         consumiHint + '\n\n' +
         'CAMPI RAPPORTINO (campo_id o rapportino_key):\n' + uiLines + '\n\n' +
-        'Per totalizzatori Consumi e Produzione usa colonna IERI. Per serbatoi usa LIVELLO mm.\n' +
-        'JSON: {"tipo":"consumi-produzione","righe":[{"totalizzatore":"9121FQI5","ieri":"23734.96","rapportino_key":"sga-ch4"}]}\n';
+        'Per totalizzatori Consumi e Produzione: TUTTE le righe mappate → colonna IERI soltanto (mai OGGI, mai portata). Per serbatoi usa LIVELLO mm.\n' +
+        'JSON: {"tipo":"consumi-produzione","righe":[{"totalizzatore":"9121FQI5","ieri":"23734.96","rapportino_key":"sga-ch4"},{"totalizzatore":"FQ-102","descrizione":"PORTATA GASDOTTO N2","ieri":"5678.90","rapportino_key":"az-acq-pipe"},{"totalizzatore":"9102-FQI-2","descrizione":"AZOTO AD S.A.2","ieri":"1234.56","rapportino_key":"az-cons-serv"}]}\n';
 };
 
 window.runGeminiNotturnoMultiCapture = async function(imageData, fields) {

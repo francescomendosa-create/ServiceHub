@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v414';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v415';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -13083,10 +13083,13 @@ window.updateStoricoButton = async function() {
 
         window.refreshLetturaDocView = function () {
             if (window.__letturaDocKind === 'notturno-giornaliero') {
-                if (typeof window.syncRapportinoNotturnoSnapshotFromPlant === 'function') {
-                    window.syncRapportinoNotturnoSnapshotFromPlant();
+                if (typeof window.flushRapportinoNotturnoPreviewToSnapshot === 'function') {
+                    window.flushRapportinoNotturnoPreviewToSnapshot();
                 }
-                window.renderLetturaNotturnoGiornalieroDocView();
+                if (typeof window.syncRapportinoNotturnoSnapshotFromPlant === 'function') {
+                    window.syncRapportinoNotturnoSnapshotFromPlant({ force: true });
+                }
+                window.renderLetturaNotturnoGiornalieroDocView({ skipSync: true });
             } else {
                 window.renderLetturaStoccaggioDocView();
             }
@@ -13211,6 +13214,7 @@ window.updateStoricoButton = async function() {
             'chpp-est-vap-sasol': ['inp-a-prod'],
             'hd-prod': ['cfil-produzione'],
             'scam-in-out': ['ph', 'cloro'],
+            'og-10500a': ['v105A_fic'],
             'og-10500b': ['v105B_fic'],
             'og-10600a': ['vmk10600_fic'],
             'ee-stab-agg1': ['inp-pote', 'inp-enel']
@@ -13223,6 +13227,7 @@ window.updateStoricoButton = async function() {
             'inp-off': ['chpp-offgas'],
             'inp-enel': ['pa-en-stab', 'ee-stab-agg1'],
             'inp-pote': ['ee-stab-agg1'],
+            'inp-cons': ['ee-interr'],
             'inp-vap': ['chpp-est-vap-sasol'],
             'inp-a-prod': ['sga-vap', 'chpp-est-vap-sasol'],
             'inp-d-prod': ['sgd-vap'],
@@ -13235,6 +13240,7 @@ window.updateStoricoButton = async function() {
             'cloro': ['scam-in-out'],
             'chemPass': ['chem-pass'],
             'chemHp': ['chem-hp'],
+            'cfil-produzione': ['hd-prod'],
             'v105A_fic': ['og-10500a'],
             'v105B_fic': ['og-10500b'],
             'vmk10600_fic': ['og-10600a'],
@@ -13358,38 +13364,81 @@ window.updateStoricoButton = async function() {
             ]).concat(extraPlant));
         };
 
-        window.syncRapportinoNotturnoSnapshotFromPlant = function () {
+        window.flushRapportinoNotturnoPreviewToSnapshot = function () {
+            var root = document.getElementById('letture-doc-body');
+            if (!root) return;
+            root.querySelectorAll('.rg-inp, .rg-notes-ta').forEach(function (inp) {
+                if (typeof window.saveRapportinoNotturnoPreviewCell === 'function') {
+                    window.saveRapportinoNotturnoPreviewCell(
+                        inp.getAttribute('data-rg-key') || '',
+                        inp.getAttribute('data-rg-field') || '',
+                        inp.value
+                    );
+                }
+            });
+        };
+
+        window.syncRapportinoNotturnoSnapshotFromPlant = function (opts) {
+            opts = opts || {};
+            var force = !!opts.force;
             var dateKey = window.getLetturaDocDateKey();
             var store = window.loadRapportinoNotturnoGiornalieroSnapshot();
             if (!store[dateKey]) store[dateKey] = {};
             var snap = store[dateKey];
             var changed = false;
 
-            function fillIfEmpty(key, val) {
-                if (!key || val == null || String(val).trim() === '') return;
-                if (snap[key] != null && String(snap[key]).trim() !== '') return;
-                snap[key] = String(val).trim();
-                changed = true;
+            function merge(key, val) {
+                if (!key || val == null) return;
+                var s = String(val).trim();
+                if (!s) return;
+                if (!force && snap[key] != null && String(snap[key]).trim() !== '') return;
+                if (snap[key] !== s) {
+                    snap[key] = s;
+                    changed = true;
+                }
             }
 
             window.flattenRapportinoNotturnoRows().forEach(function (row) {
                 if (!row) return;
                 if (row.key === 'note-streams') {
-                    fillIfEmpty(row.key, window.readRapportinoNotturnoCellValue(row));
+                    var notesEl = document.getElementById('report-notes');
+                    var noteLive = notesEl && notesEl.value ? String(notesEl.value).trim() : '';
+                    merge(row.key, noteLive);
+                    if (row.fieldId) merge(row.fieldId, noteLive);
                     return;
                 }
                 if (row.fieldIds && row.fieldIds.length) {
                     row.fieldIds.forEach(function (fid, idx) {
                         if (!fid) return;
                         var sk = row.key + (idx === 0 ? '-ore' : '-c' + idx);
-                        fillIfEmpty(sk, window.readRapportinoPlantFieldValue(fid));
-                        fillIfEmpty(fid, window.readRapportinoPlantFieldValue(fid));
+                        var live = window.readRapportinoPlantFieldValue(fid);
+                        merge(sk, live);
+                        merge(fid, live);
                     });
                     return;
                 }
-                var live = window.readRapportinoNotturnoCellValue(row);
-                if (row.key) fillIfEmpty(row.key, live);
-                if (row.fieldId) fillIfEmpty(row.fieldId, live);
+                if (row.fieldId) {
+                    var plantVal = window.readRapportinoPlantFieldValue(row.fieldId);
+                    merge(row.key, plantVal);
+                    merge(row.fieldId, plantVal);
+                }
+            });
+
+            Object.keys(window.RAPPORTINO_NOTTURNO_FIELD_TO_KEYS || {}).forEach(function (fid) {
+                var live = window.readRapportinoPlantFieldValue(fid);
+                if (!live) return;
+                merge(fid, live);
+                (window.RAPPORTINO_NOTTURNO_FIELD_TO_KEYS[fid] || []).forEach(function (mk) {
+                    merge(mk, live);
+                });
+            });
+
+            Object.keys(window.RAPPORTINO_NOTTURNO_LINKED_KEYS || {}).forEach(function (key) {
+                var v = snap[key];
+                if (v == null || String(v).trim() === '') return;
+                (window.RAPPORTINO_NOTTURNO_LINKED_KEYS[key] || []).forEach(function (lk) {
+                    merge(lk, v);
+                });
             });
 
             if (changed) {
@@ -13887,6 +13936,9 @@ window.updateStoricoButton = async function() {
             'td{mso-line-height-rule:exactly;border:solid windowtext 1.0pt;mso-border-alt:solid windowtext .5pt;font-size:6pt;padding:0 1.2pt;vertical-align:middle;}';
 
         window.buildLetturaNotturnoGiornalieroShareDocument = function () {
+            if (typeof window.flushRapportinoNotturnoPreviewToSnapshot === 'function') {
+                window.flushRapportinoNotturnoPreviewToSnapshot();
+            }
             var dateStr = window.formatLetturaDateIt(new Date());
             var body = window.buildLetturaNotturnoGiornalieroHtml({ forShare: true, forWord: true });
             return '<!DOCTYPE html><html xmlns:o="urn:schemas-microsoft-com:office:office" ' +
@@ -13918,9 +13970,11 @@ window.updateStoricoButton = async function() {
             return true;
         };
 
-        window.renderLetturaNotturnoGiornalieroDocView = function () {
-            if (typeof window.syncRapportinoNotturnoSnapshotFromPlant === 'function') {
-                window.syncRapportinoNotturnoSnapshotFromPlant();
+        window.renderLetturaNotturnoGiornalieroDocView = function (opts) {
+            opts = opts || {};
+            window.setLetturaDocKind('notturno-giornaliero');
+            if (!opts.skipSync && typeof window.syncRapportinoNotturnoSnapshotFromPlant === 'function') {
+                window.syncRapportinoNotturnoSnapshotFromPlant({ force: true });
             }
             var body = document.getElementById('letture-doc-body');
             if (!body) return;
@@ -36070,7 +36124,7 @@ window.convertToHtml = async () => {
         <div class="letture-doc-sheet" onclick="event.stopPropagation()">
             <div class="letture-doc-toolbar">
                 <button type="button" class="letture-doc-back" onclick="window.closeLetturaDocModal(); window.openLettureRapportiniModal && window.openLettureRapportiniModal();">← Indietro</button>
-                <div class="letture-doc-toolbar-title">Letture stoccaggio e caldaia D</div>
+                <div id="letture-doc-toolbar-title" class="letture-doc-toolbar-title">Letture stoccaggio e caldaia D</div>
                 <button type="button" class="letture-doc-close" onclick="window.closeLetturaDocModal && window.closeLetturaDocModal()" aria-label="Chiudi">X</button>
             </div>
             <div id="letture-doc-body" class="letture-doc-body"></div>

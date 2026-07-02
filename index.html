@@ -664,9 +664,32 @@ window.resolveAlarmEditorMetaForField = function (inputId, el) {
 };
 
 window.getAlarmStorageKeyForFieldId = function (fieldId, el) {
+    if (typeof window.resolveAlarmConfigStorageKey === 'function') {
+        return window.resolveAlarmConfigStorageKey(fieldId, el);
+    }
     if (!fieldId) return '';
     var meta = window.resolveAlarmEditorMetaForField(fieldId, el);
     return meta.alarmStorageKey || fieldId;
+};
+
+/** Chiave canonica per salvare/leggere soglie (sempre normalizzata, tranne cond:…). */
+window.resolveAlarmConfigStorageKey = function (inputId, el) {
+    var fid = inputId || (el && el.id) || '';
+    if (!fid) return '';
+    if (String(fid).indexOf('cond:') === 0) return fid;
+    var probe = el || document.getElementById(fid);
+    if (probe && typeof window.isConductivityAlarmInput === 'function' && window.isConductivityAlarmInput(probe)) {
+        return window.getConductivityAlarmStorageKey(probe.id);
+    }
+    if (typeof window.isConductivityOnlyFieldId === 'function' && window.isConductivityOnlyFieldId(fid)) {
+        return window.getConductivityAlarmStorageKey(fid);
+    }
+    return window.normalizeTankId(fid);
+};
+
+window.getAlarmStorageKeyForElement = function (el) {
+    if (!el || !el.id) return '';
+    return window.resolveAlarmConfigStorageKey(el.id, el);
 };
 
 window.isConductivityAlarmInput = function (el) {
@@ -674,14 +697,6 @@ window.isConductivityAlarmInput = function (el) {
     if (!window.isConductivityAlarmFieldId(el.id)) return false;
     if (typeof window.isTankLevelAlarmInput === 'function' && window.isTankLevelAlarmInput(el)) return false;
     return true;
-};
-
-window.getAlarmStorageKeyForElement = function (el) {
-    if (!el || !el.id) return '';
-    if (typeof window.isConductivityAlarmInput === 'function' && window.isConductivityAlarmInput(el)) {
-        return window.getConductivityAlarmStorageKey(el.id);
-    }
-    return el.id;
 };
 
 window.wireAlarmFieldInputListeners = function () {
@@ -862,7 +877,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v431';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v433';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -2175,18 +2190,25 @@ window.colorPreviewNumber = function(tankName, value) {
             const ref = doc(db, 'artifacts', appId, 'sharedDial', 'alarmConfig');
 
             let __lastAlarmConfigJson = '';
+            window.__lastAlarmConfigJson = '';
             __shUnsubAlarm = onSnapshot(ref, (snap) => {
                 if (window.__firestoreQuotaBlocked) return;
                 if (!snap.exists()) return;
-                const data = snap.data().config;
+                const snapMeta = snap.data() || {};
+                const data = snapMeta.config;
                 let json = '';
                 try {
                     json = JSON.stringify(data || {});
                 } catch (_) {
                     json = '';
                 }
-                if (json === __lastAlarmConfigJson) return;
+                if (json === __lastAlarmConfigJson || json === window.__lastAlarmConfigJson) return;
+                const snapTs = snapMeta.updatedAt ? Date.parse(snapMeta.updatedAt) : 0;
+                const localTs = window.APP_DB && window.APP_DB.updatedAt ? Date.parse(window.APP_DB.updatedAt) : 0;
+                const recentLocal = window.__lastLocalAlarmSaveMs && (Date.now() - window.__lastLocalAlarmSaveMs < 5000);
+                if (recentLocal && (!snapTs || (localTs && localTs >= snapTs))) return;
                 __lastAlarmConfigJson = json;
+                window.__lastAlarmConfigJson = json;
                 window.alarmConfig = data;
                 if (!window.APP_DB) window.APP_DB = { alarms: {}, updatedAt: null };
                 window.APP_DB.alarms = data;
@@ -2218,11 +2240,11 @@ window.colorPreviewNumber = function(tankName, value) {
             syncStatus: 'offline' // 'offline' | 'syncing' | 'synced' | 'conflict'
         };
         
-        /** Cache memoria (APP_DB + alarmConfig): nessuna lettura Firestore durante digitazione o colorazione. */
+        /** Cache memoria (APP_DB + alarmConfig): locale vince su cloud se stessa chiave. */
         window.getAlarmConfig = function () {
             const localData = (window.APP_DB && window.APP_DB.alarms) || {};
             const cloudData = window.alarmConfig || {};
-            return Object.assign({}, localData, cloudData);
+            return Object.assign({}, cloudData, localData);
         };
         
         // Sync da locale a cloud
@@ -2447,6 +2469,47 @@ window.colorPreviewNumber = function(tankName, value) {
             }
             
             return migratedAlarms;
+        };
+
+        /** All'avvio: unifica chiavi duplicate (es. inp-tk9000 → tk9000) così numpad e Gestione allarmi leggono la stessa config. */
+        window.consolidateAlarmConfigKeys = function () {
+            const alarms = window.APP_DB && window.APP_DB.alarms;
+            if (!alarms || typeof alarms !== 'object') return false;
+            const out = {};
+            let changed = false;
+            const countConfigured = function (entry) {
+                if (!entry) return 0;
+                return ['yellow', 'red', 'yellowMin', 'redMin'].filter(function (k) {
+                    return window.isAlarmThresholdConfigured(entry[k]);
+                }).length;
+            };
+            Object.keys(alarms).forEach(function (key) {
+                const data = alarms[key];
+                if (!data || typeof data !== 'object') return;
+                var canonical = key;
+                if (String(key).indexOf('cond:') !== 0) {
+                    var nid = window.normalizeTankId(key);
+                    if (nid) canonical = nid;
+                }
+                if (canonical !== key) changed = true;
+                if (!out[canonical]) {
+                    out[canonical] = Object.assign({}, data);
+                    return;
+                }
+                if (countConfigured(data) > countConfigured(out[canonical])) {
+                    out[canonical] = Object.assign({}, data);
+                    changed = true;
+                }
+            });
+            if (!changed) return false;
+            window.APP_DB.alarms = out;
+            window.alarmConfig = out;
+            if (typeof window.saveDB === 'function') window.saveDB();
+            try {
+                localStorage.setItem('alarmConfig', JSON.stringify(out));
+            } catch (_) {}
+            console.log('✅ Chiavi allarmi consolidate');
+            return true;
         };
 
         // CORE DATABASE CENTRALE
@@ -4201,7 +4264,9 @@ window.colorPreviewNumber = function(tankName, value) {
                 }
 
                 const normalizedId = window.normalizeTankId(inputId);
-                const thresholds = alarmConfig[normalizedId];
+                const thresholds = typeof window.thresholdsForAlarmFieldId === 'function'
+                    ? window.thresholdsForAlarmFieldId(inputId)
+                    : alarmConfig[normalizedId];
 
                 if (!window.hasAnyAlarmThreshold(thresholds)) {
                     input.style.background = '';
@@ -7181,6 +7246,7 @@ window.updateStoricoButton = async function() {
             if (typeof window.repairBluedownUi === 'function') window.repairBluedownUi();
             // CARICAMENTO DATABASE CENTRALE - PRIMA DI TUTTO!
             window.loadDB();
+            if (typeof window.consolidateAlarmConfigKeys === 'function') window.consolidateAlarmConfigKeys();
             window.alarmConfig = window.APP_DB.alarms || {};
             if (typeof window.loadGeminiKeySettings === 'function') window.loadGeminiKeySettings();
             if (typeof window.ensureGeminiKeysNeverLost === 'function') window.ensureGeminiKeysNeverLost();
@@ -7736,11 +7802,13 @@ window.updateStoricoButton = async function() {
 
         window.resetNumpadAlarms = function () {
             if (!currentNumpadTarget || window.__numpadView !== 'alarm') return;
-            const lookupKey = typeof window.getAlarmStorageKeyForElement === 'function'
-                ? window.getAlarmStorageKeyForElement(currentNumpadTarget)
-                : currentNumpadTarget.id;
+            const storageKey = typeof window.resolveAlarmConfigStorageKey === 'function'
+                ? window.resolveAlarmConfigStorageKey(currentNumpadTarget.id, currentNumpadTarget)
+                : (typeof window.getAlarmStorageKeyForElement === 'function'
+                    ? window.getAlarmStorageKeyForElement(currentNumpadTarget)
+                    : currentNumpadTarget.id);
             const th = typeof window.thresholdsForAlarmFieldId === 'function'
-                ? window.thresholdsForAlarmFieldId(lookupKey)
+                ? window.thresholdsForAlarmFieldId(storageKey)
                 : null;
             window.__numpadAlarmDraft = typeof window.buildNumpadAlarmDraftFromThresholds === 'function'
                 ? window.buildNumpadAlarmDraftFromThresholds(th)
@@ -7960,11 +8028,13 @@ window.updateStoricoButton = async function() {
                 const display = document.getElementById('numpad-display');
                 window.__numpadSavedDisplayValue = display ? display.value : '';
             }
-            const lookupKey = typeof window.getAlarmStorageKeyForElement === 'function'
-                ? window.getAlarmStorageKeyForElement(currentNumpadTarget)
-                : currentNumpadTarget.id;
+            const storageKey = typeof window.resolveAlarmConfigStorageKey === 'function'
+                ? window.resolveAlarmConfigStorageKey(currentNumpadTarget.id, currentNumpadTarget)
+                : (typeof window.getAlarmStorageKeyForElement === 'function'
+                    ? window.getAlarmStorageKeyForElement(currentNumpadTarget)
+                    : currentNumpadTarget.id);
             const th = typeof window.thresholdsForAlarmFieldId === 'function'
-                ? window.thresholdsForAlarmFieldId(lookupKey)
+                ? window.thresholdsForAlarmFieldId(storageKey)
                 : null;
             window.__numpadAlarmDraft = typeof window.buildNumpadAlarmDraftFromThresholds === 'function'
                 ? window.buildNumpadAlarmDraftFromThresholds(th)
@@ -8021,20 +8091,27 @@ window.updateStoricoButton = async function() {
             window.commitNumpadAlarmBufferToDraft();
             const draft = window.__numpadAlarmDraft || { yellow: '', red: '', yellowMin: '', redMin: '' };
             if (typeof window.persistTankAlarmThresholds !== 'function') return false;
-            const lookupKey = typeof window.getAlarmStorageKeyForElement === 'function'
-                ? window.getAlarmStorageKeyForElement(currentNumpadTarget)
-                : currentNumpadTarget.id;
-            const saveOpts = {
+            const storageKey = typeof window.resolveAlarmConfigStorageKey === 'function'
+                ? window.resolveAlarmConfigStorageKey(currentNumpadTarget.id, currentNumpadTarget)
+                : (typeof window.getAlarmStorageKeyForElement === 'function'
+                    ? window.getAlarmStorageKeyForElement(currentNumpadTarget)
+                    : currentNumpadTarget.id);
+            await window.persistTankAlarmThresholds(currentNumpadTarget.id, {
+                alarmStorageKey: storageKey,
                 yellow: draft.yellow,
                 red: draft.red,
                 yellowMin: draft.yellowMin,
                 redMin: draft.redMin
-            };
-            if (lookupKey && lookupKey !== currentNumpadTarget.id) {
-                saveOpts.alarmStorageKey = lookupKey;
+            });
+            if (typeof window.refreshAlarmVisualForField === 'function') {
+                window.refreshAlarmVisualForField(currentNumpadTarget, true);
             }
-            await window.persistTankAlarmThresholds(currentNumpadTarget.id, saveOpts);
-            if (typeof window.refreshNumpadAlarmVisual === 'function') window.refreshNumpadAlarmVisual();
+            if (typeof window.syncNumpadAlarmRowPreviews === 'function') {
+                window.syncNumpadAlarmRowPreviews();
+            }
+            if (typeof window.refreshNumpadAlarmVisual === 'function') {
+                window.refreshNumpadAlarmVisual();
+            }
             const startBtnText = document.getElementById('numpad-start-text');
             if (startBtnText) {
                 const orig = startBtnText.innerText;
@@ -37829,7 +37906,11 @@ function loadTabSignals(tab) {
     if (tab.id === 'sec-stoccaggio-interno') {
         if (typeof window.renderStoccaggioInternoPanel === 'function') window.renderStoccaggioInternoPanel();
         (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
-            tanks.push({ label: t.label, inputId: t.fieldId });
+            const entry = { label: t.label, inputId: t.fieldId };
+            if (typeof window.resolveAlarmConfigStorageKey === 'function') {
+                entry.alarmStorageKey = window.resolveAlarmConfigStorageKey(t.fieldId);
+            }
+            tanks.push(entry);
         });
     } else if (tab.id === 'sec-conducibilita') {
         if (typeof window.syncConducibilitaPanel === 'function') window.syncConducibilitaPanel();
@@ -37911,6 +37992,9 @@ function loadTabSignals(tab) {
         Object.assign(tankData, typeof window.resolveAlarmEditorMetaForField === 'function'
             ? window.resolveAlarmEditorMetaForField(id, el)
             : {});
+        if (typeof window.resolveAlarmConfigStorageKey === 'function') {
+            tankData.alarmStorageKey = window.resolveAlarmConfigStorageKey(id, el);
+        }
 
         // Verifica se già esiste basandosi sull'inputId (chiave unica)
         const existing = tanks.find(t => t.inputId === id);
@@ -37957,7 +38041,9 @@ function openTankAlarmEditor(tank, tab) {
     if (typeof window.updateSettingsHeaderExportImport === 'function') window.updateSettingsHeaderExportImport(true);
 
     const config = window.getAlarmConfig();
-    const storageKey = tank.alarmStorageKey || tank.inputId;
+    const storageKey = typeof window.resolveAlarmConfigStorageKey === 'function'
+        ? window.resolveAlarmConfigStorageKey(tank.inputId, document.getElementById(tank.inputId))
+        : (tank.alarmStorageKey || tank.inputId);
     const isConductivity = tank.alarmKind === 'conductivity'
         || (storageKey && String(storageKey).indexOf('cond:') === 0);
     const normalizedTank = isConductivity ? storageKey : window.normalizeTankId(tank.inputId);
@@ -38122,10 +38208,14 @@ function openTankAlarmEditor(tank, tab) {
 window.persistTankAlarmThresholds = async function (inputId, opts) {
     if (!inputId) return;
     opts = opts || {};
+    if (!window.APP_DB) window.APP_DB = { alarms: {}, updatedAt: null };
+    const el = document.getElementById(inputId);
     const isConductivity = !!(opts.alarmStorageKey && String(opts.alarmStorageKey).indexOf('cond:') === 0);
     const configKey = opts.alarmStorageKey
         ? opts.alarmStorageKey
-        : window.normalizeTankId(inputId);
+        : (typeof window.resolveAlarmConfigStorageKey === 'function'
+            ? window.resolveAlarmConfigStorageKey(inputId, el)
+            : window.normalizeTankId(inputId));
     const config = { ...(window.APP_DB.alarms || {}) };
     const existing = (typeof window.thresholdsForAlarmFieldId === 'function'
         && window.thresholdsForAlarmFieldId(configKey)) || {};
@@ -38177,6 +38267,13 @@ window.persistTankAlarmThresholds = async function (inputId, opts) {
 
     await saveAlarmConfig(config);
 
+    if (currentNumpadTarget && currentNumpadTarget.id === inputId) {
+        if (typeof window.refreshAlarmVisualForField === 'function') {
+            window.refreshAlarmVisualForField(currentNumpadTarget, true);
+        }
+    } else if (el && typeof window.refreshAlarmVisualForField === 'function') {
+        window.refreshAlarmVisualForField(el, true);
+    }
     if (window.colorAllTankInputs) window.colorAllTankInputs();
     if (typeof window.colorConductivityAlarmInputs === 'function') window.colorConductivityAlarmInputs();
     if (typeof window.colorScamInputs === 'function') window.colorScamInputs(true);
@@ -38192,10 +38289,14 @@ function saveAlarmConfig(config) {
         window.APP_DB = window.APP_DB || { alarms: {}, updatedAt: null };
         window.APP_DB.alarms = config;
         window.APP_DB.updatedAt = new Date().toISOString();
+        window.__lastLocalAlarmSaveMs = Date.now();
         if (typeof window.saveDB === 'function') window.saveDB();
     } catch (_) {}
     try {
         localStorage.setItem('alarmConfig', JSON.stringify(config));
+    } catch (_) {}
+    try {
+        window.__lastAlarmConfigJson = JSON.stringify(config);
     } catch (_) {}
     window.alarmConfig = config;
     if (typeof window.saveAlarmConfigCloud === 'function') {
@@ -38572,7 +38673,7 @@ window.normalizeTankId = function(id) {
         .trim();
 };
 
-/** Soglie allarme per id campo o chiave cond:... (conducibilità). */
+/** Soglie allarme per id campo o chiave cond:… / normalizzata. */
 window.thresholdsForAlarmFieldId = function (rawId) {
     const cfg = window.getAlarmConfig ? window.getAlarmConfig() : {};
     if (!rawId || !cfg) return null;
@@ -38589,6 +38690,8 @@ window.thresholdsForAlarmFieldId = function (rawId) {
         if (cfg[rawId]) return cfg[rawId];
         return legacyConductivityLookup(rawId.slice(5));
     }
+
+    if (cfg[rawId]) return cfg[rawId];
 
     if (typeof window.isConductivityOnlyFieldId === 'function'
         && window.isConductivityOnlyFieldId(rawId)

@@ -862,7 +862,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v422';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v423';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -13351,6 +13351,18 @@ window.updateStoricoButton = async function() {
                 );
             }
 
+            if (row.key === 'hd-prod' || row.fieldId === 'cfil-produzione') {
+                var filtraProd = typeof window.getNotturnoFiltraProduzioneTotaleFormatted === 'function'
+                    ? window.getNotturnoFiltraProduzioneTotaleFormatted()
+                    : '';
+                return pick(
+                    window.readRapportinoNotturnoSnapValue(snap, row.key || 'hd-prod'),
+                    row.fieldId ? window.readRapportinoNotturnoSnapValue(snap, row.fieldId) : '',
+                    filtraProd,
+                    row.fieldId ? window.readRapportinoPlantFieldValue(row.fieldId) : ''
+                );
+            }
+
             if (row.fieldIds && row.fieldIds.length && !opts.subKey) {
                 var parts = [];
                 row.fieldIds.forEach(function (fid, idx) {
@@ -13456,6 +13468,16 @@ window.updateStoricoButton = async function() {
                     merge(lk, v);
                 });
             });
+
+            if (window.isContatoreFiltraModuleActive && window.isContatoreFiltraModuleActive()) {
+                var filtraProd = typeof window.getNotturnoFiltraProduzioneTotaleFormatted === 'function'
+                    ? window.getNotturnoFiltraProduzioneTotaleFormatted()
+                    : '';
+                if (filtraProd !== '') {
+                    merge('hd-prod', filtraProd);
+                    merge('cfil-produzione', filtraProd);
+                }
+            }
 
             if (changed) {
                 snap._savedAt = Date.now();
@@ -24051,9 +24073,77 @@ window.updateStoricoButton = async function() {
             return /^nott-f-s\d+(-start|-end|-pi|-pf)$/.test(key);
         };
 
+        window.calcNotturnoFiltraProduzioneFromData = function(data) {
+            if (!data || typeof data !== 'object') return NaN;
+            if (data._nottFiltraProdTot != null && String(data._nottFiltraProdTot).trim() !== '') {
+                var saved = Number(data._nottFiltraProdTot);
+                if (!isNaN(saved)) return saved;
+            }
+            const steps = Math.max(1, parseInt(data._nottFiltraSteps, 10) || 1);
+            let total = 0;
+            let has = false;
+            for (let i = 0; i < steps; i++) {
+                const sid = 'nott-f-s' + i;
+                const pi = parseFloat(String(data[sid + '-pi'] || '').replace(',', '.'));
+                const pf = parseFloat(String(data[sid + '-pf'] || '').replace(',', '.'));
+                if (!isNaN(pi) && !isNaN(pf)) {
+                    total += (pf - pi);
+                    has = true;
+                }
+            }
+            return has ? total : NaN;
+        };
+
+        window.getNotturnoFiltraProduzioneTotaleFormatted = function() {
+            let raw = NaN;
+            if (window.isContatoreFiltraModuleActive && window.isContatoreFiltraModuleActive()) {
+                const panel = document.getElementById('filtra-panel-notturno');
+                if (panel && panel.querySelector('.nott-filtra-steps-stack')) {
+                    const cap = window.captureNotturnoFiltraFromDOM && window.captureNotturnoFiltraFromDOM();
+                    if (cap) raw = Number(cap._nottFiltraProdTot);
+                }
+            }
+            if (isNaN(raw)) {
+                const store = window.loadRapportiniStore && window.loadRapportiniStore();
+                const rid = store && store.activeId;
+                const d = store && rid && store.items[rid] && store.items[rid].data;
+                raw = window.calcNotturnoFiltraProduzioneFromData(d || {});
+            }
+            if (isNaN(raw)) return '';
+            return String(Math.round(Math.abs(raw)));
+        };
+
+        window.syncHdProdFromContatoreFiltraToNotturno = function(opts) {
+            opts = opts || {};
+            if (!window.isContatoreFiltraModuleActive || !window.isContatoreFiltraModuleActive()) return false;
+            const val = window.getNotturnoFiltraProduzioneTotaleFormatted();
+            if (val === '') return false;
+            const dateKey = window.getLetturaDocDateKey();
+            const store = window.loadRapportinoNotturnoGiornalieroSnapshot();
+            if (!store[dateKey]) store[dateKey] = {};
+            const snap = store[dateKey];
+            const force = !!opts.force;
+            let changed = false;
+            ['hd-prod', 'cfil-produzione'].forEach(function (key) {
+                if (!force && snap[key] != null && String(snap[key]).trim() !== '') return;
+                if (snap[key] !== val) {
+                    snap[key] = val;
+                    changed = true;
+                }
+            });
+            if (changed) {
+                snap._savedAt = Date.now();
+                window.saveRapportinoNotturnoGiornalieroSnapshot(store);
+            }
+            return changed;
+        };
+
         window.persistNotturnoFiltraFromUI = function() {
             if (!window.isContatoreFiltraModuleActive || !window.isContatoreFiltraModuleActive()) return;
             window.persistNotturnoFiltraData(window.captureNotturnoFiltraFromDOM());
+            if (typeof window.syncHdProdFromContatoreFiltraToNotturno === 'function') {
+                window.syncHdProdFromContatoreFiltraToNotturno({ force: true });
+            }
             const store = window.loadRapportiniStore && window.loadRapportiniStore();
             if (store && store.activeId && store.items[store.activeId]) {
                 store.items[store.activeId].updatedAt = new Date().toISOString();
@@ -24086,6 +24176,9 @@ window.updateStoricoButton = async function() {
             }
             window.syncNotturnoFiltraTimeDisplays();
             window.refreshNotturnoFiltraTotals();
+            if (typeof window.syncHdProdFromContatoreFiltraToNotturno === 'function') {
+                window.syncHdProdFromContatoreFiltraToNotturno({ force: true });
+            }
         };
 
         window.persistNotturnoFiltraData = function(data) {
@@ -24231,6 +24324,9 @@ window.updateStoricoButton = async function() {
                 window.renderNotturnoFiltraPanel();
             }
             window.applyNotturnoFiltraToDOM(data);
+            if (typeof window.syncHdProdFromContatoreFiltraToNotturno === 'function') {
+                window.syncHdProdFromContatoreFiltraToNotturno({ force: true });
+            }
         };
 
         window.__applyPlantFromLocalStorageFallback = function () {

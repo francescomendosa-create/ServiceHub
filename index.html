@@ -877,7 +877,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v453';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v454';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -15389,6 +15389,16 @@ window.updateStoricoButton = async function() {
             var ts = typeof window.resolveTankCurrentLevelTs === 'function'
                 ? window.resolveTankCurrentLevelTs(info.fieldId, series, info) : Date.now();
             var out = arch.slice();
+            if (typeof window.getTankTimelineEffectiveInitial === 'function') {
+                var effInit = window.getTankTimelineEffectiveInitial(info.fieldId, out);
+                if (effInit && effInit.manualInitial) {
+                    if (out.length && Math.abs(out[0].ts - effInit.ts) < 3600000) {
+                        out[0] = effInit;
+                    } else {
+                        out.unshift(effInit);
+                    }
+                }
+            }
             var last = out[out.length - 1];
             if (!last || Math.abs(last.mm - info.levelMm) > 0.05 || ts > last.ts) {
                 out.push({
@@ -15657,20 +15667,9 @@ window.updateStoricoButton = async function() {
         window.computeTankTimelineRateMmH = function (series, info) {
             info = info || {};
             series = series || [];
-            var initial = null;
-            if (info.fieldId && typeof window.collectTankLevelArchiveSeries === 'function') {
-                var archSer = window.collectTankLevelArchiveSeries(info.fieldId, { shiftOnly: false });
-                if (archSer.length) initial = archSer[0];
-            }
-            if (!initial && info.fieldId && typeof window.loadTankTimelineManualInitial === 'function') {
-                var manualInit = window.loadTankTimelineManualInitial(info.fieldId);
-                if (manualInit && Number.isFinite(manualInit.ts) && Number.isFinite(manualInit.mm)) {
-                    initial = manualInit;
-                }
-            }
-            if (!initial && typeof window.getTankTimelineInitialPoint === 'function') {
-                initial = window.getTankTimelineInitialPoint(series);
-            }
+            var initial = typeof window.getTankTimelineEffectiveInitial === 'function'
+                ? window.getTankTimelineEffectiveInitial(info.fieldId, series)
+                : null;
             var currentTs = typeof window.resolveTankCurrentLevelTs === 'function'
                 ? window.resolveTankCurrentLevelTs(info.fieldId, series, info) : null;
             var currentMm = Number.isFinite(info.levelMm) ? info.levelMm
@@ -15750,22 +15749,9 @@ window.updateStoricoButton = async function() {
                 ? window.resolveTankCurrentLevelTs(info.fieldId, series, info)
                 : (series.length ? series[series.length - 1].ts : Date.now());
             var nowTs = actualTs;
-            var archiveSeries = info.fieldId && typeof window.collectTankLevelArchiveSeries === 'function'
-                ? window.collectTankLevelArchiveSeries(info.fieldId, { shiftOnly: false }) : [];
-            var initialPt = archiveSeries.length ? archiveSeries[0] : null;
-            if (!initialPt && typeof window.getTankTimelineInitialPoint === 'function') {
-                initialPt = window.getTankTimelineInitialPoint(series);
-            }
-            var manualInitial = info.fieldId && typeof window.loadTankTimelineManualInitial === 'function'
-                ? window.loadTankTimelineManualInitial(info.fieldId) : null;
-            if (manualInitial) {
-                initialPt = {
-                    ts: manualInitial.ts,
-                    mm: manualInitial.mm,
-                    label: 'Livello iniziale',
-                    manualInitial: true
-                };
-            }
+            var initialPt = typeof window.getTankTimelineEffectiveInitial === 'function'
+                ? window.getTankTimelineEffectiveInitial(info.fieldId, series)
+                : null;
             var manualRefPts = info.manualRefPts
                 || (info.fieldId && typeof window.loadTankTimelineManualRefs === 'function'
                     ? window.loadTankTimelineManualRefs(info.fieldId) : []);
@@ -15941,6 +15927,31 @@ window.updateStoricoButton = async function() {
             try { localStorage.removeItem('sh-tl-manual-initial:' + fieldId); } catch (_) {}
         };
 
+        /** Punto iniziale effettivo: manual timeline > archivio > primo salvataggio serie. */
+        window.getTankTimelineEffectiveInitial = function (fieldId, series) {
+            series = series || [];
+            if (fieldId && typeof window.loadTankTimelineManualInitial === 'function') {
+                var manualInit = window.loadTankTimelineManualInitial(fieldId);
+                if (manualInit && Number.isFinite(manualInit.ts) && Number.isFinite(manualInit.mm)) {
+                    return {
+                        ts: manualInit.ts,
+                        mm: manualInit.mm,
+                        label: 'Livello iniziale',
+                        manualInitial: true
+                    };
+                }
+            }
+            if (fieldId && typeof window.collectTankLevelArchiveSeries === 'function') {
+                var archSer = window.collectTankLevelArchiveSeries(fieldId, { shiftOnly: false });
+                if (archSer.length) return archSer[0];
+            }
+            if (typeof window.getTankTimelineInitialPoint === 'function') {
+                var fromSeries = window.getTankTimelineInitialPoint(series);
+                if (fromSeries) return fromSeries;
+            }
+            return null;
+        };
+
         window.timelineTsFromTimeInput = function (baseTs, timeStr) {
             if (!Number.isFinite(baseTs) || !timeStr) return baseTs;
             var parts = String(timeStr).trim().split(':');
@@ -15972,10 +15983,36 @@ window.updateStoricoButton = async function() {
         };
 
         window.augmentTankTrendSeriesWithManualRef = function (series, fieldId) {
+            var out = (series || []).slice();
+            if (fieldId && typeof window.getTankTimelineEffectiveInitial === 'function') {
+                var effInit = window.getTankTimelineEffectiveInitial(fieldId, out);
+                if (effInit && effInit.manualInitial) {
+                    var replaced = false;
+                    for (var i = 0; i < out.length; i++) {
+                        if (Math.abs(out[i].ts - effInit.ts) < 60000) {
+                            out[i] = {
+                                ts: effInit.ts,
+                                mm: effInit.mm,
+                                label: 'Livello iniziale',
+                                manualInitial: true
+                            };
+                            replaced = true;
+                            break;
+                        }
+                    }
+                    if (!replaced) {
+                        out.unshift({
+                            ts: effInit.ts,
+                            mm: effInit.mm,
+                            label: 'Livello iniziale',
+                            manualInitial: true
+                        });
+                    }
+                }
+            }
             var refs = fieldId && typeof window.loadTankTimelineManualRefs === 'function'
                 ? window.loadTankTimelineManualRefs(fieldId) : [];
-            if (!refs.length) return series || [];
-            var out = (series || []).slice();
+            if (!refs.length) return out;
             refs.forEach(function (ref) {
                 var dup = out.some(function (p) {
                     return Math.abs(p.ts - ref.ts) < 60000 && Math.abs(p.mm - ref.mm) < 0.5;
@@ -40159,10 +40196,19 @@ window.parseConsumiProduzioneFromJson = function(json, fields, opts) {
     opts = opts || {};
     fields = fields || (typeof window.buildLetturaNotturnoGiornalieroCaptureFieldMap === 'function'
         ? window.buildLetturaNotturnoGiornalieroCaptureFieldMap() : []);
+    var tipo = String(json.tipo || json.type || '').toLowerCase();
+    if (tipo && tipo !== 'consumi-produzione' && tipo !== 'dcs-consumi-produzione') {
+        if (!Array.isArray(json.righe) || !json.righe.length) return [];
+    }
+    if (window.isDcsStoccaggioInternoScreen && window.isDcsStoccaggioInternoScreen('', json)) return [];
+    if (window.isDcsOverviewScreen && window.isDcsOverviewScreen('', json)) return [];
     var allowed = {};
     fields.forEach(function(f) { if (f && f.id) allowed[f.id] = true; });
     var notturnoOnly = opts.notturnoOnly !== false;
-    var items = json.righe || json.applica_ora || json.rows || json.catalogo;
+    var items = json.righe;
+    if (!items && !notturnoOnly) {
+        items = json.rows || json.catalogo;
+    }
     if (!Array.isArray(items)) return [];
     var readings = [];
     var used = {};

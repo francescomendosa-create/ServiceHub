@@ -877,7 +877,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v447';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v449';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -13712,6 +13712,8 @@ window.updateStoricoButton = async function() {
             var root = document.getElementById('letture-doc-body');
             if (!root) return;
             root.querySelectorAll('.rg-inp, .rg-notes-ta').forEach(function (inp) {
+                var v = String(inp.value == null ? '' : inp.value).trim();
+                if (!v) return;
                 if (typeof window.saveRapportinoNotturnoPreviewCell === 'function') {
                     window.saveRapportinoNotturnoPreviewCell(
                         inp.getAttribute('data-rg-key') || '',
@@ -14118,6 +14120,7 @@ window.updateStoricoButton = async function() {
             var store = window.loadRapportinoNotturnoGiornalieroSnapshot();
             if (!store[dateKey]) store[dateKey] = {};
             var v = String(value == null ? '' : value).trim();
+            if (!v) return;
             if (key) store[dateKey][key] = v;
             if (fieldId) store[dateKey][fieldId] = v;
             var linked = (key && window.RAPPORTINO_NOTTURNO_LINKED_KEYS &&
@@ -25598,7 +25601,8 @@ window.updateStoricoButton = async function() {
         if (modal) modal.classList.remove('active');
         const smartMenu = document.getElementById('smart-capture-menu');
         if (smartMenu) smartMenu.classList.remove('open');
-        if (!window._smartCaptureNativeCameraPending) {
+        var ocrLoading = document.getElementById('smart-capture-loading');
+        if (!window._smartCaptureNativeCameraPending && ocrLoading && ocrLoading.classList.contains('active')) {
             window._smartCaptureAbort = true;
             if (typeof window.setSmartCaptureLoading === 'function') window.setSmartCaptureLoading(false);
             if (typeof window.resetTesseractWorker === 'function') window.resetTesseractWorker();
@@ -26049,7 +26053,8 @@ window.updateStoricoButton = async function() {
                         inputEl.style.opacity = isRunning ? "1" : "0.3";
                         inputEl.style.pointerEvents = isRunning ? "auto" : "none";
                         inputEl.readOnly = !isRunning;
-                        if (!isRunning) inputEl.value = "";
+                        /* Non azzerare PROD/COND al FERMO: al riavvio le caldaie partono FERMO e i valori
+                           salvati verrebbero cancellati e riscritti vuoti nel backup plant. */
                         const row = inputEl.closest('tr');
                         const labelEl = row && row.querySelector('.cell-label-main');
                         if (labelEl) labelEl.style.opacity = isRunning ? "1" : "0.3";
@@ -39572,10 +39577,25 @@ window.getConsumiProduzioneMinNotturnoReadings = function() {
     return Math.max(5, Math.min(12, Math.ceil(n * 0.35)));
 };
 
+window.hasNotturnoCaldaieConsumiReading = function(readings) {
+    var keys = ['sga-ch4', 'sga-h2o', 'sga-vap', 'sga-fo', 'sgd-ch4', 'sgd-vap'];
+    return (readings || []).some(function(r) {
+        return r && r.id && keys.indexOf(r.id) >= 0;
+    });
+};
+
+window.isConsumiProduzioneRowChunkPlausible = function(rowDef, chunk) {
+    if (!rowDef || !chunk) return false;
+    var up = String(chunk).toUpperCase();
+    if (rowDef.dcsCode === 'FQI10502') {
+        return /GAS|RETE|GIORN|TOT/.test(up);
+    }
+    return true;
+};
+
 window.supplementConsumiProduzioneReadings = async function(readings, raw, fields, opts, imageData) {
     readings = (readings || []).slice();
     opts = opts || { notturnoOnly: true };
-    var minExpected = window.getConsumiProduzioneMinNotturnoReadings();
     var engineTag = '';
 
     if (raw && typeof window.matchConsumiProduzioneFromOcrText === 'function') {
@@ -39588,7 +39608,7 @@ window.supplementConsumiProduzioneReadings = async function(readings, raw, field
         }
     }
 
-    if (imageData && typeof window.runTesseractCombinedText === 'function') {
+    if (readings.length === 0 && imageData && typeof window.runTesseractCombinedText === 'function') {
         try {
             window.setSmartCaptureLoadingMessage('OCR locale tabella Consumi e Produzione…');
             var tessText = await window.runTesseractCombinedText(imageData);
@@ -39681,7 +39701,9 @@ window.resolveConsumiProduzioneNotturnoValue = function(ctx) {
     if (ctx.item) {
         if (ctx.item.ieri == null || String(ctx.item.ieri).trim() === '') return null;
         val = ctx.item.ieri;
+        if (ctx.item.valore != null && window.fixTotalizerOcrValue(val) === window.fixTotalizerOcrValue(ctx.item.valore)) return null;
     } else if (ctx.nums && ctx.nums.length) {
+        if (ctx.nums.length < 3) return null;
         val = window.pickConsumiProduzioneColumnValue(ctx.nums, 'ieri');
     }
     if (val == null) return null;
@@ -39754,6 +39776,7 @@ window.matchConsumiProduzioneFromOcrText = function(ocrText, fields, opts) {
             ? window.findConsumiProduzioneRowChunk(text, lines, rowDef)
             : '';
         if (!chunk) return;
+        if (!window.isConsumiProduzioneRowChunkPlausible(rowDef, chunk)) return;
         var nums = window.extractConsumiRowDailyNumbers
             ? window.extractConsumiRowDailyNumbers(chunk, { code: code, aliases: rowDef.dcsCodeAliases })
             : window.extractNumbersFromConsumiOcrLine(
@@ -40935,17 +40958,33 @@ window.runGeminiNotturnoMultiCapture = async function(imageData, fields) {
         }
     }
 
-    if (consumiScreenOk && merged.length >= 1) {
+    if (consumiScreenOk) {
         merged = window.filterNotturnoOcrReadings(merged);
+        var minExpected = typeof window.getConsumiProduzioneMinNotturnoReadings === 'function'
+            ? window.getConsumiProduzioneMinNotturnoReadings() : 5;
+        var hasCaldaie = typeof window.hasNotturnoCaldaieConsumiReading === 'function'
+            && window.hasNotturnoCaldaieConsumiReading(merged);
+        if (merged.length >= minExpected || hasCaldaie) {
+            return {
+                readings: merged,
+                engine: engines.length ? ('notturno-' + engines.join('+')) : 'notturno-consumi-only',
+                profile: 'dcs-consumi-produzione',
+                catalogSize: merged.length,
+                rawTextPreview: '',
+                notes: merged.length
+                    ? ('Consumi e Produzione · ' + merged.length + ' totalizzatori IERI — correggi in anteprima')
+                    : 'Consumi e Produzione · nessun totalizzatore estratto'
+            };
+        }
         return {
             readings: merged,
-            engine: engines.length ? ('notturno-' + engines.join('+')) : 'notturno-consumi-only',
+            engine: engines.length ? ('notturno-' + engines.join('+')) : 'notturno-consumi-partial',
             profile: 'dcs-consumi-produzione',
             catalogSize: merged.length,
             rawTextPreview: '',
             notes: merged.length
-                ? ('Consumi e Produzione · ' + merged.length + ' totalizzatori IERI — correggi in anteprima')
-                : 'Consumi e Produzione · nessun totalizzatore estratto'
+                ? ('Consumi e Produzione · solo ' + merged.length + ' valori (mancano caldaie/azoto) — avvicina la foto alla colonna IERI')
+                : 'Consumi e Produzione · nessun totalizzatore — zoom su TOTALIZZATORI e colonna IERI'
         };
     }
 
@@ -41783,16 +41822,21 @@ window.ensureTesseractWorker = async function() {
             logger: function(m) {
                 if (!m || !m.status) return;
                 if (m.status === 'loading language traineddata') {
-                    window.setSmartCaptureLoadingMessage('Dizionario ' + Math.round((m.progress || 0) * 100) + '%…');
+                    if (window._tesseractLangLoaded) {
+                        window.setSmartCaptureLoadingMessage('Avvio OCR…');
+                    } else {
+                        window.setSmartCaptureLoadingMessage('Primo avvio OCR: dizionario ' + Math.round((m.progress || 0) * 100) + '%…');
+                    }
                 } else if (m.status === 'recognizing text') {
                     window.setSmartCaptureLoadingMessage('Scansione ' + Math.round((m.progress || 0) * 100) + '%…');
                 } else if (m.status === 'initializing tesseract' || m.status === 'loading tesseract core') {
-                    window.setSmartCaptureLoadingMessage('Avvio OCR…');
+                    window.setSmartCaptureLoadingMessage(window._tesseractLangLoaded ? 'Avvio OCR…' : 'Primo avvio OCR…');
                 }
             }
         });
         await worker.loadLanguage('eng');
         await worker.initialize('eng');
+        window._tesseractLangLoaded = true;
         window._tesseractWorker = worker;
         return worker;
     })();

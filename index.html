@@ -40004,12 +40004,6 @@ window.runConsumiProduzioneCapture = async function(imageData) {
         throw err;
     }
 
-    if (!geminiOk && !readings.length && typeof window.supplementConsumiProduzioneReadings === 'function') {
-        var supOff = await window.supplementConsumiProduzioneReadings([], '', fields, consumiOpts, imageData);
-        readings = supOff.readings || readings;
-        if (supOff.engineTag) engine += supOff.engineTag;
-    }
-
     return {
         readings: readings,
         engine: engine,
@@ -40859,7 +40853,7 @@ window.runGeminiNotturnoMultiCapture = async function(imageData, fields) {
         } catch (e0) { console.warn('Notturno OCR erogazioni:', e0); }
     }
 
-    if (!merged.length && typeof window.runConsumiProduzioneCapture === 'function') {
+    if (typeof window.runConsumiProduzioneCapture === 'function') {
         try {
             window.setSmartCaptureLoadingMessage('Gemini: Consumi e Produzione…');
             var cr = await window.runConsumiProduzioneCapture(imageData);
@@ -40869,7 +40863,7 @@ window.runGeminiNotturnoMultiCapture = async function(imageData, fields) {
             } else if (cr && cr.rawGemini && typeof window.matchConsumiProduzioneFromOcrText === 'function') {
                 var crLocal = window.matchConsumiProduzioneFromOcrText(cr.rawGemini, fields, { notturnoOnly: true });
                 if (crLocal.length) {
-                    merged = window.mergeOcrReadingLists(merged, crLocal);
+                    merged = window.mergeOcrReadingLists(merged, window.filterConsumiProduzioneReadings(crLocal));
                     engines.push('consumi-local');
                 }
             }
@@ -42134,6 +42128,41 @@ window.matchReadingsFromOcrText = function(ocrText, fields) {
         rawTextPreview: String(ocrText).slice(0, 400),
         notes: 'OCR offline (Tesseract) · ' + readings.length + ' letture · nessuna connessione cloud'
     };
+};
+
+window.runTesseractCombinedText = async function(imageData) {
+    if (typeof Tesseract === 'undefined') return '';
+    var raw = imageData && imageData.data ? imageData.data : '';
+    if (!raw) return '';
+    var dataUrl = raw.indexOf(',') >= 0 ? raw : 'data:image/jpeg;base64,' + raw;
+    var timeoutMs = window.isIosDevice && window.isIosDevice() ? 32000 : 60000;
+    var combinedText = '';
+    try {
+        var variants = await window.withOcrTimeout(
+            window.preprocessImageVariantsForOcr(dataUrl),
+            15000,
+            'Immagine non elaborabile.'
+        );
+        var worker = await window.withOcrTimeout(
+            window.ensureTesseractWorker(),
+            35000,
+            'Avvio OCR lento.'
+        );
+        for (var vi = 0; vi < variants.length; vi++) {
+            var passText = await window.withOcrTimeout(
+                window.runTesseractOcrPass(worker, variants[vi], vi === 0
+                    ? { tessedit_pageseg_mode: '6' }
+                    : { tessedit_pageseg_mode: '6', tessedit_char_whitelist: '0123456789.,ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz- ' }),
+                Math.floor(timeoutMs / Math.max(1, variants.length)),
+                'OCR in timeout.'
+            );
+            combinedText += '\n' + passText;
+        }
+    } catch (e) {
+        console.warn('runTesseractCombinedText:', e);
+        return '';
+    }
+    return combinedText.trim();
 };
 
 window.runLocalSmartCaptureOcr = async function(imageData, fields) {

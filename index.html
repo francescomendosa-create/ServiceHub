@@ -877,7 +877,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v443';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v444';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -39052,7 +39052,8 @@ window.CONSUMI_PRODUZIONE_DCS_ROWS = [
         targets: [{ rapportinoKey: 'sga-ch4', label: 'Sg 9400 A CH4' }] },
     { riga: 2, dcsCode: '9121FQI1A', description: 'Offgas "A"', valueCol: 'ieri', notturnoIeri: true,
         targets: [{ fieldId: 'inp-off', rapportinoKey: 'chpp-offgas', label: 'Off Gas Chpp' }] },
-    { riga: 3, dcsCode: '9121FQI3B', description: 'Olio Comb "A"', valueCol: 'oggi', targets: [] },
+    { riga: 3, dcsCode: '9121FQI3B', description: 'Olio Comb "A"', valueCol: 'ieri', notturnoIeri: true,
+        targets: [{ rapportinoKey: 'sga-fo', label: 'Sg 9400 A F.O.' }] },
     { riga: 4, dcsCode: '9121FQI21', description: 'Acqua alim "A"', valueCol: 'ieri', notturnoIeri: true,
         targets: [{ rapportinoKey: 'sga-h2o', label: 'Sg 9400 A H2O' }] },
     { riga: 5, dcsCode: '9121FQI22', description: 'Vapore "A"', valueCol: 'ieri', notturnoIeri: true,
@@ -39510,6 +39511,65 @@ window.getConsumiProduzioneRowByCode = function(code) {
     return found || null;
 };
 
+window.normalizeConsumiProduzioneDescription = function(text) {
+    return String(text || '').toUpperCase().replace(/["']/g, '').replace(/\s+/g, ' ').trim();
+};
+
+window.getConsumiProduzioneRowByDescription = function(desc) {
+    var d = window.normalizeConsumiProduzioneDescription(desc);
+    if (!d) return null;
+    return (window.CONSUMI_PRODUZIONE_DCS_ROWS || []).find(function(row) {
+        var rd = window.normalizeConsumiProduzioneDescription(row.description);
+        if (rd && (d.indexOf(rd) >= 0 || rd.indexOf(d) >= 0)) return true;
+        return (row.descriptionAliases || []).some(function(a) {
+            var ad = window.normalizeConsumiProduzioneDescription(a);
+            return ad && (d.indexOf(ad) >= 0 || ad.indexOf(d) >= 0);
+        });
+    }) || null;
+};
+
+window.getConsumiProduzioneMinNotturnoReadings = function() {
+    var n = window.getNotturnoConsumiProduzioneDcsRows().length;
+    return Math.max(5, Math.min(12, Math.ceil(n * 0.35)));
+};
+
+window.supplementConsumiProduzioneReadings = async function(readings, raw, fields, opts, imageData) {
+    readings = (readings || []).slice();
+    opts = opts || { notturnoOnly: true };
+    var minExpected = window.getConsumiProduzioneMinNotturnoReadings();
+    var engineTag = '';
+
+    if (raw && typeof window.matchConsumiProduzioneFromOcrText === 'function') {
+        var fromRaw = window.filterConsumiProduzioneReadings(
+            window.matchConsumiProduzioneFromOcrText(raw, fields, opts)
+        );
+        if (fromRaw.length) {
+            readings = window.mergeOcrReadingLists(fromRaw, readings);
+            engineTag += '+raw-local';
+        }
+    }
+
+    if (readings.length < minExpected && imageData && typeof window.runTesseractCombinedText === 'function') {
+        try {
+            window.setSmartCaptureLoadingMessage('OCR locale tabella Consumi e Produzione…');
+            var tessText = await window.runTesseractCombinedText(imageData);
+            if (tessText && typeof window.matchConsumiProduzioneFromOcrText === 'function') {
+                var fromTess = window.filterConsumiProduzioneReadings(
+                    window.matchConsumiProduzioneFromOcrText(tessText, fields, opts)
+                );
+                if (fromTess.length) {
+                    readings = window.mergeOcrReadingLists(fromTess, readings);
+                    engineTag += '+tesseract';
+                }
+            }
+        } catch (eTess) {
+            console.warn('Consumi produzione Tesseract supplement:', eTess);
+        }
+    }
+
+    return { readings: readings, engineTag: engineTag };
+};
+
 window.extractNumbersFromConsumiOcrLine = function(line) {
     var out = [];
     if (!line) return out;
@@ -39708,13 +39768,25 @@ window.buildGeminiConsumiProduzionePrompt = function(opts) {
         '4) Conferma ogni riga con codice TOTALIZZATORE + DESCRIZIONE prima di assegnare il numero.\n' +
         '5) I codici possono avere trattini (996-FQI-14A, 992-FQI-1G): riportali esattamente come in foto.\n' +
         '6) Numeri decimali con punto (23734.96). Valori negativi possibili.\n' +
-        '7) Foto parziale: leggi solo righe visibili con riga numerata corretta.\n\n' +
+        '7) Foto parziale: leggi solo righe visibili con riga numerata corretta.\n' +
+        '8) OBBLIGO: restituisci TUTTE le righe mappate visibili in foto (minimo caldaie A + azoto + gasdotto se presenti). Un solo valore nel JSON non basta.\n\n' +
+        'SEZIONE CALDAIE (Sg 9400 A / Sg 9400 D) — rapportino notturno, colonna IERI:\n' +
+        '- Sg 9400 A · CH4 ← riga Metano "A" (9121FQI5) → rapportino_key "sga-ch4"\n' +
+        '- Sg 9400 A · H2O ← Acqua alim "A" (9121FQI21) → "sga-h2o"\n' +
+        '- Sg 9400 A · Vapore ← Vapore "A" (9121FQI22) → "sga-vap"\n' +
+        '- Sg 9400 A · F.O. ← Olio Comb "A" (9121FQI3B) → "sga-fo"\n' +
+        '- Sg 9400 D · CH4 ← metano "D" (9120FQI50) → "sgd-ch4"\n' +
+        '- Sg 9400 D · Vapore ← Vap. Distr. "D" (9120FQI50701) → "sgd-vap"\n' +
+        '- ORE caldaie: non in questa tabella (lasciare fuori dal JSON).\n\n' +
         'MAPPATURA RIGHE → RAPPORTINO NOTTURNO (colonna IERI):\n' + tableLines + '\n\n' +
         'JSON (senza markdown):\n' +
         '{"tipo":"consumi-produzione","righe":[' +
         '{"riga":1,"totalizzatore":"9121FQI5","descrizione":"Metano A","valore":"770.34","oggi":"143.02","ieri":"19558.98","rapportino_key":"sga-ch4"},' +
+        '{"riga":2,"totalizzatore":"9121FQI1A","descrizione":"Offgas A","ieri":"123.45","rapportino_key":"chpp-offgas"},' +
         '{"riga":4,"totalizzatore":"9121FQI21","descrizione":"Acqua alim A","ieri":"405.96","rapportino_key":"sga-h2o"},' +
         '{"riga":5,"totalizzatore":"9121FQI22","descrizione":"Vapore A","ieri":"238.24","rapportino_key":"sga-vap"},' +
+        '{"riga":6,"totalizzatore":"9120FQI50","descrizione":"metano D","ieri":"100.01","rapportino_key":"sgd-ch4"},' +
+        '{"riga":7,"totalizzatore":"9120FQI50701","descrizione":"Vap. Distr. D","ieri":"50.02","rapportino_key":"sgd-vap"},' +
         '{"riga":9,"totalizzatore":"FQI10502","descrizione":"TOT. GIORN. GAS A RETE M","ieri":"36628.81","rapportino_key":"og-rec-gas"},' +
         '{"riga":10,"totalizzatore":"FQ-102","descrizione":"PORTATA GASDOTTO N2","ieri":"5678.90","rapportino_key":"az-acq-pipe"},' +
         '{"riga":19,"totalizzatore":"992-FQI-1G","descrizione":"REINTEGRO SCAM","ieri":"363.62","rapportino_key":"scam-reint"},' +
@@ -39773,6 +39845,9 @@ window.parseConsumiProduzioneFromJson = function(json, fields, opts) {
         if (!item) return;
         var code = item.totalizzatore || item.totalizzatore_dcs || item.sigla || item.codice || '';
         var rowDef = window.getConsumiProduzioneRowByCode(code);
+        if (!rowDef && (item.descrizione || item.description)) {
+            rowDef = window.getConsumiProduzioneRowByDescription(item.descrizione || item.description);
+        }
         if (!rowDef && item.riga != null) {
             rowDef = (window.CONSUMI_PRODUZIONE_DCS_ROWS || []).find(function(r) {
                 return Number(r.riga) === Number(item.riga);
@@ -39898,7 +39973,8 @@ window.runConsumiProduzioneCapture = async function(imageData) {
         window.extractConsumiProduzioneReadings(raw, fields, consumiOpts)
     ) : [];
 
-    if (geminiOk && readings.length < 2) {
+    var minExpected = window.getConsumiProduzioneMinNotturnoReadings();
+    if (geminiOk && readings.length < minExpected) {
         try {
             var raw2 = await window.withOcrTimeout(
                 window.callGeminiAPI(prompt, false, imageData),
@@ -39906,26 +39982,32 @@ window.runConsumiProduzioneCapture = async function(imageData) {
                 'timeout'
             );
             if (raw2 && !window.isLikelyGeminiFailureRaw(raw2)) {
-                raw = raw2;
-                readings = window.filterConsumiProduzioneReadings(
+                raw = raw + '\n' + raw2;
+                var retryReadings = window.filterConsumiProduzioneReadings(
                     window.extractConsumiProduzioneReadings(raw2, fields, consumiOpts)
                 );
+                readings = window.mergeOcrReadingLists(readings, retryReadings);
                 engine = 'gemini-consumi-retry';
             }
         } catch (e2) {}
     }
 
-    if (!readings.length && raw && typeof window.matchConsumiProduzioneFromOcrText === 'function') {
-        readings = window.filterConsumiProduzioneReadings(
-            window.matchConsumiProduzioneFromOcrText(raw, fields, { notturnoOnly: true })
-        );
-        if (readings.length) engine = engine + '+local-fallback';
+    if (typeof window.supplementConsumiProduzioneReadings === 'function') {
+        var sup = await window.supplementConsumiProduzioneReadings(readings, raw, fields, consumiOpts, imageData);
+        readings = sup.readings || readings;
+        if (sup.engineTag) engine += sup.engineTag;
     }
 
-    if (!geminiOk && window.isGeminiQuotaOrBlockedError(lastErr)) {
+    if (!geminiOk && !readings.length && window.isGeminiQuotaOrBlockedError(lastErr)) {
         var err = new Error(lastErr);
         err.geminiQuota = true;
         throw err;
+    }
+
+    if (!geminiOk && !readings.length && typeof window.supplementConsumiProduzioneReadings === 'function') {
+        var supOff = await window.supplementConsumiProduzioneReadings([], '', fields, consumiOpts, imageData);
+        readings = supOff.readings || readings;
+        if (supOff.engineTag) engine += supOff.engineTag;
     }
 
     return {

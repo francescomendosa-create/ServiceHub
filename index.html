@@ -877,7 +877,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v444';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v445';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -13374,18 +13374,57 @@ window.updateStoricoButton = async function() {
             if (modal) modal.classList.remove('active');
         };
 
-        window.refreshLetturaDocView = function () {
+        window.refreshLetturaDocView = function (opts) {
+            opts = opts || {};
             if (window.__letturaDocKind === 'notturno-giornaliero') {
-                if (typeof window.flushRapportinoNotturnoPreviewToSnapshot === 'function') {
+                if (!opts.skipFlush && typeof window.flushRapportinoNotturnoPreviewToSnapshot === 'function') {
                     window.flushRapportinoNotturnoPreviewToSnapshot();
                 }
-                if (typeof window.syncRapportinoNotturnoSnapshotFromPlant === 'function') {
-                    window.syncRapportinoNotturnoSnapshotFromPlant({ force: true });
+                if (!opts.skipPlantSync && typeof window.syncRapportinoNotturnoSnapshotFromPlant === 'function') {
+                    window.syncRapportinoNotturnoSnapshotFromPlant({ force: !!opts.forcePlantSync });
                 }
                 window.renderLetturaNotturnoGiornalieroDocView({ skipSync: true });
             } else {
                 window.renderLetturaStoccaggioDocView();
             }
+        };
+
+        /** Applica letture OCR al rapportino notturno (snapshot + celle collegate, senza cancellare con flush). */
+        window.applyOcrReadingsToRapportinoNotturno = function (readings) {
+            if (!readings || !readings.length) return 0;
+            var allowed = {};
+            if (typeof window.buildLetturaNotturnoGiornalieroCaptureFieldMap === 'function') {
+                window.buildLetturaNotturnoGiornalieroCaptureFieldMap().forEach(function (f) {
+                    if (f && f.id) allowed[f.id] = true;
+                });
+            }
+            var filtered = readings.filter(function (r) {
+                return r && r.id && allowed[r.id] && r.kind !== 'status';
+            });
+            if (!filtered.length) return 0;
+
+            var keyToRow = {};
+            window.flattenRapportinoNotturnoRows().forEach(function (row) {
+                if (row && row.key) keyToRow[row.key] = row;
+                if (row && row.fieldId) keyToRow[row.fieldId] = row;
+            });
+
+            filtered.forEach(function (r) {
+                var v = String(r.value == null ? '' : r.value).trim();
+                if (!v) return;
+                var row = keyToRow[r.id] || null;
+                if (typeof window.saveRapportinoNotturnoPreviewCell === 'function') {
+                    if (row) {
+                        window.saveRapportinoNotturnoPreviewCell(row.key, row.fieldId, v);
+                    } else if (String(r.id).indexOf('inp-') === 0 || String(r.id).indexOf('val-') === 0) {
+                        window.saveRapportinoNotturnoPreviewCell('', r.id, v);
+                    } else {
+                        window.saveRapportinoNotturnoPreviewCell(r.id, null, v);
+                    }
+                }
+            });
+
+            return filtered.length;
         };
 
         window.downloadLetturaShareFile = function () {
@@ -39549,7 +39588,7 @@ window.supplementConsumiProduzioneReadings = async function(readings, raw, field
         }
     }
 
-    if (readings.length < minExpected && imageData && typeof window.runTesseractCombinedText === 'function') {
+    if (imageData && typeof window.runTesseractCombinedText === 'function') {
         try {
             window.setSmartCaptureLoadingMessage('OCR locale tabella Consumi e Produzione…');
             var tessText = await window.runTesseractCombinedText(imageData);
@@ -40833,13 +40872,35 @@ window.runGeminiNotturnoMultiCapture = async function(imageData, fields) {
     fields = fields || window.mergeCaptureFieldsForGemini(false);
     var merged = [];
     var engines = [];
+    var minExpected = typeof window.getConsumiProduzioneMinNotturnoReadings === 'function'
+        ? window.getConsumiProduzioneMinNotturnoReadings() : 5;
 
-    if (typeof window.runConsumiErogazioniCapture === 'function') {
+    if (typeof window.runConsumiProduzioneCapture === 'function') {
+        try {
+            window.setSmartCaptureLoadingMessage('Gemini: Consumi e Produzione…');
+            var cr = await window.runConsumiProduzioneCapture(imageData);
+            if (cr && cr.readings && cr.readings.length) {
+                merged = window.mergeOcrReadingLists(merged, cr.readings);
+                engines.push('consumi');
+            }
+            if (cr && cr.rawGemini && typeof window.matchConsumiProduzioneFromOcrText === 'function') {
+                var crLocal = window.filterConsumiProduzioneReadings(
+                    window.matchConsumiProduzioneFromOcrText(cr.rawGemini, fields, { notturnoOnly: true })
+                );
+                if (crLocal.length) {
+                    merged = window.mergeOcrReadingLists(crLocal, merged);
+                    engines.push('consumi-local');
+                }
+            }
+        } catch (e1) { console.warn('Notturno OCR consumi:', e1); }
+    }
+
+    if (merged.length < minExpected && typeof window.runConsumiErogazioniCapture === 'function') {
         try {
             window.setSmartCaptureLoadingMessage('Gemini: Consumi ed Erogazioni…');
             var er = await window.runConsumiErogazioniCapture(imageData);
             var erJson = er && er.rawGemini ? window.parseSmartCaptureJson(er.rawGemini) : null;
-            var isErogScreen = er && (window.isDcsConsumiErogazioniScreen(er.rawGemini || '', erJson) || (er.readings && er.readings.length >= 2));
+            var isErogScreen = er && window.isDcsConsumiErogazioniScreen(er.rawGemini || '', erJson);
             if (isErogScreen && er.readings && er.readings.length) {
                 merged = window.mergeOcrReadingLists(merged, er.readings);
                 engines.push('erogazioni');
@@ -40851,23 +40912,6 @@ window.runGeminiNotturnoMultiCapture = async function(imageData, fields) {
                 }
             }
         } catch (e0) { console.warn('Notturno OCR erogazioni:', e0); }
-    }
-
-    if (typeof window.runConsumiProduzioneCapture === 'function') {
-        try {
-            window.setSmartCaptureLoadingMessage('Gemini: Consumi e Produzione…');
-            var cr = await window.runConsumiProduzioneCapture(imageData);
-            if (cr && cr.readings && cr.readings.length) {
-                merged = window.mergeOcrReadingLists(merged, cr.readings);
-                engines.push('consumi');
-            } else if (cr && cr.rawGemini && typeof window.matchConsumiProduzioneFromOcrText === 'function') {
-                var crLocal = window.matchConsumiProduzioneFromOcrText(cr.rawGemini, fields, { notturnoOnly: true });
-                if (crLocal.length) {
-                    merged = window.mergeOcrReadingLists(merged, window.filterConsumiProduzioneReadings(crLocal));
-                    engines.push('consumi-local');
-                }
-            }
-        } catch (e1) { console.warn('Notturno OCR consumi:', e1); }
     }
 
     if (typeof window.runStoccaggioInternoCapture === 'function') {
@@ -43080,26 +43124,15 @@ window.applySmartCaptureResults = async function() {
     if (settings) settings.classList.remove('active');
 
     if (notturnoGiorMode) {
-        var allowedNg = {};
-        if (typeof window.buildLetturaNotturnoGiornalieroCaptureFieldMap === 'function') {
-            window.buildLetturaNotturnoGiornalieroCaptureFieldMap().forEach(function (f) { allowedNg[f.id] = true; });
-        }
-        var filteredNg = readings.filter(function (r) {
-            return r && r.id && allowedNg[r.id] && r.kind !== 'status';
-        });
-        var appliedNg = typeof window.persistNotturnoGiornalieroFromReadings === 'function'
-            ? window.persistNotturnoGiornalieroFromReadings(filteredNg)
+        var appliedNg = typeof window.applyOcrReadingsToRapportinoNotturno === 'function'
+            ? window.applyOcrReadingsToRapportinoNotturno(readings)
             : 0;
-        filteredNg.forEach(function (r) {
-            var el = document.getElementById(r.id);
-            if (!el || el.readOnly) return;
-            el.value = String(r.value).trim();
-            try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
-        });
         window.__lastLocalPlantEditMs = Date.now();
         if (typeof window.saveData === 'function') void window.saveData(true);
         if (typeof window.clearLetturaNotturnoGiornalieroOcrMode === 'function') window.clearLetturaNotturnoGiornalieroOcrMode();
-        if (typeof window.refreshLetturaDocView === 'function') window.refreshLetturaDocView();
+        if (typeof window.refreshLetturaDocView === 'function') {
+            window.refreshLetturaDocView({ skipFlush: true, skipPlantSync: true });
+        }
         if (typeof window.__serviceHubFlashToast === 'function') {
             window.__serviceHubFlashToast(
                 appliedNg
@@ -43154,7 +43187,14 @@ window.applySmartCaptureResults = async function() {
     let applied = 0;
 
     try {
-        if (isConsumiProd && typeof window.persistNotturnoGiornalieroFromReadings === 'function') {
+        if (isConsumiProd && typeof window.applyOcrReadingsToRapportinoNotturno === 'function') {
+            applied = window.applyOcrReadingsToRapportinoNotturno(readings);
+            window.__lastLocalPlantEditMs = Date.now();
+            if (typeof window.saveData === 'function') void window.saveData(true);
+            if (typeof window.refreshLetturaDocView === 'function') {
+                window.refreshLetturaDocView({ skipFlush: true, skipPlantSync: true });
+            }
+        } else if (isConsumiProd && typeof window.persistNotturnoGiornalieroFromReadings === 'function') {
             var allowedCp = {};
             if (typeof window.buildLetturaNotturnoGiornalieroCaptureFieldMap === 'function') {
                 window.buildLetturaNotturnoGiornalieroCaptureFieldMap().forEach(function (f) { allowedCp[f.id] = true; });

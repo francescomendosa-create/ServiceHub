@@ -877,7 +877,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v445';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v446';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -39145,7 +39145,7 @@ window.CONSUMI_PRODUZIONE_DCS_ROWS = [
         ] }
 ];
 
-/** Schermo DCS "Report Consumi ed Erogazioni" — SIGLA | VALORE | LIV | MEDIA IERI → rapportino notturno. */
+/** Schermo DCS "Report Consumi ed Erogazioni" — SIGLA | VALORE | LIV | MEDIA IERI (portate medie, NON usato nel rapportino notturno). */
 window.CONSUMI_EROGAZIONI_DCS_ROWS = [
     { riga: 1, sigla: 'METANO A', siglaAliases: ['METANO"A"', 'METANO "A"', 'METANOA'], description: 'Metano A',
         targets: [{ rapportinoKey: 'sga-ch4', label: 'Sg 9400 A CH4' }] },
@@ -39460,7 +39460,7 @@ window.runConsumiErogazioniCapture = async function(imageData) {
         rawTextPreview: String(raw).slice(0, 400),
         rawGemini: String(raw || ''),
         notes: readings.length
-            ? ('Consumi ed Erogazioni · ' + readings.length + ' valori MEDIA IERI → rapportino notturno')
+            ? ('Consumi ed Erogazioni · ' + readings.length + ' valori MEDIA IERI (portate medie)')
             : 'Consumi ed Erogazioni · nessun valore estratto — verifica foto e colonna MEDIA IERI'
     };
 };
@@ -40004,7 +40004,7 @@ window.runConsumiProduzioneCapture = async function(imageData) {
             catalogSize: 0,
             rawTextPreview: String(raw).slice(0, 400),
             rawGemini: String(raw || ''),
-            notes: 'Schermo Consumi ed Erogazioni — usa import Erogazioni'
+            notes: 'Schermo sbagliato: serve Report Consumi e Produzione 1/2, colonna IERI (totalizzatori giornalieri)'
         };
     }
 
@@ -40691,9 +40691,19 @@ window.isPlausibleCaptureLevel = function(fieldId, value) {
     return true;
 };
 
+window.isNotturnoPortataReading = function(r) {
+    if (!r) return false;
+    var src = String(r.source || '');
+    var meth = String(r.method || '');
+    if (/MEDIA\s*IERI/i.test(src)) return true;
+    if (/erogaz/i.test(src) || /erogaz/i.test(meth)) return true;
+    return false;
+};
+
 window.filterNotturnoOcrReadings = function(readings) {
     return (readings || []).filter(function(r) {
         if (!r || !r.id || r.value == null) return false;
+        if (window.isNotturnoPortataReading(r)) return false;
         if (r.id === 'inp-s121') return false;
         if (r.kind === 'status') {
             var st = window.normalizeDcsStatus(r.value);
@@ -40765,6 +40775,7 @@ window.extractGeminiCaptureReadings = function(raw, fields) {
         return window.filterConsumiProduzioneReadings(readings);
     }
     if (window.isDcsConsumiErogazioniScreen(raw, json)) {
+        if (window._smartCaptureNotturnoGiornalieroMode) return [];
         var erogFields = fields;
         if (typeof window.buildLetturaNotturnoGiornalieroCaptureFieldMap === 'function') {
             erogFields = window.buildLetturaNotturnoGiornalieroCaptureFieldMap();
@@ -40858,10 +40869,11 @@ window.buildGeminiNotturnoCapturePrompt = function(fields) {
         ? window.buildGeminiConsumiProduzionePrompt() : '';
     return 'Sei un operatore che legge schermi DCS per il RAPPORTINO GIORNALIERO NOTTURNO.\n\n' +
         'TIPO SCHERMO (campo tipo nel JSON):\n' +
-        '- "consumi-erogazioni" se titolo Report Consumi ed Erogazioni (SIGLA | MEDIA IERI)\n' +
-        '- "consumi-produzione" se titolo Report Consumi e Produzione (TOTALIZZATORI | IERI)\n' +
+        '- "consumi-produzione" se titolo Report Consumi e Produzione 1/2 (TOTALIZZATORI | IERI | OGGI)\n' +
         '- "stoccaggio-interno" se STOCCAGGIO INTERNO (SERBATOIO | LIVELLO mm)\n' +
         '- "dcs-overview-strumenti" se OVERVIEW STRUMENTI\n\n' +
+        'IMPORTANTE: il rapportino notturno usa SOLO Report Consumi e Produzione, colonna IERI (totalizzatori giornalieri). ' +
+        'NON usare Consumi ed Erogazioni né portate/MEDIA IERI.\n\n' +
         consumiHint + '\n\n' +
         'CAMPI RAPPORTINO (campo_id o rapportino_key):\n' + uiLines + '\n\n' +
         'Per totalizzatori Consumi e Produzione: TUTTE le righe mappate → colonna IERI soltanto (mai OGGI, mai portata). Per serbatoi usa LIVELLO mm.\n' +
@@ -40872,8 +40884,6 @@ window.runGeminiNotturnoMultiCapture = async function(imageData, fields) {
     fields = fields || window.mergeCaptureFieldsForGemini(false);
     var merged = [];
     var engines = [];
-    var minExpected = typeof window.getConsumiProduzioneMinNotturnoReadings === 'function'
-        ? window.getConsumiProduzioneMinNotturnoReadings() : 5;
 
     if (typeof window.runConsumiProduzioneCapture === 'function') {
         try {
@@ -40893,25 +40903,6 @@ window.runGeminiNotturnoMultiCapture = async function(imageData, fields) {
                 }
             }
         } catch (e1) { console.warn('Notturno OCR consumi:', e1); }
-    }
-
-    if (merged.length < minExpected && typeof window.runConsumiErogazioniCapture === 'function') {
-        try {
-            window.setSmartCaptureLoadingMessage('Gemini: Consumi ed Erogazioni…');
-            var er = await window.runConsumiErogazioniCapture(imageData);
-            var erJson = er && er.rawGemini ? window.parseSmartCaptureJson(er.rawGemini) : null;
-            var isErogScreen = er && window.isDcsConsumiErogazioniScreen(er.rawGemini || '', erJson);
-            if (isErogScreen && er.readings && er.readings.length) {
-                merged = window.mergeOcrReadingLists(merged, er.readings);
-                engines.push('erogazioni');
-            } else if (er && er.rawGemini && typeof window.matchConsumiErogazioniFromOcrText === 'function') {
-                var erLocal = window.matchConsumiErogazioniFromOcrText(er.rawGemini, fields);
-                if (erLocal.length) {
-                    merged = window.mergeOcrReadingLists(merged, window.filterConsumiErogazioniReadings(erLocal));
-                    engines.push('erogazioni-local');
-                }
-            }
-        } catch (e0) { console.warn('Notturno OCR erogazioni:', e0); }
     }
 
     if (typeof window.runStoccaggioInternoCapture === 'function') {
@@ -40946,13 +40937,10 @@ window.runGeminiNotturnoMultiCapture = async function(imageData, fields) {
     var consumiCount = merged.filter(function(r) {
         return r && r.method && String(r.method).indexOf('consumi') === 0;
     }).length;
-    var erogCount = merged.filter(function(r) {
-        return r && r.source && String(r.source).indexOf('MEDIA IERI') >= 0;
-    }).length;
     return {
         readings: merged,
         engine: engines.length ? ('notturno-' + engines.join('+')) : 'notturno-none',
-        profile: erogCount > 0 ? 'dcs-consumi-erogazioni' : (consumiCount > 0 ? 'dcs-consumi-produzione' : 'rapportino-notturno'),
+        profile: consumiCount > 0 ? 'dcs-consumi-produzione' : 'rapportino-notturno',
         catalogSize: merged.length,
         rawTextPreview: '',
         notes: merged.length
@@ -42965,8 +42953,7 @@ window.showSmartCaptureConfirm = function(parsed) {
     const letturaMode = !!window._smartCaptureLetturaMode;
     const notturnoGiorMode = !!window._smartCaptureNotturnoGiornalieroMode;
     const isDcsAcqua = parsed && (parsed.profile === 'dcs-acqua' || parsed.profile === 'dcs-stoccaggio-interno');
-    const isConsumiProd = parsed && (parsed.profile === 'dcs-consumi-produzione' || parsed.profile === 'dcs-consumi-erogazioni');
-    const isConsumiErog = parsed && parsed.profile === 'dcs-consumi-erogazioni';
+    const isConsumiProd = parsed && parsed.profile === 'dcs-consumi-produzione';
     const isOverview = parsed && parsed.profile === 'dcs-overview-strumenti';
     const fieldMap = {};
     let fields;
@@ -43040,19 +43027,13 @@ window.showSmartCaptureConfirm = function(parsed) {
         hint.textContent = 'Letture colonna ' + (window._letturaOcrSlotLabel || '') +
             ' — i livelli andranno nella colonna sotto l\'orario scelto';
     } else if (hint && window._smartCaptureNotturnoGiornalieroMode) {
-        hint.textContent = isConsumiErog
-            ? ('Report Consumi ed Erogazioni · colonna MEDIA IERI → rapportino notturno' +
+        hint.textContent = isConsumiProd
+            ? ('Report Consumi e Produzione · colonna IERI (totalizzatori) → rapportino notturno' +
                 (parsed.engine ? ' · ' + parsed.engine : ''))
-            : (isConsumiProd
-            ? ('Report Consumi e Produzione · colonna IERI → rapportino notturno' +
-                (parsed.engine ? ' · ' + parsed.engine : ''))
-            : 'Rapportino giornaliero notturno — correggi i valori prima di applicare al foglio A3');
+            : 'Rapportino giornaliero notturno — correggi i valori prima di applicare al foglio A3';
     } else if (hint && isConsumiProd) {
-        hint.textContent = isConsumiErog
-            ? ('Report Consumi ed Erogazioni · colonna MEDIA IERI → rapportino notturno' +
-                (parsed.engine ? ' · ' + parsed.engine : ''))
-            : ('Report Consumi e Produzione · colonna IERI → rapportino notturno' +
-            (parsed.engine ? ' · ' + parsed.engine : ''));
+        hint.textContent = 'Report Consumi e Produzione · colonna IERI → rapportino notturno' +
+            (parsed.engine ? ' · ' + parsed.engine : '');
     } else if (hint) {
         hint.textContent = isOverview
             ? ('Overview Strumenti · S-121 ignorato · 9100-LI-818 → S 818 · pozzi MARCIA/FERMO' +

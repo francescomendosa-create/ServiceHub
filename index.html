@@ -877,7 +877,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v450';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v451';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -39584,19 +39584,9 @@ window.getConsumiProduzioneMinNotturnoReadings = function() {
 };
 
 window.pruneWeakConsumiProduzioneReadings = function(readings, opts) {
-    readings = (readings || []).slice();
-    opts = opts || {};
-    if (!opts.notturnoOnly) return readings;
-    readings = readings.filter(function(r) {
+    return (readings || []).filter(function(r) {
         return r && r.id && r.id !== 'og-rec-gas';
     });
-    if (!window.hasNotturnoCaldaieConsumiReading(readings)) {
-        var hasAzoto = readings.some(function(r) {
-            return r && /^az-/.test(String(r.id));
-        });
-        if (!hasAzoto) return [];
-    }
-    return readings;
 };
 
 window.pickConsumiProduzioneIeriFromItem = function(item, rowDef) {
@@ -39614,6 +39604,13 @@ window.pickConsumiProduzioneIeriFromItem = function(item, rowDef) {
         if (nums.length >= 3) {
             nums.sort(function(a, b) { return b - a; });
             return String(nums[0]);
+        }
+    }
+    if (isMetano && oggi && ieri !== oggi) {
+        var pair = [parseFloat(ieri), parseFloat(oggi)].filter(function(n) { return isFinite(n); });
+        if (pair.length === 2) {
+            pair.sort(function(a, b) { return b - a; });
+            return String(pair[0]);
         }
     }
     if (oggi && ieri === oggi) return null;
@@ -39643,32 +39640,11 @@ window.supplementConsumiProduzioneReadings = async function(readings, raw, field
     var engineTag = '';
 
     if (raw && typeof window.matchConsumiProduzioneFromOcrText === 'function') {
-        var fromRaw = window.filterConsumiProduzioneReadings(
-            window.matchConsumiProduzioneFromOcrText(raw, fields, opts),
-            opts
-        );
+        var fromRaw = window.matchConsumiProduzioneFromOcrText(raw, fields, opts);
+        fromRaw = fromRaw.filter(function(r) { return r && r.id && r.id !== 'og-rec-gas'; });
         if (fromRaw.length) {
             readings = window.mergeOcrReadingLists(fromRaw, readings);
             engineTag += '+raw-local';
-        }
-    }
-
-    if (readings.length === 0 && imageData && typeof window.runTesseractCombinedText === 'function') {
-        try {
-            window.setSmartCaptureLoadingMessage('OCR locale tabella Consumi e Produzione…');
-            var tessText = await window.runTesseractCombinedText(imageData);
-            if (tessText && typeof window.matchConsumiProduzioneFromOcrText === 'function') {
-                var fromTess = window.filterConsumiProduzioneReadings(
-                    window.matchConsumiProduzioneFromOcrText(tessText, fields, opts),
-                    opts
-                );
-                if (fromTess.length) {
-                    readings = window.mergeOcrReadingLists(fromTess, readings);
-                    engineTag += '+tesseract';
-                }
-            }
-        } catch (eTess) {
-            console.warn('Consumi produzione Tesseract supplement:', eTess);
         }
     }
 
@@ -39748,8 +39724,11 @@ window.resolveConsumiProduzioneNotturnoValue = function(ctx) {
         val = window.pickConsumiProduzioneIeriFromItem(ctx.item, ctx.rowDef);
         if (val == null) return null;
     } else if (ctx.nums && ctx.nums.length) {
-        if (ctx.nums.length < 3) return null;
-        val = window.pickConsumiProduzioneColumnValue(ctx.nums, 'ieri');
+        if (ctx.nums.length >= 3) {
+            val = window.pickConsumiProduzioneColumnValue(ctx.nums, 'ieri');
+        } else if (ctx.nums.length === 2) {
+            val = ctx.nums[1];
+        }
     }
     if (val == null) return null;
     if (typeof val === 'number') val = String(val);
@@ -40129,25 +40108,6 @@ window.runConsumiProduzioneCapture = async function(imageData) {
         window.extractConsumiProduzioneReadings(raw, fields, consumiOpts),
         consumiOpts
     ) : [];
-
-    if (geminiOk && !window.hasNotturnoCaldaieConsumiReading(readings)) {
-        try {
-            var raw2 = await window.withOcrTimeout(
-                window.callGeminiConsumiProduzioneOcr(prompt, imageData),
-                55000,
-                'timeout'
-            );
-            if (raw2 && !window.isLikelyGeminiFailureRaw(raw2)) {
-                raw = raw + '\n' + raw2;
-                var retryReadings = window.filterConsumiProduzioneReadings(
-                    window.extractConsumiProduzioneReadings(raw2, fields, consumiOpts),
-                    consumiOpts
-                );
-                readings = window.mergeOcrReadingLists(readings, retryReadings);
-                engine = 'gemini-consumi-retry';
-            }
-        } catch (e2) {}
-    }
 
     if (typeof window.supplementConsumiProduzioneReadings === 'function') {
         var sup = await window.supplementConsumiProduzioneReadings(readings, raw, fields, consumiOpts, imageData);
@@ -41026,11 +40986,12 @@ window.runGeminiNotturnoMultiCapture = async function(imageData, fields) {
     var merged = [];
     var engines = [];
     var consumiScreenOk = false;
+    var cr = null;
 
     if (typeof window.runConsumiProduzioneCapture === 'function') {
         try {
             window.setSmartCaptureLoadingMessage('Gemini: Consumi e Produzione (1 chiamata)…');
-            var cr = await window.runConsumiProduzioneCapture(imageData);
+            cr = await window.runConsumiProduzioneCapture(imageData);
             if (cr && cr.readings && cr.readings.length) {
                 merged = window.mergeOcrReadingLists(merged, cr.readings);
                 engines.push('consumi');
@@ -41046,9 +41007,7 @@ window.runGeminiNotturnoMultiCapture = async function(imageData, fields) {
                 }
             }
             if (cr && cr.rawGemini) {
-                var crJson = window.parseSmartCaptureJson(cr.rawGemini);
-                consumiScreenOk = window.isDcsConsumiProduzioneScreen(cr.rawGemini, crJson) ||
-                    (cr.readings && cr.readings.length >= 1);
+                consumiScreenOk = true;
             }
         } catch (e1) {
             console.warn('Notturno OCR consumi:', e1);
@@ -41060,87 +41019,33 @@ window.runGeminiNotturnoMultiCapture = async function(imageData, fields) {
 
     if (consumiScreenOk) {
         merged = window.filterNotturnoOcrReadings(merged);
-        var minExpected = typeof window.getConsumiProduzioneMinNotturnoReadings === 'function'
-            ? window.getConsumiProduzioneMinNotturnoReadings() : 5;
-        var hasCaldaie = typeof window.hasNotturnoCaldaieConsumiReading === 'function'
-            && window.hasNotturnoCaldaieConsumiReading(merged);
-        if (merged.length >= minExpected || hasCaldaie) {
-            return {
-                readings: merged,
-                engine: engines.length ? ('notturno-' + engines.join('+')) : 'notturno-consumi-only',
-                profile: 'dcs-consumi-produzione',
-                catalogSize: merged.length,
-                rawTextPreview: '',
-                notes: merged.length
-                    ? ('Consumi e Produzione · ' + merged.length + ' totalizzatori IERI — correggi in anteprima')
-                    : 'Consumi e Produzione · nessun totalizzatore estratto'
-            };
+        var hasCaldaie = window.hasNotturnoCaldaieConsumiReading(merged);
+        var notesMsg;
+        if (merged.length && hasCaldaie) {
+            notesMsg = 'Consumi e Produzione · ' + merged.length + ' totalizzatori IERI — correggi in anteprima';
+        } else if (merged.length) {
+            notesMsg = 'Consumi e Produzione · ' + merged.length + ' valori — mancano caldaie: zoom Metano A (9121FQI5) colonna IERI';
+        } else {
+            notesMsg = 'Consumi e Produzione · nessun valore — avvicina foto a Metano A (9121FQI5) e colonna IERI';
         }
-        return {
-            readings: [],
-            engine: engines.length ? ('notturno-' + engines.join('+')) : 'notturno-consumi-partial',
-            profile: 'dcs-consumi-produzione',
-            catalogSize: 0,
-            rawTextPreview: '',
-            notes: 'Consumi e Produzione · nessuna caldaia letta — avvicina la foto: righe Metano A (9121FQI5), H2O, Vapore, colonna IERI'
-        };
-    }
-
-    if (window.isGeminiSessionQuotaExhausted && window.isGeminiSessionQuotaExhausted()) {
-        merged = window.filterNotturnoOcrReadings(merged);
         return {
             readings: merged,
-            engine: engines.join('+') || 'notturno-quota-partial',
-            profile: merged.length ? 'dcs-consumi-produzione' : 'rapportino-notturno',
+            engine: engines.length ? ('notturno-' + engines.join('+')) : 'notturno-consumi-only',
+            profile: 'dcs-consumi-produzione',
             catalogSize: merged.length,
-            rawTextPreview: '',
-            notes: merged.length
-                ? ('Quota Gemini esaurita · ' + merged.length + ' valori da OCR locale')
-                : 'Quota Gemini esaurita — OCR locale o riprova domani'
+            rawTextPreview: cr && cr.rawTextPreview ? cr.rawTextPreview : '',
+            rawGemini: cr && cr.rawGemini ? cr.rawGemini : '',
+            notes: notesMsg
         };
     }
 
-    if (typeof window.runStoccaggioInternoCapture === 'function') {
-        try {
-            window.setSmartCaptureLoadingMessage('Gemini: Stoccaggio interno…');
-            var sr = await window.runStoccaggioInternoCapture(imageData);
-            if (sr && sr.readings && sr.readings.length) {
-                merged = window.mergeOcrReadingLists(merged, sr.readings);
-                engines.push('stoccaggio');
-            }
-        } catch (e2) { console.warn('Notturno OCR stoccaggio:', e2); }
-    }
-
-    try {
-        window.setSmartCaptureLoadingMessage('Gemini: altri schermi rapportino…');
-        var prompt = window.buildGeminiNotturnoCapturePrompt(fields);
-        var raw = await window.withOcrTimeout(
-            window.callGeminiTankOcr(prompt, imageData),
-            65000,
-            'Gemini rapportino in timeout.'
-        );
-        if (!window.isLikelyGeminiFailureRaw(raw)) {
-            var extra = window.extractGeminiCaptureReadings(raw, fields);
-            if (extra && extra.length) {
-                merged = window.mergeOcrReadingLists(merged, extra);
-                engines.push('gemini');
-            }
-        }
-    } catch (e3) { console.warn('Notturno OCR gemini:', e3); }
-
-    merged = window.filterNotturnoOcrReadings(merged);
-    var consumiCount = merged.filter(function(r) {
-        return r && r.method && String(r.method).indexOf('consumi') === 0;
-    }).length;
     return {
-        readings: merged,
-        engine: engines.length ? ('notturno-' + engines.join('+')) : 'notturno-none',
-        profile: consumiCount > 0 ? 'dcs-consumi-produzione' : 'rapportino-notturno',
-        catalogSize: merged.length,
+        readings: [],
+        engine: 'notturno-none',
+        profile: 'dcs-consumi-produzione',
+        catalogSize: 0,
         rawTextPreview: '',
-        notes: merged.length
-            ? ('Rapportino notturno · ' + merged.length + ' valori letti — correggi in anteprima')
-            : 'Rapportino notturno · nessun valore estratto — inserisci manualmente in anteprima'
+        notes: 'Consumi e Produzione · schermo non riconosciuto'
     };
 };
 
@@ -42509,10 +42414,7 @@ window.runSmartCaptureAnalysis = async function(imageData) {
         try {
             if (window._smartCaptureNotturnoGiornalieroMode &&
                 typeof window.runGeminiNotturnoMultiCapture === 'function') {
-                var notturnoResult = await window.runGeminiNotturnoMultiCapture(imageData, fields);
-                if (notturnoResult.readings && notturnoResult.readings.length >= 1) {
-                    return notturnoResult;
-                }
+                return await window.runGeminiNotturnoMultiCapture(imageData, fields);
             }
             if (!window._smartCaptureNotturnoGiornalieroMode && !window._smartCaptureLetturaMode &&
                 typeof window.runConsumiProduzioneCapture === 'function') {

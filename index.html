@@ -877,7 +877,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v454';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v455';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -39827,22 +39827,14 @@ window.supplementConsumiProduzioneReadings = async function(readings, raw, field
     readings = (readings || []).slice();
     opts = opts || { notturnoOnly: true };
     var engineTag = '';
-
-    if (raw && typeof window.parseSmartCaptureJson === 'function') {
-        var json = window.parseSmartCaptureJson(raw);
-        if (json && Array.isArray(json.righe) && json.righe.length) {
-            var fromJson = window.filterConsumiProduzioneReadings(
-                window.parseConsumiProduzioneFromJson(json, fields, opts),
-                opts
-            );
-            if (fromJson.length) {
-                readings = window.mergeOcrReadingLists(fromJson, readings);
-                engineTag += '+json-merge';
-            }
-        }
+    var json = raw && typeof window.parseSmartCaptureJson === 'function'
+        ? window.parseSmartCaptureJson(raw) : null;
+    if (window.isDcsStoccaggioInternoScreen && window.isDcsStoccaggioInternoScreen(raw, json)) {
+        return { readings: readings, engineTag: engineTag };
     }
 
-    if (raw && typeof window.matchConsumiProduzioneFromOcrText === 'function') {
+    if (raw && typeof window.matchConsumiProduzioneFromOcrText === 'function' &&
+        window.isDcsConsumiProduzioneScreen(raw, json)) {
         var fromRaw = window.matchConsumiProduzioneFromOcrText(raw, fields, opts);
         fromRaw = fromRaw.filter(function(r) { return r && r.id && r.id !== 'og-rec-gas'; });
         if (fromRaw.length) {
@@ -40270,12 +40262,19 @@ window.parseConsumiProduzioneFromJson = function(json, fields, opts) {
 
 window.extractConsumiProduzioneReadings = function(raw, fields, opts) {
     if (!raw || window.isLikelyGeminiFailureRaw(raw)) return [];
+    opts = opts || {};
     var json = window.parseSmartCaptureJson(raw);
+    if (window.isDcsStoccaggioInternoScreen && window.isDcsStoccaggioInternoScreen(raw, json)) return [];
+    if (window._smartCaptureTankMode && !window._smartCaptureNotturnoGiornalieroMode) return [];
     var readings = window.parseConsumiProduzioneFromJson(json, fields, opts);
     if (!readings.length && json && (json.applica_ora || json.coppie) && !opts.notturnoOnly) {
         readings = window.mergeOcrReadingLists(readings, window.parseGeminiTankPairsJson(json, fields));
     }
-    if (typeof window.matchConsumiProduzioneFromOcrText === 'function') {
+    if (!readings.length && typeof window.matchConsumiProduzioneFromOcrText === 'function' &&
+        window.isDcsConsumiProduzioneScreen(raw, json)) {
+        readings = window.matchConsumiProduzioneFromOcrText(raw, fields, opts);
+    } else if (readings.length && typeof window.matchConsumiProduzioneFromOcrText === 'function' &&
+        window.isDcsConsumiProduzioneScreen(raw, json)) {
         var localReadings = window.matchConsumiProduzioneFromOcrText(raw, fields, opts);
         if (localReadings.length) {
             readings = window.mergeOcrReadingLists(localReadings, readings);
@@ -41130,15 +41129,26 @@ window.extractGeminiCaptureReadings = function(raw, fields) {
     const tankMode = !!window._smartCaptureTankMode;
     let readings = [];
 
-    if (isConsumi) {
+    if (isOverview || isStocc || isDcsTable) {
+        readings = window.extractDcsAcquaReadings(raw, fields, { allowTextFallback: false, skipTrustedFilter: true });
+    } else if (isConsumi && (window._smartCaptureNotturnoGiornalieroMode || !tankMode)) {
         var consumiFields = fields;
         if (typeof window.buildLetturaNotturnoGiornalieroCaptureFieldMap === 'function') {
             consumiFields = window.buildLetturaNotturnoGiornalieroCaptureFieldMap();
         }
         readings = window.extractConsumiProduzioneReadings(raw, consumiFields, { notturnoOnly: true });
         return window.filterConsumiProduzioneReadings(readings);
-    }
-    if (window.isDcsConsumiErogazioniScreen(raw, json)) {
+    } else if (tankMode) {
+        readings = window.extractTankReadingsFromGeminiRaw(raw, fields);
+        readings = window.mergeOcrReadingLists(readings, window.parseGeminiTankPairsJson(json, fields));
+    } else if (isConsumi) {
+        var consumiFields2 = fields;
+        if (typeof window.buildLetturaNotturnoGiornalieroCaptureFieldMap === 'function') {
+            consumiFields2 = window.buildLetturaNotturnoGiornalieroCaptureFieldMap();
+        }
+        readings = window.extractConsumiProduzioneReadings(raw, consumiFields2, { notturnoOnly: false });
+        readings = window.filterConsumiProduzioneReadings(readings, { notturnoOnly: false });
+    } else if (window.isDcsConsumiErogazioniScreen(raw, json)) {
         if (window._smartCaptureNotturnoGiornalieroMode) return [];
         var erogFields = fields;
         if (typeof window.buildLetturaNotturnoGiornalieroCaptureFieldMap === 'function') {
@@ -41146,12 +41156,6 @@ window.extractGeminiCaptureReadings = function(raw, fields) {
         }
         readings = window.extractConsumiErogazioniReadings(raw, erogFields);
         return window.filterConsumiErogazioniReadings(readings);
-    }
-    if (isOverview || isStocc || isDcsTable) {
-        readings = window.extractDcsAcquaReadings(raw, fields, { allowTextFallback: false, skipTrustedFilter: true });
-    } else if (tankMode) {
-        readings = window.extractTankReadingsFromGeminiRaw(raw, fields);
-        readings = window.mergeOcrReadingLists(readings, window.parseGeminiTankPairsJson(json, fields));
     } else {
         readings = window.extractDcsAcquaReadings(raw, fields, { allowTextFallback: false, skipTrustedFilter: true });
         readings = window.mergeOcrReadingLists(readings, window.parseGeminiTankPairsJson(json, fields));
@@ -42698,25 +42702,25 @@ window.runSmartCaptureAnalysis = async function(imageData) {
                 typeof window.runGeminiNotturnoMultiCapture === 'function') {
                 return await window.runGeminiNotturnoMultiCapture(imageData, fields);
             }
-            if (!window._smartCaptureNotturnoGiornalieroMode && !window._smartCaptureLetturaMode &&
-                typeof window.runConsumiProduzioneCapture === 'function') {
-                window.setSmartCaptureLoadingMessage('Gemini: Consumi e Produzione (IERI)…');
-                var consumiResult = await window.runConsumiProduzioneCapture(imageData);
-                var consumiJson = window.parseSmartCaptureJson(consumiResult.rawGemini || consumiResult.rawTextPreview || '');
-                var isConsumiScreen = window.isDcsConsumiProduzioneScreen(consumiResult.rawGemini || '', consumiJson);
-                if ((isConsumiScreen || (consumiResult.readings && consumiResult.readings.length >= 2)) &&
-                    consumiResult.readings && consumiResult.readings.length >= 1) {
-                    return consumiResult;
-                }
-            }
             if (tankMode && !window._smartCaptureNotturnoGiornalieroMode && !window._smartCaptureLetturaMode &&
                 typeof window.runStoccaggioInternoCapture === 'function') {
                 window.setSmartCaptureLoadingMessage('Gemini: STOCCAGGIO INTERNO (riga per riga)…');
                 var stoccResult = await window.runStoccaggioInternoCapture(imageData);
                 var stoccJson = window.parseSmartCaptureJson(stoccResult.rawGemini || stoccResult.rawTextPreview || '');
                 var isStoccScreen = window.isDcsStoccaggioInternoScreen(stoccResult.rawGemini || '', stoccJson);
-                if (isStoccScreen && stoccResult.readings && stoccResult.readings.length >= 2) {
+                if ((isStoccScreen || (stoccResult.readings && stoccResult.readings.length >= 2)) &&
+                    stoccResult.readings && stoccResult.readings.length >= 1) {
                     return stoccResult;
+                }
+            }
+            if (!tankMode && !window._smartCaptureNotturnoGiornalieroMode && !window._smartCaptureLetturaMode &&
+                typeof window.runConsumiProduzioneCapture === 'function') {
+                window.setSmartCaptureLoadingMessage('Gemini: Consumi e Produzione (IERI)…');
+                var consumiResult = await window.runConsumiProduzioneCapture(imageData);
+                var consumiJson = window.parseSmartCaptureJson(consumiResult.rawGemini || consumiResult.rawTextPreview || '');
+                var isConsumiScreen = window.isDcsConsumiProduzioneScreen(consumiResult.rawGemini || '', consumiJson);
+                if (isConsumiScreen && consumiResult.readings && consumiResult.readings.length >= 1) {
+                    return consumiResult;
                 }
             }
             window.setSmartCaptureLoadingMessage('Gemini: analisi foto (sigle e livelli)…');

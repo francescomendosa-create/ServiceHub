@@ -40038,6 +40038,7 @@ window.runConsumiProduzioneCapture = async function(imageData) {
     }
 
     if (!geminiOk && !readings.length && window.isGeminiQuotaOrBlockedError(lastErr)) {
+        window.markGeminiSessionQuotaExhausted(lastErr);
         var err = new Error(lastErr);
         err.geminiQuota = true;
         throw err;
@@ -40880,14 +40881,34 @@ window.buildGeminiNotturnoCapturePrompt = function(fields) {
         'JSON: {"tipo":"consumi-produzione","righe":[{"totalizzatore":"9121FQI5","ieri":"23734.96","rapportino_key":"sga-ch4"},{"totalizzatore":"FQ-102","descrizione":"PORTATA GASDOTTO N2","ieri":"5678.90","rapportino_key":"az-acq-pipe"},{"totalizzatore":"9102-FQI-2","descrizione":"AZOTO AD S.A.2","ieri":"1234.56","rapportino_key":"az-cons-serv"}]}\n';
 };
 
+window.markGeminiSessionQuotaExhausted = function(reason) {
+    window.__geminiSessionQuotaExhausted = true;
+    window.__geminiSessionQuotaReason = String(reason || 'quota esaurita').slice(0, 200);
+};
+
+window.isGeminiSessionQuotaExhausted = function() {
+    return !!window.__geminiSessionQuotaExhausted;
+};
+
 window.runGeminiNotturnoMultiCapture = async function(imageData, fields) {
     fields = fields || window.mergeCaptureFieldsForGemini(false);
+    if (window.isGeminiSessionQuotaExhausted && window.isGeminiSessionQuotaExhausted()) {
+        return {
+            readings: [],
+            engine: 'notturno-quota-blocked',
+            profile: 'rapportino-notturno',
+            catalogSize: 0,
+            rawTextPreview: '',
+            notes: 'Quota Gemini esaurita — OCR locale o riprova domani (limite Google AI Studio)'
+        };
+    }
     var merged = [];
     var engines = [];
+    var consumiScreenOk = false;
 
     if (typeof window.runConsumiProduzioneCapture === 'function') {
         try {
-            window.setSmartCaptureLoadingMessage('Gemini: Consumi e Produzione…');
+            window.setSmartCaptureLoadingMessage('Gemini: Consumi e Produzione (1 chiamata)…');
             var cr = await window.runConsumiProduzioneCapture(imageData);
             if (cr && cr.readings && cr.readings.length) {
                 merged = window.mergeOcrReadingLists(merged, cr.readings);
@@ -40902,7 +40923,45 @@ window.runGeminiNotturnoMultiCapture = async function(imageData, fields) {
                     engines.push('consumi-local');
                 }
             }
-        } catch (e1) { console.warn('Notturno OCR consumi:', e1); }
+            if (cr && cr.rawGemini) {
+                var crJson = window.parseSmartCaptureJson(cr.rawGemini);
+                consumiScreenOk = window.isDcsConsumiProduzioneScreen(cr.rawGemini, crJson) ||
+                    (cr.readings && cr.readings.length >= 1);
+            }
+        } catch (e1) {
+            console.warn('Notturno OCR consumi:', e1);
+            if (e1 && (e1.geminiQuota || window.isGeminiQuotaOrBlockedError(e1.message))) {
+                window.markGeminiSessionQuotaExhausted(e1.message);
+            }
+        }
+    }
+
+    if (consumiScreenOk && merged.length >= 1) {
+        merged = window.filterNotturnoOcrReadings(merged);
+        return {
+            readings: merged,
+            engine: engines.length ? ('notturno-' + engines.join('+')) : 'notturno-consumi-only',
+            profile: 'dcs-consumi-produzione',
+            catalogSize: merged.length,
+            rawTextPreview: '',
+            notes: merged.length
+                ? ('Consumi e Produzione · ' + merged.length + ' totalizzatori IERI — correggi in anteprima')
+                : 'Consumi e Produzione · nessun totalizzatore estratto'
+        };
+    }
+
+    if (window.isGeminiSessionQuotaExhausted && window.isGeminiSessionQuotaExhausted()) {
+        merged = window.filterNotturnoOcrReadings(merged);
+        return {
+            readings: merged,
+            engine: engines.join('+') || 'notturno-quota-partial',
+            profile: merged.length ? 'dcs-consumi-produzione' : 'rapportino-notturno',
+            catalogSize: merged.length,
+            rawTextPreview: '',
+            notes: merged.length
+                ? ('Quota Gemini esaurita · ' + merged.length + ' valori da OCR locale')
+                : 'Quota Gemini esaurita — OCR locale o riprova domani'
+        };
     }
 
     if (typeof window.runStoccaggioInternoCapture === 'function') {
@@ -43777,10 +43836,11 @@ window.geminiGenerateWithOneKey = async function(apiKey, parts, opts) {
                 return { text: text, model: modelli[i] };
             } catch (e) {
                 lastErr = e && e.message ? e.message : String(e);
-                if (window.isGeminiQuotaOrBlockedError(lastErr)) {
-                    i = modelli.length;
-                    break;
-                }
+            if (window.isGeminiQuotaOrBlockedError(msg)) {
+                window.markGeminiSessionQuotaExhausted(msg);
+                i = modelli.length;
+                break;
+            }
                 if (window.isGeminiTimeoutLikeError(lastErr) && attempt < maxRetry) {
                     attempt++;
                     continue;

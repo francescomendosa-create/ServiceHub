@@ -877,7 +877,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v455';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v456';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
@@ -3344,6 +3344,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
                 if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
                 if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
+                if (typeof window.wireAllPlantNumpadHandlers === 'function') window.wireAllPlantNumpadHandlers();
                 if (typeof window.syncFiltraPanelForActiveRapportino === 'function') window.syncFiltraPanelForActiveRapportino();
                 if (typeof window.syncNotturnoStoccaggioPanel === 'function') window.syncNotturnoStoccaggioPanel();
                 if (typeof window.refreshNotturnoFiltraTotals === 'function') window.refreshNotturnoFiltraTotals();
@@ -7604,14 +7605,18 @@ window.updateStoricoButton = async function() {
                 }
             });
             
+            if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
+            if (typeof window.wireAllPlantNumpadHandlers === 'function') window.wireAllPlantNumpadHandlers();
+
             document.body.addEventListener('click', (e) => {
                 const target = e.target;
                 if (window.__isAmbSpecialPopupTarget && window.__isAmbSpecialPopupTarget(target)) return;
-                if (globalInteractionLock) return;
                 if (e.target.closest && e.target.closest('#numpad-modal-panel')) return;
                 if (target.closest && target.closest('[data-no-numpad="1"]')) return;
                 if (typeof window.tryOpenTankDetailFromClick === 'function' && window.tryOpenTankDetailFromClick(e)) return;
-                if (target.classList.contains('cell-label-main') || target.classList.contains('bd-label') || (target.classList.contains('amb-label') && !target.innerText.includes("WWT") && !target.innerText.includes("OSMOSI") && !target.querySelector('.vwt-label-dynamic') && !target.querySelector('.osmosi-label-dynamic'))) { window.openNumpad(target); }
+                var labelEl = typeof window.resolveNumpadLabelFromClickTarget === 'function'
+                    ? window.resolveNumpadLabelFromClickTarget(target) : null;
+                if (labelEl) window.openNumpad(labelEl);
             });
         });
 
@@ -8268,13 +8273,92 @@ window.updateStoricoButton = async function() {
         };
 
         window.onNumpadTitleClick = function (e) {
-            var titleEl = document.getElementById('numpad-title');
-            if (!titleEl || !titleEl.classList.contains('numpad-title--tank-detail')) return;
             if (e) {
                 e.preventDefault();
                 e.stopPropagation();
             }
+            if (!currentNumpadTarget || window.currentAnalisiPopupInput) return;
+            if (window.__numpadView !== 'value') return;
+            var fieldId = currentNumpadTarget.id;
+            if (!fieldId || typeof window.canOpenTankDetailForField !== 'function'
+                || !window.canOpenTankDetailForField(fieldId)) return;
             window.openTankDetailFromNumpadTitle();
+        };
+
+        window.isNumpadLabelElement = function (labelEl) {
+            if (!labelEl || !labelEl.classList) return false;
+            if (labelEl.closest('[data-no-numpad="1"]')) return false;
+            if (labelEl.classList.contains('nott-stocc-sigla-cell--detail')) return false;
+            if (labelEl.classList.contains('cell-label-main') || labelEl.classList.contains('bd-label')
+                || labelEl.classList.contains('nott-stocc-sigla-cell')) return true;
+            if (labelEl.classList.contains('amb-label')) {
+                if (labelEl.innerText.includes('WWT') || labelEl.innerText.includes('OSMOSI')) return false;
+                if (labelEl.querySelector('.vwt-label-dynamic') || labelEl.querySelector('.osmosi-label-dynamic')) return false;
+                if (labelEl.closest('[data-analisi-trigger]')) return false;
+                return true;
+            }
+            return false;
+        };
+
+        window.resolveNumpadLabelFromClickTarget = function (target) {
+            if (!target || !target.closest) return null;
+            var labelEl = target.closest('.cell-label-main, .bd-label, .nott-stocc-sigla-cell, .amb-label');
+            if (!labelEl || !window.isNumpadLabelElement(labelEl)) return null;
+            return labelEl;
+        };
+
+        window.wireNumpadLabelClickHandlers = function (root) {
+            var scope = root && root.querySelectorAll ? root : document;
+            scope.querySelectorAll('.cell-label-main, .bd-label, .nott-stocc-sigla-cell, .amb-label').forEach(function (labelEl) {
+                if (!window.isNumpadLabelElement(labelEl)) return;
+                if (labelEl.dataset.shNumpadWired === '1') return;
+                labelEl.dataset.shNumpadWired = '1';
+                labelEl.style.cursor = 'pointer';
+                labelEl.addEventListener('click', function (ev) {
+                    if (window.__isAmbSpecialPopupTarget && window.__isAmbSpecialPopupTarget(ev.target)) return;
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    window.openNumpad(labelEl);
+                });
+            });
+            scope.querySelectorAll('input.nott-stocc-inp[id]').forEach(function (inp) {
+                if (inp.dataset.shNumpadInputWired === '1') return;
+                inp.dataset.shNumpadInputWired = '1';
+                inp.addEventListener('click', function (ev) {
+                    var row = inp.closest('.nott-stocc-row');
+                    var sigla = row && row.querySelector('.nott-stocc-sigla-cell');
+                    if (!sigla) return;
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    window.openNumpad(sigla, inp);
+                });
+            });
+        };
+
+        window.wireStoccTankDetailClickHandlers = function (root) {
+            var scope = root && root.querySelectorAll ? root : document;
+            scope.querySelectorAll('.nott-stocc-sigla-cell--detail[data-field-for]').forEach(function (el) {
+                if (el.dataset.shStoccDetailWired === '1') return;
+                el.dataset.shStoccDetailWired = '1';
+                el.style.cursor = 'pointer';
+                el.addEventListener('click', function (ev) {
+                    if (ev.target.closest('.nott-stocc-inp-cell')) return;
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    var fieldId = el.getAttribute('data-field-for');
+                    if (!fieldId || typeof window.canOpenTankDetailForField !== 'function'
+                        || !window.canOpenTankDetailForField(fieldId)) return;
+                    window.openTankDetailPage(fieldId, {
+                        backLabel: 'STOCCAGGIO INTERNO',
+                        source: 'notturno-stocc'
+                    });
+                });
+            });
+        };
+
+        window.wireAllPlantNumpadHandlers = function (root) {
+            if (typeof window.wireNumpadLabelClickHandlers === 'function') window.wireNumpadLabelClickHandlers(root);
+            if (typeof window.wireStoccTankDetailClickHandlers === 'function') window.wireStoccTankDetailClickHandlers(root);
         };
 
         window.stripTankDetailChipsFromDom = function () {
@@ -8309,10 +8393,11 @@ window.updateStoricoButton = async function() {
         };
 
         window.populateNumpadForLabel = function (labelEl, explicitInput) {
-            if (!labelEl || globalInteractionLock) return false;
-            const row = labelEl.closest('tr') || labelEl.closest('.amb-row') || labelEl.closest('.bd-input-row');
-            if (!row) return false;
-            const section = labelEl.closest('.col-section');
+            if (!labelEl) return false;
+            const row = labelEl.closest('tr') || labelEl.closest('.amb-row') || labelEl.closest('.bd-input-row')
+                || labelEl.closest('.nott-stocc-row');
+            if (!row && !explicitInput) return false;
+            const section = labelEl.closest('.col-section') || labelEl.closest('#stoccaggio-panel-notturno');
             const isAria = section && section.id === 'sec-aria';
             let input = explicitInput || null;
             if (!input) {
@@ -8320,7 +8405,7 @@ window.updateStoricoButton = async function() {
                     input = window.resolveAriaInputFromLabel(labelEl);
                 } else if (typeof window.resolveNumpadInputFromLabel === 'function') {
                     input = window.resolveNumpadInputFromLabel(labelEl);
-                } else {
+                } else if (row) {
                     input = row.querySelector('input');
                 }
             }
@@ -8333,8 +8418,11 @@ window.updateStoricoButton = async function() {
             currentNumpadTarget = input;
             window.__numpadLivePreviewOrigin = input.value;
             window.__numpadCommitted = false;
-            const sectionLabel = section ? section.querySelector('.v-label-text').textContent : 'N/D';
-            window.__numpadSavedContext = sectionLabel.toUpperCase();
+            var sectionTitleEl = section && section.querySelector('.v-label-text');
+            const sectionLabel = sectionTitleEl
+                ? sectionTitleEl.textContent
+                : (section && section.id === 'stoccaggio-panel-notturno' ? 'STOCCAGGIO INTERNO' : 'N/D');
+            window.__numpadSavedContext = String(sectionLabel || 'N/D').toUpperCase();
             if (isAria && window.isAriaNumpadField(input)) {
                 window.syncAriaNumpadUi(input);
             } else {
@@ -17484,20 +17572,6 @@ window.updateStoricoButton = async function() {
             if (!e || !e.target || !e.target.closest) return false;
             var target = e.target;
 
-            var siglaCell = target.closest('.nott-stocc-sigla-cell--detail[data-field-for]');
-            if (siglaCell && !target.closest('.nott-stocc-inp-cell')) {
-                var stoccFieldId = siglaCell.getAttribute('data-field-for');
-                if (stoccFieldId && window.canOpenTankDetailForField(stoccFieldId)) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    window.openTankDetailPage(stoccFieldId, {
-                        backLabel: 'STOCCAGGIO INTERNO',
-                        source: 'notturno-stocc'
-                    });
-                    return true;
-                }
-            }
-
             var gaugeHit = target.closest('.tank-gauge-detail-trigger, .tank-gauge-sigla-under-trigger, .digital-stocc-sigla-under');
             if (gaugeHit) {
                 var gaugeRow = gaugeHit.closest('.digital-stocc-row[data-field-id]');
@@ -17771,6 +17845,9 @@ window.updateStoricoButton = async function() {
                 if (panel && typeof window.enforceStoccaggioInternoSigleInDom === 'function') {
                     window.enforceStoccaggioInternoSigleInDom();
                 }
+                if (panel && typeof window.wireAllPlantNumpadHandlers === 'function') {
+                    window.wireAllPlantNumpadHandlers(panel);
+                }
                 return;
             }
             const tanks = window.STOCCAGGIO_INTERNO_TANKS || [];
@@ -17804,6 +17881,7 @@ window.updateStoricoButton = async function() {
             if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
             if (typeof window.wireAlarmFieldInputListeners === 'function') window.wireAlarmFieldInputListeners();
             if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
+            if (typeof window.wireAllPlantNumpadHandlers === 'function') window.wireAllPlantNumpadHandlers(panel);
         };
         window._rapportiniPendingId = null;
         window._rapportiniModificaId = null;
@@ -21418,6 +21496,7 @@ window.updateStoricoButton = async function() {
                 if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
                 if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
                 if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
+                if (typeof window.wireAllPlantNumpadHandlers === 'function') window.wireAllPlantNumpadHandlers();
             });
             if (keepExpanded) {
                 requestAnimationFrame(function () {

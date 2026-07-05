@@ -24595,7 +24595,16 @@ window.updateStoricoButton = async function() {
             return parts.unit ? parts.num + ' ' + parts.unit : parts.num;
         };
 
-        window.buildConducibilitaReportValueHtml = function(num, unit, fs) {
+        window.buildConducibilitaReportValueHtml = function(num, unit, fs, opts) {
+            opts = opts || {};
+            if (!String(num || '').trim()) return '';
+            if (typeof window.buildAlignedValueUnitHtml === 'function') {
+                return window.buildAlignedValueUnitHtml(num, unit, {
+                    numCh: opts.numCh,
+                    fs: fs,
+                    unitItalic: true
+                });
+            }
             const safeNum = window.escRapportinoHtml ? window.escRapportinoHtml(num) : num;
             const safeUnit = window.escRapportinoHtml ? window.escRapportinoHtml(unit) : unit;
             if (!safeNum) return '';
@@ -24711,9 +24720,12 @@ window.updateStoricoButton = async function() {
             const siglaCh = window.getReportPreviewSiglaWidthCh
                 ? window.getReportPreviewSiglaWidthCh()
                 : 14;
+            const condNumCh = window.getAlignedValueNumWidthCh
+                ? window.getAlignedValueNumWidthCh(data.rows.map(function (r) { return r.num; }))
+                : null;
             let rowsHtml = '';
             data.rows.forEach(function(r) {
-                const valHtml = window.buildConducibilitaReportValueHtml(r.num, r.unit, fs);
+                const valHtml = window.buildConducibilitaReportValueHtml(r.num, r.unit, fs, { numCh: condNumCh });
                 if (window.buildReportPreviewRowHtml) {
                     rowsHtml += window.buildReportPreviewRowHtml(r.label, valHtml, {
                         previewFont: fs,
@@ -27784,6 +27796,39 @@ window.updateStoricoButton = async function() {
             return v;
         };
 
+        window.getAlignedValueNumWidthCh = function (nums, minCh) {
+            var max = Math.max(1, minCh || 1);
+            (nums || []).forEach(function (n) {
+                var s = String(n == null ? '' : n).trim();
+                if (s && s.length > max) max = s.length;
+            });
+            return max;
+        };
+
+        window.buildAlignedValueUnitHtml = function (num, unit, opts) {
+            opts = opts || {};
+            var esc = window.escRapportinoHtml || function (s) {
+                return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            };
+            var safeNum = esc(String(num == null ? '' : num).trim());
+            if (!safeNum) return '';
+            var safeUnit = unit ? esc(String(unit).trim()) : '';
+            var numCh = opts.numCh != null ? opts.numCh : safeNum.length;
+            var fs = parseInt(opts.fs, 10);
+            if (!Number.isFinite(fs)) fs = 9;
+            var numStyle = 'display:inline-block;min-width:' + numCh + 'ch;text-align:right;font-weight:600;font-variant-numeric:tabular-nums;';
+            if (!safeUnit) {
+                return '<span style="' + numStyle + '">' + safeNum + '</span>';
+            }
+            var unitFs = Math.max(6, fs - 3);
+            var unitStyle = 'font-size:' + unitFs + 'px;font-weight:400;text-transform:none;letter-spacing:0;opacity:0.9;';
+            if (opts.unitItalic !== false) unitStyle += 'font-style:italic;';
+            return '<span style="display:inline-flex;align-items:baseline;white-space:nowrap;font-variant-numeric:tabular-nums;">' +
+                '<span style="' + numStyle + '">' + safeNum + '</span>' +
+                '<span style="display:inline-block;width:0.5em;" aria-hidden="true"></span>' +
+                '<span style="' + unitStyle + '">' + safeUnit + '</span></span>';
+        };
+
         window.formatAnalisiValueWithUnit = function (fieldId, val, opts) {
             opts = opts || {};
             var useHtml = !!opts.html;
@@ -27794,6 +27839,9 @@ window.updateStoricoButton = async function() {
                 return s + ' NTU';
             }
             if (fieldId && /^inp-analisi-o2-mbr/.test(fieldId) && !/\bmg\/l\b/i.test(s)) {
+                if (useHtml && opts.numCh != null) {
+                    return window.buildAlignedValueUnitHtml(s, 'mg/l', { numCh: opts.numCh, fs: opts.fs, unitItalic: true });
+                }
                 return s + (useHtml ? ' <i>mg/l</i>' : ' mg/l');
             }
             return s;
@@ -27826,18 +27874,30 @@ window.updateStoricoButton = async function() {
 
         window.collectAnalisiSectionRows = function (groupKey) {
             var fields = (window.WWT_ANALISI_SECTION_GROUPS || {})[groupKey] || [];
-            var out = [];
+            var rawRows = [];
             fields.forEach(function (pair) {
                 var raw = window.readAnalisiStoredValue(pair[1]);
-                if (raw) {
-                    var formatted = window.formatAnalisiValueWithUnit(pair[1], raw, { html: true });
-                    out.push({
-                        label: pair[0],
-                        val: formatted,
-                        isHtml: formatted.indexOf('<') !== -1,
-                        isStatus: false
-                    });
-                }
+                if (raw) rawRows.push({ label: pair[0], fieldId: pair[1], raw: raw });
+            });
+            var o2Nums = [];
+            if (groupKey === 'ossigenoCono') {
+                rawRows.forEach(function (row) {
+                    if (/^inp-analisi-o2-mbr/.test(row.fieldId)) o2Nums.push(String(row.raw).trim());
+                });
+            }
+            var o2NumCh = o2Nums.length ? window.getAlignedValueNumWidthCh(o2Nums) : null;
+            var out = [];
+            rawRows.forEach(function (row) {
+                var formatted = window.formatAnalisiValueWithUnit(row.fieldId, row.raw, {
+                    html: true,
+                    numCh: o2NumCh
+                });
+                out.push({
+                    label: row.label,
+                    val: formatted,
+                    isHtml: formatted.indexOf('<') !== -1,
+                    isStatus: false
+                });
             });
             return out;
         };
@@ -28138,18 +28198,24 @@ window.updateStoricoButton = async function() {
 
             let rows = '';
             let hasOtherMeasures = false;
+            const o2FieldIds = ['inp-analisi-o2-mbr1', 'inp-analisi-o2-mbr2', 'inp-analisi-o2-mbr3'];
+            const o2Nums = [];
 
             // Prima controlla le altre misure (escludendo RAP CONV)
             fields.forEach(([label, id]) => {
                 let val = document.getElementById(id)?.value?.trim();
                 if (val) hasOtherMeasures = true;
+                if (val && o2FieldIds.indexOf(id) >= 0) o2Nums.push(val);
             });
+            const o2NumCh = o2Nums.length && window.getAlignedValueNumWidthCh
+                ? window.getAlignedValueNumWidthCh(o2Nums)
+                : null;
 
             fields.forEach(([label, id]) => {
                 let val = document.getElementById(id)?.value?.trim();
                 if (!val) return;
                 val = window.formatAnalisiValueWithUnit
-                    ? window.formatAnalisiValueWithUnit(id, val, { html: true })
+                    ? window.formatAnalisiValueWithUnit(id, val, { html: true, numCh: o2NumCh })
                     : val;
 
                 rows += `
@@ -29562,9 +29628,14 @@ window.buildDigitalCardsHTML = function() {
                     const esc = window.escRapportinoHtml || function(s) {
                         return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
                     };
+                    const condNumCh = window.getAlignedValueNumWidthCh
+                        ? window.getAlignedValueNumWidthCh(cond.rows.map(function (r) { return r.num; }))
+                        : null;
                     contentHTML = '<div class="digital-rows">';
                     cond.rows.forEach(function(r) {
-                        const val = esc(r.val || window.formatConducibilitaReportValue(r.num, { unit: r.unit }));
+                        const val = window.buildConducibilitaReportValueHtml
+                            ? window.buildConducibilitaReportValueHtml(r.num, r.unit, 11, { numCh: condNumCh })
+                            : esc(r.val || window.formatConducibilitaReportValue(r.num, { unit: r.unit }));
                         contentHTML += '<div class="digital-row"><span class="digital-row-label">' + esc(r.label) +
                             '</span><span class="digital-row-value digital-row-value--text">' + val + '</span></div>';
                     });

@@ -17017,6 +17017,8 @@ window.updateStoricoButton = async function() {
             block.classList.remove('tank-detail-timeline-block--tons');
             var legendBtn = block.querySelector('[data-tl-tons-forecast]');
             if (legendBtn) legendBtn.classList.remove('is-active');
+            var titleEl = block.querySelector('.tank-detail-timeline-title');
+            if (titleEl) titleEl.title = '';
             window.applyTankTimelineTonsForecastMetrics(block, block.querySelector('[data-tl-svg]') &&
                 block.querySelector('[data-tl-svg]').__tlModel
                 ? block.querySelector('[data-tl-svg]').__tlModel.nowMm : 0, null);
@@ -17036,6 +17038,8 @@ window.updateStoricoButton = async function() {
             block.classList.add('tank-detail-timeline-block--tons');
             var legendBtn = block.querySelector('[data-tl-tons-forecast]');
             if (legendBtn) legendBtn.classList.add('is-active');
+            var titleEl = block.querySelector('.tank-detail-timeline-title');
+            if (titleEl) titleEl.title = 'Torna alla timeline oraria';
             window.openTankTimelineTonsForecastPopup(block);
         };
 
@@ -17126,7 +17130,10 @@ window.updateStoricoButton = async function() {
                 window.updateTankDetailTimelineTonsForecast(bl, tonsDelta);
             }
             function onCancel() {
+                var bl = window.__tankTimelineTonsModalBlock;
+                var hadDelta = bl && bl.__tlTonsDelta != null && Number.isFinite(bl.__tlTonsDelta);
                 window.__closeTankTimelineTonsModal();
+                if (bl && !hadDelta) window.exitTankTimelineTonsForecastMode(bl);
             }
             if (btnOk) btnOk.onclick = onOk;
             if (btnCancel) btnCancel.onclick = onCancel;
@@ -17765,6 +17772,9 @@ window.updateStoricoButton = async function() {
                 block.__tlSeries = window.collectTankLevelHistorySeries(fieldId, { shiftOnly: false });
             }
             block.__tlRefDraftTs = null;
+            if (block.__tlTonsForecastMode && typeof window.exitTankTimelineTonsForecastMode === 'function') {
+                window.exitTankTimelineTonsForecastMode(block);
+            }
             window.refreshTankDetailTimelineAfterRefChange(block);
             var page = block.closest('.tank-detail-page');
             if (page && typeof window.refreshTankDetailPageLiveStats === 'function') {
@@ -18325,7 +18335,10 @@ window.updateStoricoButton = async function() {
                 block.querySelectorAll('[data-tl-h]').forEach(function (btn) {
                     btn.classList.toggle('is-active', parseInt(btn.getAttribute('data-tl-h'), 10) === h);
                 });
-                window.updateTankDetailTimelineScrub(block, Math.min(prevH, h));
+                if (block.__tlTonsForecastMode && block.__tlTonsDelta != null) {
+                    window.updateTankDetailTimelineTonsForecast(block, block.__tlTonsDelta);
+                } else {
+                    window.updateTankDetailTimelineScrub(block, Math.min(prevH, h));
                 }
                 window.updateTankTimelineRefDraftUI(block, block.__tlRefDraftTs != null ? block.__tlRefDraftTs : null);
             }
@@ -18360,6 +18373,7 @@ window.updateStoricoButton = async function() {
                     var btn = ev.target && ev.target.closest ? ev.target.closest('[data-tl-h]') : null;
                     if (!btn || !block.contains(btn)) return;
                     ev.preventDefault();
+                    if (block.__tlTonsForecastMode) window.exitTankTimelineTonsForecastMode(block);
                     applyPredictH(parseInt(btn.getAttribute('data-tl-h'), 10));
                 });
             }
@@ -18454,6 +18468,27 @@ window.updateStoricoButton = async function() {
                     window.updateTankTimelineRefDraftUI(block, ts);
                     return;
                 }
+                if (block.__tlTonsForecastMode && block.__tlRefDraftTs == null) {
+                    if (!(ev.target && ev.target.closest && ev.target.closest('[data-tl-start-dot]')) &&
+                        !window.isTankTimelineInstantKnobEl(ev.target)) {
+                        ev.preventDefault();
+                        var tsTons = window.timelineTsFromSvgXFull(geom, model, sx);
+                        var td = window.computeTankTimelineTonsDeltaAtTs(model, tsTons);
+                        block.__tlTonsDelta = td;
+                        window.updateTankDetailTimelineScrubAtTs(block, tsTons, { tonsDelta: td, forceShow: true });
+                        window.__tankTimelineDragActive = {
+                            block: block,
+                            wrap: wrap,
+                            geom: geom,
+                            model: model,
+                            dragging: true,
+                            mode: 'tons',
+                            svgXFromEvent: svgXFromEvent
+                        };
+                        wrap.classList.add('is-tl-dragging');
+                        return;
+                    }
+                }
                 if (!canScrubAtSvgX(sx, geom)) return;
                 ev.preventDefault();
                 window.__tankTimelineDragActive = {
@@ -18495,6 +18530,13 @@ window.updateStoricoButton = async function() {
                         ev.preventDefault();
                         ev.stopPropagation();
                         window.openTankTimelineInitialEditPopup(block);
+                        return;
+                    }
+                    var predMetric = ev.target.closest('[data-tl-metric-pred], [data-tl-time-pred]');
+                    if (predMetric && block.__tlTonsForecastMode && block.__tlRefDraftTs == null) {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        window.openTankTimelineTonsForecastPopup(block);
                         return;
                     }
                     var addInstant = ev.target.closest('[data-tl-add-instant]');
@@ -18769,6 +18811,12 @@ window.updateStoricoButton = async function() {
                 '.tank-detail-timeline-legend-item--ref-dots{color:#64748b;font-weight:600;font-size:9px}' +
                 '.tank-detail-timeline-legend-btn{border:1px solid rgba(248,250,252,.35);background:rgba(248,250,252,.08);border-radius:8px;padding:3px 8px;cursor:pointer;touch-action:manipulation}' +
                 '.tank-detail-timeline-legend-btn:active{transform:scale(.97);background:rgba(248,250,252,.18)}' +
+                '.tank-detail-timeline-legend-btn[data-tl-tons-forecast].is-active{border-color:rgba(167,139,250,.85);background:rgba(167,139,250,.22);color:#c4b5fd}' +
+                '.tank-detail-timeline-block--tons .tank-detail-timeline-title{cursor:pointer;color:#c4b5fd}' +
+                '.tank-detail-timeline-block--tons .tank-detail-timeline-float--pred,.tank-detail-timeline-block--tons .tank-detail-timeline-time-slot--pred{cursor:pointer}' +
+                '.tank-detail-timeline-tons-sign-row{display:flex;gap:8px;margin-bottom:10px}' +
+                '.tank-timeline-tons-sign-btn{flex:1;border:2px solid rgba(96,165,250,.35);background:rgba(15,23,42,.6);color:#94a3b8;border-radius:10px;padding:10px;font-weight:800;font-size:12px;cursor:pointer;touch-action:manipulation}' +
+                '.tank-timeline-tons-sign-btn.is-active{border-color:#7c3aed;background:rgba(124,58,237,.25);color:#e9d5ff}' +
                 '.tank-detail-timeline-instant-knob{filter:drop-shadow(0 0 4px rgba(248,250,252,.85))}' +
                 '.tank-detail-timeline-legend-item--alarm-warn{color:#f59e0b}' +
                 '.tank-detail-timeline-legend-item--alarm-crit{color:#dc2626}' +

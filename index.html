@@ -17427,6 +17427,7 @@ window.updateStoricoButton = async function() {
             var tip = block.querySelector('[data-tl-point-tip]');
             if (tip) tip.style.display = 'none';
             block.__tlTipTarget = null;
+            block.__tlTipPinned = false;
         };
 
         window.showTankTimelinePointTip = function (block, target) {
@@ -17434,22 +17435,27 @@ window.updateStoricoButton = async function() {
             var tip = block.querySelector('[data-tl-point-tip]');
             var svg = block.querySelector('[data-tl-svg]');
             var geom = svg && svg.__tlGeom;
+            var wrap = block.querySelector('[data-tl-interactive]');
             if (!tip || !geom) return;
             var ts = NaN;
             var mm = NaN;
             var svgX = NaN;
+            var svgY = NaN;
             if (target.hasAttribute('data-tl-start-dot')) {
                 ts = parseInt(target.getAttribute('data-start-ts'), 10);
                 mm = parseFloat(target.getAttribute('data-start-mm'));
                 svgX = parseFloat(target.getAttribute('cx'));
+                svgY = parseFloat(target.getAttribute('cy'));
             } else if (target.hasAttribute('data-tl-ref-dot')) {
                 ts = parseInt(target.getAttribute('data-ref-ts'), 10);
                 mm = parseFloat(target.getAttribute('data-ref-mm'));
                 svgX = parseFloat(target.getAttribute('cx'));
+                svgY = parseFloat(target.getAttribute('cy'));
             } else if (target.hasAttribute('data-tl-now-hit') || target.hasAttribute('data-tl-instant-knob')) {
                 ts = parseInt(target.getAttribute('data-now-ts'), 10);
                 mm = parseFloat(target.getAttribute('data-now-mm'));
                 svgX = parseFloat(target.getAttribute('cx'));
+                svgY = parseFloat(target.getAttribute('cy'));
             }
             if (!Number.isFinite(ts) || !Number.isFinite(mm) || !Number.isFinite(svgX)) return;
             var mmEl = tip.querySelector('[data-tl-tip-mm]');
@@ -17457,6 +17463,17 @@ window.updateStoricoButton = async function() {
             if (mmEl) mmEl.textContent = window.__fmtTankDetailMm(mm) + ' mm';
             if (timeEl) timeEl.textContent = window.formatTankTimelineClock(ts);
             tip.style.left = window.timelineFloatLeftPct(geom, svgX).toFixed(2) + '%';
+            if (wrap && svg && Number.isFinite(svgY)) {
+                var wrapRect = wrap.getBoundingClientRect();
+                var svgRect = svg.getBoundingClientRect();
+                if (wrapRect.height > 0 && svgRect.height > 0) {
+                    var yInSvg = (svgY / (geom.h || 68)) * svgRect.height;
+                    var topPx = (svgRect.top - wrapRect.top) + yInSvg;
+                    tip.style.top = Math.max(0, topPx - 6).toFixed(1) + 'px';
+                    tip.style.bottom = 'auto';
+                    tip.style.transform = 'translate(-50%, -100%)';
+                }
+            }
             tip.style.display = '';
             block.__tlTipTarget = target;
             var fieldId = block.__tlInfo && block.__tlInfo.fieldId;
@@ -17472,27 +17489,72 @@ window.updateStoricoButton = async function() {
         window.wireTankTimelinePointTips = function (block, wrap, svg) {
             if (!block || !wrap || block.__tlPointTipsWired) return;
             block.__tlPointTipsWired = true;
-            var pointSel = '[data-tl-ref-dot],[data-tl-now-hit],[data-tl-instant-knob]';
-            wrap.addEventListener('pointerover', function (ev) {
-                var pt = ev.target && ev.target.closest ? ev.target.closest(pointSel) : null;
-                if (!pt || !block.contains(pt)) return;
-                window.showTankTimelinePointTip(block, pt);
-            });
-            wrap.addEventListener('pointerout', function (ev) {
-                var pt = ev.target && ev.target.closest ? ev.target.closest(pointSel) : null;
-                if (!pt) return;
-                var rel = ev.relatedTarget;
-                if (rel && rel.closest && rel.closest(pointSel)) return;
-                window.hideTankTimelinePointTip(block);
-            });
-            wrap.addEventListener('pointerdown', function (ev) {
-                var pt = ev.target && ev.target.closest ? ev.target.closest(pointSel) : null;
-                if (pt && block.contains(pt)) {
+            var pointSel = '[data-tl-ref-dot],[data-tl-start-dot],[data-tl-now-hit],[data-tl-instant-knob]';
+            function resolvePoint(el) {
+                return el && el.closest ? el.closest(pointSel) : null;
+            }
+            function isHistDot(pt) {
+                return pt && (pt.hasAttribute('data-tl-ref-dot') || pt.hasAttribute('data-tl-start-dot'));
+            }
+            function bindTipRoot(root) {
+                if (!root) return;
+                root.addEventListener('pointerover', function (ev) {
+                    var pt = resolvePoint(ev.target);
+                    if (!pt || !block.contains(pt)) return;
                     window.showTankTimelinePointTip(block, pt);
-                } else if (!ev.target.closest('#tank-timeline-ref-modal')) {
+                });
+                root.addEventListener('pointerout', function (ev) {
+                    var pt = resolvePoint(ev.target);
+                    if (!pt) return;
+                    if (block.__tlTipPinned && block.__tlTipTarget === pt) return;
+                    var rel = ev.relatedTarget;
+                    if (rel && resolvePoint(rel)) return;
                     window.hideTankTimelinePointTip(block);
-                }
-            }, true);
+                });
+                root.addEventListener('click', function (ev) {
+                    var pt = resolvePoint(ev.target);
+                    if (!pt || !block.contains(pt)) {
+                        if (!block.__tlTipPinned) window.hideTankTimelinePointTip(block);
+                        return;
+                    }
+                    if (!isHistDot(pt)) {
+                        window.showTankTimelinePointTip(block, pt);
+                        return;
+                    }
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    if (block.__tlTipPinned && block.__tlTipTarget === pt) {
+                        window.hideTankTimelinePointTip(block);
+                    } else {
+                        block.__tlTipPinned = true;
+                        window.showTankTimelinePointTip(block, pt);
+                    }
+                }, true);
+                root.addEventListener('dblclick', function (ev) {
+                    var refDot = ev.target.closest('[data-tl-ref-dot]');
+                    if (refDot && block.contains(refDot) && block.__tlRefDraftTs == null) {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        block.__tlTipPinned = false;
+                        window.hideTankTimelinePointTip(block);
+                        var rts = parseInt(refDot.getAttribute('data-ref-ts'), 10);
+                        var rmm = parseFloat(refDot.getAttribute('data-ref-mm'));
+                        window.openTankTimelineRefEditPopup(block, rts, rmm);
+                        return;
+                    }
+                    var startDot = ev.target.closest('[data-tl-start-dot]');
+                    if (startDot && block.contains(startDot)) {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        block.__tlTipPinned = false;
+                        window.hideTankTimelinePointTip(block);
+                        window.cancelTankTimelineRefDraft(block);
+                        window.openTankTimelineInitialEditPopup(block);
+                    }
+                });
+            }
+            bindTipRoot(wrap);
+            bindTipRoot(svg);
         };
 
         window.syncTankTimelineSavedRefLabels = function (block, model) {
@@ -18064,9 +18126,15 @@ window.updateStoricoButton = async function() {
                     pe = 'all';
                     dotStyle = ' style="cursor:pointer;touch-action:manipulation"';
                 }
-                return '<circle ' + dotTag + dotAttrs + ' pointer-events="' + pe + '"' + dotStyle +
-                    ' cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) +
+                var hitR = 12;
+                var visDot = '<circle pointer-events="none" cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) +
                     '" r="' + dotR + '" fill="' + dotFill + '" stroke="#0f172a" stroke-width="1.2"></circle>';
+                if (pe === 'all') {
+                    return '<circle ' + dotTag + dotAttrs + ' pointer-events="all"' + dotStyle +
+                        ' cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) +
+                        '" r="' + hitR + '" fill="transparent" stroke="none"/>' + visDot;
+                }
+                return visDot;
             }).join('');
             var zonePredLight = '<rect data-tl-zone-light pointer-events="none" x="' + nowX.toFixed(1) + '" y="' + pad.t + '" width="' + Math.max(0, endX - nowX).toFixed(1) +
                 '" height="' + plotH + '" fill="rgba(167,139,250,0.025)" />';
@@ -18413,7 +18481,7 @@ window.updateStoricoButton = async function() {
                 var model = svg.__tlModel;
                 if (!geom || !model) return;
                 if (ev.target && ev.target.closest &&
-                    ev.target.closest('[data-tl-ref-dot], [data-tl-add-instant]')) return;
+                    ev.target.closest('[data-tl-ref-dot], [data-tl-start-dot], [data-tl-add-instant]')) return;
                 var sx = svgXFromEvent(ev);
                 if (window.isTankTimelineInstantKnobEl(ev.target) && block.__tlRefDraftTs == null) {
                     ev.preventDefault();
@@ -18524,23 +18592,6 @@ window.updateStoricoButton = async function() {
             if (!block.__tlRefUiWired) {
                 block.__tlRefUiWired = true;
                 block.addEventListener('click', function (ev) {
-                    var startDot = ev.target.closest('[data-tl-start-dot]');
-                    if (startDot) {
-                        ev.preventDefault();
-                        ev.stopPropagation();
-                        window.cancelTankTimelineRefDraft(block);
-                        window.openTankTimelineInitialEditPopup(block);
-                        return;
-                    }
-                    var refDot = ev.target.closest('[data-tl-ref-dot]');
-                    if (refDot && block.__tlRefDraftTs == null) {
-                        ev.preventDefault();
-                        ev.stopPropagation();
-                        var rts = parseInt(refDot.getAttribute('data-ref-ts'), 10);
-                        var rmm = parseFloat(refDot.getAttribute('data-ref-mm'));
-                        window.openTankTimelineRefEditPopup(block, rts, rmm);
-                        return;
-                    }
                     var startMetric = ev.target.closest('[data-tl-metric-start], [data-tl-time-start]');
                     if (startMetric && block.__tlRefDraftTs == null) {
                         ev.preventDefault();
@@ -18820,7 +18871,7 @@ window.updateStoricoButton = async function() {
                 '.tank-detail-timeline-time-slot--pred{color:#7c3aed}' +
                 '.tank-detail-timeline-svg{width:100%;height:68px;min-height:68px;max-height:68px;flex:0 0 auto;display:block;touch-action:none;position:relative;z-index:3;pointer-events:auto;border-radius:8px;overflow:visible;cursor:default}' +
                 '.tank-detail-timeline-canvas-wrap{position:relative}' +
-                '.tank-detail-timeline-point-tip{position:absolute;left:50%;top:0;bottom:0;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;z-index:6;gap:0;text-align:center;width:max-content;max-width:min(140px,38vw)}' +
+                '.tank-detail-timeline-point-tip{position:absolute;left:50%;top:0;transform:translate(-50%,-100%);display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;z-index:8;gap:0;text-align:center;width:max-content;max-width:min(140px,38vw);padding-bottom:4px}' +
                 '.tank-detail-timeline-tip-mm{font-size:clamp(12px,2vw,16px);font-weight:900;color:#f8fafc;font-variant-numeric:tabular-nums;line-height:1.15;margin-bottom:auto;padding-top:2px}' +
                 '.tank-detail-timeline-tip-time{font-size:11px;font-weight:800;color:#94a3b8;font-variant-numeric:tabular-nums;line-height:1.15;margin-top:auto;padding-bottom:2px}' +
                 '.tank-detail-timeline-float--hidden{display:none!important}' +

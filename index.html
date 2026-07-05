@@ -30132,19 +30132,23 @@ window.updateStoricoButton = async function() {
             var rows = [];
             (window.WWT_RACCOLTA_SPIAZZAMENTO_FIELD_IDS || []).forEach(function (fieldId) {
                 var inp = document.getElementById(fieldId);
-                if (!inp || !String(inp.value || '').trim()) return;
+                var raw = inp && String(inp.value || '').trim()
+                    ? String(inp.value).trim()
+                    : (typeof window.readLetturaFieldValue === 'function'
+                        ? String(window.readLetturaFieldValue(fieldId) || '').trim() : '');
+                if (!raw) return;
                 var moduleId = fieldId === 'inp-s852' ? 'sec-ambiente2' : 'sec-amb';
                 var label = window.resolveReportRowLabel
-                    ? window.resolveReportRowLabel(inp, moduleId, { forReportPreview: true })
+                    ? window.resolveReportRowLabel(inp || { id: fieldId }, moduleId, { forReportPreview: true })
                     : 'VALORE';
                 var tankKey = (window.DIGITAL_TANK_FIELD_MAP && window.DIGITAL_TANK_FIELD_MAP[fieldId]) || null;
                 rows.push({
                     label: label,
-                    val: inp.value,
+                    val: raw,
                     isStatus: false,
                     fieldId: fieldId,
                     tankDbKey: tankKey,
-                    levelRaw: inp.value
+                    levelRaw: raw
                 });
             });
             return rows;
@@ -30336,6 +30340,30 @@ window.updateStoricoButton = async function() {
                 '<div style="display:flex;flex-direction:column;">' + body + '</div></div>';
         };
 
+        window.mapWwtTankRowsForDigitalStocc = function (rows) {
+            return (rows || []).map(function (row) {
+                var mm = typeof window.parseTankLevelMm === 'function'
+                    ? window.parseTankLevelMm(row.levelRaw)
+                    : parseFloat(String(row.levelRaw || '').replace(',', '.'));
+                var vis = window.getTankVisualFlagsForDbKey
+                    ? window.getTankVisualFlagsForDbKey(row.tankDbKey) : { drain: false, acc: false };
+                var condVal = row.fieldId && typeof window.readTankConductivityValue === 'function'
+                    ? window.readTankConductivityValue(row.fieldId) : '';
+                return {
+                    label: row.label,
+                    val: row.val,
+                    fieldId: row.fieldId || null,
+                    tankDbKey: row.tankDbKey,
+                    levelMm: mm,
+                    fillPct: window.getStoccaggioTankFillPct(row.tankDbKey, mm),
+                    tons: window.calculateTons ? window.calculateTons(row.tankDbKey, mm) : null,
+                    drain: vis.drain,
+                    acc: vis.acc,
+                    conductivity: condVal || null
+                };
+            });
+        };
+
         window.buildWwtAmbDigitalContentHTML = function () {
             var sections = window.getWwtAmbCardSections();
             var html = '<div class="digital-wwt-content">';
@@ -30393,29 +30421,19 @@ window.updateStoricoButton = async function() {
             if (sections.serbatoi && sections.serbatoi.length) {
                 html += subsection('Serbatoi');
                 if (window.buildStoccaggioDigitalRowsHTML) {
-                    html += window.buildStoccaggioDigitalRowsHTML(sections.serbatoi.map(function (row) {
-                        var mm = typeof window.parseTankLevelMm === 'function'
-                            ? window.parseTankLevelMm(row.levelRaw)
-                            : parseFloat(String(row.levelRaw || '').replace(',', '.'));
-                        var vis = window.getTankVisualFlagsForDbKey
-                            ? window.getTankVisualFlagsForDbKey(row.tankDbKey) : { drain: false, acc: false };
-                        var condVal = row.fieldId && typeof window.readTankConductivityValue === 'function'
-                            ? window.readTankConductivityValue(row.fieldId) : '';
-                        return {
-                            label: row.label,
-                            val: row.val,
-                            fieldId: row.fieldId || null,
-                            tankDbKey: row.tankDbKey,
-                            levelMm: mm,
-                            fillPct: window.getStoccaggioTankFillPct(row.tankDbKey, mm),
-                            tons: window.calculateTons ? window.calculateTons(row.tankDbKey, mm) : null,
-                            drain: vis.drain,
-                            acc: vis.acc,
-                            conductivity: condVal || null
-                        };
-                    }));
+                    html += window.buildStoccaggioDigitalRowsHTML(
+                        window.mapWwtTankRowsForDigitalStocc(sections.serbatoi));
                 } else {
                     html += simpleRows(sections.serbatoi);
+                }
+            }
+            if (sections.raccoltaSpiazzamento && sections.raccoltaSpiazzamento.length) {
+                html += subsection('Raccolta e spiazzamento');
+                if (window.buildStoccaggioDigitalRowsHTML) {
+                    html += window.buildStoccaggioDigitalRowsHTML(
+                        window.mapWwtTankRowsForDigitalStocc(sections.raccoltaSpiazzamento));
+                } else {
+                    html += simpleRows(sections.raccoltaSpiazzamento);
                 }
             }
             html += '</div>';

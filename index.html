@@ -16703,9 +16703,99 @@ window.updateStoricoButton = async function() {
             };
         };
 
+        window.getTankTimelineAnchorPts = function (series, info) {
+            info = info || {};
+            series = series || [];
+            var fieldId = info.fieldId;
+            var pts = [];
+            var initial = typeof window.getTankTimelineEffectiveInitial === 'function'
+                ? window.getTankTimelineEffectiveInitial(fieldId, series) : null;
+            if (initial && Number.isFinite(initial.ts) && Number.isFinite(initial.mm)) {
+                pts.push({ ts: initial.ts, mm: initial.mm, source: 'initial' });
+            }
+            var manualRefs = info.manualRefPts;
+            if ((!manualRefs || !manualRefs.length) && fieldId &&
+                typeof window.loadTankTimelineManualRefs === 'function') {
+                manualRefs = window.loadTankTimelineManualRefs(fieldId);
+            }
+            if (!manualRefs.length && info.manualRefPt) manualRefs = [info.manualRefPt];
+            (manualRefs || []).forEach(function (r) {
+                if (r && Number.isFinite(r.ts) && Number.isFinite(r.mm)) {
+                    pts.push({ ts: r.ts, mm: r.mm, source: 'ref' });
+                }
+            });
+            var currentTs = typeof window.resolveTankCurrentLevelTs === 'function'
+                ? window.resolveTankCurrentLevelTs(fieldId, series, info) : null;
+            var currentMm = Number.isFinite(info.levelMm) ? info.levelMm
+                : (series.length ? series[series.length - 1].mm : NaN);
+            if (Number.isFinite(currentTs) && Number.isFinite(currentMm)) {
+                pts.push({ ts: currentTs, mm: currentMm, source: 'current' });
+            }
+            pts.sort(function (a, b) { return a.ts - b.ts; });
+            var out = [];
+            pts.forEach(function (p) {
+                var i = -1;
+                for (var j = 0; j < out.length; j++) {
+                    if (Math.abs(out[j].ts - p.ts) < 60000) { i = j; break; }
+                }
+                if (i >= 0) {
+                    if (p.source === 'current' || (p.source === 'ref' && out[i].source === 'initial')) out[i] = p;
+                    else if (p.source === 'ref') out[i] = p;
+                } else {
+                    out.push(p);
+                }
+            });
+            return out;
+        };
+
+        window.hasTankTimelineManualData = function (fieldId, info) {
+            info = info || {};
+            if (fieldId && typeof window.loadTankTimelineManualInitial === 'function' &&
+                window.loadTankTimelineManualInitial(fieldId)) return true;
+            var refs = info.manualRefPts;
+            if ((!refs || !refs.length) && fieldId && typeof window.loadTankTimelineManualRefs === 'function') {
+                refs = window.loadTankTimelineManualRefs(fieldId);
+            }
+            return !!(refs && refs.length);
+        };
+
+        window.computeTankTimelineRateFromAnchors = function (anchors) {
+            if (!anchors || anchors.length < 2) return 0;
+            if (anchors.length === 2) {
+                var dtH2 = (anchors[1].ts - anchors[0].ts) / 3600000;
+                if (dtH2 < 0.001) return 0;
+                return (anchors[1].mm - anchors[0].mm) / dtH2;
+            }
+            var n = anchors.length;
+            var t0 = anchors[0].ts;
+            var sumT = 0;
+            var sumM = 0;
+            var sumTT = 0;
+            var sumTM = 0;
+            anchors.forEach(function (p) {
+                var th = (p.ts - t0) / 3600000;
+                sumT += th;
+                sumM += p.mm;
+                sumTT += th * th;
+                sumTM += th * p.mm;
+            });
+            var denom = n * sumTT - sumT * sumT;
+            if (Math.abs(denom) < 1e-9) return 0;
+            return (n * sumTM - sumT * sumM) / denom;
+        };
+
         window.computeTankTimelineRateMmH = function (series, info) {
             info = info || {};
             series = series || [];
+            var anchors = typeof window.getTankTimelineAnchorPts === 'function'
+                ? window.getTankTimelineAnchorPts(series, info) : [];
+            var useTimelineOnly = typeof window.hasTankTimelineManualData === 'function'
+                && window.hasTankTimelineManualData(info.fieldId, info);
+            if (anchors.length >= 2) {
+                var anchorRate = window.computeTankTimelineRateFromAnchors(anchors);
+                if (Number.isFinite(anchorRate)) return anchorRate;
+            }
+            if (useTimelineOnly) return 0;
             var initial = typeof window.getTankTimelineEffectiveInitial === 'function'
                 ? window.getTankTimelineEffectiveInitial(info.fieldId, series)
                 : null;
@@ -16713,22 +16803,6 @@ window.updateStoricoButton = async function() {
                 ? window.resolveTankCurrentLevelTs(info.fieldId, series, info) : null;
             var currentMm = Number.isFinite(info.levelMm) ? info.levelMm
                 : (series.length ? series[series.length - 1].mm : NaN);
-            var manualRefs = info.manualRefPts
-                || (info.fieldId && typeof window.loadTankTimelineManualRefs === 'function'
-                    ? window.loadTankTimelineManualRefs(info.fieldId) : []);
-            if (!manualRefs.length && info.manualRefPt) manualRefs = [info.manualRefPt];
-            if (manualRefs.length && Number.isFinite(currentTs) && Number.isFinite(currentMm)) {
-                var lastRef = null;
-                manualRefs.forEach(function (r) {
-                    if (r && Number.isFinite(r.ts) && Number.isFinite(r.mm) && r.ts <= currentTs + 60000) {
-                        if (!lastRef || r.ts >= lastRef.ts) lastRef = r;
-                    }
-                });
-                if (lastRef) {
-                    var dtRefH = (currentTs - lastRef.ts) / 3600000;
-                    if (dtRefH >= 0.08) return (currentMm - lastRef.mm) / dtRefH;
-                }
-            }
             if (initial && Number.isFinite(currentTs) && Number.isFinite(currentMm)) {
                 var dtInitH = (currentTs - initial.ts) / 3600000;
                 if (dtInitH >= 0.08) return (currentMm - initial.mm) / dtInitH;
@@ -16799,6 +16873,8 @@ window.updateStoricoButton = async function() {
                 return r && Number.isFinite(r.ts) && Number.isFinite(r.mm);
             }).slice().sort(function (a, b) { return a.ts - b.ts; });
             info.manualRefPts = manualRefPts;
+            var timelineAnchors = typeof window.getTankTimelineAnchorPts === 'function'
+                ? window.getTankTimelineAnchorPts(series, info) : [];
             var tStart = initialPt ? initialPt.ts
                 : (series.length ? series[0].ts : nowTs - 3600000);
             var wallNowTs = Date.now();
@@ -16817,6 +16893,7 @@ window.updateStoricoButton = async function() {
                 nowMm: nowMm,
                 initialPt: initialPt,
                 manualRefPts: manualRefPts,
+                timelineAnchors: timelineAnchors,
                 tStart: tStart,
                 tEnd: tEnd,
                 predictH: predH,
@@ -16828,14 +16905,42 @@ window.updateStoricoButton = async function() {
         };
 
         window.predictTankLevelAtTs = function (model, targetTs) {
-            if (!model) return NaN;
-            var lastTs = model.nowTs;
-            var lastMm = model.nowMm;
-            if (!Number.isFinite(lastTs) || !Number.isFinite(lastMm)) return NaN;
-            var dtH = (targetTs - lastTs) / 3600000;
-            var mm = lastMm + (model.rateMmH || 0) * dtH;
-            if (model.livMax && model.livMax > 0) mm = Math.min(mm, model.livMax * 1.15);
-            return Math.max(0, mm);
+            if (!model || !Number.isFinite(targetTs)) return NaN;
+            var pts = model.timelineAnchors;
+            if (!pts || !pts.length) {
+                var lastTs = model.nowTs;
+                var lastMm = model.nowMm;
+                if (!Number.isFinite(lastTs) || !Number.isFinite(lastMm)) return NaN;
+                var dtH0 = (targetTs - lastTs) / 3600000;
+                var mm0 = lastMm + (model.rateMmH || 0) * dtH0;
+                if (model.livMax && model.livMax > 0) mm0 = Math.min(mm0, model.livMax * 1.15);
+                return Math.max(0, mm0);
+            }
+            pts = pts.slice().sort(function (a, b) { return a.ts - b.ts; });
+            if (targetTs <= pts[0].ts) {
+                var mmStart = pts[0].mm;
+                if (model.livMax && model.livMax > 0) mmStart = Math.min(mmStart, model.livMax * 1.15);
+                return Math.max(0, mmStart);
+            }
+            var last = pts[pts.length - 1];
+            if (targetTs >= last.ts) {
+                var rate = model.rateMmH || 0;
+                var dtHF = (targetTs - last.ts) / 3600000;
+                var mmF = last.mm + rate * dtHF;
+                if (model.livMax && model.livMax > 0) mmF = Math.min(mmF, model.livMax * 1.15);
+                return Math.max(0, mmF);
+            }
+            for (var i = 0; i < pts.length - 1; i++) {
+                var a = pts[i];
+                var b = pts[i + 1];
+                if (targetTs >= a.ts && targetTs <= b.ts) {
+                    var frac = (b.ts - a.ts) > 0 ? (targetTs - a.ts) / (b.ts - a.ts) : 0;
+                    var mm = a.mm + frac * (b.mm - a.mm);
+                    if (model.livMax && model.livMax > 0) mm = Math.min(mm, model.livMax * 1.15);
+                    return Math.max(0, mm);
+                }
+            }
+            return Math.max(0, last.mm);
         };
 
         window.computeTankTimelineTsForTargetMm = function (model, targetMm) {
@@ -17083,6 +17188,52 @@ window.updateStoricoButton = async function() {
             var modal = document.getElementById('tank-timeline-tons-modal');
             if (modal) modal.classList.remove('active');
             window.__tankTimelineTonsModalBlock = null;
+        };
+
+        window.ensureTankTimelineResetModal = function () {
+            var el = document.getElementById('tank-timeline-reset-modal');
+            if (el) return el;
+            el = document.createElement('div');
+            el.id = 'tank-timeline-reset-modal';
+            el.className = 'tank-timeline-ref-modal tank-timeline-reset-modal';
+            el.innerHTML =
+                '<div class="tank-timeline-ref-modal-sheet" onclick="event.stopPropagation()">' +
+                '<div class="tank-timeline-ref-modal-title">Reset timeline</div>' +
+                '<p class="tank-timeline-ref-modal-hint" data-tl-reset-modal-hint>Resettare tutti i livelli della timeline per questo serbatoio? Verranno rimossi riferimenti, livello iniziale modificato e livello istantaneo.</p>' +
+                '<div class="tank-timeline-ref-modal-actions">' +
+                '<button type="button" class="tank-timeline-ref-modal-btn tank-timeline-ref-modal-btn--ghost" data-tl-reset-modal-cancel>Annulla</button>' +
+                '<button type="button" class="tank-timeline-ref-modal-btn tank-timeline-ref-modal-btn--danger" data-tl-reset-modal-ok>OK</button>' +
+                '</div></div>';
+            document.body.appendChild(el);
+            el.addEventListener('click', function (ev) {
+                if (ev.target === el) window.__closeTankTimelineResetModal();
+            });
+            return el;
+        };
+
+        window.__closeTankTimelineResetModal = function () {
+            var modal = document.getElementById('tank-timeline-reset-modal');
+            if (modal) modal.classList.remove('active');
+            window.__tankTimelineResetModalBlock = null;
+        };
+
+        window.openTankTimelineResetConfirm = function (block) {
+            if (!block || !block.__tlInfo || !block.__tlInfo.fieldId) return;
+            var modal = window.ensureTankTimelineResetModal();
+            var btnOk = modal.querySelector('[data-tl-reset-modal-ok]');
+            var btnCancel = modal.querySelector('[data-tl-reset-modal-cancel]');
+            window.__tankTimelineResetModalBlock = block;
+            modal.classList.add('active');
+            function onOk() {
+                var bl = window.__tankTimelineResetModalBlock;
+                window.__closeTankTimelineResetModal();
+                if (bl) window.applyTankTimelineResetAllLevels(bl);
+            }
+            function onCancel() {
+                window.__closeTankTimelineResetModal();
+            }
+            if (btnOk) btnOk.onclick = onOk;
+            if (btnCancel) btnCancel.onclick = onCancel;
         };
 
         window.openTankTimelineTonsForecastPopup = function (block) {
@@ -17397,6 +17548,9 @@ window.updateStoricoButton = async function() {
 
         window.suggestTankTimelineRefMmAtTs = function (model, ts) {
             if (!model || !Number.isFinite(ts)) return NaN;
+            if (typeof window.predictTankLevelAtTs === 'function' && model.timelineAnchors && model.timelineAnchors.length) {
+                return window.predictTankLevelAtTs(model, ts);
+            }
             var pts = [];
             if (model.initialPt && Number.isFinite(model.initialPt.ts) && Number.isFinite(model.initialPt.mm)) {
                 pts.push({ ts: model.initialPt.ts, mm: model.initialPt.mm });
@@ -17828,10 +17982,8 @@ window.updateStoricoButton = async function() {
             }
         };
 
-        window.resetTankTimelineAllLevels = function (block) {
+        window.applyTankTimelineResetAllLevels = function (block) {
             if (!block || !block.__tlInfo || !block.__tlInfo.fieldId) return;
-            var ok = window.confirm('Resettare tutti i livelli della timeline per questo serbatoio?\nVerranno rimossi riferimenti, livello iniziale modificato e livello istantaneo.');
-            if (!ok) return;
             var fieldId = block.__tlInfo.fieldId;
             var normId = typeof window.__normalizeTankInputAtKey === 'function'
                 ? window.__normalizeTankInputAtKey(fieldId) : fieldId;
@@ -17859,6 +18011,11 @@ window.updateStoricoButton = async function() {
                 window.refreshTankDetailPageLiveStats(page, fieldId);
             }
             if (typeof window.saveData === 'function') void window.saveData(true);
+        };
+
+        window.resetTankTimelineAllLevels = function (block) {
+            if (!block || !block.__tlInfo || !block.__tlInfo.fieldId) return;
+            window.openTankTimelineResetConfirm(block);
         };
 
         window.refreshTankDetailPageLiveStats = function (page, fieldId) {
@@ -18921,6 +19078,7 @@ window.updateStoricoButton = async function() {
                 '.tank-timeline-ref-modal-btn{border:none;border-radius:10px;padding:10px 16px;font-weight:800;font-size:13px;cursor:pointer}' +
                 '.tank-timeline-ref-modal-btn--ghost{background:rgba(100,116,139,0.35);color:#e2e8f0}' +
                 '.tank-timeline-ref-modal-btn--ok{background:#2563eb;color:#fff}' +
+                '.tank-timeline-ref-modal-btn--danger{background:#dc2626;color:#fff}' +
                 '.tank-detail-trend-block,.tank-detail-history-block{margin-top:18px}' +
                 '.tank-detail-trend-line{font-size:14px;font-weight:700;margin:6px 0 8px;color:#cbd5e1}' +
                 '.tank-detail-trend-line--up{color:#fca5a5}.tank-detail-trend-line--down{color:#93c5fd}.tank-detail-trend-line--flat{color:#94a3b8}' +

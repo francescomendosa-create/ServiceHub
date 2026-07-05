@@ -17493,14 +17493,18 @@ window.updateStoricoButton = async function() {
             function resolvePoint(el) {
                 return el && el.closest ? el.closest(pointSel) : null;
             }
-            function isHistDot(pt) {
-                return pt && (pt.hasAttribute('data-tl-ref-dot') || pt.hasAttribute('data-tl-start-dot'));
+            function isRefDot(pt) {
+                return pt && pt.hasAttribute('data-tl-ref-dot');
+            }
+            function isStartDot(pt) {
+                return pt && pt.hasAttribute('data-tl-start-dot');
             }
             function bindTipRoot(root) {
                 if (!root) return;
                 root.addEventListener('pointerover', function (ev) {
                     var pt = resolvePoint(ev.target);
                     if (!pt || !block.contains(pt)) return;
+                    if (block.__tlRefDraftTs != null && isStartDot(pt)) return;
                     window.showTankTimelinePointTip(block, pt);
                 });
                 root.addEventListener('pointerout', function (ev) {
@@ -17517,7 +17521,8 @@ window.updateStoricoButton = async function() {
                         if (!block.__tlTipPinned) window.hideTankTimelinePointTip(block);
                         return;
                     }
-                    if (!isHistDot(pt)) {
+                    if (isStartDot(pt) || block.__tlRefDraftTs != null) return;
+                    if (!isRefDot(pt)) {
                         window.showTankTimelinePointTip(block, pt);
                         return;
                     }
@@ -17540,16 +17545,6 @@ window.updateStoricoButton = async function() {
                         var rts = parseInt(refDot.getAttribute('data-ref-ts'), 10);
                         var rmm = parseFloat(refDot.getAttribute('data-ref-mm'));
                         window.openTankTimelineRefEditPopup(block, rts, rmm);
-                        return;
-                    }
-                    var startDot = ev.target.closest('[data-tl-start-dot]');
-                    if (startDot && block.contains(startDot)) {
-                        ev.preventDefault();
-                        ev.stopPropagation();
-                        block.__tlTipPinned = false;
-                        window.hideTankTimelinePointTip(block);
-                        window.cancelTankTimelineRefDraft(block);
-                        window.openTankTimelineInitialEditPopup(block);
                     }
                 });
             }
@@ -17700,15 +17695,16 @@ window.updateStoricoButton = async function() {
                     var dx = geom.toXHist(draftTs);
                     var y = geom.lineY;
                     var zTop = geom.zoneTop != null ? geom.zoneTop : geom.pad.t;
+                    var hideKnob = !!block.__tlRefDraftAtStart;
                     if (refScrub) {
-                        refScrub.style.display = '';
+                        refScrub.style.display = hideKnob ? 'none' : '';
                         refScrub.setAttribute('x1', dx.toFixed(1));
                         refScrub.setAttribute('x2', dx.toFixed(1));
                         refScrub.setAttribute('y1', zTop.toFixed(1));
                         refScrub.setAttribute('y2', y.toFixed(1));
                     }
                     if (refKnob) {
-                        refKnob.style.display = '';
+                        refKnob.style.display = hideKnob ? 'none' : '';
                         refKnob.setAttribute('cx', dx.toFixed(1));
                         refKnob.setAttribute('cy', y.toFixed(1));
                     }
@@ -17718,6 +17714,7 @@ window.updateStoricoButton = async function() {
                         refHit.setAttribute('cy', ((zTop + (geom.zoneBottom != null ? geom.zoneBottom : geom.pad.t + geom.plotH)) / 2).toFixed(1));
                     }
                 } else {
+                    block.__tlRefDraftAtStart = false;
                     [refScrub, refKnob, refHit].forEach(function (n) {
                         if (n) n.style.display = 'none';
                     });
@@ -17891,6 +17888,7 @@ window.updateStoricoButton = async function() {
         window.cancelTankTimelineRefDraft = function (block) {
             if (!block) return;
             block.__tlRefDraftTs = null;
+            block.__tlRefDraftAtStart = false;
             window.updateTankTimelineRefDraftUI(block, null);
         };
 
@@ -17902,6 +17900,8 @@ window.updateStoricoButton = async function() {
                 ? window.getTankTimelineStartPoint(model) : (model && model.initialPt);
             if (!startPt || !Number.isFinite(startPt.ts)) return;
             block.__tlRefDraftTs = startPt.ts;
+            block.__tlRefDraftAtStart = true;
+            window.hideTankTimelinePointTip(block);
             window.updateTankTimelineRefDraftUI(block, block.__tlRefDraftTs);
         };
 
@@ -18112,27 +18112,24 @@ window.updateStoricoButton = async function() {
                 });
                 var isRef = pt.kind === 'ref' || pt.p.manualRef;
                 var dotFill = isRef ? '#f8fafc' : window.timelineAlarmDotFill(dotState);
-                var dotR = isRef ? 4.5 : 5;
+                var dotR = isRef ? 4.5 : 4;
+                var hitR = isRef ? 9 : 7;
                 var dotTag = isRef ? 'data-tl-ref-dot' : 'data-tl-start-dot';
                 var dotAttrs = '';
-                var pe = 'none';
-                var dotStyle = '';
                 if (pt.p && Number.isFinite(pt.p.ts) && Number.isFinite(pt.p.mm)) {
                     if (isRef) {
                         dotAttrs = ' data-ref-ts="' + pt.p.ts + '" data-ref-mm="' + pt.p.mm + '"';
                     } else {
                         dotAttrs = ' data-start-ts="' + pt.p.ts + '" data-start-mm="' + pt.p.mm + '"';
                     }
-                    pe = 'all';
-                    dotStyle = ' style="cursor:pointer;touch-action:manipulation"';
                 }
-                var hitR = 12;
                 var visDot = '<circle pointer-events="none" cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) +
                     '" r="' + dotR + '" fill="' + dotFill + '" stroke="#0f172a" stroke-width="1.2"></circle>';
-                if (pe === 'all') {
-                    return '<circle ' + dotTag + dotAttrs + ' pointer-events="all"' + dotStyle +
-                        ' cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) +
-                        '" r="' + hitR + '" fill="transparent" stroke="none"/>' + visDot;
+                if (dotAttrs) {
+                    return '<circle class="tank-detail-timeline-dot-hit" ' + dotTag + dotAttrs +
+                        ' pointer-events="all" cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) +
+                        '" r="' + hitR + '" fill="transparent" fill-opacity="0" stroke="none"' +
+                        ' style="cursor:' + (isRef ? 'pointer' : 'grab') + ';touch-action:manipulation"/>' + visDot;
                 }
                 return visDot;
             }).join('');
@@ -18184,9 +18181,9 @@ window.updateStoricoButton = async function() {
                 '" y1="' + zoneTop.toFixed(1) + '" x2="' + startX.toFixed(1) + '" y2="' + lineY.toFixed(1) +
                 '" stroke="#f8fafc" stroke-width="3" stroke-linecap="round"/>' +
                 '<circle class="tank-detail-timeline-ref-scrub-knob" data-tl-ref-knob cx="' + startX.toFixed(1) +
-                '" cy="' + lineY.toFixed(1) + '" r="8" fill="#f8fafc" stroke="#0f172a" stroke-width="1.5" pointer-events="all" style="display:none;cursor:grab"/>' +
+                '" cy="' + lineY.toFixed(1) + '" r="5.5" fill="#f8fafc" stroke="#0f172a" stroke-width="1.5" pointer-events="all" style="display:none;cursor:grab"/>' +
                 '<circle data-tl-ref-hit style="display:none" cx="' + startX.toFixed(1) + '" cy="' + ((zoneTop + zoneBottom) / 2).toFixed(1) +
-                '" r="28" fill="transparent" pointer-events="all" style="cursor:grab;touch-action:none"/>';
+                '" r="18" fill="transparent" pointer-events="all" style="cursor:grab;touch-action:none"/>';
             svgEl.innerHTML = zoneHist + zonePredDark + zonePredLight +
                 '<line pointer-events="none" x1="' + pad.l + '" y1="' + (pad.t + plotH).toFixed(1) + '" x2="' + endX.toFixed(1) +
                 '" y2="' + (pad.t + plotH).toFixed(1) + '" stroke="rgba(148,163,184,0.35)" stroke-width="1"/>' +
@@ -18359,13 +18356,28 @@ window.updateStoricoButton = async function() {
                 if (!a.dragging) return;
                 ev.preventDefault();
                 var sx = a.svgXFromEvent(ev);
-                if (a.mode === 'ref-draft') {
+                if (a.mode === 'ref-draft' || a.mode === 'start-ref-draft') {
+                    if (a.longPressTimer && a.mode === 'start-ref-draft') {
+                        var mx = ev.clientX;
+                        var my = ev.clientY;
+                        if (ev.touches && ev.touches.length) {
+                            mx = ev.touches[0].clientX;
+                            my = ev.touches[0].clientY;
+                        }
+                        if (Math.hypot(mx - a.startClientX, my - a.startClientY) > 8) {
+                            clearTimeout(a.longPressTimer);
+                            a.longPressTimer = null;
+                        }
+                    }
                     var ts = window.timelineTsFromSvgXHist(a.geom, a.model, sx);
                     var startPt = typeof window.getTankTimelineStartPoint === 'function'
                         ? window.getTankTimelineStartPoint(a.model) : a.model.initialPt;
                     var minTs = (startPt && Number.isFinite(startPt.ts) ? startPt.ts : a.model.tStart) + 60000;
                     var maxTs = (a.model.wallNowTs != null ? a.model.wallNowTs : a.model.nowTs) - 60000;
                     ts = Math.max(minTs, Math.min(maxTs, ts));
+                    if (startPt && Number.isFinite(startPt.ts) && Math.abs(ts - startPt.ts) > 60000) {
+                        a.block.__tlRefDraftAtStart = false;
+                    }
                     a.block.__tlRefDraftTs = ts;
                     window.updateTankTimelineRefDraftUI(a.block, ts);
                     return;
@@ -18485,8 +18497,46 @@ window.updateStoricoButton = async function() {
                 var model = svg.__tlModel;
                 if (!geom || !model) return;
                 if (ev.target && ev.target.closest &&
-                    ev.target.closest('[data-tl-ref-dot], [data-tl-start-dot], [data-tl-add-instant]')) return;
+                    ev.target.closest('[data-tl-ref-dot], [data-tl-add-instant]')) return;
                 var sx = svgXFromEvent(ev);
+                if (ev.target && ev.target.closest('[data-tl-start-dot]')) {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    window.hideTankTimelinePointTip(block);
+                    var cX = ev.clientX;
+                    var cY = ev.clientY;
+                    if (ev.touches && ev.touches.length) {
+                        cX = ev.touches[0].clientX;
+                        cY = ev.touches[0].clientY;
+                    }
+                    var lpMs = window.TANK_TIMELINE_INSTANT_LONG_PRESS_MS != null
+                        ? Number(window.TANK_TIMELINE_INSTANT_LONG_PRESS_MS) : 450;
+                    var lpTimer = setTimeout(function () {
+                        var act = window.__tankTimelineDragActive;
+                        if (!act || act.mode !== 'start-ref-draft' || act.block !== block) return;
+                        act.longPressTimer = null;
+                        act.dragging = false;
+                        if (act.wrap) act.wrap.classList.remove('is-tl-dragging');
+                        window.__tankTimelineDragActive = null;
+                        window.cancelTankTimelineRefDraft(block);
+                        window.openTankTimelineInitialEditPopup(block);
+                    }, lpMs);
+                    window.beginTankTimelineRefDraft(block);
+                    window.__tankTimelineDragActive = {
+                        block: block,
+                        wrap: wrap,
+                        geom: geom,
+                        model: model,
+                        dragging: true,
+                        mode: 'start-ref-draft',
+                        svgXFromEvent: svgXFromEvent,
+                        longPressTimer: lpTimer,
+                        startClientX: cX,
+                        startClientY: cY
+                    };
+                    wrap.classList.add('is-tl-dragging');
+                    return;
+                }
                 if (window.isTankTimelineInstantKnobEl(ev.target) && block.__tlRefDraftTs == null) {
                     ev.preventDefault();
                     var cX = ev.clientX;
@@ -18520,7 +18570,7 @@ window.updateStoricoButton = async function() {
                     return;
                 }
                 if (block.__tlRefDraftTs != null) {
-                    if (!ev.target.closest('[data-tl-ref-hit], [data-tl-ref-knob], [data-tl-ref-scrub]')) return;
+                    if (!ev.target.closest('[data-tl-ref-hit], [data-tl-ref-knob], [data-tl-ref-scrub], [data-tl-start-dot]')) return;
                     ev.preventDefault();
                     window.__tankTimelineDragActive = {
                         block: block,
@@ -18861,7 +18911,8 @@ window.updateStoricoButton = async function() {
                 '.tank-detail-timeline-tip-time{font-size:11px;font-weight:800;color:#94a3b8;font-variant-numeric:tabular-nums;line-height:1.15;margin-top:auto;padding-bottom:2px}' +
                 '.tank-detail-timeline-float--hidden{display:none!important}' +
                 '.tank-detail-timeline-svg [data-tl-plot-hit],.tank-detail-timeline-svg [data-tl-drag-hit],.tank-detail-timeline-svg .tank-detail-timeline-scrub-knob{pointer-events:all;cursor:grab;touch-action:none}' +
-                '.tank-detail-timeline-svg [data-tl-ref-dot],.tank-detail-timeline-svg [data-tl-start-dot]{cursor:pointer!important;touch-action:manipulation!important}' +
+                '.tank-detail-timeline-svg [data-tl-ref-dot],.tank-detail-timeline-svg .tank-detail-timeline-dot-hit[data-tl-ref-dot]{cursor:pointer!important;touch-action:manipulation!important}' +
+                '.tank-detail-timeline-svg [data-tl-start-dot],.tank-detail-timeline-svg .tank-detail-timeline-dot-hit[data-tl-start-dot]{cursor:grab!important;touch-action:manipulation!important}' +
                 '.tank-detail-timeline-svg [data-tl-now-hit],.tank-detail-timeline-svg [data-tl-instant-knob]{cursor:grab!important;touch-action:none!important}' +
                 '.tank-detail-timeline-svg [data-tl-zone-light],.tank-detail-timeline-svg [data-tl-zone-dark],.tank-detail-timeline-svg [data-tl-now-line],.tank-detail-timeline-svg .tank-detail-timeline-scrub-line,.tank-detail-timeline-svg path,.tank-detail-timeline-svg line:not([data-tl-drag-hit]){pointer-events:none}' +
                 '.tank-detail-timeline-legend{display:flex;flex-wrap:wrap;gap:8px 14px;font-size:10px;font-weight:700;color:#64748b;margin-top:2px}' +

@@ -26532,6 +26532,20 @@ window.updateStoricoButton = async function() {
             function totalTx() { return state.baseTx + state.tx; }
             function totalTy() { return state.baseTy + state.ty; }
 
+            function viewportOriginInScroll() {
+                var e = els();
+                var viewport = document.getElementById('preview-sheet-viewport');
+                if (!e.scroll || !viewport) return { x: 0, y: 0 };
+                var sRect = e.scroll.getBoundingClientRect();
+                var vpRect = viewport.getBoundingClientRect();
+                return { x: vpRect.left - sRect.left, y: vpRect.top - sRect.top };
+            }
+
+            function contentOffsetInScroll() {
+                var vp = viewportOriginInScroll();
+                return { x: vp.x + totalTx(), y: vp.y + totalTy() };
+            }
+
             function applyTransform(animate) {
                 var e = els();
                 if (!e.stage) return;
@@ -26546,15 +26560,23 @@ window.updateStoricoButton = async function() {
 
             function captureBaseOffset() {
                 var e = els();
-                if (!e.scroll || !e.stage) return;
+                var viewport = document.getElementById('preview-sheet-viewport');
+                if (!e.scroll || !e.stage || !viewport) return;
                 e.stage.style.transform = '';
-                var sRect = e.scroll.getBoundingClientRect();
+                var vpRect = viewport.getBoundingClientRect();
                 var stRect = e.stage.getBoundingClientRect();
-                state.baseTx = stRect.left - sRect.left;
-                state.baseTy = stRect.top - sRect.top;
-                state.tx = 0;
-                state.ty = 0;
+                state.tx = stRect.left - vpRect.left;
+                state.ty = stRect.top - vpRect.top;
+                state.baseTx = 0;
+                state.baseTy = 0;
                 state.scale = 1;
+            }
+
+            function setZoomAnchorDom(on) {
+                var viewport = document.getElementById('preview-sheet-viewport');
+                var e = els();
+                if (viewport) viewport.classList.toggle('preview-sheet-viewport--zoom', !!on);
+                if (e.stage) e.stage.classList.toggle('preview-sheet-stage--zoom-anchor', !!on);
             }
 
             function clampScale(s) {
@@ -26568,17 +26590,20 @@ window.updateStoricoButton = async function() {
                 var rect = e.scroll.getBoundingClientRect();
                 var mx = clientX - rect.left;
                 var my = clientY - rect.top;
-                var wx = (mx - totalTx()) / state.scale;
-                var wy = (my - totalTy()) / state.scale;
+                var origin = contentOffsetInScroll();
+                var wx = (mx - origin.x) / state.scale;
+                var wy = (my - origin.y) / state.scale;
                 state.scale = newScale;
-                state.tx = mx - state.baseTx - wx * state.scale;
-                state.ty = my - state.baseTy - wy * state.scale;
+                var vp = viewportOriginInScroll();
+                state.tx = mx - vp.x - wx * state.scale;
+                state.ty = my - vp.y - wy * state.scale;
                 applyTransform(false);
             }
 
             function setZoomMode(on, animate) {
                 var e = els();
                 if (on && !state.zoomActive) captureBaseOffset();
+                setZoomAnchorDom(!!on);
                 state.zoomActive = !!on;
                 if (e.scroll) {
                     e.scroll.classList.toggle('preview-zoom-active', state.zoomActive);
@@ -28774,18 +28799,11 @@ if (hiddenModules.length === 0) {
     if (printableSet.has('sec-conducibilita') && orderedModules.indexOf('sec-conducibilita') < 0) {
         orderedModules.push('sec-conducibilita');
     }
-    if (window.hasConducibilitaReportData && window.hasConducibilitaReportData() &&
-        orderedModules.indexOf('sec-conducibilita') < 0) {
-        orderedModules.push('sec-conducibilita');
-    }
 
     // Solo moduli effettivamente inviati (+ virtuali già inseriti sopra)
     orderedModules = orderedModules.filter(function (id, idx, arr) {
         if (arr.indexOf(id) !== idx) return false;
         if (id === 'GESTIONE_SERBATOI_SPECIAL' || id === 'TREND_SERBATOI' || id === 'TREND_ANALISI') {
-            return true;
-        }
-        if (id === 'sec-conducibilita' && window.hasConducibilitaReportData && window.hasConducibilitaReportData()) {
             return true;
         }
         return printableSet.has(id);
@@ -28890,6 +28908,7 @@ if (hiddenModules.length === 0) {
         }
 
         if (id === 'sec-conducibilita') {
+            if (!printableSet.has('sec-conducibilita')) return;
             if (isNotesMode && typeof window.getConducibilitaReportData === 'function') {
                 const condData = window.getConducibilitaReportData();
                 if (condData.rows.length) {
@@ -35087,6 +35106,22 @@ window.convertToHtml = async () => {
         .preview-sheet-stage {
             transform-origin: 0 0;
             will-change: transform;
+        }
+        .preview-sheet-viewport--zoom {
+            position: relative;
+        }
+        .preview-sheet-viewport--zoom .preview-sheet-layout {
+            pointer-events: none;
+        }
+        .preview-sheet-viewport--zoom .preview-font-scale-controls {
+            pointer-events: auto;
+        }
+        .preview-sheet-stage--zoom-anchor {
+            position: absolute;
+            left: 0;
+            top: 0;
+            margin: 0;
+            pointer-events: auto;
         }
         .preview-sheet-stage.preview-zoom-anim {
             transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);

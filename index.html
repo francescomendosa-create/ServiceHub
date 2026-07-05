@@ -3479,11 +3479,16 @@ window.colorPreviewNumber = function(tankName, value) {
                 var key = typeof window.getConductivityPlantStorageKey === 'function'
                     ? window.getConductivityPlantStorageKey(fid)
                     : fid;
-                var val = typeof window.readConducibilitaFieldValue === 'function'
-                    ? window.readConducibilitaFieldValue(fid)
-                    : '';
+                var val = typeof window.readConducibilitaFieldValueFromDom === 'function'
+                    ? window.readConducibilitaFieldValueFromDom(fid)
+                    : (typeof window.readConducibilitaFieldValue === 'function'
+                        ? window.readConducibilitaFieldValue(fid)
+                        : '');
                 if (val != null && String(val).trim() !== '') {
                     data[key] = String(val).trim();
+                } else {
+                    data[key] = '';
+                    if (window.__cloudPlantCache) delete window.__cloudPlantCache[key];
                 }
             });
             if (typeof window.__mergeConductivityKeysIntoPlantPayload === 'function') {
@@ -11728,7 +11733,6 @@ window.updateStoricoButton = async function() {
 
         window.__touchConductivityCacheFromInput = function (input) {
             if (!input || !input.id) return;
-            if (!window.isConducibilitaContextInput(input)) return;
             var shared = window.CONDUCTIVITY_SHARED_FIELD_IDS || [];
             if (shared.indexOf(input.id) < 0) return;
             if (!window.__cloudPlantCache) window.__cloudPlantCache = {};
@@ -11771,7 +11775,7 @@ window.updateStoricoButton = async function() {
             return '';
         };
 
-        /** Mantiene le chiavi conducibilità (__cond) nel backup anche se il pannello non è ancora nel DOM. */
+        /** Integra cache conducibilità nel payload senza ripristinare valori cancellati. */
         window.__mergeConductivityKeysIntoPlantPayload = function (target, source) {
             if (!target || typeof target !== 'object') return target;
             var src = source && typeof source === 'object' ? source : {};
@@ -11782,12 +11786,6 @@ window.updateStoricoButton = async function() {
                 var fromSrc = src[key];
                 if (fromSrc != null && String(fromSrc).trim() !== '') {
                     target[key] = String(fromSrc).trim();
-                    return;
-                }
-                if ((!target[key] || !String(target[key]).trim()) &&
-                    typeof window.readStoredConductivityPlantValue === 'function') {
-                    var stored = window.readStoredConductivityPlantValue(fid);
-                    if (stored) target[key] = stored;
                 }
             });
             return target;
@@ -11887,13 +11885,19 @@ window.updateStoricoButton = async function() {
             ));
         };
 
-        window.readConducibilitaFieldValue = function(fieldId) {
+        window.readConducibilitaFieldValueFromDom = function (fieldId) {
             var inputs = window.queryConducibilitaDomInputs(fieldId);
             for (var i = 0; i < inputs.length; i++) {
                 if (inputs[i].value != null && String(inputs[i].value).trim() !== '') {
                     return String(inputs[i].value).trim();
                 }
             }
+            return '';
+        };
+
+        window.readConducibilitaFieldValue = function(fieldId) {
+            var fromDom = window.readConducibilitaFieldValueFromDom(fieldId);
+            if (fromDom) return fromDom;
             return typeof window.readStoredConductivityPlantValue === 'function'
                 ? window.readStoredConductivityPlantValue(fieldId)
                 : '';
@@ -12185,10 +12189,13 @@ window.updateStoricoButton = async function() {
             if (shared.indexOf(input.id) < 0) return;
             var overlap = window.CONDUCTIVITY_LEVEL_OVERLAP_FIELD_IDS || [];
             if (overlap.indexOf(input.id) >= 0 && !window.isConducibilitaContextInput(input)) return;
-            var val = input.value;
+            var val = input.value == null ? '' : String(input.value);
             window.queryConducibilitaDomInputs(input.id).forEach(function (el) {
                 if (el !== input && el.value !== val) el.value = val;
             });
+            if (typeof window.__touchConductivityCacheFromInput === 'function') {
+                window.__touchConductivityCacheFromInput(input);
+            }
         };
 
         window.isRapportinoOnlyDataKey = function (key) {
@@ -14945,11 +14952,18 @@ window.updateStoricoButton = async function() {
 
         window.buildReportPreviewRowHtml = function (label, val, opts) {
             opts = opts || {};
-            var pf = parseInt(opts.previewFont, 10);
+            var base = opts.previewFontBase != null ? opts.previewFontBase : (parseFloat(opts.previewFont) || 9);
+            var pf = typeof window.scalePreviewFont === 'function'
+                ? window.scalePreviewFont(base, 0)
+                : base;
             if (!Number.isFinite(pf)) pf = 9;
             var isStatus = !!opts.isStatus;
-            var labelFs = isStatus ? (pf - 1) : (pf - 2);
-            var valFs = pf - 1;
+            var labelFs = typeof window.scalePreviewFont === 'function'
+                ? window.scalePreviewFont(base, isStatus ? -1 : -2)
+                : (isStatus ? (pf - 1) : (pf - 2));
+            var valFs = typeof window.scalePreviewFont === 'function'
+                ? window.scalePreviewFont(base, -1)
+                : (pf - 1);
             var valColor = opts.valColor || '#000';
             var gapCh = Number.isFinite(opts.gapCh) ? opts.gapCh : window.REPORT_PREVIEW_SIGLA_GAP_CH;
             var siglaCh = opts.siglaCh || window.getReportPreviewSiglaWidthCh(label);
@@ -18511,14 +18525,15 @@ window.updateStoricoButton = async function() {
 
         window.buildPreviewFuochistaNotesHtml = function(printableSet) {
             const font = window.PREVIEW_NOTES_FONT_STACK;
+            const fs = function(n) { return (window.scalePreviewPx ? window.scalePreviewPx(n) : n) + 'px'; };
             let inner = '';
             if (printableSet && printableSet.has('sec-aria') && typeof window.buildAriaFuochistaNotesTableHtml === 'function') {
                 inner = window.buildAriaFuochistaNotesTableHtml();
             }
             if (!inner) {
-                inner = '<p style="margin:0;padding:12px 8px;text-align:center;font-family:' + font + ';font-style:italic;font-size:12px;color:#94a3b8;">Nessun compressore in marcia</p>';
+                inner = '<p style="margin:0;padding:12px 8px;text-align:center;font-family:' + font + ';font-style:italic;font-size:' + fs(12) + ';color:#94a3b8;">Nessun compressore in marcia</p>';
             }
-            return '<div id="capture-content" class="preview-notes-capture preview-notes-fuochista" style="font-family:' + font + ';font-style:italic;color:#1a1a1a;padding:8px 6px 10px;font-size:14px;">' +
+            return '<div id="capture-content" class="preview-notes-capture preview-notes-fuochista" style="font-family:' + font + ';font-style:italic;color:#1a1a1a;padding:8px 6px 10px;font-size:' + fs(14) + ';">' +
                 inner + '</div>';
         };
 
@@ -20054,20 +20069,22 @@ window.updateStoricoButton = async function() {
             return { title: title, rows: rows };
         };
 
-        window.buildContatoriPreviewHtml = function(previewFont) {
+        window.buildContatoriPreviewHtml = function(previewFontBase) {
             const data = window.getContatoriReportData();
             if (!data.rows.length) return '';
-            const fs = parseInt(previewFont, 10) || 9;
+            const base = typeof previewFontBase === 'number' ? previewFontBase : (parseFloat(previewFontBase) || 9);
+            const fs = window.scalePreviewFont(base, 0);
+            const fsLabel = window.scalePreviewFont(base, -1);
             let rowsHtml = '';
             data.rows.forEach(function(r) {
                 rowsHtml += '<div style="display: flex; align-items: flex-start; border-bottom: 0.2px solid #e5e7eb; padding: 4px 0;">' +
-                    '<span style="font-size: ' + (fs - 1) + 'px; font-weight: 600; text-transform: uppercase; color: #000; width: 50%; flex-shrink: 0;">' +
+                    '<span style="font-size: ' + fsLabel + 'px; font-weight: 600; text-transform: uppercase; color: #000; width: 50%; flex-shrink: 0;">' +
                     window.escRapportinoHtml(r.label) + '</span>' +
                     '<span style="font-size: ' + fs + 'px; font-weight: 850; color: #000; flex: 1; text-align: right;">' +
                     window.escRapportinoHtml(r.val) + '</span></div>';
             });
             return '<div style="margin-bottom: 6px; width: 100%; break-inside: avoid; display: inline-block;">' +
-                '<div style="font-size: ' + (fs - 1) + 'px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 5px; letter-spacing: 0.3px;">' +
+                '<div style="font-size: ' + fsLabel + 'px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 5px; letter-spacing: 0.3px;">' +
                 window.escRapportinoHtml(data.title) + '</div>' +
                 '<div style="display: flex; flex-direction: column;">' + rowsHtml + '</div></div>';
         };
@@ -22774,18 +22791,21 @@ window.updateStoricoButton = async function() {
             };
         };
 
-        window.buildNotturnoFiltraPreviewHtml = function(previewFont) {
+        window.buildNotturnoFiltraPreviewHtml = function(previewFontBase) {
             const data = window.getNotturnoFiltraReportData();
-            const fs = parseInt(previewFont, 10) || 9;
+            const base = typeof previewFontBase === 'number' ? previewFontBase : (parseFloat(previewFontBase) || 9);
+            const fs = window.scalePreviewFont(base, 0);
+            const fsLabel = window.scalePreviewFont(base, -1);
+            const fsSub = window.scalePreviewFont(base, -2);
             let rowsHtml = '';
             data.rows.forEach(function(r) {
                 rowsHtml += '<div style="display: flex; align-items: flex-start; border-bottom: 0.2px solid #e5e7eb; padding: 4px 0;">' +
-                    '<span style="font-size: ' + (fs - 1) + 'px; font-weight: 600; text-transform: uppercase; color: #000; width: 50%; flex-shrink: 0;">' + r.label + '</span>' +
+                    '<span style="font-size: ' + fsLabel + 'px; font-weight: 600; text-transform: uppercase; color: #000; width: 50%; flex-shrink: 0;">' + r.label + '</span>' +
                     '<span style="font-size: ' + fs + 'px; font-weight: 850; text-transform: uppercase; color: #000; flex: 1; text-align: right;">' + r.val + '</span></div>';
             });
             return '<div style="margin-bottom: 6px; width: 100%; break-inside: avoid; display: inline-block;">' +
-                '<div style="font-size: ' + (fs - 1) + 'px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 3px; letter-spacing: 0.3px;">' + data.title + '</div>' +
-                '<div style="font-size: ' + (fs - 2) + 'px; font-weight: 600; text-transform: uppercase; color: #444; margin-bottom: 6px;">' + data.subtitle + '</div>' +
+                '<div style="font-size: ' + fsLabel + 'px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 3px; letter-spacing: 0.3px;">' + data.title + '</div>' +
+                '<div style="font-size: ' + fsSub + 'px; font-weight: 600; text-transform: uppercase; color: #444; margin-bottom: 6px;">' + data.subtitle + '</div>' +
                 '<div style="display: flex; flex-direction: column;">' + rowsHtml + '</div></div>';
         };
 
@@ -24538,17 +24558,19 @@ window.updateStoricoButton = async function() {
             };
         };
 
-        window.buildNotturnoChemicalsPreviewHtml = function(previewFont) {
+        window.buildNotturnoChemicalsPreviewHtml = function(previewFontBase) {
             const data = window.getNotturnoChemicalsReportData();
-            const fs = parseInt(previewFont, 10) || 9;
+            const base = typeof previewFontBase === 'number' ? previewFontBase : (parseFloat(previewFontBase) || 9);
+            const fs = window.scalePreviewFont(base, 0);
+            const fsLabel = window.scalePreviewFont(base, -1);
             let rowsHtml = '';
             data.rows.forEach(function(r) {
                 rowsHtml += '<div style="display: flex; align-items: center; border-bottom: 0.1px solid #e5e7eb; padding: 6px 0;">' +
-                    '<span style="font-size: ' + (fs + 2) + 'px; font-weight: 800; text-transform: uppercase; color: #000; width: 50%; flex-shrink: 0;">' + r.label + '</span>' +
-                    '<span style="font-size: ' + (fs + 6) + 'px; font-weight: 900; color: #000; flex: 1; text-align: center; font-variant-numeric: tabular-nums;">' + r.val + '</span></div>';
+                    '<span style="font-size: ' + window.scalePreviewFont(base, 2) + 'px; font-weight: 800; text-transform: uppercase; color: #000; width: 50%; flex-shrink: 0;">' + r.label + '</span>' +
+                    '<span style="font-size: ' + window.scalePreviewFont(base, 6) + 'px; font-weight: 900; color: #000; flex: 1; text-align: center; font-variant-numeric: tabular-nums;">' + r.val + '</span></div>';
             });
             return '<div style="margin-bottom: 6px; width: 100%; break-inside: avoid; display: inline-block;">' +
-                '<div style="font-size: ' + (fs - 1) + 'px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 5px; letter-spacing: 0.3px;">' + data.title + '</div>' +
+                '<div style="font-size: ' + fsLabel + 'px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 5px; letter-spacing: 0.3px;">' + data.title + '</div>' +
                 '<div style="display: flex; flex-direction: column;">' + rowsHtml + '</div></div>';
         };
 
@@ -24713,10 +24735,11 @@ window.updateStoricoButton = async function() {
             return !!(data && data.rows && data.rows.length);
         };
 
-        window.buildConducibilitaPreviewHtml = function(previewFont) {
+        window.buildConducibilitaPreviewHtml = function(previewFontBase) {
             const data = window.getConducibilitaReportData();
             if (!data.rows.length) return '';
-            const fs = parseInt(previewFont, 10) || 9;
+            const base = typeof previewFontBase === 'number' ? previewFontBase : (parseFloat(previewFontBase) || 9);
+            const fs = window.scalePreviewFont(base, 0);
             const siglaCh = window.getReportPreviewSiglaWidthCh
                 ? window.getReportPreviewSiglaWidthCh()
                 : 14;
@@ -24728,7 +24751,7 @@ window.updateStoricoButton = async function() {
                 const valHtml = window.buildConducibilitaReportValueHtml(r.num, r.unit, fs, { numCh: condNumCh });
                 if (window.buildReportPreviewRowHtml) {
                     rowsHtml += window.buildReportPreviewRowHtml(r.label, valHtml, {
-                        previewFont: fs,
+                        previewFontBase: base,
                         isStatus: false,
                         noValUppercase: true,
                         siglaCh: siglaCh,
@@ -24741,7 +24764,7 @@ window.updateStoricoButton = async function() {
                 }
             });
             return '<div style="margin-bottom: 6px; width: 100%; break-inside: avoid; display: inline-block;">' +
-                '<div style="font-size: ' + (fs - 1) + 'px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 5px; letter-spacing: 0.3px;">' + data.title + '</div>' +
+                '<div style="font-size: ' + window.scalePreviewFont(base, -1) + 'px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 5px; letter-spacing: 0.3px;">' + data.title + '</div>' +
                 '<div style="display: flex; flex-direction: column;">' + rowsHtml + '</div></div>';
         };
 
@@ -26144,6 +26167,7 @@ window.updateStoricoButton = async function() {
             if (typeof window.resetPreviewSheetZoom === 'function') window.resetPreviewSheetZoom();
             if (typeof window.resetPreviewFontScale === 'function') window.resetPreviewFontScale();
             buildPreview();
+            if (typeof window.updatePreviewFontScaleButtons === 'function') window.updatePreviewFontScaleButtons();
             if (typeof window.initPreviewSheetZoom === 'function') window.initPreviewSheetZoom();
 
             void window.ensureBackupHistoryFresh({
@@ -26374,43 +26398,55 @@ window.updateStoricoButton = async function() {
             window.PREVIEW_FONT_SCALE_MAX = 1.48;
             window.__previewFontScale = 1;
 
-            window.resetPreviewFontScale = function () {
-                window.__previewFontScale = 1;
-                window.applyPreviewFontScale();
+            window.getPreviewFontScale = function () {
+                return window.__previewFontScale || 1;
             };
 
-            window.applyPreviewFontScale = function () {
-                var sheet = document.getElementById('preview-sheet');
-                if (!sheet) return;
-                var s = window.__previewFontScale || 1;
-                if (Math.abs(s - 1) < 0.001) {
-                    sheet.style.zoom = '';
-                    sheet.style.transform = '';
-                    sheet.style.transformOrigin = '';
-                } else if (typeof CSS !== 'undefined' && CSS.supports && CSS.supports('zoom', '1.1')) {
-                    sheet.style.zoom = String(s);
-                    sheet.style.transform = '';
-                    sheet.style.transformOrigin = '';
-                } else {
-                    sheet.style.zoom = '';
-                    sheet.style.transform = 'scale(' + s + ')';
-                    sheet.style.transformOrigin = 'top center';
-                }
+            window.scalePreviewPx = function (px) {
+                var n = typeof px === 'number' ? px : parseFloat(px);
+                if (!Number.isFinite(n)) return px;
+                var s = window.getPreviewFontScale();
+                return Math.max(1, Math.round(n * s * 10) / 10);
+            };
+
+            window.scalePreviewFont = function (unscaledBase, delta) {
+                var base = typeof unscaledBase === 'number' ? unscaledBase : parseFloat(unscaledBase);
+                if (!Number.isFinite(base)) base = 9;
+                return window.scalePreviewPx(base + (delta || 0));
+            };
+
+            window.updatePreviewFontScaleButtons = function () {
+                var s = window.getPreviewFontScale();
                 var minus = document.getElementById('preview-font-minus');
                 var plus = document.getElementById('preview-font-plus');
                 if (minus) minus.disabled = s <= window.PREVIEW_FONT_SCALE_MIN + 0.001;
                 if (plus) plus.disabled = s >= window.PREVIEW_FONT_SCALE_MAX - 0.001;
             };
 
+            window.resetPreviewFontScale = function () {
+                window.__previewFontScale = 1;
+                var sheet = document.getElementById('preview-sheet');
+                if (sheet) {
+                    sheet.style.zoom = '';
+                    sheet.style.transform = '';
+                    sheet.style.transformOrigin = '';
+                }
+                window.updatePreviewFontScaleButtons();
+            };
+
             window.nudgePreviewFontScale = function (direction) {
                 var delta = (direction > 0 ? 1 : -1) * window.PREVIEW_FONT_SCALE_STEP;
-                var next = (window.__previewFontScale || 1) + delta;
+                var next = window.getPreviewFontScale() + delta;
                 next = Math.max(
                     window.PREVIEW_FONT_SCALE_MIN,
                     Math.min(window.PREVIEW_FONT_SCALE_MAX, +next.toFixed(3))
                 );
                 window.__previewFontScale = next;
-                window.applyPreviewFontScale();
+                window.updatePreviewFontScaleButtons();
+                var screen = document.getElementById('preview-screen');
+                if (screen && screen.classList.contains('active') && typeof buildPreview === 'function') {
+                    buildPreview();
+                }
             };
         })();
 
@@ -27062,12 +27098,13 @@ window.updateStoricoButton = async function() {
         };
 
         /** Blocco TREND SERBATOI / ANALISI per report A4 (layout originale + numeri arrotondati). */
-        window.buildTrendReportModuleHtml = function (title, trends, previewFont, opts) {
+        window.buildTrendReportModuleHtml = function (title, trends, previewFontBase, opts) {
             opts = opts || {};
             if (!trends || !trends.length) return '';
-            var fs = parseInt(previewFont, 10) || 8;
-            var fsTitle = fs - 1;
-            var fsSmall = fs - 2;
+            var base = typeof previewFontBase === 'number' ? previewFontBase : (parseFloat(previewFontBase) || 8);
+            var fs = window.scalePreviewFont(base, 0);
+            var fsTitle = window.scalePreviewFont(base, -1);
+            var fsSmall = window.scalePreviewFont(base, -2);
             var startTime = trends[0].startTime || '--:--';
             var endTime = trends[trends.length - 1].endTime || '--:--';
             var totalHours = window.calculateTrendReportHours(startTime, endTime);
@@ -28014,9 +28051,9 @@ window.updateStoricoButton = async function() {
             };
         };
 
-        window.buildWwtReportSubsectionTitle = function (title, previewFont) {
-            var fs = parseInt(previewFont, 10) - 1;
-            if (!Number.isFinite(fs)) fs = 8;
+        window.buildWwtReportSubsectionTitle = function (title, previewFontBase) {
+            var base = typeof previewFontBase === 'number' ? previewFontBase : (parseFloat(previewFontBase) || 9);
+            var fs = window.scalePreviewFont(base, -1);
             var esc = window.escRapportinoHtml || function (s) { return String(s == null ? '' : s); };
             return '<div style="font-size:' + fs + 'px;font-weight:700;text-transform:uppercase;color:#000;margin:8px 0 3px 0;letter-spacing:0.3px;border-bottom:0.3px solid #bbb;padding-bottom:2px;">' +
                 esc(title) + '</div>';
@@ -28047,12 +28084,12 @@ window.updateStoricoButton = async function() {
             };
         };
 
-        window.buildWwtSedAssettoReportRowHtml = function (sedLabel, portata, previewFont) {
-            var pf = parseInt(previewFont, 10);
-            if (!Number.isFinite(pf)) pf = 9;
+        window.buildWwtSedAssettoReportRowHtml = function (sedLabel, portata, previewFontBase) {
+            var base = typeof previewFontBase === 'number' ? previewFontBase : (parseFloat(previewFontBase) || 9);
+            var fs = window.scalePreviewFont(base, -1);
             var line = window.formatWwtSedAssettoLine(sedLabel, portata);
             return '<div class="report-preview-row report-preview-row--sed-assetto" style="display:flex;align-items:baseline;border-bottom:0.1px solid #eee;padding:3px 0;">' +
-                '<span class="report-preview-sed-assetto" style="font-size:' + (pf - 1) + 'px;font-weight:600;color:#000;white-space:nowrap;">' +
+                '<span class="report-preview-sed-assetto" style="font-size:' + fs + 'px;font-weight:600;color:#000;white-space:nowrap;">' +
                 line.html + '</span></div>';
         };
 
@@ -28063,23 +28100,23 @@ window.updateStoricoButton = async function() {
                 '<span class="digital-sed-assetto-line digital-row-value digital-row-value--text">' + line.html + '</span></div>';
         };
 
-        window.buildOsmosiAssettoReportRowHtml = function (osmosiVal, previewFont) {
+        window.buildOsmosiAssettoReportRowHtml = function (osmosiVal, previewFontBase) {
             if (!osmosiVal) return '';
-            var pf = parseInt(previewFont, 10);
-            if (!Number.isFinite(pf)) pf = 9;
+            var base = typeof previewFontBase === 'number' ? previewFontBase : (parseFloat(previewFontBase) || 9);
+            var fs = window.scalePreviewFont(base, -1);
             var raw = String(osmosiVal);
             return '<div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:0.1px solid #e5e7eb;padding:2px 0;margin-bottom:1px;">' +
                 '<div style="display:flex;flex-direction:column;flex:1;padding-right:6px;border-right:0.6px solid #9ca3af;">' +
-                '<div style="font-size:' + (pf - 1) + 'px;font-weight:650;text-transform:uppercase;color:#000;margin-bottom:2px;text-decoration:underline;padding-bottom:4px;">ABILITATE</div>' +
-                '<div style="font-size:' + (pf - 1) + 'px;font-weight:650;text-transform:uppercase;color:#000;">OSMOSI</div>' +
+                '<div style="font-size:' + fs + 'px;font-weight:650;text-transform:uppercase;color:#000;margin-bottom:2px;text-decoration:underline;padding-bottom:4px;">ABILITATE</div>' +
+                '<div style="font-size:' + fs + 'px;font-weight:650;text-transform:uppercase;color:#000;">OSMOSI</div>' +
                 '</div>' +
                 '<div style="display:flex;flex-direction:column;flex:1;padding-left:6px;">' +
-                '<div style="font-size:' + (pf - 1) + 'px;font-weight:650;text-transform:uppercase;color:#000;margin-bottom:2px;text-decoration:underline;padding-bottom:4px;">ASSETTO</div>' +
-                '<div style="font-size:' + (pf - 1) + 'px;font-weight:650;text-transform:uppercase;color:#000;white-space:nowrap;margin-left:2px;">' + raw + '</div>' +
+                '<div style="font-size:' + fs + 'px;font-weight:650;text-transform:uppercase;color:#000;margin-bottom:2px;text-decoration:underline;padding-bottom:4px;">ASSETTO</div>' +
+                '<div style="font-size:' + fs + 'px;font-weight:650;text-transform:uppercase;color:#000;white-space:nowrap;margin-left:2px;">' + raw + '</div>' +
                 '</div></div>';
         };
 
-        window.buildWwtAmbReportPreviewHtml = function (previewFont, opts) {
+        window.buildWwtAmbReportPreviewHtml = function (previewFontBase, opts) {
             opts = opts || {};
             var sections = window.getWwtAmbCardSections();
             var siglaCh = opts.siglaCh || (window.getReportPreviewSiglaWidthCh ? window.getReportPreviewSiglaWidthCh() : 14);
@@ -28088,24 +28125,24 @@ window.updateStoricoButton = async function() {
             var assetto = sections.assetto || {};
 
             if (assetto.hasSed || assetto.hasOsmosis) {
-                body += window.buildWwtReportSubsectionTitle('Assetto impianto', previewFont);
+                body += window.buildWwtReportSubsectionTitle('Assetto impianto', previewFontBase);
                 if (assetto.hasSed) {
                     body += window.buildWwtSedAssettoReportRowHtml
-                        ? window.buildWwtSedAssettoReportRowHtml(assetto.sedLabel, assetto.portata, previewFont)
+                        ? window.buildWwtSedAssettoReportRowHtml(assetto.sedLabel, assetto.portata, previewFontBase)
                         : '';
                 }
                 if (assetto.hasOsmosis) {
-                    body += window.buildOsmosiAssettoReportRowHtml(assetto.osmosiVal, previewFont);
+                    body += window.buildOsmosiAssettoReportRowHtml(assetto.osmosiVal, previewFontBase);
                 }
             }
 
             function appendRowsBlock(title, rows) {
                 if (!rows || !rows.length) return;
-                body += window.buildWwtReportSubsectionTitle(title, previewFont);
+                body += window.buildWwtReportSubsectionTitle(title, previewFontBase);
                 rows.forEach(function (r) {
                     body += window.buildReportPreviewRowHtml
                         ? window.buildReportPreviewRowHtml(r.label, r.val, {
-                            previewFont: previewFont, siglaCh: siglaCh, noValUppercase: true
+                            previewFontBase: previewFontBase, siglaCh: siglaCh, noValUppercase: true
                         })
                         : '';
                 });
@@ -28117,7 +28154,7 @@ window.updateStoricoButton = async function() {
             appendRowsBlock('Torbidità in uscita', sections.torbidita);
 
             if (sections.serbatoi && sections.serbatoi.length) {
-                body += window.buildWwtReportSubsectionTitle('Serbatoi', previewFont);
+                body += window.buildWwtReportSubsectionTitle('Serbatoi', previewFontBase);
                 sections.serbatoi.forEach(function (r) {
                     var val = r.val;
                     if (typeof window.colorPreviewNumber === 'function') {
@@ -28125,7 +28162,7 @@ window.updateStoricoButton = async function() {
                     }
                     body += window.buildReportPreviewRowHtml
                         ? window.buildReportPreviewRowHtml(r.label, val, {
-                            previewFont: previewFont, siglaCh: siglaCh, noValUppercase: true
+                            previewFontBase: previewFontBase, siglaCh: siglaCh, noValUppercase: true
                         })
                         : '';
                 });
@@ -28133,8 +28170,7 @@ window.updateStoricoButton = async function() {
 
             if (!body) return '';
 
-            var pf = parseInt(previewFont, 10) - 1;
-            if (!Number.isFinite(pf)) pf = 8;
+            var pf = window.scalePreviewFont(previewFontBase, -1);
             return '<div style="margin-bottom:6px;width:100%;break-inside:avoid;display:inline-block;">' +
                 '<div style="font-size:' + pf + 'px;font-weight:650;text-transform:uppercase;color:#000;border-bottom:0.5px solid #000;padding-bottom:4px;margin-bottom:5px;letter-spacing:0.3px;">WWT</div>' +
                 '<div style="display:flex;flex-direction:column;">' + body + '</div></div>';
@@ -28225,7 +28261,8 @@ window.updateStoricoButton = async function() {
             return html;
         };
 
-        window.getAnalisiPreviewModule = function(previewFont) {
+        window.getAnalisiPreviewModule = function(previewFontBase) {
+            const base = typeof previewFontBase === 'number' ? previewFontBase : (parseFloat(previewFontBase) || 9);
             const fields = [
                 ['COD ING', 'inp-analisi-cod'],
                 ['COND ING', 'inp-analisi-cond'],
@@ -28274,7 +28311,7 @@ window.updateStoricoButton = async function() {
                         padding:4px 0;
                     ">
                         <span style="
-                            font-size:${parseInt(previewFont) - 2}px;
+                            font-size:${window.scalePreviewFont(base, -2)}px;
                             font-weight:600;
                             text-transform:uppercase;
                             color:#000;
@@ -28282,7 +28319,7 @@ window.updateStoricoButton = async function() {
                             flex-shrink:0;
                         ">${label}</span>
                         <span style="
-                            font-size:${parseInt(previewFont) - 1}px;
+                            font-size:${window.scalePreviewFont(base, -1)}px;
                             font-weight:650;
                             color:#000;
                             text-align:left;
@@ -28305,7 +28342,7 @@ window.updateStoricoButton = async function() {
                     display:inline-block;
                 ">
                     <div style="
-                        font-size:${parseInt(previewFont) - 1}px;
+                        font-size:${pfs(-1)}px;
                         font-weight:650;
                         text-transform:uppercase;
                         color:#000;
@@ -28361,44 +28398,53 @@ window.updateStoricoButton = async function() {
             // LAYOUT INTELLIGENTE A4 - MASSIMO 3 COLONNE (report) / singola colonna centrata (note)
             let previewColumns = '1fr 1fr 1fr';
             let previewGap = '20px';
-            let previewFont = '9px';
+            let previewFontBase = 9;
 
             if (isNotesMode) {
                 previewColumns = '1fr';
                 previewGap = '20px';
-                previewFont = '17px';
+                previewFontBase = 17;
             } else if (hiddenModules.length >= 3 && hiddenModules.length <= 4) {
                 previewColumns = '1fr 1fr';
                 previewGap = '12px';
-                previewFont = '9px';
+                previewFontBase = 9;
             } else if (hiddenModules.length >= 5 && hiddenModules.length <= 6) {
                 previewColumns = '1fr 1fr 1fr';
                 previewGap = '10px';
-                previewFont = '8px';
+                previewFontBase = 8;
             } else if (hiddenModules.length >= 7) {
                 previewColumns = '1fr 1fr 1fr';
                 previewGap = '8px';
-                previewFont = '7px';
+                previewFontBase = 7;
+            }
+
+            const pfs = function (delta) { return window.scalePreviewFont(previewFontBase, delta); };
+            const pf = function (delta) { return pfs(delta) + 'px'; };
+            const px = function (n) { return window.scalePreviewPx(n) + 'px'; };
+            const previewFont = pf(0);
+            if (window.getPreviewFontScale() !== 1) {
+                const gapNum = parseFloat(previewGap) || 20;
+                previewGap = window.scalePreviewPx(gapNum) + 'px';
             }
 
             const colCount = isNotesMode ? 1 : previewColumns.split(' ').length;
             const dateStr = String(now.getDate()).padStart(2, '0') + '/' + String(now.getMonth() + 1).padStart(2, '0') + '/' + String(now.getFullYear()).slice(-2);
             const headerBlock = (isNotesMode && !isFuochistaNotes)
                 ? '<div style="text-align:center;padding:18px 12px 22px;border-bottom:1px solid rgba(15,23,42,0.12);margin-bottom:20px;font-family:' + window.PREVIEW_NOTES_FONT_STACK + ';font-style:italic;">' +
-                    '<div style="font-size:13px;font-weight:600;color:#64748b;letter-spacing:1px;">Appunti turno</div>' +
-                    '<div style="font-size:24px;font-weight:700;color:#0f172a;margin-top:10px;">' + dateStr + '</div>' +
-                    '<div style="font-size:16px;font-weight:600;color:#1d4ed8;margin-top:8px;">' + currentShiftText + '</div>' +
+                    '<div style="font-size:' + px(13) + ';font-weight:600;color:#64748b;letter-spacing:1px;">Appunti turno</div>' +
+                    '<div style="font-size:' + px(24) + ';font-weight:700;color:#0f172a;margin-top:10px;">' + dateStr + '</div>' +
+                    '<div style="font-size:' + px(16) + ';font-weight:600;color:#1d4ed8;margin-top:8px;">' + currentShiftText + '</div>' +
                     '</div>'
                 : (isNotesMode ? '' : '<div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #000; padding-bottom: 4px; margin-bottom: 10px;">' +
                     '<div style="display: flex; align-items: center; gap: 25px;">' +
-                    '<h1 style="margin: 0; font-size: 12px; font-weight: 700; letter-spacing: -1px; text-transform: uppercase; font-style: italic;">REPORT GIORNALIERO OPERATIVO</h1>' +
-                    '<div style="font-size: 8px; font-weight: 650; color: #000;">' + dateStr + '</div></div>' +
-                    '<div style="font-size: ' + (parseInt(previewFont, 10) - 1) + 'px; font-weight: 700; color: #2563eb; text-transform: uppercase;">' + currentShiftText + '</div></div>');
+                    '<h1 style="margin: 0; font-size: ' + px(12) + '; font-weight: 700; letter-spacing: -1px; text-transform: uppercase; font-style: italic;">REPORT GIORNALIERO OPERATIVO</h1>' +
+                    '<div style="font-size: ' + px(8) + '; font-weight: 650; color: #000;">' + dateStr + '</div></div>' +
+                    '<div style="font-size: ' + pf(-1) + '; font-weight: 700; color: #2563eb; text-transform: uppercase;">' + currentShiftText + '</div></div>');
 
-let html = `<div id="capture-content" class="${isNotesMode ? 'preview-notes-capture' : ''}${isFuochistaNotes ? ' preview-notes-fuochista' : ''}" style="font-family: ${isNotesMode ? window.PREVIEW_NOTES_FONT_STACK : "'Helvetica Neue', Helvetica, Arial, sans-serif"}; font-style: ${isNotesMode ? 'italic' : 'normal'}; color: #1a1a1a; padding: ${isFuochistaNotes ? '8px 6px 10px' : (isNotesMode ? '20px 16px 28px' : '8px')}; font-size:${isFuochistaNotes ? '14px' : previewFont};">${headerBlock}<div style="column-count: ${colCount}; column-gap: ${previewGap};${isNotesMode ? ' max-width:' + (isFuochistaNotes ? '400px' : '460px') + '; margin:0 auto;' : ''}">`; 
+let html = `<div id="capture-content" class="${isNotesMode ? 'preview-notes-capture' : ''}${isFuochistaNotes ? ' preview-notes-fuochista' : ''}" style="font-family: ${isNotesMode ? window.PREVIEW_NOTES_FONT_STACK : "'Helvetica Neue', Helvetica, Arial, sans-serif"}; font-style: ${isNotesMode ? 'italic' : 'normal'}; color: #1a1a1a; padding: ${isFuochistaNotes ? '8px 6px 10px' : (isNotesMode ? '20px 16px 28px' : '8px')}; font-size:${isFuochistaNotes ? px(14) : previewFont};">${headerBlock}<div style="column-count: ${colCount}; column-gap: ${previewGap};${isNotesMode ? ' max-width:' + (isFuochistaNotes ? '400px' : '460px') + '; margin:0 auto;' : ''}">`; 
 
 if (hiddenModules.length === 0) { 
-    html += '<div style="grid-column: span 2; padding: 20px; text-align: center; color: #999; font-style: italic; font-weight: 650; font-size: 8px;">Nessun modulo selezionato per l\'invio</div>'; 
+    html += '<div style="grid-column: span 2; padding: 20px; text-align: center; color: #999; font-style: italic; font-weight: 650; font-size: ' + px(8) + ';">Nessun modulo selezionato per l\'invio</div>'; 
 } else {
     const printableModules = window.getPrintableReportModuleIds
         ? window.getPrintableReportModuleIds()
@@ -28408,7 +28454,7 @@ if (hiddenModules.length === 0) {
     if (isFuochistaNotes && typeof window.buildPreviewFuochistaNotesHtml === 'function') {
         container.innerHTML = window.buildPreviewFuochistaNotesHtml(printableSet);
         if (typeof window.syncPreviewViewModeUi === 'function') window.syncPreviewViewModeUi();
-        if (typeof window.applyPreviewFontScale === 'function') window.applyPreviewFontScale();
+        if (typeof window.updatePreviewFontScaleButtons === 'function') window.updatePreviewFontScaleButtons();
         return;
     }
 
@@ -28525,9 +28571,9 @@ if (hiddenModules.length === 0) {
                 }
                 return;
             }
-            html += `<div style="margin-bottom: 6px; width: 100%; break-inside: avoid; display: inline-block;"><div style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 5px; letter-spacing: 0.3px; white-space: nowrap;">Configurazione serbatoi</div><div style="display: flex; flex-direction: column;">`;
+            html += `<div style="margin-bottom: 6px; width: 100%; break-inside: avoid; display: inline-block;"><div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 5px; letter-spacing: 0.3px; white-space: nowrap;">Configurazione serbatoi</div><div style="display: flex; flex-direction: column;">`;
             tankStatuses.forEach(tank => {
-                html += `<div style="display: flex; align-items: flex-start; border-bottom: 0.2px solid #e5e7eb; padding: 4px 0;"><span style="font-size: ${parseInt(previewFont) - 2}px; font-weight: 600; text-transform: uppercase; color: #000; width: 50px; flex-shrink: 0;">${tank.tank}</span><span style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: #000; text-align: left; flex: 1; margin-left: 2px;">${tank.mode}</span></div>`;
+                html += `<div style="display: flex; align-items: flex-start; border-bottom: 0.2px solid #e5e7eb; padding: 4px 0;"><span style="font-size: ${pfs(-2)}px; font-weight: 600; text-transform: uppercase; color: #000; width: 50px; flex-shrink: 0;">${tank.tank}</span><span style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000; text-align: left; flex: 1; margin-left: 2px;">${tank.mode}</span></div>`;
             });
             const tankOnlyTrends = []; // Definisci tankOnlyTrends anche qui
             const alerts = window.checkHighLevel(tankOnlyTrends);
@@ -28560,7 +28606,7 @@ if (hiddenModules.length === 0) {
             if (tankOnlyTrends.length === 0) return;
 
             html += typeof window.buildTrendReportModuleHtml === 'function'
-                ? window.buildTrendReportModuleHtml('TREND SERBATOI', tankOnlyTrends, previewFont, {
+                ? window.buildTrendReportModuleHtml('TREND SERBATOI', tankOnlyTrends, previewFontBase, {
                     colorStart: true,
                     risingColor: '#dc2626',
                     fallingColor: '#2563eb',
@@ -28585,7 +28631,7 @@ if (hiddenModules.length === 0) {
             if (analisiOnlyTrends.length === 0) return;
 
             html += typeof window.buildTrendReportModuleHtml === 'function'
-                ? window.buildTrendReportModuleHtml('TREND ANALISI', analisiOnlyTrends, previewFont, {
+                ? window.buildTrendReportModuleHtml('TREND ANALISI', analisiOnlyTrends, previewFontBase, {
                     isAnalisi: true,
                     risingColor: '#059669',
                     fallingColor: '#dc2626',
@@ -28601,7 +28647,7 @@ if (hiddenModules.length === 0) {
         }
 
         if ((id === 'sec-contatore-filtra' || id === 'sec-filtra') && window.isContatoreFiltraModuleActive()) {
-            html += window.buildNotturnoFiltraPreviewHtml(previewFont);
+            html += window.buildNotturnoFiltraPreviewHtml(previewFontBase);
             return;
         }
 
@@ -28617,7 +28663,7 @@ if (hiddenModules.length === 0) {
                 }
                 return;
             }
-            const condHtml = window.buildConducibilitaPreviewHtml(previewFont);
+            const condHtml = window.buildConducibilitaPreviewHtml(previewFontBase);
             if (condHtml) html += condHtml;
             return;
         }
@@ -28632,7 +28678,7 @@ if (hiddenModules.length === 0) {
                 return;
             }
             const cntHtml = window.buildContatoriPreviewHtml
-                ? window.buildContatoriPreviewHtml(previewFont)
+                ? window.buildContatoriPreviewHtml(previewFontBase)
                 : '';
             if (cntHtml) html += cntHtml;
             return;
@@ -28657,7 +28703,7 @@ if (hiddenModules.length === 0) {
                 html += window.buildPreviewNotesFromReportRows(stoccData.title, stoccRows);
                 return;
             }
-            html += '<div style="margin-bottom: 6px; width: 100%; break-inside: avoid; display: inline-block;"><div style="font-size: ' + (parseInt(previewFont, 10) - 1) + 'px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 5px; letter-spacing: 0.3px;">' + stoccData.title + '</div><div class="stocc-report-preview-rows" style="display: flex; flex-direction: column;">';
+            html += '<div style="margin-bottom: 6px; width: 100%; break-inside: avoid; display: inline-block;"><div style="font-size: ' + pf(-1) + '; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 5px; letter-spacing: 0.3px;">' + stoccData.title + '</div><div class="stocc-report-preview-rows" style="display: flex; flex-direction: column;">';
             stoccData.rows.forEach(function (r) {
                 html += window.buildStoccaggioReportPreviewRowHtml
                     ? window.buildStoccaggioReportPreviewRowHtml(r.label, r.val)
@@ -28672,7 +28718,7 @@ if (hiddenModules.length === 0) {
         }
 
         if (id === 'sec-amb' && !isNotesMode && typeof window.buildWwtAmbReportPreviewHtml === 'function') {
-            html += window.buildWwtAmbReportPreviewHtml(previewFont, {
+            html += window.buildWwtAmbReportPreviewHtml(previewFontBase, {
                 siglaCh: globalReportPreviewSiglaCh,
                 isTwoColumns: colCount <= 2
             });
@@ -28862,7 +28908,7 @@ if (hiddenModules.length === 0) {
 
             // ANALISI_SPECIAL - modulo separato per analisi
             if (id === 'ANALISI_SPECIAL') {
-                html += '<div style="margin-bottom: 6px; width: 100%; break-inside: avoid; display: inline-block;"><div style="font-size: ' + (parseInt(previewFont) - 1) + 'px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 5px; letter-spacing: 0.3px;">ANALISI</div><div style="display: flex; flex-direction: column;">';
+                html += '<div style="margin-bottom: 6px; width: 100%; break-inside: avoid; display: inline-block;"><div style="font-size: ' + pf(-1) + '; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 5px; letter-spacing: 0.3px;">ANALISI</div><div style="display: flex; flex-direction: column;">';
                 
                 let analisiHeaderAdded = false;
                 
@@ -28950,7 +28996,7 @@ if (hiddenModules.length === 0) {
                         const cardStyle = isAmbiente1
     ? 'margin-bottom: 6px; width: 100%; break-inside: avoid; display: inline-block;'
     : 'margin-bottom: 6px; width: 100%; break-inside: avoid; display: inline-block;';
-                        html += `<div style="${cardStyle}"><div style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 5px; letter-spacing: 0.3px;">${displayTitle}</div><div style="display: flex; flex-direction: column;">`;
+                        html += `<div style="${cardStyle}"><div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 5px; letter-spacing: 0.3px;">${displayTitle}</div><div style="display: flex; flex-direction: column;">`;
                         
                         // AGGIUNGI I TITOLI "SERBATOI" E "LIVELLI" SOLO PER I SERBATOI REALI IN AMBIENTE 1
                         let titoliMostrati = false;
@@ -28974,7 +29020,7 @@ if (hiddenModules.length === 0) {
                             if (id === 'sec-amb' && isSerbatoioReale && !titoliMostrati) {
                                 html += `<div style="display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 0.1px solid #e5e7eb; padding: 2px 0; margin-bottom: -4px;">
                                     <div style="display: flex; flex-direction: column; flex: 1; padding-right: 6px;">
-                                        <div style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: #000; margin-bottom: 1px; text-decoration: underline; text-decoration-thickness: 0.1px; padding-bottom: 7px;">SERBATOI</div>
+                                        <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000; margin-bottom: 1px; text-decoration: underline; text-decoration-thickness: 0.1px; padding-bottom: 7px;">SERBATOI</div>
                                     </div>
                                     <div style="display: flex; flex-direction: column; flex: 1; padding-left: 5px;">
                                     </div>
@@ -29010,14 +29056,14 @@ if (hiddenModules.length === 0) {
                                     // Layout a 2 colonne - IDENTICO AL 3 COLONNE
                                     html += `<div style="display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 0.1px solid #e5e7eb; padding: 2px 0; margin-bottom: 1px;">
                                         <div style="display: flex; flex-direction: column; flex: 1; padding-right: 6px; border-right: 0.6px solid #9ca3af;">
-                                            <div style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: #000; margin-bottom: 2px; text-decoration: underline; text-decoration-thickness: 0.1px; padding-bottom: 4px;">ABILITATE</div>
-                                            <div style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: #000;">${r.label}</div>
-                                            ${disabledUnits && disabledUnits.length > 0 ? `<div style="font-size: ${parseInt(previewFont) - 2}px; font-weight: 650; text-transform: uppercase; color: #dc2626; text-align: left; margin-top: 2px;">DISABILITATE</div>` : ''}
+                                            <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000; margin-bottom: 2px; text-decoration: underline; text-decoration-thickness: 0.1px; padding-bottom: 4px;">ABILITATE</div>
+                                            <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000;">${r.label}</div>
+                                            ${disabledUnits && disabledUnits.length > 0 ? `<div style="font-size: ${pfs(-2)}px; font-weight: 650; text-transform: uppercase; color: #dc2626; text-align: left; margin-top: 2px;">DISABILITATE</div>` : ''}
                                         </div>
                                         <div style="display: flex; flex-direction: column; flex: 1; padding-left: 6px;">
-                                            <div style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: #000; margin-bottom: 2px; text-decoration: underline; text-decoration-thickness: 0.1px; padding-bottom: 4px;">ASSETTO</div>
-                                            <div style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: ${color}; white-space: nowrap; text-align: left; margin-left: 2px;">${r.val}</div>
-                                            ${disabledUnits.length > 0 ? `<div style="font-size: ${parseInt(previewFont) - 2}px; font-weight: 650; text-transform: uppercase; color: #dc2626; text-align: left; margin-top: 2px; margin-left: 2px;">${disabledUnits.join('/') || ''}</div>` : ''}
+                                            <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000; margin-bottom: 2px; text-decoration: underline; text-decoration-thickness: 0.1px; padding-bottom: 4px;">ASSETTO</div>
+                                            <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: ${color}; white-space: nowrap; text-align: left; margin-left: 2px;">${r.val}</div>
+                                            ${disabledUnits.length > 0 ? `<div style="font-size: ${pfs(-2)}px; font-weight: 650; text-transform: uppercase; color: #dc2626; text-align: left; margin-top: 2px; margin-left: 2px;">${disabledUnits.join('/') || ''}</div>` : ''}
                                         </div>
                                     </div>
                                     </div>`;
@@ -29025,14 +29071,14 @@ if (hiddenModules.length === 0) {
                                     // Layout originale a 3 colonne
                                     html += `<div style="display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 0.1px solid #e5e7eb; padding: 2px 0; margin-bottom: 1px; position: relative;">
                                         <div style="display: flex; flex-direction: column; flex: 1; padding-right: 6px; border-right: 0.6px solid #9ca3af;">
-                                            <div style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: #000; margin-bottom: 2px; text-decoration: underline; text-decoration-thickness: 0.1px; padding-bottom: 4px;">ABILITATE</div>
-                                            <div style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: #000;">${r.label}</div>
-                                            ${disabledUnits && disabledUnits.length > 0 ? `<div style="font-size: ${parseInt(previewFont) - 2}px; font-weight: 650; text-transform: uppercase; color: #dc2626; text-align: left; margin-top: 2px;">DISABILITATE</div>` : ''}
+                                            <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000; margin-bottom: 2px; text-decoration: underline; text-decoration-thickness: 0.1px; padding-bottom: 4px;">ABILITATE</div>
+                                            <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000;">${r.label}</div>
+                                            ${disabledUnits && disabledUnits.length > 0 ? `<div style="font-size: ${pfs(-2)}px; font-weight: 650; text-transform: uppercase; color: #dc2626; text-align: left; margin-top: 2px;">DISABILITATE</div>` : ''}
                                         </div>
                                         <div style="display: flex; flex-direction: column; flex: 1; padding-left: 6px;">
-                                            <div style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: #000; margin-bottom: 2px; text-decoration: underline; text-decoration-thickness: 0.1px; padding-bottom: 4px;">ASSETTO</div>
-                                            <div style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: ${color}; white-space: nowrap; text-align: left; margin-left: 2px;">${r.val}</div>
-                                            ${disabledUnits.length > 0 ? `<div style="font-size: ${parseInt(previewFont) - 2}px; font-weight: 650; text-transform: uppercase; color: #dc2626; text-align: left; margin-top: 2px; margin-left: 2px;">${disabledUnits.join('/') || ''}</div>` : ''}
+                                            <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000; margin-bottom: 2px; text-decoration: underline; text-decoration-thickness: 0.1px; padding-bottom: 4px;">ASSETTO</div>
+                                            <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: ${color}; white-space: nowrap; text-align: left; margin-left: 2px;">${r.val}</div>
+                                            ${disabledUnits.length > 0 ? `<div style="font-size: ${pfs(-2)}px; font-weight: 650; text-transform: uppercase; color: #dc2626; text-align: left; margin-top: 2px; margin-left: 2px;">${disabledUnits.join('/') || ''}</div>` : ''}
                                         </div>
                                     </div>`;
                                 }
@@ -29040,17 +29086,17 @@ if (hiddenModules.length === 0) {
                                 // FALLBACK: se contiene OSMOSI - AGGIUNGIAMO LA LINEA ANCHE QUI!
                                 html += `<div style="display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 0.1px solid #e5e7eb; padding: 2px 0; margin-bottom: 1px;">
                                     <div style="display: flex; flex-direction: column; flex: 1; padding-right: 6px; border-right: 0.6px solid #9ca3af;">
-                                        <div style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: #000; margin-bottom: 2px; text-decoration: underline; text-decoration-thickness: 0.1px; padding-bottom: 4px;">ABILITATE</div>
-                                        <div style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: #000;">${r.label}</div>
+                                        <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000; margin-bottom: 2px; text-decoration: underline; text-decoration-thickness: 0.1px; padding-bottom: 4px;">ABILITATE</div>
+                                        <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000;">${r.label}</div>
                                     </div>
                                     <div style="display: flex; flex-direction: column; flex: 1; padding-left: 6px;">
-                                        <div style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: #000; margin-bottom: 2px; text-decoration: underline; text-decoration-thickness: 0.1px; padding-bottom: 4px;">ASSETTO</div>
-                                        <div style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; text-transform: uppercase; color: ${color}; white-space: nowrap; text-align: left; margin-left: 2px;">${r.val}</div>
+                                        <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000; margin-bottom: 2px; text-decoration: underline; text-decoration-thickness: 0.1px; padding-bottom: 4px;">ASSETTO</div>
+                                        <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: ${color}; white-space: nowrap; text-align: left; margin-left: 2px;">${r.val}</div>
                                     </div>
                                 </div>`;
                             } else {
                                 const rowOpts = {
-                                    previewFont: previewFont,
+                                    previewFontBase: previewFontBase,
                                     valColor: color,
                                     isStatus: !!r.isStatus,
                                     siglaCh: globalReportPreviewSiglaCh,
@@ -29083,7 +29129,7 @@ if (hiddenModules.length === 0) {
                     clear:both;
                 ">
                     <div style="
-                        font-size:${parseInt(previewFont) - 1}px;
+                        font-size:${pfs(-1)}px;
                         font-weight:800;
                         color:#000;
                         margin-bottom:8px;
@@ -29107,7 +29153,7 @@ if (hiddenModules.length === 0) {
                     
                     html += `
                     <div style="
-                        font-size:${parseInt(previewFont) - 1}px;
+                        font-size:${pfs(-1)}px;
                         font-weight:700;
                         color:#000;
                         margin-bottom:4px;
@@ -29118,7 +29164,7 @@ if (hiddenModules.length === 0) {
                     ">
                         <span style="
                             color:${bulletColor};
-                            font-size:${parseInt(previewFont) - 0}px;
+                            font-size:${pfs(0)}px;
                         ">${a.includes('CRITICO') ? '⚠️' : '🔵'}</span>
                         ${alertText.replace('CRITICO', 'CRITICO').replace('MONITORARE LIVELLO', 'MONITORARE LIVELLO')}
                     </div>
@@ -29129,15 +29175,15 @@ if (hiddenModules.length === 0) {
             }
             
             html += (isNotesMode && !isFuochistaNotes)
-                ? `<div style="margin-top:28px;padding-top:14px;border-top:1px solid rgba(15,23,42,0.1);text-align:center;font-family:${window.PREVIEW_NOTES_FONT_STACK};font-style:italic;"><span style="font-size:13px;font-weight:600;color:#64748b;">Generato alle ${now.toLocaleTimeString('it-IT')}</span></div></div>`
-                : (isFuochistaNotes ? '</div>' : `<div style="margin-top: 20px; padding-top: 6px; border-top: 1px solid #000; display: flex; justify-content: space-between; align-items: center;"><span style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; color: #999; text-transform: uppercase; letter-spacing: 1px;">STABILE V4.3 ENGINE</span><span style="font-size: ${parseInt(previewFont) - 1}px; font-weight: 650; color: #000; text-transform: uppercase;">GENERATO ALLE ${now.toLocaleTimeString('it-IT')}</span></div></div>`);
+                ? `<div style="margin-top:28px;padding-top:14px;border-top:1px solid rgba(15,23,42,0.1);text-align:center;font-family:${window.PREVIEW_NOTES_FONT_STACK};font-style:italic;"><span style="font-size:${px(13)};font-weight:600;color:#64748b;">Generato alle ${now.toLocaleTimeString('it-IT')}</span></div></div>`
+                : (isFuochistaNotes ? '</div>' : `<div style="margin-top: 20px; padding-top: 6px; border-top: 1px solid #000; display: flex; justify-content: space-between; align-items: center;"><span style="font-size: ${pfs(-1)}px; font-weight: 650; color: #999; text-transform: uppercase; letter-spacing: 1px;">STABILE V4.3 ENGINE</span><span style="font-size: ${pfs(-1)}px; font-weight: 650; color: #000; text-transform: uppercase;">GENERATO ALLE ${now.toLocaleTimeString('it-IT')}</span></div></div>`);
             
             // Aggiungi l'avviso operativo MBBR se presente
             html += window.getMBBROperativeInstruction();
             
             container.innerHTML = html;
             if (typeof window.syncPreviewViewModeUi === 'function') window.syncPreviewViewModeUi();
-            if (typeof window.applyPreviewFontScale === 'function') window.applyPreviewFontScale();
+            if (typeof window.updatePreviewFontScaleButtons === 'function') window.updatePreviewFontScaleButtons();
         }
 
         function adjustOsmosiFontSize(el) {

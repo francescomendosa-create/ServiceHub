@@ -6673,7 +6673,10 @@ window.updateStoricoButton = async function() {
         }
 
         const leftDiv = document.createElement('div');
-        leftDiv.className = 'flex flex-col';
+        leftDiv.className = 'flex flex-col cursor-pointer archive-card-main min-w-0 flex-1 pr-3';
+        leftDiv.title = 'Tocca per anteprima a schermo intero';
+        leftDiv.setAttribute('role', 'button');
+        leftDiv.setAttribute('tabindex', '0');
         leftDiv.innerHTML = `
             <span class="font-black text-slate-900 dark:text-white uppercase text-[13px] tracking-tight leading-snug">
                 ${(function () {
@@ -6687,6 +6690,17 @@ window.updateStoricoButton = async function() {
                 ${snap.shift || 'TURNO AUTO'} - ${isOffline ? 'LOCALE' : (snap.time || 'ORA N.D.')}
             </span>
         `;
+        leftDiv.onclick = function (e) {
+            e.stopPropagation();
+            if (typeof window.openArchivePreview === 'function') window.openArchivePreview(snap);
+        };
+        leftDiv.onkeydown = function (e) {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                e.stopPropagation();
+                if (typeof window.openArchivePreview === 'function') window.openArchivePreview(snap);
+            }
+        };
 
         const rightDiv = document.createElement('div');
         rightDiv.className = 'flex items-center gap-2 flex-wrap justify-center';
@@ -6828,6 +6842,368 @@ window.updateStoricoButton = async function() {
         listContainer.appendChild(item);
     });
 };
+
+        window.ARCHIVE_PREVIEW_META_KEYS = {
+            hiddenModules: 1, isDarkMode: 1, lastUpdate: 1, manualShift: 1, archiveTime: 1,
+            createdAt: 1, shift: 1, syncRevision: 1, tankStatuses: 1, tankStatusManualAD: 1,
+            tankLevelInputAt: 1, tankLevelCompareBaseline: 1, source: 1, id: 1, __localSavedAt: 1,
+            date: 1, time: 1, data: 1
+        };
+
+        window.__buildArchivePreviewModuleFieldMap = function () {
+            var map = {};
+            var add = function (fieldId, moduleId) {
+                if (!fieldId || !moduleId || map[fieldId]) return;
+                map[fieldId] = moduleId;
+            };
+            (window.RAPPORTINI_TAB_META || []).forEach(function (tab) {
+                if (!tab || !tab.id) return;
+                var fields = typeof window.collectFieldsForRapportinoSection === 'function'
+                    ? window.collectFieldsForRapportinoSection(tab.id) : [];
+                (fields || []).forEach(function (f) {
+                    if (f && f.id) add(f.id, tab.id);
+                });
+            });
+            (window.CONDUCTIVITY_SHARED_FIELD_IDS || []).forEach(function (fid) {
+                add(fid, 'sec-conducibilita');
+                if (typeof window.getConductivityPlantStorageKey === 'function') {
+                    add(window.getConductivityPlantStorageKey(fid), 'sec-conducibilita');
+                }
+            });
+            (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
+                if (t && t.fieldId) add(t.fieldId, 'sec-stoccaggio-interno');
+            });
+            (window.ARIA_COMPRESSORS || []).forEach(function (c) {
+                if (!c || !c.id) return;
+                add(c.id, 'sec-aria');
+                (window.ARIA_COMPRESSOR_MEASURES || []).forEach(function (m) {
+                    add(c.id + '-' + m.key, 'sec-aria');
+                });
+            });
+            (window.BLOWDOWN_COMPRESSORS || []).forEach(function (c) {
+                if (!c) return;
+                add(c.headerId, 'sec-bluedown');
+                add(c.statusId, 'sec-bluedown');
+                (c.inputs || []).forEach(function (inpId) { add(inpId, 'sec-bluedown'); });
+            });
+            return map;
+        };
+
+        window.guessArchiveFieldModuleId = function (fieldId) {
+            if (!fieldId) return 'altri-dati';
+            if (/^stat-well/i.test(fieldId)) return 'sec-well';
+            if (/^stat-/i.test(fieldId)) return 'sec-chpp';
+            if (/^sa-/i.test(fieldId)) return 'sec-aria';
+            if (/^inp-analisi-/i.test(fieldId)) return 'sec-amb';
+            if (/^cnt-/i.test(fieldId)) return 'sec-contatori';
+            if (/^cfil-/i.test(fieldId)) return 'sec-conteggio-filtra';
+            if (/^rigen-/i.test(fieldId)) return 'sec-rigenerazione';
+            if (/^nott-/i.test(fieldId) || /^f-s\d/i.test(fieldId)) return 'sec-filtra';
+            if (/chem/i.test(fieldId)) return 'sec-chemicals';
+            if (/^v105|^vmk10600|^t105|^tmk10600|^h105|^hmk10600/i.test(fieldId)) return 'sec-bluedown';
+            if (fieldId === 'f-cond' || fieldId === 'inp-a-cond' || fieldId === 'inp-d-cond') return 'sec-conducibilita';
+            if (window.isConductivityPlantStorageKey && window.isConductivityPlantStorageKey(fieldId)) {
+                return 'sec-conducibilita';
+            }
+            if (/^inp-tk|^inp-s|^inp-a|^tk101|^inp-v|^inp-bacino|^inp-lurgi|^inp-daf|^inp-sf3/i.test(fieldId)) {
+                return 'sec-amb';
+            }
+            return 'altri-dati';
+        };
+
+        window.getArchivePreviewModuleTitle = function (moduleId) {
+            if (!moduleId) return 'DATI';
+            if (moduleId === 'altri-dati') return 'ALTRI DATI';
+            if (moduleId === 'tank-status') return 'STATO SERBATOI';
+            var tab = (window.RAPPORTINI_TAB_META || []).find(function (t) { return t && t.id === moduleId; });
+            if (tab && tab.name) return tab.name;
+            var lbl = document.getElementById('lbl-' + moduleId);
+            if (lbl && lbl.textContent) return lbl.textContent.trim();
+            return String(moduleId).replace(/^sec-/, '').replace(/-/g, ' ').toUpperCase();
+        };
+
+        window.getArchivePreviewFieldLabel = function (fieldId, fallback) {
+            if (fallback) return fallback;
+            if (window.isConductivityPlantStorageKey && window.isConductivityPlantStorageKey(fieldId)) {
+                var fid = window.resolveConductivityFieldIdFromStorageKey(fieldId);
+                var meta = (window.CONDUCTIVITY_FIELDS_META || []).find(function (m) { return m && m.id === fid; });
+                if (meta && meta.label) return meta.label + ' (µS/cm)';
+            }
+            var condMeta = (window.CONDUCTIVITY_FIELDS_META || []).find(function (m) { return m && m.id === fieldId; });
+            if (condMeta && condMeta.label) return condMeta.label;
+            if (typeof window.getTankName === 'function') {
+                var tn = window.getTankName(fieldId);
+                if (tn && tn !== fieldId) return tn;
+            }
+            if (typeof window.formatTrendDisplayLabel === 'function') {
+                var fd = window.formatTrendDisplayLabel(fieldId, false);
+                if (fd && fd !== fieldId) return fd;
+            }
+            return String(fieldId).replace(/^inp-/, '').replace(/-/g, ' ').toUpperCase();
+        };
+
+        window.readArchivePreviewFieldValue = function (snap, fieldId) {
+            if (!snap || !fieldId) return { display: '', kind: 'input', raw: '' };
+            var raw = snap[fieldId];
+            if (raw == null || raw === '') return { display: '', kind: 'input', raw: '' };
+            if (typeof raw === 'object' && raw.text != null) {
+                var text = String(raw.text).replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+                return { display: text, kind: 'status', raw: raw };
+            }
+            return { display: String(raw), kind: 'input', raw: raw };
+        };
+
+        window.buildArchivePreviewSections = function (snap) {
+            snap = snap || {};
+            var fieldMap = window.__buildArchivePreviewModuleFieldMap();
+            var buckets = {};
+            var seen = {};
+            var addRow = function (moduleId, fieldId, label, valueInfo) {
+                if (!valueInfo || !String(valueInfo.display || '').trim()) return;
+                if (seen[fieldId]) return;
+                seen[fieldId] = true;
+                if (!buckets[moduleId]) {
+                    buckets[moduleId] = {
+                        moduleId: moduleId,
+                        title: window.getArchivePreviewModuleTitle(moduleId),
+                        rows: []
+                    };
+                }
+                buckets[moduleId].rows.push({
+                    fieldId: fieldId,
+                    label: label || window.getArchivePreviewFieldLabel(fieldId),
+                    value: valueInfo.display,
+                    kind: valueInfo.kind || 'input',
+                    raw: valueInfo.raw
+                });
+            };
+
+            (window.RAPPORTINI_TAB_META || []).forEach(function (tab) {
+                if (!tab || !tab.id) return;
+                var fields = typeof window.collectFieldsForRapportinoSection === 'function'
+                    ? window.collectFieldsForRapportinoSection(tab.id) : [];
+                (fields || []).forEach(function (f) {
+                    if (!f || !f.id) return;
+                    addRow(tab.id, f.id, f.label, window.readArchivePreviewFieldValue(snap, f.id));
+                });
+            });
+
+            (window.CONDUCTIVITY_SHARED_FIELD_IDS || []).forEach(function (fid) {
+                var key = typeof window.getConductivityPlantStorageKey === 'function'
+                    ? window.getConductivityPlantStorageKey(fid) : fid;
+                var vi = window.readArchivePreviewFieldValue(snap, key);
+                if (!vi.display && key !== fid) vi = window.readArchivePreviewFieldValue(snap, fid);
+                var meta = (window.CONDUCTIVITY_FIELDS_META || []).find(function (m) { return m && m.id === fid; });
+                addRow('sec-conducibilita', key !== fid ? key : fid, meta ? meta.label : null, vi);
+            });
+
+            Object.keys(snap).forEach(function (k) {
+                if (window.ARCHIVE_PREVIEW_META_KEYS[k]) return;
+                if (seen[k]) return;
+                var vi = window.readArchivePreviewFieldValue(snap, k);
+                if (!vi.display) return;
+                var mod = fieldMap[k] || window.guessArchiveFieldModuleId(k);
+                addRow(mod, k, null, vi);
+            });
+
+            if (snap.tankStatuses && typeof snap.tankStatuses === 'object' && !Array.isArray(snap.tankStatuses)) {
+                Object.keys(snap.tankStatuses).forEach(function (tk) {
+                    var val = snap.tankStatuses[tk];
+                    if (val == null || val === '') return;
+                    addRow('tank-status', 'tank-status:' + tk, tk, {
+                        display: Array.isArray(val) ? val.join(', ') : String(val),
+                        kind: 'input',
+                        raw: val
+                    });
+                });
+            }
+
+            var order = (window.RAPPORTINI_TAB_META || []).map(function (t) { return t.id; });
+            order.push('tank-status', 'altri-dati');
+            var out = [];
+            order.forEach(function (id) {
+                if (buckets[id] && buckets[id].rows.length) out.push(buckets[id]);
+            });
+            Object.keys(buckets).forEach(function (id) {
+                if (order.indexOf(id) < 0 && buckets[id].rows.length) out.push(buckets[id]);
+            });
+            return out;
+        };
+
+        window.buildArchivePreviewBodyHtml = function (sections) {
+            var esc = window.escRapportinoHtml || function (s) {
+                return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            };
+            if (!sections || !sections.length) {
+                return '<div class="archive-preview-empty">Nessun dato in questo storico.</div>';
+            }
+            var rowIdx = 0;
+            return sections.map(function (sec) {
+                var rowsHtml = (sec.rows || []).map(function (r) {
+                    var inputId = 'archive-prev-row-' + (rowIdx++);
+                    var valEsc = esc(r.value);
+                    var statusCls = r.kind === 'status' ? ' archive-preview-row--status' : '';
+                    return '<div class="archive-preview-row' + statusCls + '">' +
+                        '<label class="archive-preview-lbl" for="' + inputId + '">' + esc(r.label) + '</label>' +
+                        '<input type="text" class="archive-preview-inp" id="' + inputId + '" ' +
+                        'data-archive-field="' + esc(r.fieldId) + '" data-archive-kind="' + esc(r.kind || 'input') + '" ' +
+                        'value="' + valEsc + '" autocomplete="off" spellcheck="false">' +
+                        '</div>';
+                }).join('');
+                return '<section class="archive-preview-module" data-archive-module="' + esc(sec.moduleId) + '">' +
+                    '<h3 class="archive-preview-module-title">' + esc(sec.title) + '</h3>' +
+                    '<div class="archive-preview-module-body">' + rowsHtml + '</div></section>';
+            }).join('');
+        };
+
+        window.closeArchivePreview = function () {
+            var modal = document.getElementById('archive-preview-modal');
+            if (modal) modal.classList.remove('active');
+            window.__archivePreviewContext = null;
+        };
+
+        window.collectArchivePreviewEdits = function () {
+            var ctx = window.__archivePreviewContext;
+            if (!ctx || !ctx.snap) return null;
+            var data = JSON.parse(JSON.stringify(ctx.snap));
+            var body = document.getElementById('archive-preview-body');
+            if (!body) return data;
+            body.querySelectorAll('[data-archive-field]').forEach(function (inp) {
+                var fid = inp.getAttribute('data-archive-field');
+                var kind = inp.getAttribute('data-archive-kind') || 'input';
+                var val = inp.value == null ? '' : String(inp.value).trim();
+                if (!fid) return;
+                if (fid.indexOf('tank-status:') === 0) {
+                    var tk = fid.slice('tank-status:'.length);
+                    if (!data.tankStatuses) data.tankStatuses = {};
+                    if (!val) delete data.tankStatuses[tk];
+                    else data.tankStatuses[tk] = val.indexOf(',') >= 0
+                        ? val.split(',').map(function (s) { return s.trim(); }).filter(Boolean)
+                        : val;
+                    return;
+                }
+                if (kind === 'status') {
+                    var prev = data[fid];
+                    if (prev && typeof prev === 'object' && prev.text != null) {
+                        data[fid] = Object.assign({}, prev, { text: val });
+                    } else {
+                        data[fid] = val;
+                    }
+                } else if (!val) {
+                    delete data[fid];
+                } else {
+                    data[fid] = val;
+                }
+            });
+            return data;
+        };
+
+        window.persistArchivePreviewSnapshot = async function (updatedSnap, ctx) {
+            if (!updatedSnap || !ctx) return { ok: false };
+            var createdAt = updatedSnap.createdAt != null ? updatedSnap.createdAt : ctx.snap.createdAt;
+            updatedSnap.createdAt = createdAt;
+            var payload = JSON.parse(JSON.stringify(updatedSnap));
+            delete payload.id;
+            delete payload.source;
+            try {
+                if (ctx.source === 'offline' || String(ctx.archiveId || '').indexOf('local-') === 0) {
+                    var localArchives = JSON.parse(localStorage.getItem('stabileArchives') || '[]');
+                    if (!Array.isArray(localArchives)) localArchives = [];
+                    var found = false;
+                    localArchives = localArchives.map(function (a) {
+                        if (!a) return a;
+                        var ca = a.createdAt != null ? a.createdAt : (a.data && a.data.createdAt);
+                        if (ca === createdAt) {
+                            found = true;
+                            return Object.assign({}, updatedSnap, { __localSavedAt: Date.now() });
+                        }
+                        return a;
+                    });
+                    if (!found) {
+                        localArchives.push(Object.assign({}, updatedSnap, { __localSavedAt: Date.now() }));
+                    }
+                    if (localArchives.length > 24) localArchives = localArchives.slice(-24);
+                    localStorage.setItem('stabileArchives', JSON.stringify(localArchives));
+                    if (window.savedHistory && Array.isArray(window.savedHistory)) {
+                        window.savedHistory = window.savedHistory.map(function (entry) {
+                            return entry && entry.createdAt === createdAt ? Object.assign({}, updatedSnap) : entry;
+                        });
+                    }
+                    return { ok: true, local: true };
+                }
+                if (ctx.source === 'cloud' && typeof user !== 'undefined' && user && user.uid && typeof db !== 'undefined' && db && ctx.archiveId) {
+                    var payload = typeof window.__prepareArchivePayloadForFirestore === 'function'
+                        ? window.__prepareArchivePayloadForFirestore(updatedSnap)
+                        : updatedSnap;
+                    if (typeof window.__archiveFirestoreOp === 'function' && typeof setDoc === 'function' && typeof doc === 'function') {
+                        await window.__archiveFirestoreOp(
+                            setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant', 'snapshots', ctx.archiveId), payload),
+                            'archive preview save'
+                        );
+                    }
+                    return { ok: true, cloud: true };
+                }
+            } catch (e) {
+                console.warn('[ServiceHub] persistArchivePreviewSnapshot:', e && e.message);
+                return { ok: false, error: e };
+            }
+            return { ok: false };
+        };
+
+        window.saveArchivePreviewEdits = async function () {
+            var ctx = window.__archivePreviewContext;
+            if (!ctx) return;
+            var updated = window.collectArchivePreviewEdits();
+            if (!updated) return;
+            var btn = document.getElementById('btn-archive-preview-save');
+            if (btn) { btn.disabled = true; btn.textContent = 'SALVATAGGIO...'; }
+            var res = await window.persistArchivePreviewSnapshot(updated, ctx);
+            if (btn) { btn.disabled = false; btn.textContent = 'SALVA MODIFICHE'; }
+            if (res && res.ok) {
+                ctx.snap = updated;
+                window.__archivePreviewContext = ctx;
+                if (typeof window.updateStoricoButton === 'function') window.updateStoricoButton();
+            } else {
+                alert('Impossibile salvare le modifiche su questo archivio.');
+            }
+        };
+
+        window.restoreArchivePreviewToPlant = function () {
+            var ctx = window.__archivePreviewContext;
+            if (!ctx || !ctx.snap) return;
+            var data = typeof window.collectArchivePreviewEdits === 'function'
+                ? window.collectArchivePreviewEdits() : ctx.snap;
+            if (typeof applyData === 'function') applyData(data);
+            window.closeArchivePreview();
+            var listModal = document.getElementById('archive-list-modal');
+            if (listModal) listModal.classList.remove('active');
+            if (typeof window.closeSettings === 'function') window.closeSettings();
+        };
+
+        window.openArchivePreview = function (snap) {
+            if (!snap) return;
+            var modal = document.getElementById('archive-preview-modal');
+            var body = document.getElementById('archive-preview-body');
+            var titleEl = document.getElementById('archive-preview-title');
+            var metaEl = document.getElementById('archive-preview-meta');
+            if (!modal || !body) return;
+            var meta = typeof window.__parseArchiveSnapshotTime === 'function'
+                ? window.__parseArchiveSnapshotTime(snap) : null;
+            var label = meta ? meta.displayLabel : (snap.archiveTime || 'Storico');
+            var shift = snap.shift || 'TURNO AUTO';
+            var sourceLabel = snap.source === 'offline' ? 'LOCALE' : 'CLOUD';
+            window.__archivePreviewContext = {
+                snap: JSON.parse(JSON.stringify(snap)),
+                archiveId: snap.id,
+                source: snap.source || (String(snap.id || '').indexOf('local-') === 0 ? 'offline' : 'cloud'),
+                createdAt: snap.createdAt
+            };
+            if (titleEl) titleEl.textContent = label;
+            if (metaEl) metaEl.textContent = shift + ' · ' + sourceLabel + (snap.time ? ' · ' + snap.time : '');
+            var sections = window.buildArchivePreviewSections(window.__archivePreviewContext.snap);
+            body.innerHTML = window.buildArchivePreviewBodyHtml(sections);
+            modal.classList.add('active');
+        };
 
         window.deleteSingleArchive = function(archiveId, source, createdAt) {
             alert('FUNZIONE DELETE SINGLE ARCHIVE FUNZIONA!');
@@ -36228,6 +36604,189 @@ window.convertToHtml = async () => {
         @keyframes archive-cloud-sync-spin {
             to { transform: rotate(360deg); }
         }
+        #archive-preview-modal {
+            z-index: 10150;
+            align-items: stretch;
+            justify-content: stretch;
+        }
+        #archive-preview-modal.active {
+            display: flex !important;
+            background: rgba(0, 0, 0, 0.9);
+            backdrop-filter: blur(8px);
+            visibility: visible;
+            pointer-events: auto;
+        }
+        .archive-preview-sheet {
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            height: 100%;
+            max-height: 100vh;
+            max-height: 100dvh;
+            background: #f1f5f9;
+        }
+        .dark .archive-preview-sheet { background: #020617; }
+        .archive-preview-header {
+            flex-shrink: 0;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 14px 16px;
+            border-bottom: 1px solid #e2e8f0;
+            background: #fff;
+        }
+        .dark .archive-preview-header {
+            background: #0f172a;
+            border-bottom-color: #1e293b;
+        }
+        .archive-preview-header-main { min-width: 0; flex: 1 1 180px; }
+        .archive-preview-title {
+            margin: 0;
+            font-size: 15px;
+            font-weight: 900;
+            font-style: italic;
+            text-transform: uppercase;
+            letter-spacing: -0.02em;
+            color: #0f172a;
+        }
+        .dark .archive-preview-title { color: #f8fafc; }
+        .archive-preview-meta {
+            margin: 4px 0 0;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            color: #64748b;
+            letter-spacing: 0.04em;
+        }
+        .archive-preview-header-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            justify-content: flex-end;
+        }
+        .archive-preview-btn {
+            border: none;
+            border-radius: 12px;
+            padding: 10px 14px;
+            font-size: 10px;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .archive-preview-btn--ghost {
+            background: #e2e8f0;
+            color: #0f172a;
+        }
+        .dark .archive-preview-btn--ghost {
+            background: #1e293b;
+            color: #f8fafc;
+        }
+        .archive-preview-btn--primary {
+            background: #2563eb;
+            color: #fff;
+            border-bottom: 3px solid #1d4ed8;
+        }
+        .archive-preview-btn--restore {
+            background: #0891b2;
+            color: #fff;
+            border-bottom: 3px solid #0e7490;
+        }
+        .archive-preview-btn--close {
+            background: transparent;
+            color: #64748b;
+            font-size: 18px;
+            line-height: 1;
+            padding: 6px 10px;
+        }
+        .archive-preview-body {
+            flex: 1 1 auto;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+            padding: 12px 12px 28px;
+        }
+        .archive-preview-module {
+            background: #fff;
+            border-radius: 16px;
+            margin-bottom: 12px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+        }
+        .dark .archive-preview-module {
+            background: #0f172a;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+        }
+        .archive-preview-module-title {
+            margin: 0;
+            padding: 12px 14px;
+            font-size: 12px;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: #1d4ed8;
+            border-bottom: 2px solid #dbeafe;
+            background: #eff6ff;
+        }
+        .dark .archive-preview-module-title {
+            color: #93c5fd;
+            border-bottom-color: #1e3a8a;
+            background: #172554;
+        }
+        .archive-preview-module-body { padding: 4px 12px 10px; }
+        .archive-preview-row {
+            display: grid;
+            grid-template-columns: minmax(110px, 38%) 1fr;
+            gap: 8px;
+            align-items: center;
+            padding: 9px 0;
+            border-bottom: 1px solid #f1f5f9;
+        }
+        .dark .archive-preview-row { border-bottom-color: #1e293b; }
+        .archive-preview-row:last-child { border-bottom: none; }
+        .archive-preview-lbl {
+            font-size: 10px;
+            font-weight: 800;
+            text-transform: uppercase;
+            color: #475569;
+            line-height: 1.25;
+            word-break: break-word;
+        }
+        .dark .archive-preview-lbl { color: #94a3b8; }
+        .archive-preview-inp {
+            width: 100%;
+            box-sizing: border-box;
+            font-size: 14px;
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+            padding: 8px 10px;
+            border-radius: 10px;
+            border: 1px solid #cbd5e1;
+            background: #f8fafc;
+            color: #0f172a;
+        }
+        .dark .archive-preview-inp {
+            background: #020617;
+            border-color: #334155;
+            color: #f8fafc;
+        }
+        .archive-preview-row--status .archive-preview-inp {
+            font-weight: 800;
+            text-transform: uppercase;
+        }
+        .archive-preview-empty {
+            padding: 48px 20px;
+            text-align: center;
+            font-weight: 800;
+            font-style: italic;
+            color: #94a3b8;
+            text-transform: uppercase;
+        }
+        .archive-card-main:hover { opacity: 0.92; }
+        .archive-card-main:active { transform: scale(0.995); }
         .settings-sheet {
             transform: translateY(-100%);
             width: 100%;
@@ -38839,6 +39398,23 @@ window.convertToHtml = async () => {
                 </div>
             </div>
             <div id="archive-list-content" class="overflow-y-auto grow p-4 flex flex-col gap-2 bg-slate-50 dark:bg-slate-950"></div>
+        </div>
+    </div>
+
+    <div id="archive-preview-modal" class="modal-overlay" onclick="if(event.target === this) window.closeArchivePreview()">
+        <div class="archive-preview-sheet" onclick="event.stopPropagation()">
+            <div class="archive-preview-header">
+                <div class="archive-preview-header-main">
+                    <h2 id="archive-preview-title" class="archive-preview-title">Anteprima storico</h2>
+                    <p id="archive-preview-meta" class="archive-preview-meta"></p>
+                </div>
+                <div class="archive-preview-header-actions">
+                    <button type="button" class="archive-preview-btn archive-preview-btn--restore" onclick="window.restoreArchivePreviewToPlant()">Ripristina in impianto</button>
+                    <button type="button" id="btn-archive-preview-save" class="archive-preview-btn archive-preview-btn--primary" onclick="window.saveArchivePreviewEdits()">Salva modifiche</button>
+                    <button type="button" class="archive-preview-btn archive-preview-btn--close" onclick="window.closeArchivePreview()" aria-label="Chiudi anteprima">✕</button>
+                </div>
+            </div>
+            <div id="archive-preview-body" class="archive-preview-body"></div>
         </div>
     </div>
 

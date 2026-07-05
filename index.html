@@ -599,6 +599,14 @@ window.calculateTons = function(tankName, level) {
     return ((lvl / 1000) * tankData.coeff).toFixed(1);
 };
 
+window.calculateMmFromTons = function (tankName, tons) {
+    var t = parseFloat(String(tons == null ? '' : tons).replace(',', '.'));
+    if (!Number.isFinite(t)) return null;
+    var tankData = window.lookupTankDatabaseEntry(tankName);
+    if (!tankData || !tankData.coeff) return null;
+    return (t * 1000) / tankData.coeff;
+};
+
 window.parseAlarmThresholdInput = function (raw) {
     const s = String(raw == null ? '' : raw).trim();
     if (s === '') return null;
@@ -16634,7 +16642,7 @@ window.updateStoricoButton = async function() {
             var alarmOpts = { tankDbKey: model.tankDbKey, livMax: model.livMax };
             var nowState = window.resolveTankLevelAlarmState(fieldId, model.nowMm, alarmOpts);
             var predState = window.resolveTankLevelAlarmState(fieldId, predMm, alarmOpts);
-            var scrubState = (hoursAhead != null && hoursAhead > 0.05) ? predState : nowState;
+            var scrubState = (hoursAhead != null && Math.abs(hoursAhead) > 0.05) ? predState : nowState;
             var scrub = svg.querySelector('[data-tl-scrub]');
             var knob = svg.querySelector('[data-tl-knob]');
             var predPathEl = svg.querySelector('[data-tl-pred-path]');
@@ -16642,7 +16650,7 @@ window.updateStoricoButton = async function() {
             if (knob) knob.setAttribute('fill', window.timelineAlarmKnobFill(scrubState));
             if (predPathEl) {
                 predPathEl.setAttribute('stroke', window.timelineAlarmPredStroke(
-                    (hoursAhead != null && hoursAhead > 0.05) ? predState : 'normal'
+                    (hoursAhead != null && Math.abs(hoursAhead) > 0.05) ? predState : 'normal'
                 ));
             }
             if (model.initialPt && Number.isFinite(model.initialPt.mm)) {
@@ -16828,6 +16836,306 @@ window.updateStoricoButton = async function() {
             var mm = lastMm + (model.rateMmH || 0) * dtH;
             if (model.livMax && model.livMax > 0) mm = Math.min(mm, model.livMax * 1.15);
             return Math.max(0, mm);
+        };
+
+        window.computeTankTimelineTsForTargetMm = function (model, targetMm) {
+            if (!model || !Number.isFinite(targetMm)) return null;
+            var rate = model.rateMmH || 0;
+            if (Math.abs(rate) < 0.001) return null;
+            var nowTs = model.nowTs;
+            var nowMm = model.nowMm;
+            if (!Number.isFinite(nowTs) || !Number.isFinite(nowMm)) return null;
+            var dtH = (targetMm - nowMm) / rate;
+            return {
+                ts: nowTs + dtH * 3600000,
+                mm: targetMm,
+                hoursFromNow: dtH
+            };
+        };
+
+        window.computeTankTimelineForecastFromTonsDelta = function (model, tonsDelta) {
+            if (!model || !Number.isFinite(tonsDelta) || !model.tankDbKey) return null;
+            var currentTons = parseFloat(window.calculateTons(model.tankDbKey, model.nowMm));
+            if (!Number.isFinite(currentTons)) return null;
+            var targetTons = currentTons + tonsDelta;
+            var targetMm = window.calculateMmFromTons(model.tankDbKey, targetTons);
+            if (!Number.isFinite(targetMm)) return null;
+            return window.computeTankTimelineTsForTargetMm(model, targetMm);
+        };
+
+        window.computeTankTimelineTonsDeltaAtTs = function (model, targetTs) {
+            if (!model || !model.tankDbKey || !Number.isFinite(targetTs)) return null;
+            var predMm = window.predictTankLevelAtTs(model, targetTs);
+            if (!Number.isFinite(predMm)) return null;
+            var currentTons = parseFloat(window.calculateTons(model.tankDbKey, model.nowMm));
+            var targetTons = parseFloat(window.calculateTons(model.tankDbKey, predMm));
+            if (!Number.isFinite(currentTons) || !Number.isFinite(targetTons)) return null;
+            return Math.round((targetTons - currentTons) * 10) / 10;
+        };
+
+        window.timelineTsFromSvgXFull = function (geom, model, svgX) {
+            if (!geom || !model) return model ? model.nowTs : Date.now();
+            var padL = geom.pad ? geom.pad.l : 76;
+            var endX = geom.endX != null ? geom.endX : (geom.w || 800) - 8;
+            if (svgX <= padL) return model.tStart;
+            if (svgX >= endX) return model.tEnd;
+            var frac = (svgX - padL) / Math.max(1, endX - padL);
+            return model.tStart + frac * (model.tEnd - model.tStart);
+        };
+
+        window.applyTankTimelineTonsForecastMetrics = function (root, predMm, tonsDelta) {
+            if (!root) return;
+            var predMmEl = root.querySelector('[data-tl-pred-mm]');
+            var predLbl = root.querySelector('[data-tl-pred-lbl]');
+            if (root.__tlTonsForecastMode) {
+                if (predLbl) predLbl.textContent = 'Previsione tonnellate';
+                if (predMmEl) {
+                    var tonsPart = '';
+                    if (tonsDelta != null && Number.isFinite(tonsDelta)) {
+                        var sign = tonsDelta >= 0 ? '+' : '';
+                        tonsPart = ' · ' + sign + window.__fmtTankDetailTons(tonsDelta) + ' t';
+                    }
+                    predMmEl.textContent = window.__fmtTankDetailMm(predMm) + ' mm' + tonsPart;
+                }
+            } else {
+                if (predLbl) predLbl.textContent = 'Previsione';
+                if (predMmEl) predMmEl.textContent = window.__fmtTankDetailMm(predMm) + ' mm';
+            }
+        };
+
+        window.updateTankDetailTimelineScrubAtTs = function (root, targetTs, opts) {
+            opts = opts || {};
+            if (!root) return;
+            var svg = root.querySelector('[data-tl-svg]');
+            var model = svg && svg.__tlModel;
+            var geom = svg && svg.__tlGeom;
+            if (!model || !geom) return;
+            if (!Number.isFinite(targetTs)) return;
+            targetTs = Math.max(model.tStart, Math.min(model.tEnd, targetTs));
+            var anchorTs = model.wallNowTs != null ? model.wallNowTs : model.nowTs;
+            var hoursAhead = (targetTs - anchorTs) / 3600000;
+            var predMm = window.predictTankLevelAtTs(model, targetTs);
+            var x = geom.toX(targetTs);
+            var nowX = geom.nowX;
+            var y = geom.lineY != null ? geom.lineY : (((geom.zoneTop != null ? geom.zoneTop : geom.pad.t) +
+                (geom.zoneBottom != null ? geom.zoneBottom : geom.pad.t + geom.plotH)) / 2);
+            var endX = geom.endX != null ? geom.endX : geom.w - (geom.pad ? geom.pad.r : 0);
+            var showScrub = Math.abs(hoursAhead) > 0.02 || !!opts.forceShow;
+            var scrub = svg.querySelector('[data-tl-scrub]');
+            var knob = svg.querySelector('[data-tl-knob]');
+            var hit = svg.querySelector('[data-tl-drag-hit]');
+            if (scrub) {
+                scrub.style.display = showScrub ? '' : 'none';
+                scrub.setAttribute('x1', x.toFixed(1));
+                scrub.setAttribute('x2', x.toFixed(1));
+                scrub.setAttribute('y1', String(geom.zoneTop != null ? geom.zoneTop : geom.pad.t));
+                scrub.setAttribute('y2', y.toFixed(1));
+            }
+            if (knob) {
+                knob.style.display = showScrub ? '' : 'none';
+                knob.setAttribute('cx', x.toFixed(1));
+                knob.setAttribute('cy', y.toFixed(1));
+            }
+            if (hit) {
+                hit.style.display = showScrub ? '' : 'none';
+                hit.setAttribute('cx', x.toFixed(1));
+                hit.setAttribute('cy', y.toFixed(1));
+            }
+            var zoneDark = svg.querySelector('[data-tl-zone-dark]');
+            var zoneLight = svg.querySelector('[data-tl-zone-light]');
+            if (zoneDark) {
+                zoneDark.removeAttribute('opacity');
+                if (x > nowX + 1) {
+                    zoneDark.setAttribute('x', nowX.toFixed(1));
+                    zoneDark.setAttribute('width', (x - nowX).toFixed(1));
+                    zoneDark.style.display = '';
+                } else if (x < nowX - 1) {
+                    zoneDark.setAttribute('x', x.toFixed(1));
+                    zoneDark.setAttribute('width', (nowX - x).toFixed(1));
+                    zoneDark.style.display = '';
+                    zoneDark.setAttribute('opacity', '0.42');
+                } else {
+                    zoneDark.setAttribute('width', '0');
+                }
+            }
+            if (zoneLight) {
+                var lightX = Math.max(x, nowX);
+                zoneLight.setAttribute('x', lightX.toFixed(1));
+                zoneLight.setAttribute('width', Math.max(0, endX - lightX).toFixed(1));
+            }
+            var predPathEl = svg.querySelector('[data-tl-pred-path]');
+            if (predPathEl) {
+                var lineY = geom.lineY != null ? geom.lineY : geom.pad.t + geom.plotH * 0.5;
+                var segA = Math.min(x, nowX);
+                var segB = Math.max(x, nowX);
+                if (segB > segA + 0.5) {
+                    predPathEl.setAttribute('d', 'M' + segA.toFixed(1) + ',' + lineY.toFixed(1) +
+                        ' L' + segB.toFixed(1) + ',' + lineY.toFixed(1));
+                    predPathEl.style.display = '';
+                } else {
+                    predPathEl.setAttribute('d', '');
+                    predPathEl.style.display = 'none';
+                }
+            }
+            if (typeof window.updateTankDetailTimelineAlarmSvg === 'function') {
+                window.updateTankDetailTimelineAlarmSvg(svg, model, geom, predMm, hoursAhead,
+                    root.__tlInfo && root.__tlInfo.fieldId);
+            }
+            window.positionTankDetailTimelineMetrics(root, geom, model, x, targetTs, predMm);
+            window.applyTankTimelineTonsForecastMetrics(root, predMm, opts.tonsDelta);
+            if (root.__tlInfo && typeof window.updateTankDetailGaugePred === 'function') {
+                var page = root.closest('.tank-detail-page');
+                if (page) window.updateTankDetailGaugePred(page, root.__tlInfo, predMm);
+            }
+            root.classList.toggle('tank-detail-timeline-block--pred', Math.abs(hoursAhead) > 0.05);
+            root.classList.toggle('tank-detail-timeline-block--tons', !!root.__tlTonsForecastMode);
+            root.__tlTargetTs = targetTs;
+            root.__tlHoursAhead = hoursAhead;
+            if (typeof window.updateTankTimelineRefDraftUI === 'function') {
+                window.updateTankTimelineRefDraftUI(root, root.__tlRefDraftTs != null ? root.__tlRefDraftTs : null);
+            }
+        };
+
+        window.updateTankDetailTimelineTonsForecast = function (block, tonsDelta) {
+            if (!block) return;
+            var svg = block.querySelector('[data-tl-svg]');
+            var model = svg && svg.__tlModel;
+            if (!model) return;
+            block.__tlTonsDelta = tonsDelta;
+            var forecast = window.computeTankTimelineForecastFromTonsDelta(model, tonsDelta);
+            if (!forecast || !Number.isFinite(forecast.ts)) {
+                window.applyTankTimelineTonsForecastMetrics(block, model.nowMm, tonsDelta);
+                return;
+            }
+            window.updateTankDetailTimelineScrubAtTs(block, forecast.ts, { tonsDelta: tonsDelta, forceShow: true });
+        };
+
+        window.exitTankTimelineTonsForecastMode = function (block) {
+            if (!block || !block.__tlTonsForecastMode) return;
+            block.__tlTonsForecastMode = false;
+            block.__tlTonsDelta = null;
+            block.classList.remove('tank-detail-timeline-block--tons');
+            var legendBtn = block.querySelector('[data-tl-tons-forecast]');
+            if (legendBtn) legendBtn.classList.remove('is-active');
+            window.applyTankTimelineTonsForecastMetrics(block, block.querySelector('[data-tl-svg]') &&
+                block.querySelector('[data-tl-svg]').__tlModel
+                ? block.querySelector('[data-tl-svg]').__tlModel.nowMm : 0, null);
+            var restoreH = block.__tlSavedHoursAhead;
+            if (!Number.isFinite(restoreH) || restoreH < 0) restoreH = 0;
+            window.updateTankDetailTimelineScrub(block, restoreH);
+        };
+
+        window.setTankTimelineTonsForecastMode = function (block, on) {
+            if (!block) return;
+            if (!on) {
+                window.exitTankTimelineTonsForecastMode(block);
+                return;
+            }
+            block.__tlSavedHoursAhead = block.__tlHoursAhead;
+            block.__tlTonsForecastMode = true;
+            block.classList.add('tank-detail-timeline-block--tons');
+            var legendBtn = block.querySelector('[data-tl-tons-forecast]');
+            if (legendBtn) legendBtn.classList.add('is-active');
+            window.openTankTimelineTonsForecastPopup(block);
+        };
+
+        window.ensureTankTimelineTonsModal = function () {
+            var el = document.getElementById('tank-timeline-tons-modal');
+            if (el) return el;
+            el = document.createElement('div');
+            el.id = 'tank-timeline-tons-modal';
+            el.className = 'tank-timeline-ref-modal tank-timeline-tons-modal';
+            el.innerHTML =
+                '<div class="tank-timeline-ref-modal-sheet" onclick="event.stopPropagation()">' +
+                '<div class="tank-timeline-ref-modal-title">Previsioni tonnellate</div>' +
+                '<p class="tank-timeline-ref-modal-hint" data-tl-tons-modal-hint>Aggiungi o togli tonnellate rispetto al livello attuale. Il punto calcolato può essere prima o dopo adesso.</p>' +
+                '<div class="tank-timeline-tons-sign-row">' +
+                '<button type="button" class="tank-timeline-tons-sign-btn is-active" data-tl-tons-sign="add" title="Aggiungi tonnellate">+ Aggiungi</button>' +
+                '<button type="button" class="tank-timeline-tons-sign-btn" data-tl-tons-sign="sub" title="Togli tonnellate">− Togli</button>' +
+                '</div>' +
+                '<input type="tel" class="tank-timeline-ref-modal-inp" data-tl-tons-modal-inp inputmode="decimal" placeholder="tonnellate" autocomplete="off">' +
+                '<div class="tank-timeline-ref-modal-actions">' +
+                '<button type="button" class="tank-timeline-ref-modal-btn tank-timeline-ref-modal-btn--ghost" data-tl-tons-modal-cancel>Annulla</button>' +
+                '<button type="button" class="tank-timeline-ref-modal-btn tank-timeline-ref-modal-btn--ok" data-tl-tons-modal-ok>Calcola</button>' +
+                '</div></div>';
+            document.body.appendChild(el);
+            el.addEventListener('click', function (ev) {
+                if (ev.target === el) window.__closeTankTimelineTonsModal();
+            });
+            return el;
+        };
+
+        window.__closeTankTimelineTonsModal = function () {
+            var modal = document.getElementById('tank-timeline-tons-modal');
+            if (modal) modal.classList.remove('active');
+            window.__tankTimelineTonsModalBlock = null;
+        };
+
+        window.openTankTimelineTonsForecastPopup = function (block) {
+            if (!block) return;
+            var info = block.__tlInfo || {};
+            var svg = block.querySelector('[data-tl-svg]');
+            var model = svg && svg.__tlModel;
+            if (!model || !model.tankDbKey) {
+                alert('Previsioni tonnellate non disponibili per questo serbatoio.');
+                window.exitTankTimelineTonsForecastMode(block);
+                return;
+            }
+            if (Math.abs(model.rateMmH || 0) < 0.001) {
+                alert('Trend piatto: impossibile calcolare quando si raggiunge il livello.');
+            }
+            var modal = window.ensureTankTimelineTonsModal();
+            var inp = modal.querySelector('[data-tl-tons-modal-inp]');
+            var btnOk = modal.querySelector('[data-tl-tons-modal-ok]');
+            var btnCancel = modal.querySelector('[data-tl-tons-modal-cancel]');
+            var signBtns = modal.querySelectorAll('[data-tl-tons-sign]');
+            var sign = block.__tlTonsDelta != null && block.__tlTonsDelta < 0 ? 'sub' : 'add';
+            var absVal = block.__tlTonsDelta != null && Number.isFinite(block.__tlTonsDelta)
+                ? Math.abs(block.__tlTonsDelta) : '';
+            signBtns.forEach(function (b) {
+                b.classList.toggle('is-active', b.getAttribute('data-tl-tons-sign') === sign);
+            });
+            if (inp) inp.value = absVal !== '' ? String(absVal).replace('.', ',') : '';
+            window.__tankTimelineTonsModalBlock = block;
+            modal.classList.add('active');
+            function currentSign() {
+                var active = modal.querySelector('[data-tl-tons-sign].is-active');
+                return active && active.getAttribute('data-tl-tons-sign') === 'sub' ? -1 : 1;
+            }
+            signBtns.forEach(function (b) {
+                b.onclick = function () {
+                    signBtns.forEach(function (x) { x.classList.remove('is-active'); });
+                    b.classList.add('is-active');
+                };
+            });
+            function onOk() {
+                var raw = inp && inp.value ? String(inp.value).replace(',', '.') : '';
+                var n = parseFloat(raw);
+                if (!Number.isFinite(n) || n <= 0) {
+                    if (inp) inp.focus();
+                    return;
+                }
+                var tonsDelta = Math.round(n * currentSign() * 10) / 10;
+                var bl = window.__tankTimelineTonsModalBlock;
+                window.__closeTankTimelineTonsModal();
+                if (!bl) return;
+                bl.__tlTonsForecastMode = true;
+                bl.classList.add('tank-detail-timeline-block--tons');
+                var legendBtn = bl.querySelector('[data-tl-tons-forecast]');
+                if (legendBtn) legendBtn.classList.add('is-active');
+                window.updateTankDetailTimelineTonsForecast(bl, tonsDelta);
+            }
+            function onCancel() {
+                window.__closeTankTimelineTonsModal();
+            }
+            if (btnOk) btnOk.onclick = onOk;
+            if (btnCancel) btnCancel.onclick = onCancel;
+            if (inp) {
+                inp.onkeydown = function (ev) {
+                    if (ev.key === 'Enter') { ev.preventDefault(); onOk(); }
+                };
+                setTimeout(function () { inp.focus(); inp.select && inp.select(); }, 80);
+            }
         };
 
         window.formatTankTimelineClock = function (ts) {
@@ -17625,7 +17933,7 @@ window.updateStoricoButton = async function() {
                 '<div class="tank-detail-timeline-saved-refs" data-tl-refs-metrics></div>' +
                 '<div class="tank-detail-timeline-float tank-detail-timeline-float--pred" data-tl-metric-pred style="left:50%">' +
                 '<div class="tank-detail-timeline-metric-lbl tank-detail-timeline-metric-lbl--pred">' +
-                'Previsione' +
+                '<span data-tl-pred-lbl>Previsione</span>' +
                 (siglaTxt ? ' · <span class="tank-detail-timeline-sigla" data-tl-sigla>' + window.__escTankDetailHtml(siglaTxt) + '</span>' : '') +
                 '</div>' +
                 '<div class="tank-detail-timeline-metric-mm tank-detail-timeline-pred-mm" data-tl-pred-mm>' + window.__fmtTankDetailMm(model.nowMm) + ' mm</div>' +
@@ -17650,6 +17958,7 @@ window.updateStoricoButton = async function() {
                 '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--ref-dots">· passati = puntini</span>' +
                 '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--alarm-warn">■ Allarme giallo</span>' +
                 '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--alarm-crit">■ Allarme rosso</span>' +
+                '<span class="tank-detail-timeline-legend-item tank-detail-timeline-legend-item--pred tank-detail-timeline-legend-btn" data-tl-tons-forecast role="button" tabindex="0" title="Calcola quando si raggiunge un livello aggiungendo o togliendo tonnellate">◇ Previsioni</span>' +
                 '</div></div>';
         };
 
@@ -17896,6 +18205,7 @@ window.updateStoricoButton = async function() {
 
         window.updateTankDetailTimelineScrub = function (root, hoursAhead) {
             if (!root) return;
+            if (root.__tlTonsForecastMode) return;
             var svg = root.querySelector('[data-tl-svg]');
             var model = svg && svg.__tlModel;
             var geom = svg && svg.__tlGeom;
@@ -17906,76 +18216,8 @@ window.updateStoricoButton = async function() {
             ));
             var anchorTs = model.wallNowTs != null ? model.wallNowTs : model.nowTs;
             var targetTs = anchorTs + hoursAhead * 3600000;
-            var predMm = window.predictTankLevelAtTs(model, targetTs);
-            var x = geom.toX(targetTs);
-            if (geom.endX != null && x > geom.endX) x = geom.endX;
-            var y = geom.lineY != null ? geom.lineY : (((geom.zoneTop != null ? geom.zoneTop : geom.pad.t) + (geom.zoneBottom != null ? geom.zoneBottom : geom.pad.t + geom.plotH)) / 2);
-            var nowX = geom.nowX;
-            var scrub = svg.querySelector('[data-tl-scrub]');
-            var knob = svg.querySelector('[data-tl-knob]');
-            var hit = svg.querySelector('[data-tl-drag-hit]');
-            var showPredScrub = hoursAhead > 0.05;
-            if (scrub) {
-                scrub.style.display = showPredScrub ? '' : 'none';
-                scrub.setAttribute('x1', x.toFixed(1));
-                scrub.setAttribute('x2', x.toFixed(1));
-                scrub.setAttribute('y1', String(geom.zoneTop != null ? geom.zoneTop : geom.pad.t));
-                scrub.setAttribute('y2', y.toFixed(1));
-            }
-            if (knob) {
-                knob.style.display = showPredScrub ? '' : 'none';
-                knob.setAttribute('cx', x.toFixed(1));
-                knob.setAttribute('cy', y.toFixed(1));
-            }
-            if (hit) {
-                hit.style.display = showPredScrub ? '' : 'none';
-                hit.setAttribute('cx', x.toFixed(1));
-                hit.setAttribute('cy', y.toFixed(1));
-            }
-            var zoneDark = svg.querySelector('[data-tl-zone-dark]');
-            var zoneLight = svg.querySelector('[data-tl-zone-light]');
-            if (zoneDark) {
-                if (x > nowX + 1) {
-                    zoneDark.setAttribute('x', nowX.toFixed(1));
-                    zoneDark.setAttribute('width', (x - nowX).toFixed(1));
-                    zoneDark.style.display = '';
-                } else {
-                    zoneDark.setAttribute('width', '0');
-                }
-            }
-            if (zoneLight) {
-                var endX = geom.endX != null ? geom.endX : geom.w - geom.pad.r;
-                zoneLight.setAttribute('x', x.toFixed(1));
-                zoneLight.setAttribute('width', Math.max(0, endX - x).toFixed(1));
-            }
-            var predPathEl = svg.querySelector('[data-tl-pred-path]');
-            if (predPathEl) {
-                var lineY = geom.lineY != null ? geom.lineY : geom.pad.t + geom.plotH * 0.5;
-                var predEndX = geom.endX != null ? Math.min(x, geom.endX) : x;
-                if (predEndX > geom.nowX + 0.5) {
-                    predPathEl.setAttribute('d', 'M' + geom.nowX.toFixed(1) + ',' + lineY.toFixed(1) +
-                        ' L' + predEndX.toFixed(1) + ',' + lineY.toFixed(1));
-                    predPathEl.style.display = '';
-                } else {
-                    predPathEl.setAttribute('d', '');
-                    predPathEl.style.display = 'none';
-                }
-            }
-            if (typeof window.updateTankDetailTimelineAlarmSvg === 'function') {
-                window.updateTankDetailTimelineAlarmSvg(svg, model, geom, predMm, hoursAhead,
-                    root.__tlInfo && root.__tlInfo.fieldId);
-            }
-            var isPred = hoursAhead > 0.05;
-            window.positionTankDetailTimelineMetrics(root, geom, model, x, targetTs, predMm);
-            if (root.__tlInfo && typeof window.updateTankDetailGaugePred === 'function') {
-                var page = root.closest('.tank-detail-page');
-                if (page) window.updateTankDetailGaugePred(page, root.__tlInfo, predMm);
-            }
-            root.classList.toggle('tank-detail-timeline-block--pred', isPred);
+            window.updateTankDetailTimelineScrubAtTs(root, targetTs, {});
             root.__tlHoursAhead = hoursAhead;
-            if (typeof window.updateTankTimelineRefDraftUI === 'function') {
-                window.updateTankTimelineRefDraftUI(root, root.__tlRefDraftTs != null ? root.__tlRefDraftTs : null);
-            }
         };
 
         window.__ensureTankTimelineDragHandlers = function () {
@@ -18000,11 +18242,19 @@ window.updateStoricoButton = async function() {
                             clearTimeout(a.longPressTimer);
                             a.longPressTimer = null;
                         }
-                        a.mode = 'pred';
+                        a.mode = a.block.__tlTonsForecastMode ? 'tons' : 'pred';
                         a.dragging = true;
                         if (a.wrap) a.wrap.classList.add('is-tl-dragging');
-                        var h0 = window.timelineScrubHoursFromSvgX(a.geom, a.model, a.svgXFromEvent(ev));
-                        window.updateTankDetailTimelineScrub(a.block, h0);
+                        var sx0 = a.svgXFromEvent(ev);
+                        if (a.mode === 'tons') {
+                            var ts0 = window.timelineTsFromSvgXFull(a.geom, a.model, sx0);
+                            var td0 = window.computeTankTimelineTonsDeltaAtTs(a.model, ts0);
+                            a.block.__tlTonsDelta = td0;
+                            window.updateTankDetailTimelineScrubAtTs(a.block, ts0, { tonsDelta: td0, forceShow: true });
+                        } else {
+                            var h0 = window.timelineScrubHoursFromSvgX(a.geom, a.model, sx0);
+                            window.updateTankDetailTimelineScrub(a.block, h0);
+                        }
                     }
                     return;
                 }
@@ -18020,6 +18270,13 @@ window.updateStoricoButton = async function() {
                     ts = Math.max(minTs, Math.min(maxTs, ts));
                     a.block.__tlRefDraftTs = ts;
                     window.updateTankTimelineRefDraftUI(a.block, ts);
+                    return;
+                }
+                if (a.mode === 'tons') {
+                    var tsTons = window.timelineTsFromSvgXFull(a.geom, a.model, sx);
+                    var tonsDelta = window.computeTankTimelineTonsDeltaAtTs(a.model, tsTons);
+                    a.block.__tlTonsDelta = tonsDelta;
+                    window.updateTankDetailTimelineScrubAtTs(a.block, tsTons, { tonsDelta: tonsDelta, forceShow: true });
                     return;
                 }
                 var h = window.timelineScrubHoursFromSvgX(a.geom, a.model, sx);
@@ -18069,12 +18326,31 @@ window.updateStoricoButton = async function() {
                     btn.classList.toggle('is-active', parseInt(btn.getAttribute('data-tl-h'), 10) === h);
                 });
                 window.updateTankDetailTimelineScrub(block, Math.min(prevH, h));
+                }
                 window.updateTankTimelineRefDraftUI(block, block.__tlRefDraftTs != null ? block.__tlRefDraftTs : null);
             }
 
             if (!block.__tlHorizonWired) {
                 block.__tlHorizonWired = true;
                 block.addEventListener('click', function (ev) {
+                    var titleEl = ev.target && ev.target.closest ? ev.target.closest('.tank-detail-timeline-title') : null;
+                    if (titleEl && block.contains(titleEl)) {
+                        if (block.__tlTonsForecastMode) {
+                            ev.preventDefault();
+                            window.exitTankTimelineTonsForecastMode(block);
+                        }
+                        return;
+                    }
+                    var tonsBtn = ev.target && ev.target.closest ? ev.target.closest('[data-tl-tons-forecast]') : null;
+                    if (tonsBtn && block.contains(tonsBtn)) {
+                        ev.preventDefault();
+                        if (block.__tlTonsForecastMode) {
+                            window.openTankTimelineTonsForecastPopup(block);
+                        } else {
+                            window.setTankTimelineTonsForecastMode(block, true);
+                        }
+                        return;
+                    }
                     var resetBtn = ev.target && ev.target.closest ? ev.target.closest('[data-tl-reset]') : null;
                     if (resetBtn && block.contains(resetBtn)) {
                         ev.preventDefault();

@@ -16941,8 +16941,28 @@ window.updateStoricoButton = async function() {
             };
         };
 
+        window.getTankTimelineInstantMm = function (model) {
+            if (!model) return NaN;
+            return Number.isFinite(model.nowMm) ? model.nowMm : NaN;
+        };
+
+        window.isTankTimelineAtInstantTs = function (model, targetTs, geom, svgX) {
+            if (!model || !Number.isFinite(targetTs)) return false;
+            if (geom && Number.isFinite(svgX) && Number.isFinite(geom.nowX) && Math.abs(svgX - geom.nowX) < 12) {
+                return true;
+            }
+            var wall = Number.isFinite(model.wallNowTs) ? model.wallNowTs : (model.nowTs || Date.now());
+            var span = Number.isFinite(model.tEnd) && Number.isFinite(model.tStart)
+                ? (model.tEnd - model.tStart) : 0;
+            var eps = Math.max(45000, span > 0 ? span * 0.0015 : 45000);
+            return Math.abs(targetTs - wall) < eps;
+        };
+
         window.predictTankLevelAtTs = function (model, targetTs) {
             if (!model || !Number.isFinite(targetTs)) return NaN;
+            if (window.isTankTimelineAtInstantTs(model, targetTs)) {
+                return window.getTankTimelineInstantMm(model);
+            }
             var pts = model.timelineAnchors;
             if (!pts || !pts.length) {
                 var lastTs = model.nowTs;
@@ -16962,8 +16982,23 @@ window.updateStoricoButton = async function() {
             var last = pts[pts.length - 1];
             if (targetTs >= last.ts) {
                 var rate = model.rateMmH || 0;
-                var dtHF = (targetTs - last.ts) / 3600000;
-                var mmF = last.mm + rate * dtHF;
+                var baseTs = last.ts;
+                var baseMm = last.mm;
+                var wall = Number.isFinite(model.wallNowTs) ? model.wallNowTs : Date.now();
+                if (Number.isFinite(model.nowMm) && Number.isFinite(model.nowTs) &&
+                    Math.abs(last.ts - model.nowTs) < 120000 &&
+                    Math.abs(last.mm - model.nowMm) < 0.55) {
+                    if (targetTs >= wall) {
+                        baseTs = wall;
+                        baseMm = model.nowMm;
+                    } else if (wall > last.ts + 1) {
+                        var mmAt = last.mm + ((model.nowMm - last.mm) * (targetTs - last.ts)) / (wall - last.ts);
+                        if (model.livMax && model.livMax > 0) mmAt = Math.min(mmAt, model.livMax * 1.15);
+                        return Math.max(0, mmAt);
+                    }
+                }
+                var dtHF = (targetTs - baseTs) / 3600000;
+                var mmF = baseMm + rate * dtHF;
                 if (model.livMax && model.livMax > 0) mmF = Math.min(mmF, model.livMax * 1.15);
                 return Math.max(0, mmF);
             }
@@ -17066,9 +17101,11 @@ window.updateStoricoButton = async function() {
             targetTs = Math.max(model.tStart, Math.min(model.tEnd, targetTs));
             var anchorTs = model.wallNowTs != null ? model.wallNowTs : model.nowTs;
             var hoursAhead = (targetTs - anchorTs) / 3600000;
-            var predMm = window.predictTankLevelAtTs(model, targetTs);
             var x = geom.toX(targetTs);
             var nowX = geom.nowX;
+            var predMm = window.isTankTimelineAtInstantTs(model, targetTs, geom, x)
+                ? window.getTankTimelineInstantMm(model)
+                : window.predictTankLevelAtTs(model, targetTs);
             var y = geom.lineY != null ? geom.lineY : (((geom.zoneTop != null ? geom.zoneTop : geom.pad.t) +
                 (geom.zoneBottom != null ? geom.zoneBottom : geom.pad.t + geom.plotH)) / 2);
             var endX = geom.endX != null ? geom.endX : geom.w - (geom.pad ? geom.pad.r : 0);
@@ -18544,10 +18581,11 @@ window.updateStoricoButton = async function() {
                 setStartLeft('[data-tl-metric-start]', startLabelX);
             }
             setLeft('[data-tl-metric-instant]', nowX);
-            var nearNow = !Number.isFinite(scrubX) || Math.abs(scrubX - nowX) < 10;
+            var atInstant = window.isTankTimelineAtInstantTs(model, targetTs, geom, scrubX);
             var mPred = root.querySelector('[data-tl-metric-pred]');
-            if (mPred) mPred.style.display = nearNow ? 'none' : '';
-            if (!nearNow) setLeft('[data-tl-metric-pred]', scrubX);
+            if (mPred) mPred.style.display = atInstant ? 'none' : '';
+            if (!atInstant) setLeft('[data-tl-metric-pred]', scrubX);
+            var displayPredMm = atInstant ? model.nowMm : predMm;
             var instantMmEl = root.querySelector('[data-tl-instant-mm]');
             var instantTimeEl = root.querySelector('[data-tl-instant-time]');
             var wallTs = model.wallNowTs != null ? model.wallNowTs : model.nowTs;
@@ -18561,12 +18599,12 @@ window.updateStoricoButton = async function() {
             var predTimeEl = root.querySelector('[data-tl-pred-time]');
             if (startMmEl) startMmEl.textContent = window.__fmtTankDetailMm(startPt.mm) + ' mm';
             if (startTimeEl) startTimeEl.textContent = window.formatTankTimelineClock(startPt.ts);
-            if (predMmEl) predMmEl.textContent = window.__fmtTankDetailMm(predMm) + ' mm';
+            if (predMmEl) predMmEl.textContent = window.__fmtTankDetailMm(displayPredMm) + ' mm';
             if (predTimeEl) predTimeEl.textContent = window.formatTankTimelineClock(targetTs);
             window.applyTankTimelineAlarmMetricClass(startMmEl, showStart
                 ? window.resolveTankLevelAlarmState(fieldId, startPt.mm, alarmOpts) : 'normal');
             window.applyTankTimelineAlarmMetricClass(predMmEl,
-                window.resolveTankLevelAlarmState(fieldId, predMm, alarmOpts));
+                window.resolveTankLevelAlarmState(fieldId, displayPredMm, alarmOpts));
             window.syncTankTimelineSavedRefLabels(root, model);
         };
 

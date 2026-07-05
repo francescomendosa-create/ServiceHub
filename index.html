@@ -5234,14 +5234,34 @@ window.colorPreviewNumber = function(tankName, value) {
 
         window.clearAllRapportiniDataForTotalReset = function (store) {
             if (!store || !store.items) return store;
+            var now = new Date().toISOString();
             Object.keys(store.items).forEach(function (rid) {
                 var item = store.items[rid];
                 if (!item) return;
-                item.data = {};
-                item.updatedAt = new Date().toISOString();
+                var emptySnap = typeof window.captureEmptyRapportinoSnapshot === 'function'
+                    ? window.captureEmptyRapportinoSnapshot(item.sectionsLayout || null, null, rid)
+                    : { data: {}, sectionsLayout: item.sectionsLayout || null, manualShift: null, updatedAt: now };
+                store.items[rid] = Object.assign({}, emptySnap, {
+                    id: rid,
+                    name: item.name || rid,
+                    schedeConfig: item.schedeConfig,
+                    schedeConfigUpdatedAt: item.schedeConfigUpdatedAt,
+                    updatedAt: now
+                });
+                if (store.items[rid].data && typeof window.extractRapportinoOnlyData === 'function') {
+                    store.items[rid].data = window.extractRapportinoOnlyData(store.items[rid].data);
+                }
             });
-            store.lastUpdate = new Date().toISOString();
+            store.lastUpdate = now;
             return store;
+        };
+
+        window.__reapplyActiveRapportinoAfterTotalReset = function () {
+            var store = window.__rapportiniStore || (window.loadRapportiniStore && window.loadRapportiniStore());
+            if (!store || !store.activeId || !store.items[store.activeId]) return;
+            if (typeof window.applyRapportinoItem === 'function') {
+                window.applyRapportinoItem(store.items[store.activeId]);
+            }
         };
 
         window.__applyTotalResetLocalSideEffects = function () {
@@ -5257,7 +5277,8 @@ window.colorPreviewNumber = function(tankName, value) {
             var store = window.loadRapportiniStore && window.loadRapportiniStore();
             if (store) {
                 window.clearAllRapportiniDataForTotalReset(store);
-                window.saveRapportiniStore(store, { pushCloud: true, flushCloud: true });
+                window.saveRapportiniStore(store, { pushCloud: true, flushCloud: true, forceCloudOverwrite: true });
+                window.__reapplyActiveRapportinoAfterTotalReset();
             }
             var panel = document.getElementById('stoccaggio-panel-notturno');
             if (panel && panel.dataset) delete panel.dataset.built;
@@ -5329,6 +5350,7 @@ window.colorPreviewNumber = function(tankName, value) {
             if (typeof window.renderStoccaggioInternoPanel === 'function') window.renderStoccaggioInternoPanel();
             if (typeof window.refreshStoccaggioInternoTons === 'function') window.refreshStoccaggioInternoTons();
             if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
+            window.__reapplyActiveRapportinoAfterTotalReset();
             return true;
         };
 
@@ -5398,9 +5420,10 @@ window.colorPreviewNumber = function(tankName, value) {
 
                 // 4. Propaga reset a cloud + backup locale (tutti i dispositivi)
                 if (typeof window.flushRapportiniPushToCloudNow === 'function') {
-                    await window.flushRapportiniPushToCloudNow();
+                    await window.flushRapportiniPushToCloudNow({ forceOverwrite: true });
                 }
                 await window.__pushTotalResetToCloud();
+                window.__reapplyActiveRapportinoAfterTotalReset();
                 if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
                 await window.saveData(true);
 
@@ -21285,7 +21308,8 @@ window.updateStoricoButton = async function() {
         window.__rapportiniPushTimer = null;
         window.__rapportiniPushDebounceMs = 2500;
 
-        window.flushRapportiniPushToCloudNow = function () {
+        window.flushRapportiniPushToCloudNow = function (opts) {
+            opts = opts || {};
             if (window.__rapportiniPushTimer) {
                 clearTimeout(window.__rapportiniPushTimer);
                 window.__rapportiniPushTimer = null;
@@ -21296,7 +21320,7 @@ window.updateStoricoButton = async function() {
             const store = window.__rapportiniStore || (window.loadRapportiniStore && window.loadRapportiniStore());
             if (!store || window.__rapportiniApplyingFromCloud) return Promise.resolve();
             if (typeof window.pushRapportiniStoreToCloud === 'function') {
-                return window.pushRapportiniStoreToCloud(store);
+                return window.pushRapportiniStoreToCloud(store, opts);
             }
             return Promise.resolve();
         };
@@ -21316,19 +21340,22 @@ window.updateStoricoButton = async function() {
             }, window.__rapportiniPushDebounceMs || 2500);
         };
 
-        window.pushRapportiniStoreToCloud = async function(store) {
+        window.pushRapportiniStoreToCloud = async function(store, opts) {
+            opts = opts || {};
             if (!user || !user.uid || !db || !store) return;
             if (window.__rapportiniApplyingFromCloud) return;
             try {
                 let mergedStore = store;
                 let rapportiniSnap = null;
-                try {
-                    const rapportiniDoc = doc(db, 'artifacts', appId, 'sharedDial', 'rapportini');
-                    rapportiniSnap = await getDoc(rapportiniDoc);
-                    if (rapportiniSnap.exists() && typeof window.mergeRapportiniStores === 'function') {
-                        mergedStore = window.mergeRapportiniStores(store, rapportiniSnap.data(), false);
-                    }
-                } catch (_) {}
+                if (!opts.forceOverwrite) {
+                    try {
+                        const rapportiniDoc = doc(db, 'artifacts', appId, 'sharedDial', 'rapportini');
+                        rapportiniSnap = await getDoc(rapportiniDoc);
+                        if (rapportiniSnap.exists() && typeof window.mergeRapportiniStores === 'function') {
+                            mergedStore = window.mergeRapportiniStores(store, rapportiniSnap.data(), false);
+                        }
+                    } catch (_) {}
+                }
                 const slimItems = {};
                 Object.keys(mergedStore.items || {}).forEach(function (rid) {
                     const item = JSON.parse(JSON.stringify(mergedStore.items[rid]));
@@ -21433,12 +21460,15 @@ window.updateStoricoButton = async function() {
                 if (typeof window.persistSessionPrefs === 'function') window.persistSessionPrefs();
                 const mayPush = opts.pushCloud !== false && !window.__rapportiniApplyingFromCloud && window.__rapportiniCloudHydrated;
                 if (mayPush) {
+                    const pushOpts = opts.forceCloudOverwrite ? { forceOverwrite: true } : {};
                     if (opts.flushCloud && typeof window.flushRapportiniPushToCloudNow === 'function') {
-                        void window.flushRapportiniPushToCloudNow();
+                        void window.flushRapportiniPushToCloudNow(pushOpts);
+                    } else if (opts.forceCloudOverwrite && typeof window.pushRapportiniStoreToCloud === 'function') {
+                        void window.pushRapportiniStoreToCloud(store, pushOpts);
                     } else if (typeof window.scheduleRapportiniPushToCloud === 'function') {
                         window.scheduleRapportiniPushToCloud(store);
                     } else if (typeof window.pushRapportiniStoreToCloud === 'function') {
-                        void window.pushRapportiniStoreToCloud(store);
+                        void window.pushRapportiniStoreToCloud(store, pushOpts);
                     }
                 }
             } catch (e) {

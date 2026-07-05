@@ -3354,16 +3354,9 @@ window.colorPreviewNumber = function(tankName, value) {
             }
             if (typeof window.__setPlantSyncBaseline === 'function') window.__setPlantSyncBaseline(d);
             if (typeof window.__writePlantLocalBackupFromDOM === 'function') {
-                var snap = window.__writePlantLocalBackupFromDOM({ syncRevision: d.syncRevision, lastUpdate: d.lastUpdate });
-                if (typeof window.__mergeConductivityKeysIntoPlantPayload === 'function') {
-                    window.__mergeConductivityKeysIntoPlantPayload(snap, d);
-                    __writePlantLocalBackup(snap);
-                }
+                window.__writePlantLocalBackupFromDOM({ syncRevision: d.syncRevision, lastUpdate: d.lastUpdate });
             } else {
-                var backupPayload = typeof window.__mergeConductivityKeysIntoPlantPayload === 'function'
-                    ? window.__mergeConductivityKeysIntoPlantPayload(Object.assign({}, d), d)
-                    : d;
-                __writePlantLocalBackup(backupPayload);
+                __writePlantLocalBackup(d);
             }
             if (!opts.quick && typeof window.__verifyRemotePlantFieldsApplied === 'function') {
                 window.__verifyRemotePlantFieldsApplied(d);
@@ -3669,9 +3662,6 @@ window.colorPreviewNumber = function(tankName, value) {
             }
             if (typeof window.buildPlantPayloadFromDOM !== 'function') return;
             const snap = window.buildPlantPayloadFromDOM({ bumpRevision: false });
-            if (typeof window.__mergeConductivityKeysIntoPlantPayload === 'function') {
-                window.__mergeConductivityKeysIntoPlantPayload(snap, window.__cloudPlantCache || null);
-            }
             if (syncMeta) {
                 if (syncMeta.syncRevision) snap.syncRevision = syncMeta.syncRevision;
                 if (syncMeta.lastUpdate) snap.lastUpdate = syncMeta.lastUpdate;
@@ -7462,6 +7452,16 @@ window.updateStoricoButton = async function() {
                         if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
                         if (typeof window.__schedulePlantCloudSave === 'function') window.__schedulePlantCloudSave(true);
                     }, window.__PLANT_CLOUD_SAVE_DEBOUNCE_MS || 1000);
+                },
+                true
+            );
+            document.addEventListener(
+                'change',
+                function (e) {
+                    const t = e.target;
+                    if (!t || t.tagName !== 'INPUT') return;
+                    if (typeof window.__touchConductivityCacheFromInput === 'function') window.__touchConductivityCacheFromInput(t);
+                    if (typeof window.__mirrorConducibilitaSharedFields === 'function') window.__mirrorConducibilitaSharedFields(t);
                 },
                 true
             );
@@ -11438,19 +11438,19 @@ window.updateStoricoButton = async function() {
                     }
                     continue;
                 }
+                var condOverlap = window.CONDUCTIVITY_LEVEL_OVERLAP_FIELD_IDS || [];
+                if (window.CONDUCTIVITY_SHARED_FIELD_IDS && window.CONDUCTIVITY_SHARED_FIELD_IDS.indexOf(id) >= 0
+                    && condOverlap.indexOf(id) < 0) {
+                    if (typeof window.__applyConductivitySharedFieldToDom === 'function') {
+                        window.__applyConductivitySharedFieldToDom(id, val, { forcePlant: forcePlant });
+                    }
+                    continue;
+                }
                 if (window.isConductivityPlantStorageKey && window.isConductivityPlantStorageKey(id)) {
                     const condFieldId = window.resolveConductivityFieldIdFromStorageKey(id);
-                    const condVal = val != null && val !== undefined ? String(val).trim() : '';
-                    if (!condVal) continue;
-                    const condInputs = window.queryConducibilitaDomInputs
-                        ? window.queryConducibilitaDomInputs(condFieldId)
-                        : [];
-                    condInputs.forEach(function (el) {
-                        if (forcePlant && window.__shouldSkipInputForPlantPayload && window.__shouldSkipInputForPlantPayload(el)) return;
-                        if (forcePlant && !window.__shouldApplyRemoteValueToInput(el)) return;
-                        if (!forcePlant && document.activeElement === el) return;
-                        el.value = condVal;
-                    });
+                    if (typeof window.__applyConductivitySharedFieldToDom === 'function') {
+                        window.__applyConductivitySharedFieldToDom(condFieldId, val, { forcePlant: forcePlant });
+                    }
                     continue;
                 }
                 let strVal = val != null && val !== undefined ? String(val) : '';
@@ -11845,12 +11845,35 @@ window.updateStoricoButton = async function() {
                 var key = typeof window.getConductivityPlantStorageKey === 'function'
                     ? window.getConductivityPlantStorageKey(fid)
                     : fid;
+                if (Object.prototype.hasOwnProperty.call(target, key)) return;
                 var fromSrc = src[key];
                 if (fromSrc != null && String(fromSrc).trim() !== '') {
                     target[key] = String(fromSrc).trim();
                 }
             });
             return target;
+        };
+
+        window.__applyConductivitySharedFieldToDom = function (fieldId, rawVal, opts) {
+            opts = opts || {};
+            var forcePlant = !!opts.forcePlant;
+            var condVal = rawVal != null && rawVal !== undefined ? String(rawVal).trim() : '';
+            var inputs = typeof window.queryConducibilitaDomInputs === 'function'
+                ? window.queryConducibilitaDomInputs(fieldId)
+                : [];
+            inputs.forEach(function (el) {
+                if (!forcePlant && document.activeElement === el) return;
+                if (forcePlant && typeof window.__shouldApplyRemoteValueToInput === 'function'
+                    && !window.__shouldApplyRemoteValueToInput(el)) return;
+                el.value = condVal;
+            });
+            if (window.__cloudPlantCache) {
+                var cacheKey = typeof window.getConductivityPlantStorageKey === 'function'
+                    ? window.getConductivityPlantStorageKey(fieldId)
+                    : fieldId;
+                if (condVal) window.__cloudPlantCache[cacheKey] = condVal;
+                else delete window.__cloudPlantCache[cacheKey];
+            }
         };
 
         window.rebuildStoccaggioFieldIdsSet = function() {
@@ -23306,8 +23329,8 @@ window.updateStoricoButton = async function() {
             if (!panel || panel.dataset.rendered === renderVer) return;
             const preserved = {};
             (window.CONDUCTIVITY_SHARED_FIELD_IDS || []).forEach(function (fid) {
-                preserved[fid] = typeof window.readConducibilitaFieldValue === 'function'
-                    ? window.readConducibilitaFieldValue(fid)
+                preserved[fid] = typeof window.readConducibilitaFieldValueFromDom === 'function'
+                    ? window.readConducibilitaFieldValueFromDom(fid)
                     : '';
             });
             const fields = window.CONDUCTIVITY_FIELDS_META || [];
@@ -23335,15 +23358,9 @@ window.updateStoricoButton = async function() {
 
         window.hydrateConducibilitaInputsFromDom = function() {
             (window.CONDUCTIVITY_SHARED_FIELD_IDS || []).forEach(function(fid) {
-                var overlap = window.CONDUCTIVITY_LEVEL_OVERLAP_FIELD_IDS || [];
-                var val = '';
-                if (overlap.indexOf(fid) >= 0 && typeof window.readStoredConductivityPlantValue === 'function') {
-                    val = window.readStoredConductivityPlantValue(fid);
-                }
-                if (!val && typeof window.readConducibilitaFieldValue === 'function') {
-                    val = window.readConducibilitaFieldValue(fid);
-                }
-                if (!val) return;
+                var val = typeof window.readConducibilitaFieldValueFromDom === 'function'
+                    ? window.readConducibilitaFieldValueFromDom(fid)
+                    : '';
                 window.queryConducibilitaDomInputs(fid).forEach(function(el) {
                     if (el.value !== val) el.value = val;
                 });
@@ -28118,6 +28135,7 @@ window.updateStoricoButton = async function() {
             var unitFs = Math.max(6, fs - 3);
             var unitStyle = 'font-size:' + unitFs + 'px;font-weight:400;text-transform:none;letter-spacing:0;opacity:0.9;';
             if (opts.unitItalic !== false) unitStyle += 'font-style:italic;';
+            if (opts.unitHidden) unitStyle += 'visibility:hidden;';
             return '<span style="display:inline-flex;align-items:baseline;white-space:nowrap;font-variant-numeric:tabular-nums;">' +
                 '<span style="' + numStyle + '">' + safeNum + '</span>' +
                 '<span style="display:inline-block;width:0.5em;" aria-hidden="true"></span>' +
@@ -28138,6 +28156,14 @@ window.updateStoricoButton = async function() {
                     return window.buildAlignedValueUnitHtml(s, 'mg/l', { numCh: opts.numCh, fs: opts.fs, unitItalic: true });
                 }
                 return s + (useHtml ? ' <i>mg/l</i>' : ' mg/l');
+            }
+            if (fieldId === 'inp-analisi-cono') {
+                if (useHtml && opts.numCh != null) {
+                    return window.buildAlignedValueUnitHtml(s, 'mg/l', {
+                        numCh: opts.numCh, fs: opts.fs, unitItalic: true, unitHidden: true
+                    });
+                }
+                return s;
             }
             return s;
         };
@@ -28177,7 +28203,7 @@ window.updateStoricoButton = async function() {
             var o2Nums = [];
             if (groupKey === 'ossigenoCono') {
                 rawRows.forEach(function (row) {
-                    if (/^inp-analisi-o2-mbr/.test(row.fieldId)) o2Nums.push(String(row.raw).trim());
+                    o2Nums.push(String(row.raw).trim());
                 });
             }
             var o2NumCh = o2Nums.length ? window.getAlignedValueNumWidthCh(o2Nums) : null;
@@ -28493,7 +28519,7 @@ window.updateStoricoButton = async function() {
 
             let rows = '';
             let hasOtherMeasures = false;
-            const o2FieldIds = ['inp-analisi-o2-mbr1', 'inp-analisi-o2-mbr2', 'inp-analisi-o2-mbr3'];
+            const o2FieldIds = ['inp-analisi-o2-mbr1', 'inp-analisi-o2-mbr2', 'inp-analisi-o2-mbr3', 'inp-analisi-cono'];
             const o2Nums = [];
 
             // Prima controlla le altre misure (escludendo RAP CONV)

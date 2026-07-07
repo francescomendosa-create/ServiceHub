@@ -607,6 +607,41 @@ window.calculateMmFromTons = function (tankName, tons) {
     return (t * 1000) / tankData.coeff;
 };
 
+// ===============================
+// SERBATOI ESPRESSI IN PERCENTUALE
+// Per questi serbatoi il valore inserito è già una % (0–100), non un livello in mm:
+// niente conversione in tonnellate, unità di misura "%" ovunque (interfaccia + timeline).
+// ===============================
+window.PERCENT_LEVEL_TANK_KEYS = window.PERCENT_LEVEL_TANK_KEYS || { "S829": true };
+window.PERCENT_LEVEL_FIELD_IDS = window.PERCENT_LEVEL_FIELD_IDS || { "inp-s829": true };
+
+window.isPercentLevelFieldId = function (fieldId) {
+    if (!fieldId) return false;
+    var norm = typeof window.normalizeTrendFieldId === 'function'
+        ? window.normalizeTrendFieldId(fieldId) : fieldId;
+    if (window.PERCENT_LEVEL_FIELD_IDS[norm] || window.PERCENT_LEVEL_FIELD_IDS[fieldId]) return true;
+    var key = typeof window.getTankStatusKeyForFieldId === 'function'
+        ? window.getTankStatusKeyForFieldId(norm) : null;
+    if (!key && window.DIGITAL_TANK_FIELD_MAP) {
+        key = window.DIGITAL_TANK_FIELD_MAP[norm] || window.DIGITAL_TANK_FIELD_MAP[fieldId];
+    }
+    return window.isPercentLevelTankKey(key);
+};
+
+window.isPercentLevelTankKey = function (tankKey) {
+    if (!tankKey) return false;
+    if (window.PERCENT_LEVEL_TANK_KEYS[tankKey]) return true;
+    var up = String(tankKey).toUpperCase().replace(/\s+/g, '');
+    return !!window.PERCENT_LEVEL_TANK_KEYS[up];
+};
+
+/** Unità di misura del livello per un serbatoio: '%' o 'mm'. */
+window.tankLevelUnitForField = function (fieldId, tankKey) {
+    if (fieldId && window.isPercentLevelFieldId(fieldId)) return '%';
+    if (tankKey && window.isPercentLevelTankKey(tankKey)) return '%';
+    return 'mm';
+};
+
 window.parseAlarmThresholdInput = function (raw) {
     const s = String(raw == null ? '' : raw).trim();
     if (s === '') return null;
@@ -16559,6 +16594,22 @@ window.updateStoricoButton = async function() {
             return String(Number(n).toFixed(1)).replace(/\.0$/, '');
         };
 
+        /** Formatta un valore di livello con la sua unità ('%' o 'mm'). */
+        window.__fmtTankLevelUnit = function (n, unit) {
+            if (!Number.isFinite(n)) return '—';
+            return window.__fmtTankDetailMm(n) + ' ' + (unit || 'mm');
+        };
+
+        /** Ricava l'unità del livello ('%' o 'mm') da un model o info di timeline. */
+        window.__tankLevelUnitFrom = function (obj) {
+            if (!obj) return 'mm';
+            if (obj.levelUnit) return obj.levelUnit;
+            if (obj.isPercent) return '%';
+            if (obj.fieldId && typeof window.isPercentLevelFieldId === 'function'
+                && window.isPercentLevelFieldId(obj.fieldId)) return '%';
+            return 'mm';
+        };
+
         window.mmPerHourToTonsPerHour = function (tankDbKey, rateMmH) {
             if (!Number.isFinite(rateMmH)) return null;
             var tankData = typeof window.lookupTankDatabaseEntry === 'function'
@@ -16567,9 +16618,13 @@ window.updateStoricoButton = async function() {
             return Math.round(((rateMmH / 1000) * tankData.coeff) * 10) / 10;
         };
 
-        window.formatTankTrendRateText = function (rateMmH, tankDbKey) {
+        window.formatTankTrendRateText = function (rateMmH, tankDbKey, unit) {
             if (!Number.isFinite(rateMmH)) return '—';
             var rateSign = rateMmH > 0 ? '+' : '';
+            // Serbatoi in %: velocità in %/h, senza tonnellate.
+            if (unit === '%') {
+                return rateSign + window.__fmtTankDetailMm(rateMmH) + ' %/h';
+            }
             var mmPart = rateSign + window.__fmtTankDetailMm(rateMmH) + ' mm/h';
             var tonsH = window.mmPerHourToTonsPerHour(tankDbKey, rateMmH);
             if (tonsH == null || !Number.isFinite(tonsH)) return mmPart;
@@ -16606,11 +16661,13 @@ window.updateStoricoButton = async function() {
                 ? window.formatTankTimelineClock(startTs) : '--:--';
             var instantTime = typeof window.formatTankTimelineClock === 'function'
                 ? window.formatTankTimelineClock(instantTs) : '--:--';
+            var levelUnit = window.__tankLevelUnitFrom(info);
+            var isPct = levelUnit === '%';
             var mmDelta = info.levelMm - startPt.mm;
             var minDelta = window.TANK_TREND_AUTO_MIN_DELTA_MM != null ? Number(window.TANK_TREND_AUTO_MIN_DELTA_MM) : 5;
-            var tonsStart = info.tankDbKey && typeof window.calculateTons === 'function'
+            var tonsStart = (!isPct && info.tankDbKey && typeof window.calculateTons === 'function')
                 ? parseFloat(window.calculateTons(info.tankDbKey, startPt.mm)) : NaN;
-            var tonsNow = info.tankDbKey && typeof window.calculateTons === 'function'
+            var tonsNow = (!isPct && info.tankDbKey && typeof window.calculateTons === 'function')
                 ? parseFloat(window.calculateTons(info.tankDbKey, info.levelMm)) : NaN;
             var tonsDelta = Number.isFinite(tonsStart) && Number.isFinite(tonsNow)
                 ? Math.abs(Math.round((tonsNow - tonsStart) * 10) / 10) : null;
@@ -16622,9 +16679,9 @@ window.updateStoricoButton = async function() {
             }
             var verb = mmDelta > 0 ? 'accumulati' : 'drenati';
             var cls = mmDelta > 0 ? 'up' : 'down';
-            var tonsTxt = tonsDelta != null && Number.isFinite(tonsDelta)
+            var tonsTxt = (!isPct && tonsDelta != null && Number.isFinite(tonsDelta))
                 ? ' <b>' + window.__fmtTankDetailTons(tonsDelta) + ' t</b> di prodotto'
-                : ' <b>' + window.__fmtTankDetailMm(Math.abs(mmDelta)) + ' mm</b> di livello';
+                : ' <b>' + window.__fmtTankDetailMm(Math.abs(mmDelta)) + ' ' + levelUnit + '</b> di livello';
             return '<div class="tank-detail-shift-resoconto tank-detail-shift-resoconto--' + cls + '" data-tank-shift-resoconto">' +
                 'In questo turno, ' + timeSpan + ', sono stati <b>' + verb + '</b>' + tonsTxt + '.</div>';
         };
@@ -16792,11 +16849,16 @@ window.updateStoricoButton = async function() {
                 ? window.readTankFieldLiveRaw(fieldId, { levelRaw: opts.levelRaw })
                 : (inp && inp.value != null ? String(inp.value).trim() : '');
             if (!raw && inp && inp.value != null) raw = String(inp.value).trim();
+            var isPercentTank = typeof window.isPercentLevelFieldId === 'function'
+                && (window.isPercentLevelFieldId(normId) || window.isPercentLevelTankKey(tankDbKey));
+            var levelUnit = isPercentTank ? '%' : 'mm';
             var levelMm = typeof window.parseTankLevelMm === 'function'
                 ? window.parseTankLevelMm(raw) : parseFloat(String(raw).replace(',', '.'));
-            var currentTons = typeof window.calculateTons === 'function'
+            // Serbatoi in %: il valore è già una percentuale ⇒ scala fissa 0–100, niente tonnellate.
+            if (isPercentTank) livMax = 100;
+            var currentTons = (!isPercentTank && typeof window.calculateTons === 'function')
                 ? window.calculateTons(tankDbKey, levelMm) : null;
-            var maxTons = livMax && typeof window.calculateTons === 'function'
+            var maxTons = (!isPercentTank && livMax && typeof window.calculateTons === 'function')
                 ? window.calculateTons(tankDbKey, livMax) : null;
             var vis = typeof window.getTankVisualFlagsForDbKey === 'function'
                 ? window.getTankVisualFlagsForDbKey(tankDbKey) : { drain: false, acc: false };
@@ -16816,10 +16878,17 @@ window.updateStoricoButton = async function() {
                 if (Math.abs(trendDelta) > minDelta) trendDir = trendDelta > 0 ? 'up' : 'down';
             }
 
-            var fillPctOfMax = (livMax && Number.isFinite(levelMm)) ? Math.round((levelMm / livMax) * 1000) / 10 : null;
-            var fillPct = typeof window.getStoccaggioTankFillPct === 'function' && Number.isFinite(levelMm)
-                ? window.getStoccaggioTankFillPct(tankDbKey, levelMm)
-                : (fillPctOfMax != null ? fillPctOfMax : 0);
+            var fillPctOfMax;
+            var fillPct;
+            if (isPercentTank) {
+                fillPctOfMax = Number.isFinite(levelMm) ? Math.round(levelMm * 10) / 10 : null;
+                fillPct = fillPctOfMax != null ? Math.max(0, Math.min(100, fillPctOfMax)) : 0;
+            } else {
+                fillPctOfMax = (livMax && Number.isFinite(levelMm)) ? Math.round((levelMm / livMax) * 1000) / 10 : null;
+                fillPct = typeof window.getStoccaggioTankFillPct === 'function' && Number.isFinite(levelMm)
+                    ? window.getStoccaggioTankFillPct(tankDbKey, levelMm)
+                    : (fillPctOfMax != null ? fillPctOfMax : 0);
+            }
             var fillOverMax = fillPctOfMax != null && fillPctOfMax > 100.5;
             var levelInputTs = typeof window.getTankLevelInputTimestampMs === 'function'
                 ? window.getTankLevelInputTimestampMs(normId)
@@ -16836,6 +16905,8 @@ window.updateStoricoButton = async function() {
                 tankDbKey: tankDbKey,
                 label: label,
                 description: description,
+                isPercent: isPercentTank,
+                levelUnit: levelUnit,
                 livMax: livMax,
                 levelMm: Number.isFinite(levelMm) ? levelMm : null,
                 levelInputTs: levelInputTs,
@@ -16957,6 +17028,7 @@ window.updateStoricoButton = async function() {
             if (!series || series.length < 2) {
                 return '<div class="tank-detail-chart-empty">Servono almeno 2 punti (salvataggi o livello attuale) per il grafico trend.</div>';
             }
+            var chartUnit = window.__tankLevelUnitFrom(info);
             var w = 640, h = 220;
             var pad = { l: 52, r: 18, t: 18, b: 40 };
             var plotW = w - pad.l - pad.r;
@@ -16989,7 +17061,7 @@ window.updateStoricoButton = async function() {
             if (maxMm && maxMm > 0 && maxMm <= yMax) {
                 var yMaxLine = toY(maxMm);
                 maxLine = '<line x1="' + pad.l + '" y1="' + yMaxLine.toFixed(1) + '" x2="' + (w - pad.r) + '" y2="' + yMaxLine.toFixed(1) + '" stroke="#f87171" stroke-width="1.5" stroke-dasharray="6 4" opacity="0.85"/>' +
-                    '<text x="' + (w - pad.r) + '" y="' + (yMaxLine - 4).toFixed(1) + '" text-anchor="end" font-size="10" fill="#fca5a5">MAX ' + maxMm + ' mm</text>';
+                    '<text x="' + (w - pad.r) + '" y="' + (yMaxLine - 4).toFixed(1) + '" text-anchor="end" font-size="10" fill="#fca5a5">MAX ' + maxMm + ' ' + chartUnit + '</text>';
             }
             var dots = pts.map(function (pt) {
                 var fill = pt.p.manualRef ? '#f8fafc' : (pt.p.live ? '#fbbf24' : '#38bdf8');
@@ -16997,8 +17069,8 @@ window.updateStoricoButton = async function() {
                 var timeTip = typeof window.formatTankTimelineClock === 'function'
                     ? window.formatTankTimelineClock(pt.p.ts) : '';
                 var tipLbl = timeTip
-                    ? (timeTip + ' · ' + window.__fmtTankDetailMm(pt.p.mm) + ' mm')
-                    : (window.__escTankDetailHtml(pt.p.label) + ': ' + window.__fmtTankDetailMm(pt.p.mm) + ' mm');
+                    ? (timeTip + ' · ' + window.__fmtTankDetailMm(pt.p.mm) + ' ' + chartUnit)
+                    : (window.__escTankDetailHtml(pt.p.label) + ': ' + window.__fmtTankDetailMm(pt.p.mm) + ' ' + chartUnit);
                 return '<circle cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) + '" r="4.5" fill="' + fill + '" stroke="' + stroke + '" stroke-width="1.2">' +
                     '<title>' + window.__escTankDetailHtml(tipLbl) + '</title></circle>';
             }).join('');
@@ -17081,6 +17153,7 @@ window.updateStoricoButton = async function() {
 
         window.buildTankDetailTrendSummaryHTML = function (info, series) {
             var parts = [];
+            var trendUnit = window.__tankLevelUnitFrom(info);
             if (typeof window.buildTankDetailTrendSeries === 'function') {
                 series = window.buildTankDetailTrendSeries(series, info);
             }
@@ -17090,17 +17163,17 @@ window.updateStoricoButton = async function() {
                         ? '<span style="color:#dc2626;font-weight:900;">↑</span>'
                         : window.buildTankTrendArrowGfxHtml('up', { size: 'xs' })) +
                     ' In salita: <b>+' + window.__fmtTankDetailMm(Math.abs(info.trendDelta)) +
-                    ' mm</b> rispetto al baseline turno</div>');
+                    ' ' + trendUnit + '</b> rispetto al baseline turno</div>');
             } else if (info.trendDir === 'down') {
                 parts.push('<div class="tank-detail-trend-line tank-detail-trend-line--down">' +
                     (window.shouldUseCompactTankTrendArrow && window.shouldUseCompactTankTrendArrow()
                         ? '<span style="color:#16a34a;font-weight:900;">↓</span>'
                         : window.buildTankTrendArrowGfxHtml('down', { size: 'xs' })) +
                     ' In discesa: <b>-' + window.__fmtTankDetailMm(Math.abs(info.trendDelta)) +
-                    ' mm</b> rispetto al baseline turno</div>');
+                    ' ' + trendUnit + '</b> rispetto al baseline turno</div>');
             } else if (info.baselineMm != null && info.levelMm != null) {
                 parts.push('<div class="tank-detail-trend-line tank-detail-trend-line--flat">→ Stabile (Δ ≤ ' +
-                    (window.TANK_TREND_AUTO_MIN_DELTA_MM || 5) + ' mm vs baseline turno)</div>');
+                    (window.TANK_TREND_AUTO_MIN_DELTA_MM || 5) + ' ' + trendUnit + ' vs baseline turno)</div>');
             } else {
                 parts.push('<div class="tank-detail-trend-line tank-detail-trend-line--flat">Trend turno: baseline non disponibile</div>');
             }
@@ -17112,8 +17185,8 @@ window.updateStoricoButton = async function() {
                     var rate = (last.mm - first.mm) / dtH;
                     var rateCls = rate > 0 ? 'up' : rate < 0 ? 'down' : 'flat';
                     var rateTxt = typeof window.formatTankTrendRateText === 'function'
-                        ? window.formatTankTrendRateText(rate, info && info.tankDbKey)
-                        : ((rate > 0 ? '+' : '') + window.__fmtTankDetailMm(rate) + ' mm/h');
+                        ? window.formatTankTrendRateText(rate, info && info.tankDbKey, trendUnit)
+                        : ((rate > 0 ? '+' : '') + window.__fmtTankDetailMm(rate) + ' ' + trendUnit + '/h');
                     parts.push('<div class="tank-detail-trend-line tank-detail-trend-line--' + rateCls + '">Velocità stimata: <b>' +
                         window.__escTankDetailHtml(rateTxt) + '</b> (' + series.length + ' punti)</div>');
                 }
@@ -17458,7 +17531,9 @@ window.updateStoricoButton = async function() {
                 nowX: 0,
                 livMax: info.livMax,
                 tankDbKey: info.tankDbKey,
-                fieldId: info.fieldId
+                fieldId: info.fieldId,
+                isPercent: !!info.isPercent,
+                levelUnit: info.levelUnit || (info.isPercent ? '%' : 'mm')
             };
         };
 
@@ -18402,7 +18477,8 @@ window.updateStoricoButton = async function() {
             if (!Number.isFinite(svgX)) return;
             var mmEl = tip.querySelector('[data-tl-tip-mm]');
             var timeEl = tip.querySelector('[data-tl-tip-time]');
-            if (mmEl) mmEl.textContent = window.__fmtTankDetailMm(mm) + ' mm';
+            var tipUnit = window.__tankLevelUnitFrom((svg && svg.__tlModel) || block.__tlInfo);
+            if (mmEl) mmEl.textContent = window.__fmtTankDetailMm(mm) + ' ' + tipUnit;
             if (timeEl) timeEl.textContent = window.formatTankTimelineClock(ts);
             tip.style.left = window.timelineFloatLeftPct(geom, svgX).toFixed(2) + '%';
             var levelsRow = block.querySelector('.tank-detail-timeline-levels-row');
@@ -18528,6 +18604,7 @@ window.updateStoricoButton = async function() {
             var geom = svg && svg.__tlGeom;
             if (!metricsHost || !geom || !geom.toXHist) return;
             var fieldId = block.__tlInfo && block.__tlInfo.fieldId;
+            var mUnit = window.__tankLevelUnitFrom(model);
             var alarmOpts = { tankDbKey: model.tankDbKey, livMax: model.livMax };
             (model.manualRefPts || []).filter(function (ref) {
                 return ref && Number.isFinite(ref.ts) && Number.isFinite(ref.mm);
@@ -18548,7 +18625,7 @@ window.updateStoricoButton = async function() {
                 el.style.left = leftPct;
                 el.innerHTML =
                     '<div class="tank-detail-timeline-metric-lbl tank-detail-timeline-metric-lbl--ref tank-detail-timeline-metric-lbl--ghost">·</div>' +
-                    '<div class="' + mmCls + '">' + window.__fmtTankDetailMm(ref.mm) + ' mm</div>' +
+                    '<div class="' + mmCls + '">' + window.__fmtTankDetailMm(ref.mm) + ' ' + mUnit + '</div>' +
                     '<div class="tank-detail-timeline-metric-time tank-detail-timeline-ref-time">' +
                     window.__escTankDetailHtml(window.formatTankTimelineClock(ref.ts)) + '</div>';
                 metricsHost.appendChild(el);
@@ -18599,9 +18676,10 @@ window.updateStoricoButton = async function() {
                 titleEl.textContent = opts.title || (opts.mode === 'initial' ? 'Livello iniziale' : 'Livello di riferimento');
             }
             if (hint) {
+                var popUnit = opts.unit === '%' ? 'in %' : 'in mm';
                 hint.textContent = opts.editTime
-                    ? 'Modifica ora e livello misurato in mm'
-                    : ('Ora ' + window.formatTankTimelineClock(opts.ts) + ' · inserisci il livello misurato in mm');
+                    ? ('Modifica ora e livello misurato ' + popUnit)
+                    : ('Ora ' + window.formatTankTimelineClock(opts.ts) + ' · inserisci il livello misurato ' + popUnit);
             }
             if (timeRow) timeRow.style.display = opts.editTime ? '' : 'none';
             if (timeInp && opts.editTime && Number.isFinite(opts.ts)) {
@@ -18729,6 +18807,7 @@ window.updateStoricoButton = async function() {
             window.openTankTimelineRefLevelPopup({
                 mode: 'initial',
                 title: 'Livello iniziale',
+                unit: window.__tankLevelUnitFrom(block.__tlInfo),
                 ts: startPt.ts,
                 baseTs: startPt.ts,
                 editTime: true,
@@ -18759,6 +18838,7 @@ window.updateStoricoButton = async function() {
             }
             window.openTankTimelineRefLevelPopup({
                 title: 'Livello istantaneo',
+                unit: window.__tankLevelUnitFrom(block.__tlInfo),
                 ts: wallTs,
                 suggestedMm: suggested,
                 onConfirm: function (mm, ts) {
@@ -18771,6 +18851,7 @@ window.updateStoricoButton = async function() {
             if (!block || !Number.isFinite(refTs) || !Number.isFinite(refMm)) return;
             window.openTankTimelineRefLevelPopup({
                 title: 'Modifica punto',
+                unit: window.__tankLevelUnitFrom(block.__tlInfo),
                 ts: refTs,
                 baseTs: refTs,
                 editTime: true,
@@ -18872,11 +18953,18 @@ window.updateStoricoButton = async function() {
                 gaugeWrap.innerHTML = window.buildDigitalTankGaugeSVG(info.fillPct, info.label, gaugeOpts);
             }
             var statVals = page.querySelectorAll('.tank-detail-stats .tank-detail-stat-val');
-            if (statVals[0]) statVals[0].innerHTML = window.__fmtTankDetailMm(info.levelMm) + ' <small>mm</small>';
-            if (statVals[1]) statVals[1].innerHTML = window.__fmtTankDetailTons(info.currentTons) + ' <small>t</small>';
-            if (statVals[4]) {
-                statVals[4].classList.toggle('tank-detail-stat-val--warn', !!info.fillOverMax);
-                statVals[4].innerHTML = (info.fillPctOfMax != null
+            // Serbatoi in %: layout ridotto (Livello attuale, Livello massimo, Riempimento).
+            var fillIdx = info.isPercent ? 2 : 4;
+            if (info.isPercent) {
+                if (statVals[0]) statVals[0].innerHTML = window.__fmtTankDetailMm(info.levelMm) + ' <small>%</small>';
+                if (statVals[1]) statVals[1].innerHTML = '100 <small>%</small>';
+            } else {
+                if (statVals[0]) statVals[0].innerHTML = window.__fmtTankDetailMm(info.levelMm) + ' <small>mm</small>';
+                if (statVals[1]) statVals[1].innerHTML = window.__fmtTankDetailTons(info.currentTons) + ' <small>t</small>';
+            }
+            if (statVals[fillIdx]) {
+                statVals[fillIdx].classList.toggle('tank-detail-stat-val--warn', !!info.fillOverMax);
+                statVals[fillIdx].innerHTML = (info.fillPctOfMax != null
                     ? info.fillPctOfMax.toLocaleString('it-IT') + ' <small>%</small>' : '—') +
                     (info.fillOverMax ? ' <small class="tank-detail-overmax-hint">sopra max</small>' : '');
             }
@@ -18971,9 +19059,10 @@ window.updateStoricoButton = async function() {
             window.renderTankDetailTimelineSvg(svg, model);
             var rateWrap = block.querySelector('.tank-detail-timeline-rate');
             if (rateWrap) {
+                var rrUnit = window.__tankLevelUnitFrom(model);
                 var rateTxt = typeof window.formatTankTrendRateText === 'function'
-                    ? window.formatTankTrendRateText(model.rateMmH, model.tankDbKey)
-                    : ((model.rateMmH > 0 ? '+' : '') + window.__fmtTankDetailMm(model.rateMmH) + ' mm/h');
+                    ? window.formatTankTrendRateText(model.rateMmH, model.tankDbKey, rrUnit)
+                    : ((model.rateMmH > 0 ? '+' : '') + window.__fmtTankDetailMm(model.rateMmH) + ' ' + rrUnit + '/h');
                 rateWrap.innerHTML = 'Velocità trend: <b>' + window.__escTankDetailHtml(rateTxt) + '</b>';
                 rateWrap.classList.remove('tank-detail-timeline-rate--up', 'tank-detail-timeline-rate--down', 'tank-detail-timeline-rate--flat');
                 rateWrap.classList.add('tank-detail-timeline-rate--' +
@@ -19011,9 +19100,10 @@ window.updateStoricoButton = async function() {
 
         window.buildTankDetailTimelineHTML = function (series, info) {
             var model = window.buildTankTimelineModel(series, info);
+            var tlUnit = window.__tankLevelUnitFrom(model);
             var rateTxt = typeof window.formatTankTrendRateText === 'function'
-                ? window.formatTankTrendRateText(model.rateMmH, model.tankDbKey)
-                : ((model.rateMmH > 0 ? '+' : '') + window.__fmtTankDetailMm(model.rateMmH) + ' mm/h');
+                ? window.formatTankTrendRateText(model.rateMmH, model.tankDbKey, tlUnit)
+                : ((model.rateMmH > 0 ? '+' : '') + window.__fmtTankDetailMm(model.rateMmH) + ' ' + tlUnit + '/h');
             var rateCls = model.rateMmH > 0.05 ? 'up' : model.rateMmH < -0.05 ? 'down' : 'flat';
             var startPt = typeof window.getTankTimelineStartPoint === 'function'
                 ? window.getTankTimelineStartPoint(model)
@@ -19028,7 +19118,7 @@ window.updateStoricoButton = async function() {
                 '<div class="tank-detail-timeline-levels-row">' +
                 '<div class="tank-detail-timeline-float tank-detail-timeline-float--start" data-tl-metric-start style="left:4%">' +
                 '<div class="tank-detail-timeline-metric-lbl tank-detail-timeline-metric-lbl--start">Livello iniziale</div>' +
-                '<div class="tank-detail-timeline-metric-mm" data-tl-start-mm>' + window.__fmtTankDetailMm(startPt.mm) + ' mm</div>' +
+                '<div class="tank-detail-timeline-metric-mm" data-tl-start-mm>' + window.__fmtTankDetailMm(startPt.mm) + ' ' + tlUnit + '</div>' +
                 '<div class="tank-detail-timeline-metric-time tank-detail-timeline-start-time" data-tl-time-start><span data-tl-start-time>' +
                 window.formatTankTimelineClock(startPt.ts) + '</span></div>' +
                 '</div>' +
@@ -19041,7 +19131,7 @@ window.updateStoricoButton = async function() {
                 '<div class="tank-detail-timeline-metric-lbl tank-detail-timeline-metric-lbl--pred">' +
                 '<span data-tl-pred-lbl>Previsione</span>' +
                 '</div>' +
-                '<div class="tank-detail-timeline-metric-mm tank-detail-timeline-pred-mm" data-tl-pred-mm>' + window.__fmtTankDetailMm(model.nowMm) + ' mm</div>' +
+                '<div class="tank-detail-timeline-metric-mm tank-detail-timeline-pred-mm" data-tl-pred-mm>' + window.__fmtTankDetailMm(model.nowMm) + ' ' + tlUnit + '</div>' +
                 '<div class="tank-detail-timeline-pred-tons" data-tl-pred-tons style="display:none"></div>' +
                 '<div class="tank-detail-timeline-metric-time tank-detail-timeline-pred-time" data-tl-time-pred><span data-tl-pred-time>' + window.formatTankTimelineClock(model.wallNowTs || model.nowTs) + '</span></div>' +
                 '</div></div>' +
@@ -19168,7 +19258,7 @@ window.updateStoricoButton = async function() {
             var instantKnob = '<circle class="tank-detail-timeline-instant-knob" data-tl-instant-knob data-tl-now-hit data-now-ts="' + instantTs +
                 '" data-now-mm="' + instantMm + '" cx="' + nowX.toFixed(1) + '" cy="' + lineY.toFixed(1) +
                 '" r="7.5" fill="' + instFill + '" stroke="#f8fafc" stroke-width="2.5" pointer-events="all" style="cursor:grab;touch-action:none">' +
-                '<title>Livello istantaneo · ' + window.__fmtTankDetailMm(instantMm) + ' mm · tieni premuto per modificare</title></circle>';
+                '<title>Livello istantaneo · ' + window.__fmtTankDetailMm(instantMm) + ' ' + window.__tankLevelUnitFrom(model) + ' · tieni premuto per modificare</title></circle>';
             var nowHitZone = '<rect data-tl-now-hit data-now-ts="' + instantTs + '" data-now-mm="' + instantMm +
                 '" x="' + (nowX - 18).toFixed(1) + '" y="' + zoneTop.toFixed(1) +
                 '" width="36" height="' + (zoneBottom - zoneTop).toFixed(1) +
@@ -19181,7 +19271,7 @@ window.updateStoricoButton = async function() {
                 });
                 levelDot = '<circle data-tl-level-dot pointer-events="none" cx="' + levelNowX.toFixed(1) + '" cy="' + lineY.toFixed(1) +
                     '" r="5" fill="' + window.timelineAlarmDotFill(lvlState) + '" stroke="#0f172a" stroke-width="1.2">' +
-                    '<title>Livello inserito ' + window.__fmtTankDetailMm(model.nowMm) + ' mm · ' +
+                    '<title>Livello inserito ' + window.__fmtTankDetailMm(model.nowMm) + ' ' + window.__tankLevelUnitFrom(model) + ' · ' +
                     window.formatTankTimelineClock(model.nowTs) + '</title></circle>';
             }
             var plotHitPred = '<rect data-tl-plot-hit x="' + (nowX + 14).toFixed(1) + '" y="' + zoneTop.toFixed(1) +
@@ -19309,9 +19399,10 @@ window.updateStoricoButton = async function() {
             var startTimeEl = root.querySelector('[data-tl-start-time]');
             var predMmEl = root.querySelector('[data-tl-pred-mm]');
             var predTimeEl = root.querySelector('[data-tl-pred-time]');
-            if (startMmEl) startMmEl.textContent = window.__fmtTankDetailMm(startPt.mm) + ' mm';
+            var scrubUnit = window.__tankLevelUnitFrom(model);
+            if (startMmEl) startMmEl.textContent = window.__fmtTankDetailMm(startPt.mm) + ' ' + scrubUnit;
             if (startTimeEl) startTimeEl.textContent = window.formatTankTimelineClock(startPt.ts);
-            if (predMmEl) predMmEl.textContent = window.__fmtTankDetailMm(predMm) + ' mm';
+            if (predMmEl) predMmEl.textContent = window.__fmtTankDetailMm(predMm) + ' ' + scrubUnit;
             if (predTimeEl) predTimeEl.textContent = window.formatTankTimelineClock(targetTs);
             window.applyTankTimelineAlarmMetricClass(startMmEl, showStart
                 ? window.resolveTankLevelAlarmState(fieldId, startPt.mm, alarmOpts) : 'normal');
@@ -19700,6 +19791,7 @@ window.updateStoricoButton = async function() {
                         ? window.suggestTankTimelineRefMmAtTs(m, draftTs)
                         : m.nowMm;
                     window.openTankTimelineRefLevelPopup({
+                        unit: window.__tankLevelUnitFrom(block.__tlInfo || (svg && svg.__tlModel)),
                         ts: draftTs,
                         suggestedMm: suggested,
                         onConfirm: function (mm, ts) {
@@ -19753,17 +19845,21 @@ window.updateStoricoButton = async function() {
             }, 60000);
         };
 
-        window.buildTankDetailHistoryTableHTML = function (series) {
+        window.buildTankDetailHistoryTableHTML = function (series, info) {
             if (!series || !series.length) {
                 return '<div class="tank-detail-history-empty">Nessun salvataggio storico per questo serbatoio.</div>';
             }
+            var hUnit = window.__tankLevelUnitFrom(info);
+            var isPct = hUnit === '%';
             var rows = series.slice().reverse().map(function (p) {
                 var meta = [p.date, p.shift].filter(Boolean).join(' · ');
                 return '<tr><td>' + window.__escTankDetailHtml(p.label) + '</td><td>' + window.__escTankDetailHtml(meta) +
-                    '</td><td class="tank-detail-num">' + window.__fmtTankDetailMm(p.mm) + ' mm</td><td class="tank-detail-num">' +
-                    window.__fmtTankDetailTons(p.tons) + ' t</td></tr>';
+                    '</td><td class="tank-detail-num">' + window.__fmtTankDetailMm(p.mm) + ' ' + hUnit + '</td>' +
+                    (isPct ? '' : ('<td class="tank-detail-num">' + window.__fmtTankDetailTons(p.tons) + ' t</td>')) +
+                    '</tr>';
             }).join('');
-            return '<table class="tank-detail-history-table"><thead><tr><th>Ora</th><th>Turno</th><th>Livello</th><th>Tonn.</th></tr></thead><tbody>' +
+            return '<table class="tank-detail-history-table"><thead><tr><th>Ora</th><th>Turno</th><th>Livello</th>' +
+                (isPct ? '' : '<th>Tonn.</th>') + '</tr></thead><tbody>' +
                 rows + '</tbody></table>';
         };
 
@@ -19803,14 +19899,18 @@ window.updateStoricoButton = async function() {
                 '<div class="tank-detail-status-row">' + window.buildTankDetailStatusHTML(info) + '</div>' +
                 '</div>' +
                 '<div class="tank-detail-stats">' +
-                '<div class="tank-detail-stat"><span class="tank-detail-stat-label">Livello attuale</span><span class="tank-detail-stat-val">' +
-                window.__fmtTankDetailMm(info.levelMm) + ' <small>mm</small></span></div>' +
-                '<div class="tank-detail-stat"><span class="tank-detail-stat-label">Tonnellate attuali</span><span class="tank-detail-stat-val">' +
-                window.__fmtTankDetailTons(info.currentTons) + ' <small>t</small></span></div>' +
-                '<div class="tank-detail-stat"><span class="tank-detail-stat-label">Livello massimo</span><span class="tank-detail-stat-val">' +
-                window.__fmtTankDetailMm(info.livMax) + ' <small>mm</small></span></div>' +
-                '<div class="tank-detail-stat"><span class="tank-detail-stat-label">Tonnellate max</span><span class="tank-detail-stat-val">' +
-                window.__fmtTankDetailTons(info.maxTons) + ' <small>t</small></span></div>' +
+                (info.isPercent
+                    ? ('<div class="tank-detail-stat"><span class="tank-detail-stat-label">Livello attuale</span><span class="tank-detail-stat-val">' +
+                        window.__fmtTankDetailMm(info.levelMm) + ' <small>%</small></span></div>' +
+                        '<div class="tank-detail-stat"><span class="tank-detail-stat-label">Livello massimo</span><span class="tank-detail-stat-val">100 <small>%</small></span></div>')
+                    : ('<div class="tank-detail-stat"><span class="tank-detail-stat-label">Livello attuale</span><span class="tank-detail-stat-val">' +
+                        window.__fmtTankDetailMm(info.levelMm) + ' <small>mm</small></span></div>' +
+                        '<div class="tank-detail-stat"><span class="tank-detail-stat-label">Tonnellate attuali</span><span class="tank-detail-stat-val">' +
+                        window.__fmtTankDetailTons(info.currentTons) + ' <small>t</small></span></div>' +
+                        '<div class="tank-detail-stat"><span class="tank-detail-stat-label">Livello massimo</span><span class="tank-detail-stat-val">' +
+                        window.__fmtTankDetailMm(info.livMax) + ' <small>mm</small></span></div>' +
+                        '<div class="tank-detail-stat"><span class="tank-detail-stat-label">Tonnellate max</span><span class="tank-detail-stat-val">' +
+                        window.__fmtTankDetailTons(info.maxTons) + ' <small>t</small></span></div>')) +
                 '<div class="tank-detail-stat"><span class="tank-detail-stat-label">Riempimento</span><span class="tank-detail-stat-val' +
                 (info.fillOverMax ? ' tank-detail-stat-val--warn' : '') + '">' +
                 (info.fillPctOfMax != null ? info.fillPctOfMax.toLocaleString('it-IT') + ' <small>%</small>' : '—') +
@@ -19827,7 +19927,7 @@ window.updateStoricoButton = async function() {
                 '</div>' +
                 '<div class="tank-detail-history-block">' +
                 '<div class="tank-detail-section-title">Storico salvataggi</div>' +
-                window.buildTankDetailHistoryTableHTML(series) +
+                window.buildTankDetailHistoryTableHTML(series, info) +
                 '</div></div>';
         };
 
@@ -29512,7 +29612,8 @@ window.updateStoricoButton = async function() {
                 var displayName = typeof opts.formatName === 'function'
                     ? opts.formatName(trend, tankName)
                     : tankName;
-                var isPct = window.tankConfig && window.tankConfig[tankName] && window.tankConfig[tankName].unit === '%';
+                var isPct = (window.tankConfig && window.tankConfig[tankName] && window.tankConfig[tankName].unit === '%')
+                    || (typeof window.isPercentLevelTankKey === 'function' && window.isPercentLevelTankKey(trend.tank));
                 var numOpts = { unit: (isPct || opts.isAnalisi) ? '%' : 'mm', locale: 'it-IT' };
                 var startVal = window.formatTrendReportNumber(trend.start, numOpts);
                 var endVal = window.formatTrendReportNumber(trend.end, numOpts);
@@ -29525,7 +29626,7 @@ window.updateStoricoButton = async function() {
                     trendText = trendText.replace(' mm', '');
                 }
                 var color = trend.rising ? (opts.risingColor || '#dc2626') : (opts.fallingColor || '#2563eb');
-                var tons = !opts.isAnalisi && typeof window.calculateTons === 'function'
+                var tons = (!opts.isAnalisi && !isPct && typeof window.calculateTons === 'function')
                     ? window.calculateTons(tankName, trend.end) : '';
                 var startPad = getPaddingRight(startVal);
                 var endPad = getPaddingRight(endVal);
@@ -32445,7 +32546,8 @@ window.__buildDigitalTrendTableHTML = function (trends, opts) {
         const deltaClass = isAnalisi
             ? (rising ? 'digital-trend-row__delta--up-an' : 'digital-trend-row__delta--down-an')
             : (rising ? 'digital-trend-row__delta--up-tank' : 'digital-trend-row__delta--down-tank');
-        const isPct = window.tankConfig && window.tankConfig[tankName] && window.tankConfig[tankName].unit === '%';
+        const isPct = (window.tankConfig && window.tankConfig[tankName] && window.tankConfig[tankName].unit === '%')
+            || (typeof window.isPercentLevelTankKey === 'function' && window.isPercentLevelTankKey(trend.tank));
         const deltaOpts = { unit: (isPct || isAnalisi) ? '%' : 'mm' };
         const deltaMain = typeof window.formatTrendReportDelta === 'function'
             ? window.formatTrendReportDelta(trend.start, trend.end, deltaOpts)
@@ -32454,7 +32556,7 @@ window.__buildDigitalTrendTableHTML = function (trends, opts) {
             ? window.formatTrendNumeric(trend.start) : trend.start;
         const endVal = typeof window.formatTrendNumeric === 'function'
             ? window.formatTrendNumeric(trend.end) : trend.end;
-        const tons = !isAnalisi && typeof window.calculateTons === 'function'
+        const tons = (!isAnalisi && !isPct && typeof window.calculateTons === 'function')
             ? window.calculateTons(tankName, trend.end)
             : '';
         html += '<div class="digital-trend-grid digital-trend-row">';
@@ -40886,7 +40988,7 @@ window.convertToHtml = async () => {
                     <div class="amb-row" style="grid-template-columns: 90px 1fr;"><div class="amb-label">S 852</div><div class="amb-input-box"><input type="tel" id="inp-s852" onchange="window.saveData(true)"></div><div class="tank-status-single" data-tank="S852" onclick="window.openTankStatusPopup('S852')">---</div></div>
                     <div class="amb-row" style="grid-template-columns: 90px 1fr;"><div class="amb-label">LURGI</div><div class="amb-input-box"><input type="tel" id="inp-lurgi" onchange="window.saveData(true)"></div><div class="tank-status-single" data-tank="LURGI" onclick="window.openTankStatusPopup('LURGI')">---</div></div>
                     <div class="amb-row" style="grid-template-columns: 90px 1fr;"><div class="amb-label">SF3</div><div class="amb-input-box"><input type="tel" id="inp-sf3" onchange="window.saveData(true)"></div><div class="tank-status-single" data-tank="SF3" onclick="window.openTankStatusPopup('SF3')">---</div></div>
-                    <div class="amb-row" style="grid-template-columns: 90px 1fr;"><div class="amb-label">S 829</div><div class="amb-input-box"><input type="tel" id="inp-s829" onchange="window.saveData(true)"></div><div class="tank-status-single" data-tank="S829" onclick="window.openTankStatusPopup('S829')">---</div></div>
+                    <div class="amb-row" style="grid-template-columns: 90px 1fr;"><div class="amb-label">S 829</div><div class="amb-input-box" style="position:relative;"><input type="tel" id="inp-s829" onchange="window.saveData(true)" style="padding-right:20px;"><span class="amb-unit-suffix" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);font-size:11px;font-weight:800;color:#64748b;pointer-events:none;">%</span></div><div class="tank-status-single" data-tank="S829" onclick="window.openTankStatusPopup('S829')">---</div></div>
                     <div class="amb-row" style="grid-template-columns: 90px 1fr;"><div class="amb-label">UNITÀ DAF</div><div class="amb-input-box"><input type="tel" id="inp-daf" onchange="window.saveData(true)"></div><div class="tank-status-single" data-tank="UNITA-DAF" onclick="window.openTankStatusPopup('UNITA-DAF')">---</div></div>
                 </div>
             </div>

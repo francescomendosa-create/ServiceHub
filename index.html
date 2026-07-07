@@ -1735,6 +1735,43 @@ window.colorPreviewNumber = function(tankName, value) {
             if (el.type === 'tel' && !el.readOnly) el.type = 'text';
         };
 
+        /** True quando la S Pen sta scrivendo: campo dell'impianto a fuoco su tablet Android.
+         *  Mentre è true non tocchiamo il DOM (niente priming/refresh) per non interrompere
+         *  la sessione di riconoscimento della scrittura. */
+        window.__shSpenIsWriting = function () {
+            if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return false;
+            var ae = document.activeElement;
+            if (!ae || (ae.tagName !== 'INPUT' && ae.tagName !== 'TEXTAREA')) return false;
+            if (!ae.closest || !ae.closest('.main-container')) return false;
+            if (ae.closest('#settings-modal') || ae.closest('#management-modal') || ae.closest('#shift-modal')) return false;
+            return true;
+        };
+
+        /** Coalizza tutto il priming degli input in un solo passaggio per frame.
+         *  Evita di eseguire querySelectorAll/mutazioni sincrone a ogni singola mutazione
+         *  del DOM (frecce, timer, sync) che saturerebbe il main thread e bloccherebbe la penna.
+         *  Se la penna sta scrivendo, rimanda al sollevamento (pointerup/blur). */
+        window.__scheduleAndroidSpenPrime = function () {
+            if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
+            if (window.__shSpenIsWriting && window.__shSpenIsWriting()) {
+                window.__androidSpenPrimePending = true;
+                return;
+            }
+            if (window.__androidSpenPrimeScheduled) return;
+            window.__androidSpenPrimeScheduled = true;
+            requestAnimationFrame(function () {
+                window.__androidSpenPrimeScheduled = false;
+                if (window.__shSpenIsWriting && window.__shSpenIsWriting()) {
+                    window.__androidSpenPrimePending = true;
+                    return;
+                }
+                window.__androidSpenPrimePending = false;
+                document.querySelectorAll(
+                    '.main-container input:not([data-sh-spen-input="1"]), .main-container textarea:not([data-sh-spen-input="1"])'
+                ).forEach(window.__primeAndroidSpenInput);
+            });
+        };
+
         window.__initAndroidSpenSupport = function () {
             if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
             document.documentElement.setAttribute('writingsuggestions', 'false');
@@ -1744,19 +1781,25 @@ window.colorPreviewNumber = function(tankName, value) {
             }
             var mc = document.querySelector('.main-container');
             if (mc) mc.setAttribute('writingsuggestions', 'false');
-            document.querySelectorAll('.main-container input, .main-container textarea').forEach(window.__primeAndroidSpenInput);
+            window.__scheduleAndroidSpenPrime();
             if (window.__androidSpenObserver) return;
+            // Observer "leggero": non fa lavoro sincrono. Rileva solo se sono stati aggiunti
+            // input/textarea e, in tal caso, pianifica un unico passaggio di priming per frame.
             window.__androidSpenObserver = new MutationObserver(function (mutations) {
-                mutations.forEach(function (m) {
-                    m.addedNodes.forEach(function (node) {
-                        if (!node || node.nodeType !== 1) return;
-                        if (node.matches && (node.matches('input') || node.matches('textarea'))) {
-                            window.__primeAndroidSpenInput(node);
-                        } else if (node.querySelectorAll) {
-                            node.querySelectorAll('input, textarea').forEach(window.__primeAndroidSpenInput);
+                var needsPrime = false;
+                for (var i = 0; i < mutations.length && !needsPrime; i++) {
+                    var added = mutations[i].addedNodes;
+                    for (var j = 0; j < added.length; j++) {
+                        var node = added[j];
+                        if (!node || node.nodeType !== 1) continue;
+                        if ((node.matches && (node.matches('input') || node.matches('textarea'))) ||
+                            (node.querySelector && node.querySelector('input, textarea'))) {
+                            needsPrime = true;
+                            break;
                         }
-                    });
-                });
+                    }
+                }
+                if (needsPrime) window.__scheduleAndroidSpenPrime();
             });
             window.__androidSpenObserver.observe(document.body, { childList: true, subtree: true });
             if (window.__androidSpenListenersReady) return;
@@ -1772,18 +1815,38 @@ window.colorPreviewNumber = function(tankName, value) {
                     clearTimeout(window.__spenPenLiftTimer);
                 }
             }, true);
-            document.addEventListener('pointerup', function (e) {
-                if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
-                if (!window.__isStylusPointerEvent(e)) return;
+            var __onSpenLift = function () {
                 clearTimeout(window.__spenPenLiftTimer);
                 window.__spenPenLiftTimer = setTimeout(function () {
                     document.body.classList.remove('sh-stylus-pen-active');
+                    // Penna sollevata: se avevamo rimandato priming/refresh mentre scriveva, eseguili ora.
+                    if (window.__androidSpenPrimePending && typeof window.__scheduleAndroidSpenPrime === 'function') {
+                        window.__scheduleAndroidSpenPrime();
+                    }
                 }, 350);
+            };
+            document.addEventListener('pointerup', function (e) {
+                if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
+                if (!window.__isStylusPointerEvent(e)) return;
+                __onSpenLift();
             }, true);
+            // Ogni volta che un campo dell'impianto perde il fuoco, la scrittura è finita:
+            // recupera il priming rimandato così i campi successivi restano scrivibili.
+            document.addEventListener('focusout', function (e) {
+                if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
+                if (window.__androidSpenPrimePending && typeof window.__scheduleAndroidSpenPrime === 'function') {
+                    window.__scheduleAndroidSpenPrime();
+                }
+            }, true);
+            // Watchdog: garantisce che nessuno stato residuo (shield/lock) blocchi la penna.
             setInterval(function () {
-                if (!document.body.classList.contains('sh-long-press-lock')) return;
+                if (window.__shSpenIsWriting && window.__shSpenIsWriting()) return;
                 if (window.__isUserPressingLabel && window.__isUserPressingLabel()) return;
-                if (typeof window.__releaseSpenStuckLocks === 'function') window.__releaseSpenStuckLocks();
+                var shieldStuck = window.__postLongPressShieldActive === true;
+                var lockStuck = document.body.classList.contains('sh-long-press-lock');
+                if (shieldStuck || lockStuck) {
+                    if (typeof window.__releaseSpenStuckLocks === 'function') window.__releaseSpenStuckLocks();
+                }
             }, 4000);
         };
 
@@ -30319,6 +30382,22 @@ window.updateStoricoButton = async function() {
         };
 
         window.refreshAllTankLevelArrows = function() {
+            // Tablet Android: mentre la S Pen scrive non muoviamo il DOM vicino agli input
+            // (frecce nei contenitori label), altrimenti la sessione di scrittura si interrompe.
+            // Rimandiamo il refresh a fine scrittura.
+            if (window.__shSpenIsWriting && window.__shSpenIsWriting()) {
+                if (!window.__pendingTankArrowsRefresh) {
+                    window.__pendingTankArrowsRefresh = true;
+                    setTimeout(function () {
+                        window.__pendingTankArrowsRefresh = false;
+                        if (typeof window.refreshAllTankLevelArrows === 'function') {
+                            window.refreshAllTankLevelArrows();
+                        }
+                    }, 600);
+                }
+                return;
+            }
+            window.__pendingTankArrowsRefresh = false;
             if (typeof window.refreshTankLevelBaselineFromSavedHistory === 'function') {
                 window.refreshTankLevelBaselineFromSavedHistory();
             }

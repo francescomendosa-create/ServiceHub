@@ -17989,7 +17989,9 @@ window.updateStoricoButton = async function() {
                     if (!k2 || k2.indexOf('sh-tl-manual-initial:') !== 0) continue;
                     var fid2 = window.__normalizeTankTimelineFieldId(k2.slice('sh-tl-manual-initial:'.length));
                     var mi = window.loadTankTimelineManualInitial(fid2);
-                    if (mi) initial[fid2] = { ts: mi.ts, mm: mi.mm };
+                    if (mi && mi.explicit === true) {
+                        initial[fid2] = { ts: mi.ts, mm: mi.mm, explicit: true };
+                    }
                 }
             } catch (_) {}
             return {
@@ -18033,10 +18035,13 @@ window.updateStoricoButton = async function() {
                     var norm = window.__normalizeTankTimelineFieldId(fid);
                     var o = initial[fid];
                     if (!o || !Number.isFinite(o.ts) || !Number.isFinite(o.mm)) return;
+                    if (o.explicit !== true) return;
                     var loc = window.loadTankTimelineManualInitial(norm);
                     if (!loc || o.ts >= loc.ts) {
                         try {
-                            localStorage.setItem('sh-tl-manual-initial:' + norm, JSON.stringify({ ts: o.ts, mm: o.mm }));
+                            localStorage.setItem('sh-tl-manual-initial:' + norm, JSON.stringify({
+                                ts: o.ts, mm: o.mm, explicit: true
+                            }));
                         } catch (_) {}
                     }
                 });
@@ -18150,17 +18155,20 @@ window.updateStoricoButton = async function() {
                 if (!raw) return null;
                 var o = JSON.parse(raw);
                 if (o && Number.isFinite(o.ts) && Number.isFinite(o.mm)) {
-                    return { ts: o.ts, mm: o.mm };
+                    return { ts: o.ts, mm: o.mm, explicit: o.explicit === true };
                 }
             } catch (_) {}
             return null;
         };
 
-        window.saveTankTimelineManualInitial = function (fieldId, pt) {
+        window.saveTankTimelineManualInitial = function (fieldId, pt, opts) {
             if (!fieldId || !pt || !Number.isFinite(pt.ts) || !Number.isFinite(pt.mm)) return;
+            opts = opts || {};
             fieldId = window.__normalizeTankTimelineFieldId(fieldId);
+            var payload = { ts: pt.ts, mm: pt.mm };
+            if (opts.explicit === true || pt.explicit === true) payload.explicit = true;
             try {
-                localStorage.setItem('sh-tl-manual-initial:' + fieldId, JSON.stringify({ ts: pt.ts, mm: pt.mm }));
+                localStorage.setItem('sh-tl-manual-initial:' + fieldId, JSON.stringify(payload));
             } catch (_) {}
             if (typeof window.__persistTankTimelineManualPlantBackup === 'function') {
                 window.__persistTankTimelineManualPlantBackup();
@@ -18183,6 +18191,24 @@ window.updateStoricoButton = async function() {
             return;
         };
 
+        /** Rimuove iniziali timeline auto-catturati (senza flag explicit) lasciati da versioni precedenti. */
+        window.__purgeAutoCapturedTankTimelineManualInitials = function () {
+            try {
+                var rm = [];
+                for (var i = 0; i < localStorage.length; i++) {
+                    var k = localStorage.key(i);
+                    if (!k || k.indexOf('sh-tl-manual-initial:') !== 0) continue;
+                    var raw = localStorage.getItem(k);
+                    if (!raw) { rm.push(k); continue; }
+                    try {
+                        var o = JSON.parse(raw);
+                        if (!o || o.explicit !== true) rm.push(k);
+                    } catch (_) { rm.push(k); }
+                }
+                rm.forEach(function (k) { localStorage.removeItem(k); });
+            } catch (_) {}
+        };
+
         window.clearTankTimelineManualInitial = function (fieldId) {
             if (!fieldId) return;
             fieldId = window.__normalizeTankTimelineFieldId(fieldId);
@@ -18198,7 +18224,8 @@ window.updateStoricoButton = async function() {
             series = series || [];
             if (fieldId && typeof window.loadTankTimelineManualInitial === 'function') {
                 var manualInit = window.loadTankTimelineManualInitial(fieldId);
-                if (manualInit && Number.isFinite(manualInit.ts) && Number.isFinite(manualInit.mm)) {
+                if (manualInit && manualInit.explicit === true &&
+                    Number.isFinite(manualInit.ts) && Number.isFinite(manualInit.mm)) {
                     return {
                         ts: manualInit.ts,
                         mm: manualInit.mm,
@@ -18709,7 +18736,7 @@ window.updateStoricoButton = async function() {
                 onConfirm: function (mm, ts) {
                     if (!block.__tlInfo || !block.__tlInfo.fieldId) return;
                     var finalTs = Number.isFinite(ts) ? ts : startPt.ts;
-                    window.saveTankTimelineManualInitial(block.__tlInfo.fieldId, { ts: finalTs, mm: mm });
+                    window.saveTankTimelineManualInitial(block.__tlInfo.fieldId, { ts: finalTs, mm: mm }, { explicit: true });
                     window.refreshTankDetailTimelineAfterRefChange(block);
                 }
             });
@@ -18901,7 +18928,7 @@ window.updateStoricoButton = async function() {
                 var mi = window.loadTankTimelineManualInitial(fid);
                 if (!mi || !Number.isFinite(mi.ts) || !Number.isFinite(mi.mm)) return;
                 if (Math.abs(mi.ts - oldCreatedAt) >= 60000) return;
-                window.saveTankTimelineManualInitial(fid, { ts: newCreatedAt, mm: mi.mm });
+                window.saveTankTimelineManualInitial(fid, { ts: newCreatedAt, mm: mi.mm, explicit: mi.explicit === true });
             });
         };
 
@@ -20282,8 +20309,8 @@ window.updateStoricoButton = async function() {
                 }
                 if (typeof window.loadTankTimelineManualInitial === 'function') {
                     var mi = window.loadTankTimelineManualInitial(fid);
-                    if (mi && Number.isFinite(mi.ts) && Number.isFinite(mi.mm)) {
-                        timelineManualInitial[fid] = { ts: mi.ts, mm: mi.mm };
+                    if (mi && mi.explicit === true && Number.isFinite(mi.ts) && Number.isFinite(mi.mm)) {
+                        timelineManualInitial[fid] = { ts: mi.ts, mm: mi.mm, explicit: true };
                     }
                 }
                 if (typeof window.loadTankTimelineManualRefs === 'function') {
@@ -30131,6 +30158,9 @@ window.updateStoricoButton = async function() {
         };
 
         window.__loadTankLevelInputAtFromStorage();
+        if (typeof window.__purgeAutoCapturedTankTimelineManualInitials === 'function') {
+            window.__purgeAutoCapturedTankTimelineManualInitials();
+        }
         if (typeof window.__migrateLegacyTankTimelineManualKeys === 'function') {
             window.__migrateLegacyTankTimelineManualKeys();
         }
@@ -30274,11 +30304,14 @@ window.updateStoricoButton = async function() {
                 }
                 return '';
             }
-            // Livelli serbatoio: nessun archivio → il baseline è SOLO l'iniziale timeline MEMORIZZATO.
-            // Senza archivio e senza iniziale memorizzato non c'è baseline ⇒ nessuna freccia.
+            // Livelli serbatoio: nessun archivio → il baseline è SOLO l'iniziale timeline MEMORIZZATO
+            // ed impostato ESPLICITAMENTE dall'utente (popup "Livello iniziale").
+            // Iniziali auto-catturati dal primo input istantaneo non contano.
             var manualInit = typeof window.loadTankTimelineManualInitial === 'function'
                 ? window.loadTankTimelineManualInitial(normId) : null;
-            if (manualInit && Number.isFinite(manualInit.mm)) return String(manualInit.mm);
+            if (manualInit && manualInit.explicit === true && Number.isFinite(manualInit.mm)) {
+                return String(manualInit.mm);
+            }
             return '';
         };
 

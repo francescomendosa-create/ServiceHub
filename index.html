@@ -28362,6 +28362,57 @@ window.updateStoricoButton = async function() {
             buildPreview();
         };
 
+        /** Disegna il tratteggio del perimetro A4 sull'anteprima report: una cornice tratteggiata
+         *  per ogni pagina A4 (105×148.5mm = A4 in scala 1:2), così si vede se il contenuto entra. */
+        window.renderPreviewA4Guide = function () {
+            var container = document.getElementById('preview-sheet');
+            if (!container) return;
+            // Altezza di una pagina A4 (in scala) in px, misurata una volta con una sonda in mm.
+            if (!window.__a4GuidePagePx) {
+                var probe = document.createElement('div');
+                probe.style.cssText = 'position:absolute;visibility:hidden;height:148.5mm;width:1px;pointer-events:none;';
+                container.appendChild(probe);
+                window.__a4GuidePagePx = probe.offsetHeight || (148.5 * 96 / 25.4);
+                container.removeChild(probe);
+            }
+            var pagePx = window.__a4GuidePagePx;
+            var existing = container.querySelector('.preview-a4-guide');
+            if (existing) existing.remove();
+            // Misura il contenuto SENZA la guida (già rimossa) per contare le pagine.
+            var total = container.scrollHeight;
+            var pages = Math.max(1, Math.ceil((total - 2) / pagePx));
+            var guide = document.createElement('div');
+            guide.className = 'preview-a4-guide';
+            guide.setAttribute('aria-hidden', 'true');
+            var html = '';
+            for (var i = 0; i < pages; i++) {
+                html += '<div class="preview-a4-guide-page" style="top:' + Math.round(i * pagePx) + 'px;height:' + Math.round(pagePx) + 'px;">' +
+                    '<span class="preview-a4-guide-label">A4 &middot; PAG. ' + (i + 1) + '</span></div>';
+            }
+            guide.innerHTML = html;
+            container.appendChild(guide);
+        };
+
+        window.__initPreviewA4Guide = function () {
+            var container = document.getElementById('preview-sheet');
+            if (!container) return;
+            // buildPreview() riscrive innerHTML (cancellando la guida): la ridisegniamo a ogni
+            // ricostruzione del contenuto. takeRecords() scarta le mutazioni generate da noi
+            // stessi, evitando qualsiasi loop.
+            if (!window.__a4GuideObserver && typeof MutationObserver !== 'undefined') {
+                window.__a4GuideObserver = new MutationObserver(function () {
+                    if (window.__a4GuideRaf) return;
+                    window.__a4GuideRaf = requestAnimationFrame(function () {
+                        window.__a4GuideRaf = null;
+                        window.renderPreviewA4Guide();
+                        if (window.__a4GuideObserver) window.__a4GuideObserver.takeRecords();
+                    });
+                });
+                window.__a4GuideObserver.observe(container, { childList: true });
+            }
+            window.renderPreviewA4Guide();
+        };
+
         window.openPreview = async function () {
             var previewScreen = document.getElementById('preview-screen');
             if (!previewScreen) return;
@@ -28380,6 +28431,7 @@ window.updateStoricoButton = async function() {
             buildPreview();
             if (typeof window.updatePreviewFontScaleButtons === 'function') window.updatePreviewFontScaleButtons();
             if (typeof window.initPreviewSheetZoom === 'function') window.initPreviewSheetZoom();
+            if (typeof window.__initPreviewA4Guide === 'function') window.__initPreviewA4Guide();
 
             void window.ensureBackupHistoryFresh({
                 timeoutMs: 8000,
@@ -32054,7 +32106,14 @@ if (hiddenModules.length === 0) {
                     window.saveCurrentState();
                 }
                 
-                const canvas = await html2canvas(previewSheet, { scale: 3.0, useCORS: true, backgroundColor: "#ffffff" });
+                const canvas = await html2canvas(previewSheet, {
+                    scale: 3.0,
+                    useCORS: true,
+                    backgroundColor: "#ffffff",
+                    ignoreElements: function (el) {
+                        return el && el.classList && el.classList.contains('preview-a4-guide');
+                    }
+                });
                 const dataUrl = canvas.toDataURL("image/jpeg", 0.95);
                 const response = await fetch(dataUrl);
                 const blob = await response.blob();
@@ -37918,7 +37977,13 @@ window.convertToHtml = async () => {
             cursor: grabbing;
         }
         
-        .a4-sheet { width: 105mm; background: white; min-height: 148.5mm; height: fit-content; margin: 0 auto; box-sizing: border-box; }
+        .a4-sheet { width: 105mm; background: white; min-height: 148.5mm; height: fit-content; margin: 0 auto; box-sizing: border-box; position: relative; }
+        /* Guida A4: tratteggio che mostra il perimetro di ogni pagina A4 nell'anteprima report,
+           per capire se il contenuto entra nel foglio. Solo a schermo (esclusa da stampa/cattura). */
+        .preview-a4-guide { position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 6; }
+        .preview-a4-guide-page { position: absolute; left: 0; right: 0; box-sizing: border-box; border: 1.4px dashed #e11d48; border-radius: 2px; }
+        .preview-a4-guide-label { position: absolute; top: 2px; right: 3px; font-size: 6.5px; font-weight: 800; letter-spacing: 0.06em; color: #e11d48; background: rgba(255,255,255,0.82); padding: 0 3px; border-radius: 3px; line-height: 1.45; white-space: nowrap; }
+        @media print { .preview-a4-guide { display: none !important; } }
         
         #settings-modal { z-index: 10070; align-items: stretch; justify-content: stretch; overflow: hidden; flex-direction: column; }
         #letture-rapportini-modal { z-index: 10075; align-items: center; justify-content: center; }

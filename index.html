@@ -3402,6 +3402,11 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__pickNewestPlantPayload = function (serverData, backupData) {
             if (!serverData || typeof serverData !== 'object') return backupData || null;
             if (!backupData || typeof backupData !== 'object') return serverData;
+            var serverN = typeof window.__countMeaningfulPlantFields === 'function'
+                ? window.__countMeaningfulPlantFields(serverData) : 0;
+            var backupN = typeof window.__countMeaningfulPlantFields === 'function'
+                ? window.__countMeaningfulPlantFields(backupData) : 0;
+            if (serverN < 3 && backupN >= 3) return backupData;
             const sMs = __plantLastUpdateMs(serverData.lastUpdate);
             const bMs = __plantLastUpdateMs(backupData.lastUpdate);
             let picked;
@@ -3485,6 +3490,13 @@ window.colorPreviewNumber = function(tankName, value) {
             }
             if (typeof window.hydrateConducibilitaInputsFromDom === 'function') {
                 window.hydrateConducibilitaInputsFromDom();
+            }
+            if (!opts.skipRestoreOffer) {
+                setTimeout(function () {
+                    if (typeof window.__maybeAutoOfferPlantRestore === 'function') {
+                        window.__maybeAutoOfferPlantRestore();
+                    }
+                }, 900);
             }
         };
 
@@ -5327,7 +5339,163 @@ window.colorPreviewNumber = function(tankName, value) {
             }
         };
 
-        window.__lastAppliedTotalResetAt = window.__lastAppliedTotalResetAt || 0;
+        window.__LS_LAST_APPLIED_TOTAL_RESET = 'servicehub_last_applied_total_reset_at';
+
+        window.__readPersistedLastAppliedTotalResetAt = function () {
+            try {
+                var v = Number(localStorage.getItem(window.__LS_LAST_APPLIED_TOTAL_RESET));
+                return Number.isFinite(v) && v > 0 ? v : 0;
+            } catch (_) { return 0; }
+        };
+
+        window.__persistLastAppliedTotalResetAt = function (ts) {
+            if (!Number.isFinite(ts) || ts <= 0) return;
+            window.__lastAppliedTotalResetAt = ts;
+            try { localStorage.setItem(window.__LS_LAST_APPLIED_TOTAL_RESET, String(ts)); } catch (_) {}
+        };
+
+        window.__lastAppliedTotalResetAt = window.__readPersistedLastAppliedTotalResetAt();
+
+        window.__PLANT_RESTORE_SKIP_KEYS = {
+            shift: 1, lastUpdate: 1, syncRevision: 1, manualShift: 1, totalResetAt: 1,
+            archiveTime: 1, createdAt: 1, time: 1, date: 1, source: 1, id: 1, __localSavedAt: 1
+        };
+
+        window.__countMeaningfulPlantFields = function (data) {
+            if (!data || typeof data !== 'object') return 0;
+            var n = 0;
+            Object.keys(data).forEach(function (k) {
+                if (window.__PLANT_RESTORE_SKIP_KEYS[k]) return;
+                if (k.indexOf('inp-osmosi__') === 0) return;
+                var v = data[k];
+                if (v == null) return;
+                if (typeof v === 'object') {
+                    var t = v.text != null ? String(v.text).trim() : '';
+                    if (t && t !== 'FERMO' && t !== '---') n++;
+                    return;
+                }
+                if (String(v).trim() !== '') n++;
+            });
+            return n;
+        };
+
+        window.__countFilledPlantInputsFromDOM = function () {
+            var n = 0;
+            document.querySelectorAll('input[id]').forEach(function (inp) {
+                if (!inp.id) return;
+                if (window.__shouldSkipInputForPlantPayload && window.__shouldSkipInputForPlantPayload(inp)) return;
+                if (inp.value != null && String(inp.value).trim() !== '') n++;
+            });
+            return n;
+        };
+
+        window.getLatestArchiveSnapshotForRestore = function () {
+            var best = null;
+            var bestTs = 0;
+            var consider = function (entry) {
+                if (!entry || typeof entry !== 'object') return;
+                var ts = typeof window.getArchiveTimestampMs === 'function'
+                    ? window.getArchiveTimestampMs(entry) : 0;
+                if (!ts && entry.createdAt) ts = Number(entry.createdAt);
+                if (ts >= bestTs) { bestTs = ts; best = entry; }
+            };
+            if (window.savedHistory && window.savedHistory.length) {
+                window.savedHistory.forEach(consider);
+            }
+            try {
+                var local = JSON.parse(localStorage.getItem('stabileArchives') || '[]');
+                (local || []).forEach(function (a) {
+                    if (a && a.data) consider(a.data);
+                });
+            } catch (_) {}
+            return best;
+        };
+
+        window.__showPlantRestoreOfferBanner = function (message) {
+            window.__showPlantCloudSyncBanner(message);
+            var b = document.getElementById('plant-cloud-sync-banner');
+            if (!b) return;
+            var btn = document.getElementById('plant-restore-offer-btn');
+            if (!btn) {
+                btn = document.createElement('button');
+                btn.id = 'plant-restore-offer-btn';
+                btn.type = 'button';
+                btn.className = 'shrink-0 px-2 py-1 rounded bg-emerald-700 text-white text-[9px] font-black uppercase border border-emerald-900';
+                btn.textContent = 'Ripristina dati';
+                btn.onclick = function () {
+                    void window.emergencyRestorePlantInterface({ confirm: true });
+                };
+                var closeBtn = b.querySelector('button[onclick*="__hidePlantCloudSyncBanner"]');
+                if (closeBtn) b.insertBefore(btn, closeBtn);
+                else b.appendChild(btn);
+            }
+        };
+
+        window.__maybeAutoOfferPlantRestore = function () {
+            if (window.__plantRestoreOfferShown) return;
+            if (window.__countFilledPlantInputsFromDOM() >= 5) return;
+            var backup = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
+            var arch = window.getLatestArchiveSnapshotForRestore();
+            var backupN = window.__countMeaningfulPlantFields(backup);
+            var archN = window.__countMeaningfulPlantFields(arch);
+            if (backupN >= 3 || archN >= 3) {
+                window.__plantRestoreOfferShown = true;
+                window.__showPlantRestoreOfferBanner(
+                    'Interfaccia vuota o incompleta: è disponibile un backup locale o un archivio salvato. ' +
+                    'Clicca «Ripristina dati» (non hai fatto reset — protezione attiva).'
+                );
+            }
+        };
+
+        /** Ripristino emergenza: backup locale o ultimo archivio → interfaccia + cloud. */
+        window.emergencyRestorePlantInterface = async function (opts) {
+            opts = opts || {};
+            if (opts.confirm !== false &&
+                !confirm('Ripristinare i dati nell\'interfaccia dal backup locale o dall\'ultimo archivio salvato?')) {
+                return false;
+            }
+            var backup = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
+            var arch = window.getLatestArchiveSnapshotForRestore();
+            var backupN = window.__countMeaningfulPlantFields(backup);
+            var archN = window.__countMeaningfulPlantFields(arch);
+            var source = null;
+            var label = '';
+            if (backupN >= archN && backupN >= 1) {
+                source = backup;
+                label = 'backup locale';
+            } else if (archN >= 1) {
+                source = arch;
+                label = 'archivio ' + (arch.archiveTime || arch.time || '');
+            }
+            if (!source) {
+                var msg = 'Nessun backup o archivio con dati trovato.';
+                if (typeof window.__serviceHubFlashToast === 'function') window.__serviceHubFlashToast(msg, true);
+                else alert(msg);
+                return false;
+            }
+            var payload = Object.assign({}, source);
+            delete payload.totalResetAt;
+            __applyRemotePlantPayload(payload, { force: true, skipRestoreOffer: true });
+            if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
+            if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
+            if (typeof window.refreshAllTankLevelArrows === 'function') window.refreshAllTankLevelArrows();
+            if (typeof window.repaintTankStatusSquares === 'function') window.repaintTankStatusSquares();
+            if (typeof window.saveData === 'function') await window.saveData(true);
+            if (user && user.uid && db && typeof window.buildPlantPayloadFromDOM === 'function') {
+                try {
+                    var pushPayload = window.buildPlantPayloadFromDOM({ bumpRevision: true });
+                    delete pushPayload.totalResetAt;
+                    await setDoc(doc(db, 'artifacts', appId, 'sharedDial', 'plant'), pushPayload, { merge: true });
+                } catch (e) {
+                    console.warn('[ServiceHub] restore cloud push:', e && e.message);
+                }
+            }
+            window.__hidePlantCloudSyncBanner();
+            var okMsg = 'Dati ripristinati da ' + label + '.';
+            if (typeof window.__serviceHubFlashToast === 'function') window.__serviceHubFlashToast(okMsg, false, 'ok');
+            else alert(okMsg);
+            return true;
+        };
 
         window.clearTimelineLocalStorageAll = function () {
             try {
@@ -5441,7 +5609,7 @@ window.colorPreviewNumber = function(tankName, value) {
             payload.tankTimelineManualRefs = {};
             payload.tankTimelineManualInitial = {};
             payload.totalResetAt = Date.now();
-            window.__lastAppliedTotalResetAt = payload.totalResetAt;
+            window.__persistLastAppliedTotalResetAt(payload.totalResetAt);
             try {
                 var plantRef = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
                 await setDoc(plantRef, payload, { merge: true });
@@ -5463,8 +5631,23 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!payload || payload.totalResetAt == null) return false;
             var remoteTs = Number(payload.totalResetAt);
             if (!Number.isFinite(remoteTs) || remoteTs <= 0) return false;
-            if (remoteTs <= (window.__lastAppliedTotalResetAt || 0)) return false;
-            window.__lastAppliedTotalResetAt = remoteTs;
+            if (remoteTs <= window.__readPersistedLastAppliedTotalResetAt()) return false;
+
+            // Protezione: reset remoto nel cloud NON deve cancellare dati già presenti qui
+            // (es. reset fatto su altro dispositivo o in passato — l'utente non ha premuto reset).
+            var localFilled = window.__countFilledPlantInputsFromDOM();
+            var backup = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
+            var backupFilled = window.__countMeaningfulPlantFields(backup);
+            if (localFilled >= 2 || backupFilled >= 2) {
+                window.__persistLastAppliedTotalResetAt(remoteTs);
+                window.__showPlantRestoreOfferBanner(
+                    'Il cloud contiene un reset totale passato, ma qui ci sono ancora dati o un backup. ' +
+                    'Il reset remoto non è stato applicato. Se l\'interfaccia è vuota, clicca «Ripristina dati».'
+                );
+                return false;
+            }
+
+            window.__persistLastAppliedTotalResetAt(remoteTs);
             window.clearTankLevelInputAtAll();
             window.clearTimelineLocalStorageAll();
             window.clearNotturnoStoccLocalSnapshots();

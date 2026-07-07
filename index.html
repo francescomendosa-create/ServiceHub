@@ -1725,6 +1725,9 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
             if (!el || el.getAttribute('data-sh-spen-input') === '1') return;
             if (el.type === 'hidden' || el.type === 'file' || el.type === 'checkbox' || el.type === 'radio') return;
+            // Non riconfigurare l'input mentre è a fuoco: cambiare type/attributi durante la
+            // scrittura annullerebbe la sessione di riconoscimento della S Pen.
+            if (el === document.activeElement) return;
             el.setAttribute('data-sh-spen-input', '1');
             el.setAttribute('writingsuggestions', 'false');
             el.setAttribute('autocomplete', 'off');
@@ -1747,29 +1750,15 @@ window.colorPreviewNumber = function(tankName, value) {
             return true;
         };
 
-        /** Coalizza tutto il priming degli input in un solo passaggio per frame.
-         *  Evita di eseguire querySelectorAll/mutazioni sincrone a ogni singola mutazione
-         *  del DOM (frecce, timer, sync) che saturerebbe il main thread e bloccherebbe la penna.
-         *  Se la penna sta scrivendo, rimanda al sollevamento (pointerup/blur). */
-        window.__scheduleAndroidSpenPrime = function () {
+        /** Prepara SUBITO (eager) tutti gli input non ancora inizializzati, così sono pronti
+         *  alla scrittura prima ancora di toccarli con la penna. Cheap: agisce solo sui campi
+         *  non inizializzati e salta quello a fuoco. Nessun differimento: il primo numero
+         *  dev'essere accettato immediatamente. */
+        window.__primeAllAndroidSpenInputs = function () {
             if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
-            if (window.__shSpenIsWriting && window.__shSpenIsWriting()) {
-                window.__androidSpenPrimePending = true;
-                return;
-            }
-            if (window.__androidSpenPrimeScheduled) return;
-            window.__androidSpenPrimeScheduled = true;
-            requestAnimationFrame(function () {
-                window.__androidSpenPrimeScheduled = false;
-                if (window.__shSpenIsWriting && window.__shSpenIsWriting()) {
-                    window.__androidSpenPrimePending = true;
-                    return;
-                }
-                window.__androidSpenPrimePending = false;
-                document.querySelectorAll(
-                    '.main-container input:not([data-sh-spen-input="1"]), .main-container textarea:not([data-sh-spen-input="1"])'
-                ).forEach(window.__primeAndroidSpenInput);
-            });
+            document.querySelectorAll(
+                '.main-container input:not([data-sh-spen-input="1"]), .main-container textarea:not([data-sh-spen-input="1"])'
+            ).forEach(window.__primeAndroidSpenInput);
         };
 
         window.__initAndroidSpenSupport = function () {
@@ -1781,25 +1770,24 @@ window.colorPreviewNumber = function(tankName, value) {
             }
             var mc = document.querySelector('.main-container');
             if (mc) mc.setAttribute('writingsuggestions', 'false');
-            window.__scheduleAndroidSpenPrime();
+            window.__primeAllAndroidSpenInputs();
             if (window.__androidSpenObserver) return;
-            // Observer "leggero": non fa lavoro sincrono. Rileva solo se sono stati aggiunti
-            // input/textarea e, in tal caso, pianifica un unico passaggio di priming per frame.
+            // Observer: prepara SUBITO gli input appena aggiunti (re-render pannelli), così sono
+            // scrivibili immediatamente. Agisce solo sui nodi realmente aggiunti (niente scansione
+            // dell'intero body a ogni mutazione).
             window.__androidSpenObserver = new MutationObserver(function (mutations) {
-                var needsPrime = false;
-                for (var i = 0; i < mutations.length && !needsPrime; i++) {
+                for (var i = 0; i < mutations.length; i++) {
                     var added = mutations[i].addedNodes;
                     for (var j = 0; j < added.length; j++) {
                         var node = added[j];
                         if (!node || node.nodeType !== 1) continue;
-                        if ((node.matches && (node.matches('input') || node.matches('textarea'))) ||
-                            (node.querySelector && node.querySelector('input, textarea'))) {
-                            needsPrime = true;
-                            break;
+                        if (node.matches && (node.matches('input') || node.matches('textarea'))) {
+                            window.__primeAndroidSpenInput(node);
+                        } else if (node.querySelector && node.querySelector('input, textarea')) {
+                            node.querySelectorAll('input, textarea').forEach(window.__primeAndroidSpenInput);
                         }
                     }
                 }
-                if (needsPrime) window.__scheduleAndroidSpenPrime();
             });
             window.__androidSpenObserver.observe(document.body, { childList: true, subtree: true });
             if (window.__androidSpenListenersReady) return;
@@ -1809,36 +1797,25 @@ window.colorPreviewNumber = function(tankName, value) {
                 var t = e.target;
                 if (!t || !t.closest || !t.closest('.main-container')) return;
                 if (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA') return;
+                // Prepara l'input PRIMA che parta il riconoscimento (mentre non è ancora a fuoco),
+                // così il primo numero viene accettato subito senza dover ripassare la penna.
+                window.__primeAndroidSpenInput(t);
                 if (typeof window.__releaseSpenStuckLocks === 'function') window.__releaseSpenStuckLocks();
                 if (window.__isStylusPointerEvent(e)) {
                     document.body.classList.add('sh-stylus-pen-active');
                     clearTimeout(window.__spenPenLiftTimer);
                 }
             }, true);
-            var __onSpenLift = function () {
-                clearTimeout(window.__spenPenLiftTimer);
-                window.__spenPenLiftTimer = setTimeout(function () {
-                    document.body.classList.remove('sh-stylus-pen-active');
-                    // Penna sollevata: se avevamo rimandato priming/refresh mentre scriveva, eseguili ora.
-                    if (window.__androidSpenPrimePending && typeof window.__scheduleAndroidSpenPrime === 'function') {
-                        window.__scheduleAndroidSpenPrime();
-                    }
-                }, 350);
-            };
             document.addEventListener('pointerup', function (e) {
                 if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
                 if (!window.__isStylusPointerEvent(e)) return;
-                __onSpenLift();
+                clearTimeout(window.__spenPenLiftTimer);
+                window.__spenPenLiftTimer = setTimeout(function () {
+                    document.body.classList.remove('sh-stylus-pen-active');
+                }, 350);
             }, true);
-            // Ogni volta che un campo dell'impianto perde il fuoco, la scrittura è finita:
-            // recupera il priming rimandato così i campi successivi restano scrivibili.
-            document.addEventListener('focusout', function (e) {
-                if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
-                if (window.__androidSpenPrimePending && typeof window.__scheduleAndroidSpenPrime === 'function') {
-                    window.__scheduleAndroidSpenPrime();
-                }
-            }, true);
-            // Watchdog: garantisce che nessuno stato residuo (shield/lock) blocchi la penna.
+            // Watchdog: garantisce che nessuno stato residuo (shield/lock) blocchi la penna,
+            // senza mai intervenire mentre si sta scrivendo.
             setInterval(function () {
                 if (window.__shSpenIsWriting && window.__shSpenIsWriting()) return;
                 if (window.__isUserPressingLabel && window.__isUserPressingLabel()) return;

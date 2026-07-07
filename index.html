@@ -18457,6 +18457,11 @@ window.updateStoricoButton = async function() {
                 mm = parseFloat(target.getAttribute('data-ref-mm'));
                 svgX = parseFloat(target.getAttribute('cx'));
                 svgY = parseFloat(target.getAttribute('cy'));
+            } else if (target.hasAttribute('data-tl-saved-dot')) {
+                ts = parseInt(target.getAttribute('data-saved-ts'), 10);
+                mm = parseFloat(target.getAttribute('data-saved-mm'));
+                svgX = parseFloat(target.getAttribute('cx'));
+                svgY = parseFloat(target.getAttribute('cy'));
             } else if (target.hasAttribute('data-tl-now-hit') || target.hasAttribute('data-tl-instant-knob')) {
                 ts = parseInt(target.getAttribute('data-now-ts'), 10);
                 mm = parseFloat(target.getAttribute('data-now-mm'));
@@ -18514,12 +18519,12 @@ window.updateStoricoButton = async function() {
         window.wireTankTimelinePointTips = function (block, wrap, svg) {
             if (!block || !wrap || block.__tlPointTipsWired) return;
             block.__tlPointTipsWired = true;
-            var pointSel = '[data-tl-ref-dot],[data-tl-start-dot],[data-tl-now-hit],[data-tl-instant-knob]';
+            var pointSel = '[data-tl-ref-dot],[data-tl-start-dot],[data-tl-saved-dot],[data-tl-now-hit],[data-tl-instant-knob]';
             function resolvePoint(el) {
                 return el && el.closest ? el.closest(pointSel) : null;
             }
             function isRefDot(pt) {
-                return pt && pt.hasAttribute('data-tl-ref-dot');
+                return pt && (pt.hasAttribute('data-tl-ref-dot') || pt.hasAttribute('data-tl-saved-dot'));
             }
             function isStartDot(pt) {
                 return pt && pt.hasAttribute('data-tl-start-dot');
@@ -19161,14 +19166,36 @@ window.updateStoricoButton = async function() {
             if (!model || !Number.isFinite(lineY)) return [];
             var startPt = model.initialPt;
             var pts = [];
+            var occupied = [];
+            var TOL = 90000; // 90s: stesso punto se cadono quasi nello stesso istante
+            var isFree = function (ts) {
+                for (var i = 0; i < occupied.length; i++) {
+                    if (Math.abs(occupied[i] - ts) < TOL) return false;
+                }
+                return true;
+            };
             if (startPt && Number.isFinite(startPt.ts)) {
                 pts.push({ x: toXHist(startPt.ts), y: lineY, p: startPt, kind: 'start' });
+                occupied.push(startPt.ts);
             }
             (model.manualRefPts || []).forEach(function (ref) {
                 if (ref && Number.isFinite(ref.ts)) {
                     pts.push({ x: toXHist(ref.ts), y: lineY, p: ref, kind: 'ref' });
+                    occupied.push(ref.ts);
                 }
             });
+            // Salvataggi in archivio: ogni salvataggio lascia una traccia (punto storico),
+            // che resta fisso nel tempo mentre l'asta istantanea avanza con l'ora corrente.
+            var instTs = Number.isFinite(model.nowTs) ? model.nowTs : (model.wallNowTs || Date.now());
+            (model.series || []).forEach(function (p) {
+                if (!p || !Number.isFinite(p.ts) || !Number.isFinite(p.mm)) return;
+                if (p.live) return;                         // il "adesso" è l'asta istantanea
+                if (p.ts >= instTs - TOL) return;           // solo punti storici (prima di adesso)
+                if (!isFree(p.ts)) return;                  // evita doppioni con iniziale/refs
+                pts.push({ x: toXHist(p.ts), y: lineY, p: p, kind: 'saved' });
+                occupied.push(p.ts);
+            });
+            pts.sort(function (a, b) { return a.p.ts - b.p.ts; });
             return pts;
         };
 
@@ -19209,6 +19236,7 @@ window.updateStoricoButton = async function() {
             var predPath = 'M' + nowX.toFixed(1) + ',' + lineY.toFixed(1) +
                 ' L' + endX.toFixed(1) + ',' + lineY.toFixed(1);
             var nowY = lineY;
+            var histUnit = window.__tankLevelUnitFrom(model);
             var dots = histPts.map(function (pt) {
                 var lbl = window.__escTankDetailHtml(pt.p.label || window.formatTankTimelineClock(pt.p.ts));
                 var mmLbl = window.__fmtTankDetailMm(pt.p.mm);
@@ -19216,6 +19244,19 @@ window.updateStoricoButton = async function() {
                     tankDbKey: model.tankDbKey,
                     livMax: model.livMax
                 });
+                // Punto di salvataggio storico: traccia fissa, non trascinabile, con tooltip.
+                if (pt.kind === 'saved') {
+                    var savedFill = window.timelineAlarmDotFill(dotState);
+                    var savedTitle = window.__escTankDetailHtml(
+                        window.formatTankTimelineClock(pt.p.ts) + ' · ' + mmLbl + ' ' + histUnit +
+                        (pt.p.label ? ' · ' + pt.p.label : ''));
+                    return '<circle class="tank-detail-timeline-saved-dot" data-tl-saved-dot' +
+                        ' data-saved-ts="' + pt.p.ts + '" data-saved-mm="' + pt.p.mm + '"' +
+                        ' cx="' + pt.x.toFixed(1) + '" cy="' + pt.y.toFixed(1) +
+                        '" r="4" fill="' + savedFill + '" stroke="#0f172a" stroke-width="1.1"' +
+                        ' pointer-events="all" style="cursor:pointer;touch-action:manipulation">' +
+                        '<title>' + savedTitle + '</title></circle>';
+                }
                 var isRef = pt.kind === 'ref' || pt.p.manualRef;
                 var dotFill = isRef ? '#f8fafc' : window.timelineAlarmDotFill(dotState);
                 var dotR = isRef ? 4.5 : 5;

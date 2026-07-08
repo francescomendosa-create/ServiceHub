@@ -17694,6 +17694,9 @@ window.updateStoricoButton = async function() {
                 series = [{ ts: liveTs || Date.now(), mm: info.levelMm, label: 'Livello attuale', live: true }];
             }
             var rate = window.computeTankTimelineRateMmH(series, info);
+            var inputTs = info.fieldId && typeof window.getTankLevelInputTimestampMs === 'function'
+                ? window.getTankLevelInputTimestampMs(info.fieldId) : null;
+            var hasInstantLevel = !!(inputTs && Number.isFinite(info.levelMm));
             var nowMm = Number.isFinite(info.levelMm)
                 ? info.levelMm
                 : (series.length ? series[series.length - 1].mm : 0);
@@ -17730,6 +17733,7 @@ window.updateStoricoButton = async function() {
                 wallNowTs: wallNowTs,
                 actualTs: actualTs,
                 nowMm: nowMm,
+                hasInstantLevel: hasInstantLevel,
                 initialPt: initialPt,
                 manualRefPts: manualRefPts,
                 timelineAnchors: timelineAnchors,
@@ -18676,29 +18680,39 @@ window.updateStoricoButton = async function() {
                 mm = parseFloat(target.getAttribute('data-saved-mm'));
                 svgX = parseFloat(target.getAttribute('cx'));
                 svgY = parseFloat(target.getAttribute('cy'));
-            } else if (target.hasAttribute('data-tl-now-hit') || target.hasAttribute('data-tl-instant-knob')) {
+            } else if (target.hasAttribute('data-tl-now-hit')) {
                 ts = parseInt(target.getAttribute('data-now-ts'), 10);
-                mm = parseFloat(target.getAttribute('data-now-mm'));
-                svgX = parseFloat(target.getAttribute('cx'));
-                svgY = parseFloat(target.getAttribute('cy'));
+                if (!Number.isFinite(ts) && geom) {
+                    var m0 = svg && svg.__tlModel;
+                    ts = m0 && Number.isFinite(m0.wallNowTs) ? m0.wallNowTs : Date.now();
+                }
+                svgX = geom.nowX != null ? geom.nowX : NaN;
+                svgY = geom.lineY != null ? geom.lineY : NaN;
                 if (!Number.isFinite(svgX) && target.getAttribute('x') != null) {
                     svgX = parseFloat(target.getAttribute('x')) +
                         parseFloat(target.getAttribute('width') || 0) / 2;
                     svgY = parseFloat(target.getAttribute('y')) +
                         parseFloat(target.getAttribute('height') || 0) / 2;
                 }
-                if (!Number.isFinite(svgX) && geom) {
-                    svgX = geom.nowX != null ? geom.nowX : svgX;
-                    svgY = geom.lineY != null ? geom.lineY : svgY;
-                }
+            } else if (target.hasAttribute('data-tl-instant-knob')) {
+                ts = parseInt(target.getAttribute('data-now-ts'), 10);
+                mm = parseFloat(target.getAttribute('data-now-mm'));
+                svgX = parseFloat(target.getAttribute('cx'));
+                svgY = parseFloat(target.getAttribute('cy'));
             }
-            if (!Number.isFinite(ts) || !Number.isFinite(mm)) return;
+            if (!Number.isFinite(ts)) return;
             if (!Number.isFinite(svgX)) return;
             var mmEl = tip.querySelector('[data-tl-tip-mm]');
             var timeEl = tip.querySelector('[data-tl-tip-time]');
             var tipUnit = window.__tankLevelUnitFrom((svg && svg.__tlModel) || block.__tlInfo);
-            if (mmEl) mmEl.textContent = window.__fmtTankDetailMm(mm) + ' ' + tipUnit;
-            if (timeEl) timeEl.textContent = window.formatTankTimelineClock(ts);
+            var timeOnly = target.hasAttribute('data-tl-now-hit') && !target.hasAttribute('data-tl-instant-knob');
+            if (timeOnly || !Number.isFinite(mm)) {
+                if (mmEl) mmEl.textContent = timeOnly ? 'Ora attuale' : '—';
+                if (timeEl) timeEl.textContent = window.formatTankTimelineClock(ts);
+            } else {
+                if (mmEl) mmEl.textContent = window.__fmtTankDetailMm(mm) + ' ' + tipUnit;
+                if (timeEl) timeEl.textContent = window.formatTankTimelineClock(ts);
+            }
             tip.style.left = window.timelineFloatLeftPct(geom, svgX).toFixed(2) + '%';
             var levelsRow = block.querySelector('.tank-detail-timeline-levels-row');
             if (levelsRow && wrap) {
@@ -18722,7 +18736,7 @@ window.updateStoricoButton = async function() {
             block.__tlTipTarget = target;
             var fieldId = block.__tlInfo && block.__tlInfo.fieldId;
             var model = svg.__tlModel;
-            if (mmEl && fieldId && model) {
+            if (mmEl && fieldId && model && Number.isFinite(mm)) {
                 window.applyTankTimelineAlarmMetricClass(mmEl, window.resolveTankLevelAlarmState(fieldId, mm, {
                     tankDbKey: model.tankDbKey,
                     livMax: model.livMax
@@ -19413,6 +19427,24 @@ window.updateStoricoButton = async function() {
             return pts;
         };
 
+        /** Aggiorna la linea bianca dell'ora corrente senza ricostruire tutta la pagina. */
+        window.tickTankTimelineWallClock = function (block) {
+            if (!block || !block.isConnected) return false;
+            var svg = block.querySelector('[data-tl-svg]');
+            if (!svg || !svg.__tlModel) return false;
+            var model = svg.__tlModel;
+            model.wallNowTs = Date.now();
+            window.renderTankDetailTimelineSvg(svg, model);
+            var predTimeEl = block.querySelector('[data-tl-pred-time]');
+            if (predTimeEl) {
+                predTimeEl.textContent = window.formatTankTimelineClock(model.wallNowTs);
+            }
+            if (typeof window.updateTankDetailTimelineScrub === 'function') {
+                window.updateTankDetailTimelineScrub(block, block.__tlHoursAhead || 0);
+            }
+            return true;
+        };
+
         window.renderTankDetailTimelineSvg = function (svgEl, model) {
             if (!svgEl || !model) return;
             var h = 68;
@@ -19501,34 +19533,37 @@ window.updateStoricoButton = async function() {
             var zoneHist = '<rect pointer-events="none" x="' + pad.l + '" y="' + pad.t + '" width="' + (nowX - pad.l).toFixed(1) +
                 '" height="' + plotH + '" fill="rgba(56,189,248,0.06)" />';
             var wallTs = model.wallNowTs || Date.now();
-            var instantTs = Number.isFinite(model.nowTs) ? model.nowTs : wallTs;
-            var instantMm = Number.isFinite(model.nowMm) ? model.nowMm : 0;
-            var instState = window.resolveTankLevelAlarmState(model.fieldId, instantMm, {
-                tankDbKey: model.tankDbKey,
-                livMax: model.livMax
-            });
-            var instFill = window.timelineAlarmDotFill(instState);
+            var levelTs = Number.isFinite(model.nowTs) ? model.nowTs : wallTs;
+            var levelMm = Number.isFinite(model.nowMm) ? model.nowMm : 0;
+            var hasLvl = !!model.hasInstantLevel && Number.isFinite(levelMm);
+            // Linea bianca verticale: sempre sull'ora esatta corrente (scorre col tempo).
             var nowLine = '<line data-tl-now-line pointer-events="none" x1="' + nowX.toFixed(1) + '" y1="' + zoneTop.toFixed(1) + '" x2="' + nowX.toFixed(1) +
                 '" y2="' + zoneBottom.toFixed(1) + '" stroke="#f8fafc" stroke-width="2.5" stroke-linecap="round"/>';
-            var instantKnob = '<circle class="tank-detail-timeline-instant-knob" data-tl-instant-knob data-tl-now-hit data-now-ts="' + instantTs +
-                '" data-now-mm="' + instantMm + '" cx="' + nowX.toFixed(1) + '" cy="' + lineY.toFixed(1) +
-                '" r="7.5" fill="' + instFill + '" stroke="#f8fafc" stroke-width="2.5" pointer-events="all" style="cursor:grab;touch-action:none">' +
-                '<title>Livello istantaneo · ' + window.__fmtTankDetailMm(instantMm) + ' ' + window.__tankLevelUnitFrom(model) + ' · tieni premuto per modificare</title></circle>';
-            var nowHitZone = '<rect data-tl-now-hit data-now-ts="' + instantTs + '" data-now-mm="' + instantMm +
+            // Segno sull'asse al passaggio della linea bianca (solo ora, senza livello).
+            var nowAxisMark = '<circle data-tl-now-axis-mark pointer-events="none" cx="' + nowX.toFixed(1) + '" cy="' + lineY.toFixed(1) +
+                '" r="3.5" fill="#f8fafc" stroke="#f8fafc" stroke-width="1"/>';
+            // Zona click sulla linea bianca: long-press per inserire/modificare livello istantaneo.
+            var nowHitZone = '<rect data-tl-now-hit data-now-ts="' + wallTs +
                 '" x="' + (nowX - 18).toFixed(1) + '" y="' + zoneTop.toFixed(1) +
                 '" width="36" height="' + (zoneBottom - zoneTop).toFixed(1) +
-                '" fill="transparent" pointer-events="all" style="cursor:grab;touch-action:none"/>';
-            var levelDot = '';
-            if (Math.abs(levelNowX - nowX) > 4 && Number.isFinite(model.nowMm)) {
-                var lvlState = window.resolveTankLevelAlarmState(model.fieldId, model.nowMm, {
+                '" fill="transparent" pointer-events="all" style="cursor:grab;touch-action:none">' +
+                '<title>Ora attuale · tieni premuto per livello istantaneo</title></rect>';
+            // Pallino livello inserito: fisso all'orario di inserimento (non segue la linea bianca).
+            var instantKnob = '';
+            if (hasLvl) {
+                var instState = window.resolveTankLevelAlarmState(model.fieldId, levelMm, {
                     tankDbKey: model.tankDbKey,
                     livMax: model.livMax
                 });
-                levelDot = '<circle data-tl-level-dot pointer-events="none" cx="' + levelNowX.toFixed(1) + '" cy="' + lineY.toFixed(1) +
-                    '" r="5" fill="' + window.timelineAlarmDotFill(lvlState) + '" stroke="#0f172a" stroke-width="1.2">' +
-                    '<title>Livello inserito ' + window.__fmtTankDetailMm(model.nowMm) + ' ' + window.__tankLevelUnitFrom(model) + ' · ' +
-                    window.formatTankTimelineClock(model.nowTs) + '</title></circle>';
+                var instFill = window.timelineAlarmDotFill(instState);
+                instantKnob = '<circle class="tank-detail-timeline-instant-knob" data-tl-instant-knob' +
+                    ' data-now-ts="' + levelTs + '" data-now-mm="' + levelMm +
+                    '" cx="' + levelNowX.toFixed(1) + '" cy="' + lineY.toFixed(1) +
+                    '" r="7.5" fill="' + instFill + '" stroke="#f8fafc" stroke-width="2.5" pointer-events="all" style="cursor:grab;touch-action:none">' +
+                    '<title>Livello istantaneo · ' + window.__fmtTankDetailMm(levelMm) + ' ' + window.__tankLevelUnitFrom(model) +
+                    ' · ' + window.formatTankTimelineClock(levelTs) + ' · tieni premuto per modificare</title></circle>';
             }
+            var levelDot = '';
             var plotHitPred = '<rect data-tl-plot-hit x="' + (nowX + 14).toFixed(1) + '" y="' + zoneTop.toFixed(1) +
                 '" width="' + Math.max(0, endX - nowX - 14).toFixed(1) + '" height="' + (zoneBottom - zoneTop).toFixed(1) +
                 '" fill="transparent" pointer-events="all" style="cursor:grab"/>';
@@ -19551,7 +19586,7 @@ window.updateStoricoButton = async function() {
                 '" y2="' + (pad.t + plotH).toFixed(1) + '" stroke="rgba(148,163,184,0.35)" stroke-width="1"/>' +
                 (histPath ? '<path pointer-events="none" d="' + histPath + '" fill="none" stroke="#38bdf8" stroke-width="2.5" stroke-linejoin="round"/>' : '') +
                 '<path data-tl-pred-path pointer-events="none" d="' + predPath + '" fill="none" stroke="#a78bfa" stroke-width="2.5" stroke-dasharray="8 5" stroke-linejoin="round"/>' +
-                dots + levelDot + plotHitPred + scrubber + refScrubber + nowLine + instantKnob + nowHitZone;
+                dots + levelDot + plotHitPred + scrubber + refScrubber + nowLine + nowAxisMark + instantKnob + nowHitZone;
             svgEl.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
             svgEl.__tlModel = model;
             svgEl.__tlGeom = geom;
@@ -20096,8 +20131,12 @@ window.updateStoricoButton = async function() {
                     block.__tlWallClockTimer = null;
                     return;
                 }
-                applyPredictH(block.__tlPredictH);
-            }, 60000);
+                if (typeof window.tickTankTimelineWallClock === 'function') {
+                    window.tickTankTimelineWallClock(block);
+                } else {
+                    applyPredictH(block.__tlPredictH);
+                }
+            }, 30000);
         };
 
         window.buildTankDetailHistoryTableHTML = function (series, info) {

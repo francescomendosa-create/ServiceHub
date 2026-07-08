@@ -15897,8 +15897,9 @@ window.updateStoricoButton = async function() {
                 'display:inline-block;width:100%;vertical-align:top;margin-bottom:6px;box-sizing:border-box;';
         };
 
-        window.reportPreviewPackedBlockShell = function (innerHtml) {
-            return '<div class="rp-page-block" style="width:100%;box-sizing:border-box;margin-bottom:6px;">' + innerHtml + '</div>';
+        window.reportPreviewPackedBlockShell = function (innerHtml, order) {
+            var ordAttr = (order != null) ? (' data-rp-order="' + order + '"') : '';
+            return '<div class="rp-page-block"' + ordAttr + ' style="width:100%;box-sizing:border-box;margin-bottom:6px;">' + innerHtml + '</div>';
         };
 
         window.estimateReportPreviewBlockHeight = function (meta) {
@@ -15928,32 +15929,42 @@ window.updateStoricoButton = async function() {
         window.packReportPreviewBlocksHtml = function (blocks, colCount, gap) {
             if (!blocks || !blocks.length) return '';
             colCount = Math.max(1, Number(colCount) || 3);
+            gap = gap || '12px';
+            var sorted = blocks.slice().sort(function (a, b) {
+                if (a.order !== b.order) return a.order - b.order;
+                return String(a.id || '').localeCompare(String(b.id || ''));
+            });
+            // Indice d'ordine di lettura: serve alla ri-paginazione per-pagina (applyPreviewA4Pagination)
+            // per ricostruire l'ordine corretto dei moduli quando si crea una seconda pagina.
+            sorted.forEach(function (b, i) { b.__rpOrder = i; });
+            var packAttrs = ' data-rp-pack="1" data-rp-cols="' + colCount + '" data-rp-gap="' + gap + '"';
+
             if (colCount <= 1) {
-                return blocks.slice().sort(function (a, b) { return a.order - b.order; }).map(function (b) {
-                    return window.reportPreviewPackedBlockShell(b.html);
-                }).join('');
+                var single = '<div' + packAttrs + ' style="width:100%;box-sizing:border-box;">';
+                sorted.forEach(function (b) {
+                    single += window.reportPreviewPackedBlockShell(b.html, b.__rpOrder);
+                });
+                single += '</div>';
+                return single;
             }
             var cols = [];
             var ci;
             for (ci = 0; ci < colCount; ci++) cols.push({ h: 0, parts: [] });
-            blocks.slice().sort(function (a, b) {
-                if (a.order !== b.order) return a.order - b.order;
-                return String(a.id || '').localeCompare(String(b.id || ''));
-            }).forEach(function (block) {
+            sorted.forEach(function (block) {
                 var est = block.estHeight != null ? block.estHeight
                     : window.estimateReportPreviewBlockHeight(block.meta || {});
                 var minIdx = 0;
                 for (ci = 1; ci < colCount; ci++) {
                     if (cols[ci].h < cols[minIdx].h) minIdx = ci;
                 }
-                cols[minIdx].parts.push(block.html);
+                cols[minIdx].parts.push({ html: block.html, order: block.__rpOrder });
                 cols[minIdx].h += est;
             });
-            var out = '<div style="' + window.reportPreviewPackedColumnsStyle(colCount, gap) + '">';
+            var out = '<div' + packAttrs + ' style="' + window.reportPreviewPackedColumnsStyle(colCount, gap) + '">';
             cols.forEach(function (col) {
                 out += '<div style="' + window.reportPreviewPackedColumnStyle() + '">';
                 col.parts.forEach(function (part) {
-                    out += window.reportPreviewPackedBlockShell(part);
+                    out += window.reportPreviewPackedBlockShell(part.html, part.order);
                 });
                 out += '</div>';
             });
@@ -28819,33 +28830,105 @@ window.updateStoricoButton = async function() {
             return window.__a4GuidePagePx;
         };
 
-        /** Paginazione anteprima: nessuna scheda a cavallo del bordo A4. Se una scheda sforerebbe
-         *  la pagina, viene spinta interamente all'inizio della pagina successiva. Le schede più
-         *  alte di un'intera pagina restano dove sono (si riducono con i tasti +/-). */
+        /** Paginazione anteprima PER-PAGINA: ogni pagina A4 ha la propria griglia ordinata a colonne.
+         *  Quando i moduli riempiono una pagina, i successivi ricominciano IN ALTO A SINISTRA della
+         *  pagina dopo (stesso layout ordinato della prima pagina), senza schede a cavallo del bordo
+         *  e senza moduli disallineati. Le schede più alte di un'intera pagina restano intere. */
         window.applyPreviewA4Pagination = function () {
             var container = document.getElementById('preview-sheet');
             if (!container) return;
             if (typeof window.isPreviewNotesMode === 'function' && window.isPreviewNotesMode()) return;
             var pagePx = window.__ensureA4PagePx(container);
             if (!pagePx) return;
-            var blocks = container.querySelectorAll('.rp-page-block');
+            var host = container.querySelector('[data-rp-pack]');
+            if (!host) return;
+            var colCount = Math.max(1, parseInt(host.getAttribute('data-rp-cols'), 10) || 3);
+            var gap = host.getAttribute('data-rp-gap') || '12px';
+            var blocks = Array.prototype.slice.call(host.querySelectorAll('.rp-page-block'));
             if (!blocks.length) return;
-            var EPS = 2;
-            // Reset (idempotenza) di eventuali spinte precedenti sullo stesso DOM.
-            blocks.forEach(function (b) { b.style.marginTop = ''; });
-            var sheetTop = container.getBoundingClientRect().top;
-            // Elabora dall'alto verso il basso: spostando una scheda si spostano quelle sotto,
-            // e la misura live (getBoundingClientRect) tiene conto delle spinte già applicate.
-            blocks.forEach(function (b) {
-                var h = b.offsetHeight;
-                if (h >= pagePx - EPS) return; // troppo alta per una pagina: la lascio (userà +/-)
-                var top = b.getBoundingClientRect().top - sheetTop;
-                var pageEnd = (Math.floor((top + EPS) / pagePx) + 1) * pagePx;
-                if (top + h > pageEnd + EPS) {
-                    var shift = pageEnd - top;
-                    if (shift > 0) b.style.marginTop = shift + 'px';
-                }
+
+            // Ordine di lettura originale dei moduli.
+            blocks.sort(function (a, b) {
+                return (parseInt(a.getAttribute('data-rp-order'), 10) || 0) -
+                    (parseInt(b.getAttribute('data-rp-order'), 10) || 0);
             });
+
+            // Altezza reale di ogni scheda (larghezza colonna costante fra le pagine → misura valida).
+            var GAP_V = 6;
+            var measured = blocks.map(function (el) {
+                return { el: el, h: el.getBoundingClientRect().height + GAP_V };
+            });
+
+            // La prima pagina ha meno spazio utile per via dell'intestazione del report.
+            var hostOffset = host.getBoundingClientRect().top - container.getBoundingClientRect().top;
+            if (!(hostOffset >= 0)) hostOffset = 0;
+            var fullBudget = function (pageIdx) { return pageIdx === 0 ? (pagePx - hostOffset) : pagePx; };
+            var budget = function (pageIdx) { return fullBudget(pageIdx) - 4; };
+
+            // Impacchettamento per-pagina: riempie le colonne della pagina corrente, poi passa
+            // alla pagina successiva ricominciando dalla colonna di sinistra.
+            var pages = [];
+            var mkPage = function () {
+                var cols = [];
+                for (var i = 0; i < colCount; i++) cols.push({ h: 0, items: [] });
+                pages.push(cols);
+                return cols;
+            };
+            var shortest = function (cols) {
+                var idx = 0;
+                for (var i = 1; i < cols.length; i++) if (cols[i].h < cols[idx].h) idx = i;
+                return idx;
+            };
+            var firstFit = function (cols, h, b) {
+                for (var i = 0; i < cols.length; i++) if (cols[i].h + h <= b) return i;
+                return -1;
+            };
+            var pageEmpty = function (cols) {
+                for (var i = 0; i < cols.length; i++) if (cols[i].items.length) return false;
+                return true;
+            };
+            var cur = mkPage();
+            measured.forEach(function (m) {
+                var b = budget(pages.length - 1);
+                var idx = shortest(cur);
+                if (cur[idx].h + m.h > b) {
+                    var alt = firstFit(cur, m.h, b);
+                    if (alt >= 0) {
+                        idx = alt;
+                    } else if (!pageEmpty(cur)) {
+                        cur = mkPage();
+                        idx = 0;
+                    } else {
+                        idx = shortest(cur); // scheda più alta della pagina: la lascio intera
+                    }
+                }
+                cur[idx].items.push(m.el);
+                cur[idx].h += m.h;
+            });
+
+            // Ricostruisce il DOM: host diventa uno stack di pagine, ognuna con la sua griglia.
+            var colsStyle = window.reportPreviewPackedColumnsStyle(colCount, gap);
+            var colStyle = window.reportPreviewPackedColumnStyle();
+            var frag = document.createDocumentFragment();
+            pages.forEach(function (cols, pi) {
+                var pageEl = document.createElement('div');
+                pageEl.className = 'rp-page';
+                var minH = (pi < pages.length - 1) ? ('min-height:' + Math.round(fullBudget(pi)) + 'px;') : '';
+                pageEl.setAttribute('style', colsStyle + minH);
+                cols.forEach(function (col) {
+                    var colEl = document.createElement('div');
+                    colEl.setAttribute('style', colStyle);
+                    col.items.forEach(function (el) {
+                        el.style.marginTop = '';
+                        colEl.appendChild(el);
+                    });
+                    pageEl.appendChild(colEl);
+                });
+                frag.appendChild(pageEl);
+            });
+            host.setAttribute('style', 'width:100%;box-sizing:border-box;');
+            host.innerHTML = '';
+            host.appendChild(frag);
         };
 
         /** Disegna il tratteggio del perimetro A4 sull'anteprima report: una cornice tratteggiata

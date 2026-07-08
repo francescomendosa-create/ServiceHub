@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="it">
 <head>
     <meta charset="UTF-8">
@@ -43963,9 +43963,10 @@ window.applyAlarmLevelFillToField = function (el, forceMin) {
 // --- ACQUISIZIONE INTELLIGENTE: GEMINI VISION + OCR + CONFERMA ---
 window.SMART_CAPTURE_OFFLINE_ONLY = false;
 window.SMART_CAPTURE_PREFER_GEMINI = true;
-/** true = solo Gemini su desktop; iPhone usa fallback OCR locale se Gemini non legge. */
+/** true = solo Gemini (PC e iPhone). L'OCR locale Tesseract su iPhone inventa numeri errati. */
 window.SMART_CAPTURE_GEMINI_ONLY = true;
-window.SMART_CAPTURE_IOS_LOCAL_FALLBACK = true;
+/** false = su iPhone NON passare a Tesseract se Gemini non legge (stesso comportamento del PC). */
+window.SMART_CAPTURE_IOS_LOCAL_FALLBACK = false;
 window._smartCaptureTankMode = false;
 
 window.TANK_CAPTURE_FIELDS = [
@@ -47806,6 +47807,14 @@ window.runSmartCaptureAnalysis = async function(imageData) {
                 }
                 return geminiResult;
             }
+            // iPhone: secondo tentativo Gemini (modello alternativo) prima di arrendersi — mai Tesseract.
+            if (window.isIosDevice && window.isIosDevice()) {
+                window.setSmartCaptureLoadingMessage('Gemini: secondo tentativo (iPhone)…');
+                const iosRetry = await window.runGeminiSmartCaptureOcr(imageData, fields);
+                if (iosRetry.readings && iosRetry.readings.length > 0) {
+                    return iosRetry;
+                }
+            }
             console.warn('Gemini: risposta senza letture utilizzabili', geminiResult.rawTextPreview);
         } catch (errGem) {
             console.warn('Gemini primary capture:', errGem);
@@ -47817,14 +47826,23 @@ window.runSmartCaptureAnalysis = async function(imageData) {
         }
     }
 
-    if (window.SMART_CAPTURE_GEMINI_ONLY && !geminiQuotaHit) {
-        var iosFallback = window.isIosDevice && window.isIosDevice() && window.SMART_CAPTURE_IOS_LOCAL_FALLBACK !== false;
-        if (!iosFallback) {
-            throw new Error('Gemini non ha trovato sigle/livelli nella foto. Avvicina il DCS, luce uniforme, riprova.');
+    var iosDevice = typeof window.isIosDevice === 'function' && window.isIosDevice();
+    var iosLocalOk = iosDevice && window.SMART_CAPTURE_IOS_LOCAL_FALLBACK === true;
+
+    // iPhone: mai OCR locale (Tesseract) — numeri inventati. Stesso percorso Gemini del PC.
+    if (iosDevice && !iosLocalOk) {
+        if (geminiQuotaHit) {
+            throw new Error('Quota Gemini esaurita. Riprova più tardi (su iPhone non uso OCR locale per evitare numeri errati).');
         }
-        console.warn('iOS: Gemini senza letture, fallback OCR locale');
+        throw new Error('Gemini non ha trovato sigle/livelli nella foto. Avvicina il DCS, luce uniforme, riprova. ' +
+            'iPhone: Impostazioni → Fotocamera → Formati → Massima compatibilità (JPG).');
     }
 
+    if (window.SMART_CAPTURE_GEMINI_ONLY && !geminiQuotaHit) {
+        throw new Error('Gemini non ha trovato sigle/livelli nella foto. Avvicina il DCS, luce uniforme, riprova.');
+    }
+
+    // OCR locale (Tesseract): solo PC con quota esaurita o modalità offline esplicita.
     if (geminiQuotaHit) {
         window.setSmartCaptureLoadingMessage('Quota Gemini: OCR locale (controlla i numeri)…');
     } else {
@@ -48483,8 +48501,10 @@ window.showSmartCaptureConfirm = function(parsed) {
 
     if (parsed && parsed.notes && hint) {
         const eng = parsed.engine ? (' · motore: ' + parsed.engine) : '';
+        const localWarn = (parsed.engine === 'local' || String(parsed.engine || '').indexOf('local') >= 0)
+            ? ' ⚠ OCR locale (meno affidabile) — preferisci Gemini' : '';
         const multi = parsed.photoCount > 1 ? (' · ' + parsed.photoCount + ' foto unite') : '';
-        hint.textContent = parsed.notes + multi + eng + ' — correggi se necessario';
+        hint.textContent = parsed.notes + multi + eng + localWarn + ' — correggi se necessario';
     } else if (hint && letturaMode) {
         hint.textContent = 'Letture colonna ' + (window._letturaOcrSlotLabel || '') +
             ' — i livelli andranno nella colonna sotto l\'orario scelto';
@@ -49239,8 +49259,8 @@ window.geminiGenerateWithOneKey = async function(apiKey, parts, opts) {
                 return { text: text, model: modelli[i] };
             } catch (e) {
                 lastErr = e && e.message ? e.message : String(e);
-            if (window.isGeminiQuotaOrBlockedError(msg)) {
-                window.markGeminiSessionQuotaExhausted(msg);
+                if (window.isGeminiQuotaOrBlockedError(lastErr)) {
+                window.markGeminiSessionQuotaExhausted(lastErr);
                 i = modelli.length;
                 break;
             }

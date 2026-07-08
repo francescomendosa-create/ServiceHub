@@ -603,6 +603,27 @@ window.calculateTons = function(tankName, level) {
     return ((lvl / 1000) * tankData.coeff).toFixed(1);
 };
 
+/**
+ * Tonnellate movimentate tra due livelli (scaricate/caricate nel periodo).
+ * È il delta di prodotto, NON le tonnellate totali presenti nel serbatoio.
+ * Ritorna il valore assoluto (la direzione è data da freccia/colore del trend),
+ * arrotondato a 1 decimale, oppure null se non calcolabile.
+ */
+window.calculateTonsDelta = function (tankName, startLevel, endLevel) {
+    var tankData = window.lookupTankDatabaseEntry(tankName);
+    if (!tankData || !tankData.coeff) return null;
+    var parseLvl = function (v) {
+        return typeof window.parseTankLevelMm === 'function'
+            ? window.parseTankLevelMm(v)
+            : parseFloat(String(v == null ? '' : v).replace(',', '.'));
+    };
+    var a = parseLvl(startLevel);
+    var b = parseLvl(endLevel);
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+    var delta = Math.abs(b - a) / 1000 * tankData.coeff;
+    return Math.round(delta * 10) / 10;
+};
+
 window.calculateMmFromTons = function (tankName, tons) {
     var t = parseFloat(String(tons == null ? '' : tons).replace(',', '.'));
     if (!Number.isFinite(t)) return null;
@@ -18393,6 +18414,9 @@ window.updateStoricoButton = async function() {
             if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                 window.schedulePublicDigitalSnapshotSync();
             }
+            if (typeof window.refreshReportPreview === 'function') {
+                try { void window.refreshReportPreview(); } catch (_) {}
+            }
             if (typeof window.saveData === 'function') void window.saveData(true);
         };
 
@@ -18437,6 +18461,9 @@ window.updateStoricoButton = async function() {
             }
             if (typeof window.schedulePublicDigitalSnapshotSync === 'function') {
                 window.schedulePublicDigitalSnapshotSync();
+            }
+            if (typeof window.refreshReportPreview === 'function') {
+                try { void window.refreshReportPreview(); } catch (_) {}
             }
             if (typeof window.saveData === 'function') void window.saveData(true);
         };
@@ -29826,17 +29853,20 @@ window.updateStoricoButton = async function() {
                 if (str.length === 3) return '8px';
                 return '2px';
             };
-            var html = '<div style="' + window.reportPreviewModuleWrapStyle() + 'position:relative;">';
-            html += '<div style="font-size:' + fsTitle + 'px;font-weight:650;text-transform:uppercase;color:#000;border-bottom:0.5px solid #000;padding-bottom:4px;margin-bottom:5px;letter-spacing:0.3px;">' + title + '</div>';
-            html += '<div style="font-size:' + fsSmall + 'px;font-weight:400;text-transform:none;color:#666;margin-top:2px;letter-spacing:0.1px;display:flex;align-items:center;">';
-            html += '<span style="display:inline-block;width:31px;"></span>';
-            html += '<span style="display:inline-block;min-width:28px;text-align:center;margin-left:4px;font-size:' + fsTime + 'px;font-weight:800;color:#000;">' + startTime + '</span>';
-            html += '<span style="display:inline-block;min-width:28px;text-align:center;margin-left:4px;font-size:' + fsTime + 'px;font-weight:800;color:#000;">' + endTime + '</span>';
-            html += '<span style="display:inline-block;width:auto;margin-left:8px;font-size:' + fsTime + 'px;font-weight:800;color:#333;">(' + totalHours + ')</span>';
-            html += '</div>';
-            html += '<div style="position:absolute;left:58px;top:25px;bottom:0;width:1px;background-color:#ccc;"></div>';
-            html += '<div style="display:flex;flex-direction:column;">';
-            trends.forEach(function (trend) {
+            // Intestazione orari (start → end + durata), riusabile per ogni gruppo.
+            var buildTimeHeaderHtml = function (st, et) {
+                var dur = window.calculateTrendReportHours(st, et);
+                var h = '<div style="font-size:' + fsSmall + 'px;font-weight:400;text-transform:none;color:#666;margin-top:2px;letter-spacing:0.1px;display:flex;align-items:center;">';
+                h += '<span style="display:inline-block;width:31px;"></span>';
+                h += '<span style="display:inline-block;min-width:28px;text-align:center;margin-left:4px;font-size:' + fsTime + 'px;font-weight:800;color:#000;">' + st + '</span>';
+                h += '<span style="display:inline-block;min-width:28px;text-align:center;margin-left:4px;font-size:' + fsTime + 'px;font-weight:800;color:#000;">' + et + '</span>';
+                h += '<span style="display:inline-block;width:auto;margin-left:8px;font-size:' + fsTime + 'px;font-weight:800;color:#333;">(' + dur + ')</span>';
+                h += '</div>';
+                return h;
+            };
+
+            // Riga singola di trend (nome, valore iniziale → finale, delta, tonnellate).
+            var buildTrendRowHtml = function (trend) {
                 var tankName = window.getTankName(trend.tank);
                 var displayName = typeof opts.formatName === 'function'
                     ? opts.formatName(trend, tankName)
@@ -29855,27 +29885,62 @@ window.updateStoricoButton = async function() {
                     trendText = trendText.replace(' mm', '');
                 }
                 var color = trend.rising ? (opts.risingColor || '#dc2626') : (opts.fallingColor || '#2563eb');
-                var tons = (!opts.isAnalisi && !isPct && typeof window.calculateTons === 'function')
-                    ? window.calculateTons(tankName, trend.end) : '';
+                // Tonnellate MOVIMENTATE nel periodo (delta), non il totale nel serbatoio.
+                var tons = (!opts.isAnalisi && !isPct && typeof window.calculateTonsDelta === 'function')
+                    ? window.calculateTonsDelta(tankName, trend.start, trend.end) : '';
                 var startPad = getPaddingRight(startVal);
                 var endPad = getPaddingRight(endVal);
                 var nameWidth = opts.isAnalisi ? '37px' : '37px';
                 var nameLineHeight = opts.isAnalisi ? 'line-height:1.2;' : '';
-                html += '<div style="display:flex;align-items:flex-start;padding:2px 0;border-bottom:0.1px solid #e5e7eb;font-size:' + fsTitle + 'px;">';
-                html += '<span style="font-weight:600;text-transform:uppercase;color:#000;width:' + nameWidth + ';flex-shrink:0;' + nameLineHeight + '">' + displayName + '</span>';
-                html += '<span style="font-weight:600;color:#333;width:40px;text-align:left;margin-left:-2px;font-family:monospace;padding-right:' + startPad + ';box-sizing:border-box;">' + coloredStart + '</span>';
-                html += '<span class="report-trend-mid-arrow" style="margin:0 1px;color:#999;' +
+                var r = '<div style="display:flex;align-items:flex-start;padding:2px 0;border-bottom:0.1px solid #e5e7eb;font-size:' + fsTitle + 'px;">';
+                r += '<span style="font-weight:600;text-transform:uppercase;color:#000;width:' + nameWidth + ';flex-shrink:0;' + nameLineHeight + '">' + displayName + '</span>';
+                r += '<span style="font-weight:600;color:#333;width:40px;text-align:left;margin-left:-2px;font-family:monospace;padding-right:' + startPad + ';box-sizing:border-box;">' + coloredStart + '</span>';
+                r += '<span class="report-trend-mid-arrow" style="margin:0 1px;color:#999;' +
                     window.__tankTrendArrowCompactCss(fsTitle + 'px') + '">→</span>';
-                html += '<span style="font-weight:600;color:#333;width:40px;text-align:left;margin-left:-2px;font-family:monospace;padding-right:' + endPad + ';box-sizing:border-box;">' + coloredEnd + '</span>';
-                html += '<span style="margin:0 1px;color:#999;">|</span>';
-                html += '<div style="display:flex;flex-direction:column;align-items:flex-start;flex-shrink:0;margin-left:-2px;">';
-                html += '<span style="font-weight:700;color:' + color + ';">' + trendText + '</span>';
+                r += '<span style="font-weight:600;color:#333;width:40px;text-align:left;margin-left:-2px;font-family:monospace;padding-right:' + endPad + ';box-sizing:border-box;">' + coloredEnd + '</span>';
+                r += '<span style="margin:0 1px;color:#999;">|</span>';
+                r += '<div style="display:flex;flex-direction:column;align-items:flex-start;flex-shrink:0;margin-left:-2px;">';
+                r += '<span style="font-weight:700;color:' + color + ';">' + trendText + '</span>';
                 if (tons) {
-                    html += '<span style="font-size:' + fsSmall + 'px;color:#0ea5e9;font-weight:600;margin-top:1px;">' + tons + ' t</span>';
+                    r += '<span style="font-size:' + fsSmall + 'px;color:#0ea5e9;font-weight:600;margin-top:1px;">' + tons + ' t</span>';
                 }
-                html += '</div></div>';
+                r += '</div></div>';
+                return r;
+            };
+
+            // Raggruppa i serbatoi per orario di inizio (modificabile dal timeline):
+            // i serbatoi con lo stesso orario di inizio finiscono sotto la stessa intestazione.
+            var trendGroups = [];
+            var trendGroupIdx = {};
+            trends.forEach(function (trend) {
+                var st = trend.startTime || startTime || '--:--';
+                if (!(st in trendGroupIdx)) {
+                    trendGroupIdx[st] = trendGroups.length;
+                    trendGroups.push({ startTime: st, items: [] });
+                }
+                trendGroups[trendGroupIdx[st]].items.push(trend);
             });
-            html += '</div></div>';
+            var multiStart = trendGroups.length > 1;
+
+            var html = '<div style="' + window.reportPreviewModuleWrapStyle() + 'position:relative;">';
+            html += '<div style="font-size:' + fsTitle + 'px;font-weight:650;text-transform:uppercase;color:#000;border-bottom:0.5px solid #000;padding-bottom:4px;margin-bottom:5px;letter-spacing:0.3px;">' + title + '</div>';
+
+            if (!multiStart) {
+                html += buildTimeHeaderHtml(startTime, endTime);
+                html += '<div style="position:absolute;left:58px;top:25px;bottom:0;width:1px;background-color:#ccc;"></div>';
+                html += '<div style="display:flex;flex-direction:column;">';
+                trends.forEach(function (trend) { html += buildTrendRowHtml(trend); });
+                html += '</div>';
+            } else {
+                trendGroups.forEach(function (g, gi) {
+                    var gEnd = (g.items[g.items.length - 1] && g.items[g.items.length - 1].endTime) || endTime;
+                    html += '<div style="display:flex;flex-direction:column;' + (gi > 0 ? 'margin-top:7px;' : '') + '">';
+                    html += buildTimeHeaderHtml(g.startTime, gEnd);
+                    g.items.forEach(function (trend) { html += buildTrendRowHtml(trend); });
+                    html += '</div>';
+                });
+            }
+            html += '</div>';
             return html;
         };
 
@@ -30043,8 +30108,24 @@ window.updateStoricoButton = async function() {
 
                 tankFields.forEach(tankId => {
                     const normId = window.normalizeTrendFieldId(tankId);
-                    const firstValue = window.archiveSnapshotValue(firstEntry, normId);
+                    let firstValue = window.archiveSnapshotValue(firstEntry, normId);
                     const lastValue = window.archiveSnapshotValue(lastEntry, normId);
+                    // Orario e valore di inizio per-serbatoio: se l'utente ha impostato/modificato
+                    // un livello iniziale esplicito dal timeline, usa quel ts e quel mm come inizio.
+                    var startTimeForTank = startTime;
+                    var startTsForTank = null;
+                    try {
+                        var effInit = typeof window.getTankTimelineEffectiveInitial === 'function'
+                            ? window.getTankTimelineEffectiveInitial(normId, []) : null;
+                        if (effInit && effInit.manualInitial === true && Number.isFinite(effInit.ts)) {
+                            startTsForTank = effInit.ts;
+                            startTimeForTank = typeof window.formatTankTimelineClock === 'function'
+                                ? window.formatTankTimelineClock(effInit.ts) : startTime;
+                            if (Number.isFinite(effInit.mm) && effInit.mm > 0) {
+                                firstValue = effInit.mm;
+                            }
+                        }
+                    } catch (_) {}
                     if (!Number.isFinite(firstValue) || firstValue <= 0) return;
                     if (!Number.isFinite(lastValue) || lastValue <= 0) return;
                     if (firstValue === lastValue) return;
@@ -30060,7 +30141,8 @@ window.updateStoricoButton = async function() {
                         tank: normId,
                         start: Math.round(firstValue * 10) / 10,
                         end: Math.round(lastValue * 10) / 10,
-                        startTime: startTime,
+                        startTime: startTimeForTank,
+                        startTs: startTsForTank,
                         endTime: endTime,
                         rising: lastValue > firstValue
                     });
@@ -32755,22 +32837,18 @@ window.__buildDigitalTrendTableHTML = function (trends, opts) {
         return String(tankName || '').trim();
     };
     const analisiKeys = ['COD', 'COND ING', 'COND', 'O2 MBR1', 'O2 MBR2', 'CONO', 'COD NUOVO', 'COD VECCHIO'];
-    let html = '<div class="digital-trend-wrap digital-trend-wrap--' + theme + '">';
-    html += '<style>' + window.__digitalTrendEmbedCss(theme) + '</style>';
-    html += '<div class="digital-trend-grid digital-trend-head">';
-    html += '<span class="digital-trend-head__name"></span>';
-    html += '<span class="digital-trend-head__time">' + startTime + '</span>';
-    html += '<span class="digital-trend-head__time">' + endTime + '</span>';
-    html += '<span class="digital-trend-head__dur">(' + calculateHours(startTime, endTime) + ')</span>';
-    html += '</div>';
-    let analisiTitleShown = false;
-    trends.forEach(function (trend) {
+    const buildTimeHeader = function (st, et) {
+        let h = '<div class="digital-trend-grid digital-trend-head">';
+        h += '<span class="digital-trend-head__name"></span>';
+        h += '<span class="digital-trend-head__time">' + st + '</span>';
+        h += '<span class="digital-trend-head__time">' + et + '</span>';
+        h += '<span class="digital-trend-head__dur">(' + calculateHours(st, et) + ')</span>';
+        h += '</div>';
+        return h;
+    };
+    const buildTrendRow = function (trend) {
         const tankName = window.getTankName(trend.tank);
         const isAnalisi = analisiKeys.indexOf(tankName) >= 0;
-        if (isAnalisi && !analisiTitleShown) {
-            html += '<div class="digital-trend-section">ANALISI</div>';
-            analisiTitleShown = true;
-        }
         const rising = !!trend.rising;
         const deltaClass = isAnalisi
             ? (rising ? 'digital-trend-row__delta--up-an' : 'digital-trend-row__delta--down-an')
@@ -32785,19 +32863,57 @@ window.__buildDigitalTrendTableHTML = function (trends, opts) {
             ? window.formatTrendNumeric(trend.start) : trend.start;
         const endVal = typeof window.formatTrendNumeric === 'function'
             ? window.formatTrendNumeric(trend.end) : trend.end;
-        const tons = (!isAnalisi && !isPct && typeof window.calculateTons === 'function')
-            ? window.calculateTons(tankName, trend.end)
+        // Tonnellate MOVIMENTATE nel periodo (delta), non il totale nel serbatoio.
+        const tons = (!isAnalisi && !isPct && typeof window.calculateTonsDelta === 'function')
+            ? window.calculateTonsDelta(tankName, trend.start, trend.end)
             : '';
-        html += '<div class="digital-trend-grid digital-trend-row">';
-        html += '<span class="digital-trend-row__name">' + formatTrendName(tankName, trend.tank) + '</span>';
-        html += '<span class="digital-trend-row__val">' + startVal + '</span>';
-        html += '<span class="digital-trend-row__val">' + endVal + '</span>';
-        html += '<span class="digital-trend-row__delta ' + deltaClass + '">' + deltaMain;
+        let r = '<div class="digital-trend-grid digital-trend-row">';
+        r += '<span class="digital-trend-row__name">' + formatTrendName(tankName, trend.tank) + '</span>';
+        r += '<span class="digital-trend-row__val">' + startVal + '</span>';
+        r += '<span class="digital-trend-row__val">' + endVal + '</span>';
+        r += '<span class="digital-trend-row__delta ' + deltaClass + '">' + deltaMain;
         if (tons) {
-            html += '<span class="digital-trend-row__tons">' + tons + ' t</span>';
+            r += '<span class="digital-trend-row__tons">' + tons + ' t</span>';
         }
-        html += '</span></div>';
+        r += '</span></div>';
+        return r;
+    };
+
+    // Raggruppa per orario di inizio (impostato dal timeline): i serbatoi con lo
+    // stesso orario di inizio finiscono sotto la stessa intestazione oraria.
+    const trendGroups = [];
+    const trendGroupIdx = {};
+    trends.forEach(function (trend) {
+        const st = trend.startTime || startTime || '--:--';
+        if (!(st in trendGroupIdx)) {
+            trendGroupIdx[st] = trendGroups.length;
+            trendGroups.push({ startTime: st, items: [] });
+        }
+        trendGroups[trendGroupIdx[st]].items.push(trend);
     });
+    const multiStart = trendGroups.length > 1;
+
+    let html = '<div class="digital-trend-wrap digital-trend-wrap--' + theme + '">';
+    html += '<style>' + window.__digitalTrendEmbedCss(theme) + '</style>';
+
+    if (!multiStart) {
+        html += buildTimeHeader(startTime, endTime);
+        let analisiTitleShown = false;
+        trends.forEach(function (trend) {
+            const tankName = window.getTankName(trend.tank);
+            if (analisiKeys.indexOf(tankName) >= 0 && !analisiTitleShown) {
+                html += '<div class="digital-trend-section">ANALISI</div>';
+                analisiTitleShown = true;
+            }
+            html += buildTrendRow(trend);
+        });
+    } else {
+        trendGroups.forEach(function (g) {
+            const gEnd = (g.items[g.items.length - 1] && g.items[g.items.length - 1].endTime) || endTime;
+            html += buildTimeHeader(g.startTime, gEnd);
+            g.items.forEach(function (trend) { html += buildTrendRow(trend); });
+        });
+    }
     html += '</div>';
     return html;
 };

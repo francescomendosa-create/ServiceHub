@@ -29813,25 +29813,82 @@ window.updateStoricoButton = async function() {
             return text;
         };
 
-        window.calculateTrendReportHours = function (startTime, endTime) {
-            var startHour = parseInt(String(startTime).split(':')[0], 10);
-            var startMin = parseInt(String(startTime).split(':')[1], 10);
-            var endHour = parseInt(String(endTime).split(':')[0], 10);
-            var endMin = parseInt(String(endTime).split(':')[1], 10);
-            if (isNaN(startHour)) startHour = 0;
-            if (isNaN(startMin)) startMin = 0;
-            if (isNaN(endHour)) endHour = 0;
-            if (isNaN(endMin)) endMin = 0;
-            var totalHours = endHour - startHour;
-            var totalMinutes = endMin - startMin;
-            if (totalMinutes < 0) {
-                totalHours--;
-                totalMinutes += 60;
+        window.__parseTrendClockHM = function (timeStr) {
+            if (!timeStr || timeStr === '--:--') return null;
+            var parts = String(timeStr).trim().split(':');
+            if (parts.length < 2) return null;
+            var h = parseInt(parts[0], 10);
+            var m = parseInt(parts[1], 10);
+            if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+            return { h: h, m: m };
+        };
+
+        /** Durata in ms tra due orari HH:MM (gestisce passaggio mezzanotte). */
+        window.__trendClockSpanMs = function (startTime, endTime) {
+            var sp = window.__parseTrendClockHM(startTime);
+            var ep = window.__parseTrendClockHM(endTime);
+            if (!sp || !ep) return null;
+            var startMs = sp.h * 3600000 + sp.m * 60000;
+            var endMs = ep.h * 3600000 + ep.m * 60000;
+            if (endMs <= startMs) endMs += 24 * 3600000;
+            return endMs - startMs;
+        };
+
+        /** Etichetta durata trend: "8h", "8h½", "9h" (arrotondamento come prima). */
+        window.__formatTrendDurationLabel = function (diffMs) {
+            if (!Number.isFinite(diffMs) || diffMs < 0) return '--';
+            var totalMinutes = Math.round(diffMs / 60000);
+            var hours = Math.floor(totalMinutes / 60);
+            var minutes = totalMinutes % 60;
+            if (minutes >= 30) return (hours + 1) + 'h';
+            if (minutes > 0) return hours + 'h½';
+            return hours + 'h';
+        };
+
+        /**
+         * Durata trend tra orario iniziale e finale.
+         * Preferisce i timestamp reali (startTs/endTs); altrimenti calcola da HH:MM
+         * con gestione del passaggio di mezzanotte.
+         */
+        window.calculateTrendReportHours = function (startTime, endTime, startTs, endTs) {
+            var diffMs = null;
+            if (Number.isFinite(startTs) && Number.isFinite(endTs) && endTs > startTs) {
+                diffMs = endTs - startTs;
+            } else {
+                diffMs = window.__trendClockSpanMs(startTime, endTime);
             }
-            totalHours = Math.abs(totalHours);
-            if (totalMinutes >= 30) return totalHours + 1 + 'h';
-            if (totalMinutes > 0) return totalHours + 'hÂ½';
-            return totalHours + 'h';
+            return window.__formatTrendDurationLabel(diffMs);
+        };
+
+        /** Orari e timestamp estremi di un gruppo trend (inizio comune, fine più recente). */
+        window.__trendGroupTimeBounds = function (items, fallbackStart, fallbackEnd) {
+            var out = {
+                startTime: fallbackStart || '--:--',
+                endTime: fallbackEnd || '--:--',
+                startTs: null,
+                endTs: null
+            };
+            if (!items || !items.length) return out;
+            items.forEach(function (t) {
+                if (t.startTime) out.startTime = t.startTime;
+                if (Number.isFinite(t.startTs)) {
+                    if (out.startTs == null || t.startTs < out.startTs) out.startTs = t.startTs;
+                }
+                if (Number.isFinite(t.endTs)) {
+                    if (out.endTs == null || t.endTs > out.endTs) {
+                        out.endTs = t.endTs;
+                        if (t.endTime) out.endTime = t.endTime;
+                    }
+                } else if (t.endTime) {
+                    var span = window.__trendClockSpanMs(out.startTime, t.endTime);
+                    var curSpan = window.__trendClockSpanMs(out.startTime, out.endTime);
+                    if (span != null && (curSpan == null || span > curSpan)) out.endTime = t.endTime;
+                }
+            });
+            if (Number.isFinite(out.endTs) && typeof window.formatTankTimelineClock === 'function') {
+                out.endTime = window.formatTankTimelineClock(out.endTs);
+            }
+            return out;
         };
 
         /** Blocco TREND SERBATOI / ANALISI per report A4 (layout originale + numeri arrotondati). */
@@ -29845,7 +29902,6 @@ window.updateStoricoButton = async function() {
             var fsTime = window.scalePreviewFont(base, -2);
             var startTime = trends[0].startTime || '--:--';
             var endTime = trends[trends.length - 1].endTime || '--:--';
-            var totalHours = window.calculateTrendReportHours(startTime, endTime);
             var getPaddingRight = function (num) {
                 var str = String(num == null ? '' : num);
                 if (str.length === 1) return '20px';
@@ -29854,8 +29910,8 @@ window.updateStoricoButton = async function() {
                 return '2px';
             };
             // Intestazione orari (start → end + durata), riusabile per ogni gruppo.
-            var buildTimeHeaderHtml = function (st, et) {
-                var dur = window.calculateTrendReportHours(st, et);
+            var buildTimeHeaderHtml = function (st, et, sts, ets) {
+                var dur = window.calculateTrendReportHours(st, et, sts, ets);
                 var h = '<div style="font-size:' + fsSmall + 'px;font-weight:400;text-transform:none;color:#666;margin-top:2px;letter-spacing:0.1px;display:flex;align-items:center;">';
                 h += '<span style="display:inline-block;width:31px;"></span>';
                 h += '<span style="display:inline-block;min-width:28px;text-align:center;margin-left:4px;font-size:' + fsTime + 'px;font-weight:800;color:#000;">' + st + '</span>';
@@ -29926,16 +29982,20 @@ window.updateStoricoButton = async function() {
             html += '<div style="font-size:' + fsTitle + 'px;font-weight:650;text-transform:uppercase;color:#000;border-bottom:0.5px solid #000;padding-bottom:4px;margin-bottom:5px;letter-spacing:0.3px;">' + title + '</div>';
 
             if (!multiStart) {
-                html += buildTimeHeaderHtml(startTime, endTime);
+                var bounds = typeof window.__trendGroupTimeBounds === 'function'
+                    ? window.__trendGroupTimeBounds(trends, startTime, endTime) : { startTime: startTime, endTime: endTime };
+                html += buildTimeHeaderHtml(bounds.startTime, bounds.endTime, bounds.startTs, bounds.endTs);
                 html += '<div style="position:absolute;left:58px;top:25px;bottom:0;width:1px;background-color:#ccc;"></div>';
                 html += '<div style="display:flex;flex-direction:column;">';
                 trends.forEach(function (trend) { html += buildTrendRowHtml(trend); });
                 html += '</div>';
             } else {
                 trendGroups.forEach(function (g, gi) {
-                    var gEnd = (g.items[g.items.length - 1] && g.items[g.items.length - 1].endTime) || endTime;
+                    var gBounds = typeof window.__trendGroupTimeBounds === 'function'
+                        ? window.__trendGroupTimeBounds(g.items, g.startTime, endTime)
+                        : { startTime: g.startTime, endTime: endTime };
                     html += '<div style="display:flex;flex-direction:column;' + (gi > 0 ? 'margin-top:7px;' : '') + '">';
-                    html += buildTimeHeaderHtml(g.startTime, gEnd);
+                    html += buildTimeHeaderHtml(gBounds.startTime, gBounds.endTime, gBounds.startTs, gBounds.endTs);
                     g.items.forEach(function (trend) { html += buildTrendRowHtml(trend); });
                     html += '</div>';
                 });
@@ -30105,6 +30165,10 @@ window.updateStoricoButton = async function() {
                 const trends = [];
                 const startTime = firstEntry.time || firstEntry.archiveTime || '--:--';
                 const endTimeDefault = lastEntry.time || '--:--';
+                const archiveStartTs = typeof window.getArchiveTimestampMs === 'function'
+                    ? window.getArchiveTimestampMs(firstEntry) : null;
+                const archiveEndTs = typeof window.getArchiveTimestampMs === 'function'
+                    ? window.getArchiveTimestampMs(lastEntry) : null;
 
                 tankFields.forEach(tankId => {
                     const normId = window.normalizeTrendFieldId(tankId);
@@ -30126,6 +30190,9 @@ window.updateStoricoButton = async function() {
                             }
                         }
                     } catch (_) {}
+                    if (!Number.isFinite(startTsForTank) && Number.isFinite(archiveStartTs) && archiveStartTs > 0) {
+                        startTsForTank = archiveStartTs;
+                    }
                     if (!Number.isFinite(firstValue) || firstValue <= 0) return;
                     if (!Number.isFinite(lastValue) || lastValue <= 0) return;
                     if (firstValue === lastValue) return;
@@ -30137,6 +30204,10 @@ window.updateStoricoButton = async function() {
                             endTime = new Date(endTs).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
                         } catch (_) {}
                     }
+                    if (!Number.isFinite(endTs) && Number.isFinite(archiveEndTs) && archiveEndTs > 0) {
+                        endTs = archiveEndTs;
+                    }
+                    if (!Number.isFinite(endTs)) endTs = Date.now();
                     trends.push({
                         tank: normId,
                         start: Math.round(firstValue * 10) / 10,
@@ -30144,6 +30215,7 @@ window.updateStoricoButton = async function() {
                         startTime: startTimeForTank,
                         startTs: startTsForTank,
                         endTime: endTime,
+                        endTs: endTs,
                         rising: lastValue > firstValue
                     });
                 });
@@ -30180,6 +30252,9 @@ window.updateStoricoButton = async function() {
                 const trends = [];
                 const startTime = firstEntry.time || firstEntry.archiveTime || '--:--';
                 const endTime = new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+                const archiveStartTs = typeof window.getArchiveTimestampMs === 'function'
+                    ? window.getArchiveTimestampMs(firstEntry) : null;
+                const endTs = Date.now();
 
                 analisiFields.forEach(field => {
                     const normField = window.normalizeTrendFieldId(field);
@@ -30194,7 +30269,9 @@ window.updateStoricoButton = async function() {
                         start: Math.round(startValue * 10) / 10,
                         end: Math.round(endValue * 10) / 10,
                         startTime: startTime,
+                        startTs: archiveStartTs,
                         endTime: endTime,
+                        endTs: endTs,
                         rising: endValue > startValue
                     });
                 });
@@ -32814,21 +32891,9 @@ window.__buildDigitalTrendTableHTML = function (trends, opts) {
     const theme = o.theme === 'print' ? 'print' : 'digital';
     const startTime = trends[0].startTime || '--:--';
     const endTime = trends[trends.length - 1].endTime || '--:--';
-    const calculateHours = function (start, end) {
-        const startHour = parseInt(start.split(':')[0], 10);
-        const startMin = parseInt(start.split(':')[1], 10);
-        const endHour = parseInt(end.split(':')[0], 10);
-        const endMin = parseInt(end.split(':')[1], 10);
-        let totalHours = endHour - startHour;
-        let totalMinutes = endMin - startMin;
-        if (totalMinutes < 0) {
-            totalHours--;
-            totalMinutes += 60;
-        }
-        totalHours = Math.abs(totalHours);
-        if (totalMinutes >= 30) return totalHours + 1 + 'h';
-        if (totalMinutes > 0) return totalHours + 'hÂ½';
-        return totalHours + 'h';
+    const calcDur = function (st, et, sts, ets) {
+        return typeof window.calculateTrendReportHours === 'function'
+            ? window.calculateTrendReportHours(st, et, sts, ets) : '--';
     };
     const formatTrendName = function (tankName, fieldId) {
         if (fieldId && typeof window.formatTrendDisplayLabel === 'function') {
@@ -32837,12 +32902,12 @@ window.__buildDigitalTrendTableHTML = function (trends, opts) {
         return String(tankName || '').trim();
     };
     const analisiKeys = ['COD', 'COND ING', 'COND', 'O2 MBR1', 'O2 MBR2', 'CONO', 'COD NUOVO', 'COD VECCHIO'];
-    const buildTimeHeader = function (st, et) {
+    const buildTimeHeader = function (st, et, sts, ets) {
         let h = '<div class="digital-trend-grid digital-trend-head">';
         h += '<span class="digital-trend-head__name"></span>';
         h += '<span class="digital-trend-head__time">' + st + '</span>';
         h += '<span class="digital-trend-head__time">' + et + '</span>';
-        h += '<span class="digital-trend-head__dur">(' + calculateHours(st, et) + ')</span>';
+        h += '<span class="digital-trend-head__dur">(' + calcDur(st, et, sts, ets) + ')</span>';
         h += '</div>';
         return h;
     };
@@ -32897,7 +32962,10 @@ window.__buildDigitalTrendTableHTML = function (trends, opts) {
     html += '<style>' + window.__digitalTrendEmbedCss(theme) + '</style>';
 
     if (!multiStart) {
-        html += buildTimeHeader(startTime, endTime);
+        const bounds = typeof window.__trendGroupTimeBounds === 'function'
+            ? window.__trendGroupTimeBounds(trends, startTime, endTime)
+            : { startTime: startTime, endTime: endTime };
+        html += buildTimeHeader(bounds.startTime, bounds.endTime, bounds.startTs, bounds.endTs);
         let analisiTitleShown = false;
         trends.forEach(function (trend) {
             const tankName = window.getTankName(trend.tank);
@@ -32909,8 +32977,10 @@ window.__buildDigitalTrendTableHTML = function (trends, opts) {
         });
     } else {
         trendGroups.forEach(function (g) {
-            const gEnd = (g.items[g.items.length - 1] && g.items[g.items.length - 1].endTime) || endTime;
-            html += buildTimeHeader(g.startTime, gEnd);
+            const gBounds = typeof window.__trendGroupTimeBounds === 'function'
+                ? window.__trendGroupTimeBounds(g.items, g.startTime, endTime)
+                : { startTime: g.startTime, endTime: endTime };
+            html += buildTimeHeader(gBounds.startTime, gBounds.endTime, gBounds.startTs, gBounds.endTs);
             g.items.forEach(function (trend) { html += buildTrendRow(trend); });
         });
     }

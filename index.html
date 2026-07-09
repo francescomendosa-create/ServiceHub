@@ -45970,6 +45970,7 @@ window.parseDcsAcquaPairsFromJson = function(json, fields) {
         if (target && target.fieldId) id = target.fieldId;
         if (!id) id = window.resolveTankIdFromLabel(sigla || desc, fields);
         if (!id || !allowed.has(id) || used.has(id)) return;
+        if (typeof window.isLikelyTankCapacityMisread === 'function' && window.isLikelyTankCapacityMisread(id, val)) return;
 
         used.add(id);
         readings.push({
@@ -46047,12 +46048,42 @@ window.isLikelyGeminiFailureRaw = function(raw) {
 window.isPlausibleDcsLevel = function(fieldId, value) {
     const n = parseFloat(String(value || '').replace(',', '.'));
     if (!isFinite(n) || n < 80 || n > 11000) return false;
+    if (typeof window.isLikelyTankCapacityMisread === 'function' && window.isLikelyTankCapacityMisread(fieldId, n)) return false;
     const seed = (window.getDefaultDcsCatalogSeed() || []).find(function(c) { return c.fieldId === fieldId; });
     if (seed && seed.livMax != null) {
         const max = parseFloat(String(seed.livMax).replace(',', '.'));
         if (isFinite(max) && n > max * 1.08) return false;
     }
     return true;
+};
+
+/** Livello massimo di riferimento per un campo (capacità serbatoio, non livello attuale). */
+window.getTankReferenceLivMax = function(fieldId) {
+    if (!fieldId) return null;
+    var rows = window.STOCCAGGIO_DCS_SCREEN_ROWS || [];
+    for (var i = 0; i < rows.length; i++) {
+        if (rows[i].fieldId === fieldId && rows[i].livMax != null) return Number(rows[i].livMax);
+    }
+    var dbKey = typeof window.getTankName === 'function' ? window.getTankName(fieldId) : null;
+    if (dbKey && window.TANK_MAX && window.TANK_MAX[dbKey] != null) return Number(window.TANK_MAX[dbKey]);
+    return null;
+};
+
+/**
+ * Rileva quando un valore letto è in realtà la CAPACITÀ MASSIMA (liv_max, es. 6000 mm)
+ * confusa col livello attuale — errore frequente su JSON Gemini e regex sul testo grezzo.
+ */
+window.isLikelyTankCapacityMisread = function(fieldId, value) {
+    var n = typeof value === 'number' ? value : parseFloat(String(value || '').replace(',', '.'));
+    if (!Number.isFinite(n)) return false;
+    var max = window.getTankReferenceLivMax(fieldId);
+    if (max != null && Number.isFinite(max) && Math.abs(n - max) < 1.5) return true;
+    var rows = window.STOCCAGGIO_DCS_SCREEN_ROWS || [];
+    for (var i = 0; i < rows.length; i++) {
+        if (rows[i].fieldId !== fieldId || rows[i].livMax == null) continue;
+        if (Math.abs(n - Number(rows[i].livMax)) < 1.5) return true;
+    }
+    return false;
 };
 
 window.isTrustedDcsOcrReading = function(r) {
@@ -46113,6 +46144,7 @@ window.extractDcsAcquaReadings = function(raw, fields, opts) {
 window.isPlausibleCaptureLevel = function(fieldId, value) {
     const n = parseFloat(String(value || '').replace(',', '.'));
     if (!isFinite(n) || n < 0 || n > 12000) return false;
+    if (typeof window.isLikelyTankCapacityMisread === 'function' && window.isLikelyTankCapacityMisread(fieldId, n)) return false;
     const seed = (window.getDefaultDcsCatalogSeed() || []).find(function(c) { return c.fieldId === fieldId; });
     if (seed && seed.livMax != null) {
         const max = parseFloat(String(seed.livMax).replace(',', '.'));
@@ -46352,16 +46384,7 @@ window.runGeminiNotturnoMultiCapture = async function(imageData, fields) {
                 merged = window.mergeOcrReadingLists(merged, cr.readings);
                 engines.push('consumi');
             }
-            if (cr && cr.rawGemini && typeof window.matchConsumiProduzioneFromOcrText === 'function') {
-                var crLocal = window.filterConsumiProduzioneReadings(
-                    window.matchConsumiProduzioneFromOcrText(cr.rawGemini, fields, { notturnoOnly: true }),
-                    { notturnoOnly: true }
-                );
-                if (crLocal.length) {
-                    merged = window.mergeOcrReadingLists(crLocal, merged);
-                    engines.push('consumi-local');
-                }
-            }
+            // Non parsare il JSON Gemini con regex locale (stesso problema liv_max su iPhone/PC).
             if (cr && cr.rawGemini) {
                 consumiScreenOk = true;
             }
@@ -46821,7 +46844,8 @@ window.parseGeminiTankPairsJson = function(json, fields) {
     fields = fields || window.buildTankCaptureFieldMap();
     const fieldIds = new Set(fields.map(function(f) { return f.id; }));
     if (!json) return [];
-    let pairs = json.applica_ora || json.coppie || json.pairs || json.serbatoi || json.catalogo || json.readings;
+    // NON usare json.catalogo qui: contiene liv_max (es. 6000) che viene scambiato per il livello.
+    let pairs = json.applica_ora || json.coppie || json.pairs || json.serbatoi || json.readings;
     if (!pairs && Array.isArray(json)) pairs = json;
     if (!Array.isArray(pairs)) return [];
     const readings = [];
@@ -46845,6 +46869,7 @@ window.parseGeminiTankPairsJson = function(json, fields) {
         if (id === 'inp-s121') return;
         if (/^S.?121$/i.test(String(sigla).trim()) && /LIVELLO|90.?LT.?121/i.test(String(p.descrizione || p.description || ''))) return;
         if (!id || used.has(id)) return;
+        if (typeof window.isLikelyTankCapacityMisread === 'function' && window.isLikelyTankCapacityMisread(id, val)) return;
         used.add(id);
         const field = fields.find(function(f) { return f.id === id; });
         readings.push({
@@ -46949,6 +46974,7 @@ window.parseGeminiTankGridJson = function(json) {
             console.warn('[Tank OCR] Corretto slot', slot.key, 'da', id, 'a', fromSigla, 'sigla letta:', sigla);
             id = fromSigla;
         }
+        if (typeof window.isLikelyTankCapacityMisread === 'function' && window.isLikelyTankCapacityMisread(id, val)) return;
         if (used.has(id)) return;
         used.add(id);
         readings.push({ id: id, value: val, confidence: 'alta', source: slot.label });
@@ -46975,6 +47001,7 @@ window.normalizeGeminiTankReadings = function(rawReadings, fields) {
         if (!id || used.has(id)) return;
         const field = fields.find(function(f) { return f.id === id; });
         if (!field) return;
+        if (typeof window.isLikelyTankCapacityMisread === 'function' && window.isLikelyTankCapacityMisread(id, val)) return;
         used.add(id);
         out.push({ id: id, value: val, confidence: r.confidence || 'alta', source: field.label });
     });
@@ -47138,17 +47165,23 @@ window.extractTankReadingsFromGeminiRaw = function(raw, fields) {
     if (json && Array.isArray(json.readings)) {
         legacy = window.normalizeGeminiTankReadings(json.readings, fields);
     }
-    const text = window.matchTankReadingsFromOcrText(raw, fields);
+    // Mai applicare regex OCR sul JSON grezzo di Gemini: legge liv_max (6000) come livello.
+    var textReadings = [];
+    var hasStructured = pairs.length || grid.length || legacy.length ||
+        (json && (json.applica_ora || json.coppie || json.pairs || json.serbatoi));
+    if (!hasStructured) {
+        textReadings = window.matchTankReadingsFromOcrText(raw, fields);
+    }
     let readings = window.reconcileTankOcrReadings(
         pairs.length ? pairs : legacy,
         grid,
-        text
+        textReadings
     );
     if (!readings.length) {
-        readings = window.mergeOcrReadingLists(window.mergeOcrReadingLists(pairs, grid), text);
+        readings = window.mergeOcrReadingLists(window.mergeOcrReadingLists(pairs, grid), textReadings);
     }
     if (!readings.length) {
-        readings = window.mergeOcrReadingLists(legacy, text);
+        readings = window.mergeOcrReadingLists(legacy, textReadings);
     }
     return readings;
 };
@@ -47336,7 +47369,8 @@ window.normalizeSmartCaptureImageForGemini = async function(imageData) {
     const dataUrl = raw.indexOf(',') >= 0 ? raw : 'data:image/jpeg;base64,' + raw;
     const mime = String(imageData.type || '').toLowerCase();
     const isMobile = window.isIosDevice && window.isIosDevice();
-    const maxW = isMobile ? 1800 : 2200;
+    const maxW = isMobile ? 2048 : 2200;
+    const jpegQ = isMobile ? 0.93 : 0.9;
 
     return new Promise(function(resolve, reject) {
         const img = new Image();
@@ -47360,7 +47394,7 @@ window.normalizeSmartCaptureImageForGemini = async function(imageData) {
                 ctx.imageSmoothingQuality = 'high';
                 ctx.drawImage(img, 0, 0, w, h);
                 resolve({
-                    data: canvas.toDataURL('image/jpeg', 0.9),
+                    data: canvas.toDataURL('image/jpeg', jpegQ),
                     type: 'image/jpeg',
                     name: String(imageData.name || 'foto.jpg').replace(/\.(heic|heif|png|webp)$/i, '.jpg')
                 });
@@ -47548,6 +47582,7 @@ window.matchReadingsFromOcrText = function(ocrText, fields) {
         if (!field || !field.id || usedIds.has(field.id)) return;
         let v = window.fixOcrDigitValue(value);
         if (!window.isValidOcrValue(v)) return;
+        if (typeof window.isLikelyTankCapacityMisread === 'function' && window.isLikelyTankCapacityMisread(field.id, v)) return;
         readings.push({
             id: field.id,
             value: v,
@@ -47961,6 +47996,9 @@ window.finishSmartCapture = function(parsed) {
     const p = parsed || { readings: [], notes: '' };
     if (!p.photoDataUrl && window._smartCapturePhotoData) {
         p.photoDataUrl = window.smartCapturePhotoToUrl(window._smartCapturePhotoData);
+    }
+    if (p.engine && p.notes && p.notes.indexOf('motore:') < 0 && p.notes.indexOf(p.engine) < 0) {
+        p.notes = p.notes + ' · motore: ' + p.engine;
     }
     window.showSmartCaptureConfirm(p);
 };

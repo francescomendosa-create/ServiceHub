@@ -49298,10 +49298,10 @@ window.geminiGenerateWithOneKey = async function(apiKey, parts, opts) {
             } catch (e) {
                 lastErr = e && e.message ? e.message : String(e);
                 if (window.isGeminiQuotaOrBlockedError(lastErr)) {
-                window.markGeminiSessionQuotaExhausted(lastErr);
-                i = modelli.length;
-                break;
-            }
+                    window.markGeminiSessionQuotaExhausted(lastErr);
+                    i = modelli.length;
+                    break;
+                }
                 if (window.isGeminiTimeoutLikeError(lastErr) && attempt < maxRetry) {
                     attempt++;
                     continue;
@@ -49313,15 +49313,17 @@ window.geminiGenerateWithOneKey = async function(apiKey, parts, opts) {
     throw new Error(lastErr || 'Gemini non disponibile');
 };
 
-/** Test leggero: una sola chiamata API per chiave (niente doppio modello = niente risultati a raffica). */
+/** Test chiave: prova i modelli in ordine (come OCR/chat), non solo flash-lite. */
 window.geminiTestOneKey = async function(apiKey, timeoutMs) {
     const ms = timeoutMs || (window.GEMINI_TIMING && window.GEMINI_TIMING.testPerKeyMs) || 58000;
     const parts = [{ text: 'Rispondi solo con la parola OK.' }];
-    const text = await window.geminiFetchModelOnce(apiKey, 'gemini-2.5-flash-lite', parts, ms, {
-        temperature: 0,
-        maxOutputTokens: 32
+    const out = await window.geminiGenerateWithOneKey(apiKey, parts, {
+        models: ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-flash'],
+        timeoutMs: ms,
+        generationConfig: { temperature: 0, maxOutputTokens: 32 },
+        retryOnSlow: false
     });
-    return { text: text, model: 'gemini-2.5-flash-lite' };
+    return { text: out.text, model: out.model };
 };
 
 window.runGeminiWithKeyRotation = async function(parts, opts) {
@@ -49466,7 +49468,7 @@ window.testGeminiApiKeys = async function() {
             );
             const t0 = Date.now();
             try {
-                await Promise.race([
+                const testOut = await Promise.race([
                     window.geminiTestOneKey(slot.key, perKeyMs),
                     new Promise(function(_, reject) {
                         setTimeout(function() {
@@ -49475,7 +49477,8 @@ window.testGeminiApiKeys = async function() {
                     })
                 ]);
                 const sec = Math.round((Date.now() - t0) / 1000);
-                lines.push('Chiave ' + keyNum + ': OK (' + sec + ' s)');
+                const modelLbl = testOut && testOut.model ? (' · ' + testOut.model) : '';
+                lines.push('Chiave ' + keyNum + ': OK' + modelLbl + ' (' + sec + ' s)');
                 anyOk = true;
                 window.clearGeminiKeyCooldown(slot.slotIndex);
                 cfg.activeIndex = slot.slotIndex;
@@ -49554,6 +49557,9 @@ window.formatGeminiError = function(message) {
     }
     if (/API key not valid|INVALID_ARGUMENT.*API key/i.test(msg)) {
         return 'Chiave Gemini non valida. Verifica la API key nel progetto Google Cloud servicehub-18309.';
+    }
+    if (/not found|NOT_FOUND|is not supported|not available|does not exist|404/i.test(msg) && /gemini|model|flash/i.test(msg)) {
+        return 'Modello Gemini non disponibile su questo progetto/chiave (es. 2.5 flash-lite). L\'app proverà altri modelli in automatico; se il test fallisce, abilita Generative Language API o usa un\'altra chiave.';
     }
     if (window.isGeminiQuotaOrBlockedError && window.isGeminiQuotaOrBlockedError(msg)) {
         return 'Quota Gemini esaurita su questa chiave/progetto Google. ' +

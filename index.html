@@ -15739,9 +15739,9 @@ window.updateStoricoButton = async function() {
                 { key: 'torcia-val', subLabel: 'VAL. TAL QUALE', unit: 'KSmc/h' },
                 { key: 'torcia-pct', subLabel: '% GIORN. PREC.', unit: 'KSmc/h' }
             ]},
-            { type: 'status', key: 'k10600', label: 'K10600', statusId: 'tmk10600', hint: 'marcia' },
-            { type: 'status', key: 'k10500a', label: 'K10500A', statusId: 't105A', hint: 'marcia' },
-            { type: 'status', key: 'k10500b', label: 'K10500B', statusId: 't105B', hint: 'fermo' },
+            { type: 'status', key: 'k10600', label: 'K10600', headerId: 'hmk10600', statusId: 'tmk10600' },
+            { type: 'status', key: 'k10500a', label: 'K10500A', headerId: 'h105A', statusId: 't105A' },
+            { type: 'status', key: 'k10500b', label: 'K10500B', headerId: 'h105B', statusId: 't105B' },
             { type: 'n2block', key: 'n2', label: 'N2', items: [
                 { key: 'n2-nmc', subLabel: '', unit: 'Nmc/h', fieldId: 'val-az-n2' },
                 { key: 'n2-giorn', subLabel: 'GIORN.', unit: '', fieldId: null }
@@ -15829,49 +15829,75 @@ window.updateStoricoButton = async function() {
             return '';
         };
 
-        window.normalizeSituazioneCompressorStatus = function (v) {
-            var s = String(v == null ? '' : v).trim();
-            if (/^MARCIA$/i.test(s)) return 'MARCIA';
-            if (/^FERMO$/i.test(s)) return 'FERMO';
-            return '';
+        window.formatSituazioneBluedownStatusLabel = function (state) {
+            return String(state || '').toUpperCase() === 'MARCIA' ? 'marcia' : 'arresto';
         };
 
-        /** Valori di prova digitati a mano (minuscolo) — non sono stati reali. */
-        window.isStaleSituazioneStatusTestValue = function (raw) {
-            var s = String(raw == null ? '' : raw).trim();
-            return s === 'marcia' || s === 'fermo';
+        window.readSituazioneGiornalieraBluedownStatus = function (row) {
+            if (!row) return '';
+            var comp = (window.BLOWDOWN_COMPRESSORS || []).find(function (c) {
+                return c.statusId === row.statusId || c.headerId === row.headerId;
+            });
+            var headerId = (comp && comp.headerId) || row.headerId || '';
+            var header = headerId ? document.getElementById(headerId) : null;
+            if (header && typeof window.readBluedownCompressorState === 'function') {
+                return window.formatSituazioneBluedownStatusLabel(window.readBluedownCompressorState(header));
+            }
+            var state = '';
+            function parseStoredStatus(val) {
+                if (val == null) return '';
+                if (typeof val === 'object' && val.text != null) {
+                    var txt = String(val.text);
+                    if (/MARCIA/i.test(txt)) return 'MARCIA';
+                    if (/FERMO/i.test(txt)) return 'FERMO';
+                    return '';
+                }
+                var s = String(val).trim().toUpperCase();
+                if (s.indexOf('MARCIA') >= 0) return 'MARCIA';
+                if (s.indexOf('FERMO') >= 0) return 'FERMO';
+                return '';
+            }
+            if (headerId) {
+                var backup = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
+                if (backup && backup[headerId] != null) {
+                    state = parseStoredStatus(backup[headerId]);
+                }
+                if (!state) {
+                    try {
+                        var store = window.loadRapportiniStore && window.loadRapportiniStore();
+                        if (store && store.items) {
+                            Object.keys(store.items).forEach(function (rid) {
+                                if (state) return;
+                                var d = store.items[rid] && store.items[rid].data;
+                                if (d && d[headerId] != null) state = parseStoredStatus(d[headerId]);
+                            });
+                        }
+                    } catch (_) {}
+                }
+            }
+            if (!state && row.statusId) {
+                var statusEl = document.getElementById(row.statusId);
+                if (statusEl) {
+                    var t = String(statusEl.textContent || statusEl.innerText || '').trim().toUpperCase();
+                    if (t === 'MARCIA' || t === 'FERMO') state = t;
+                }
+            }
+            return state ? window.formatSituazioneBluedownStatusLabel(state) : '';
         };
 
-        window.readSituazioneGiornalieraStatusSnapValue = function (snap, key) {
-            var raw = window.readSituazioneGiornalieraSnapValue(snap, key);
-            if (!raw || window.isStaleSituazioneStatusTestValue(raw)) return '';
-            return window.normalizeSituazioneCompressorStatus(raw);
-        };
-
-        window.purgeInvalidSituazioneStatusSnapshot = function () {
+        window.purgeSituazioneBluedownStatusSnapshotKeys = function () {
             var store = window.loadSituazioneGiornalieraSnapshot();
             var dateKey = window.getLetturaDocDateKey();
             var snap = store[dateKey];
             if (!snap) return;
             var changed = false;
             ['k10600', 'k10500a', 'k10500b'].forEach(function (key) {
-                var raw = snap[key];
-                if (raw == null || String(raw).trim() === '') return;
-                if (window.isStaleSituazioneStatusTestValue(raw) || !window.normalizeSituazioneCompressorStatus(raw)) {
+                if (snap[key] != null) {
                     delete snap[key];
                     changed = true;
                 }
             });
-            if (changed) {
-                window.saveSituazioneGiornalieraSnapshot(store);
-            }
-        };
-
-        window.readSituazioneGiornalieraStatusValue = function (statusId) {
-            var el = document.getElementById(statusId);
-            if (!el) return '';
-            var t = String(el.innerText || el.textContent || '').trim();
-            return window.normalizeSituazioneCompressorStatus(t);
+            if (changed) window.saveSituazioneGiornalieraSnapshot(store);
         };
 
         window.readSituazioneGiornalieraVwtPortataValue = function () {
@@ -15941,9 +15967,7 @@ window.updateStoricoButton = async function() {
                 return pick(window.readSituazioneGiornalieraSnapValue(snap, key), window.readSituazioneGiornalieraOsmosiUnitValue(row.unit));
             }
             if (row && row.type === 'status') {
-                var snapSt = window.readSituazioneGiornalieraStatusSnapValue(snap, key);
-                var plantSt = window.readSituazioneGiornalieraStatusValue(row.statusId);
-                return pick(snapSt, plantSt);
+                return window.readSituazioneGiornalieraBluedownStatus(row);
             }
             if (row && row.type === 'notes') {
                 return window.readSituazioneGiornalieraSnapValue(snap, key);
@@ -16016,18 +16040,7 @@ window.updateStoricoButton = async function() {
             var store = window.loadSituazioneGiornalieraSnapshot();
             if (!store[dateKey]) store[dateKey] = {};
             var v = String(value == null ? '' : value).trim();
-            if (['k10600', 'k10500a', 'k10500b'].indexOf(key) >= 0) {
-                if (!v) {
-                    if (store[dateKey][key] != null) {
-                        delete store[dateKey][key];
-                        store[dateKey]._savedAt = Date.now();
-                        window.saveSituazioneGiornalieraSnapshot(store);
-                    }
-                    return;
-                }
-                v = window.normalizeSituazioneCompressorStatus(v);
-                if (!v) return;
-            }
+            if (['k10600', 'k10500a', 'k10500b'].indexOf(key) >= 0) return;
             if (!v) return;
             if (key) store[dateKey][key] = v;
             if (fieldId) {
@@ -16121,13 +16134,6 @@ window.updateStoricoButton = async function() {
                     return;
                 }
                 if (row.type === 'status') {
-                    var plantSt = window.readSituazioneGiornalieraStatusValue(row.statusId);
-                    var snapSt = window.readSituazioneGiornalieraStatusSnapValue(snap, row.key);
-                    if (force || !snapSt) {
-                        merge(row.key, plantSt);
-                    } else {
-                        merge(row.key, snapSt);
-                    }
                     return;
                 }
                 if (row.type === 'n2block') {
@@ -16184,17 +16190,6 @@ window.updateStoricoButton = async function() {
                 inp.addEventListener('change', function () { commit(inp); });
                 inp.addEventListener('blur', function () { commit(inp); });
             });
-        };
-
-        window.buildSituazioneCompressorStatusHtml = function (key, val, esc, interactive) {
-            var norm = window.normalizeSituazioneCompressorStatus(val);
-            if (!interactive) {
-                return norm ? esc(norm) : '&nbsp;';
-            }
-            return '<select class="rg-inp sg-inp sg-status" data-sg-key="' + window.escRapportinoAttr(key || '') + '" data-sg-field="">' +
-                '<option value=""' + (norm ? '' : ' selected') + '>—</option>' +
-                '<option value="MARCIA"' + (norm === 'MARCIA' ? ' selected' : '') + '>MARCIA</option>' +
-                '<option value="FERMO"' + (norm === 'FERMO' ? ' selected' : '') + '>FERMO</option></select>';
         };
 
         window.buildSituazioneGiornalieraSinoHtml = function (key, val, esc, interactive) {
@@ -16259,10 +16254,10 @@ window.updateStoricoButton = async function() {
                 }).join('');
             }
             if (row.type === 'status') {
-                var stVal = window.readSituazioneGiornalieraCellValue(row);
+                var stVal = window.readSituazioneGiornalieraBluedownStatus(row);
                 return '<tr><td class="sg-lbl">' + esc(row.label) + '</td>' +
-                    '<td class="sg-um">' + esc(row.hint || '') + '</td>' +
-                    '<td class="sg-val">' + window.buildSituazioneCompressorStatusHtml(row.key, stVal, esc, interactive) + '</td>' +
+                    '<td class="sg-um">' + empty + '</td>' +
+                    '<td class="sg-val sg-val-status">' + (stVal ? esc(stVal) : empty) + '</td>' +
                     '<td class="sg-um">' + empty + '</td><td class="sg-val">' + empty + '</td></tr>';
             }
             if (row.type === 'n2block') {
@@ -16422,8 +16417,8 @@ window.updateStoricoButton = async function() {
         window.renderLetturaSituazioneGiornalieraDocView = function (opts) {
             opts = opts || {};
             window.setLetturaDocKind('situazione-giornaliera');
-            if (typeof window.purgeInvalidSituazioneStatusSnapshot === 'function') {
-                window.purgeInvalidSituazioneStatusSnapshot();
+            if (typeof window.purgeSituazioneBluedownStatusSnapshotKeys === 'function') {
+                window.purgeSituazioneBluedownStatusSnapshotKeys();
             }
             if (!opts.skipSync && typeof window.syncSituazioneGiornalieraFromPlant === 'function') {
                 window.syncSituazioneGiornalieraFromPlant({ force: true });
@@ -16475,7 +16470,8 @@ window.updateStoricoButton = async function() {
             '.sg-side-block{margin:0 0 4pt}' +
             '.sg-inp{width:100%;max-width:100%;border:none;background:transparent;text-align:center;font-weight:700;font-size:inherit;padding:0;margin:0;outline:none}' +
             '.sg-notes-ta{width:100%;min-height:72px;border:none;background:transparent;font-size:inherit;font-family:inherit;resize:vertical;padding:2pt;outline:none;line-height:1.2}' +
-            '.sg-sino,.sg-status{text-align:center}' +
+            '.sg-sino{text-align:center}' +
+            '.sg-val-status{font-weight:700;text-transform:lowercase}' +
             '.lettura-doc--situazione-preview .sg-inp,.lettura-doc--situazione-preview .sg-notes-ta{background:rgba(99,102,241,0.08);border-radius:3px;min-height:22px}' +
             '@media print{.sg-inp,.sg-notes-ta{border:none!important;background:transparent!important}}';
 

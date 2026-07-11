@@ -15829,12 +15829,49 @@ window.updateStoricoButton = async function() {
             return '';
         };
 
+        window.normalizeSituazioneCompressorStatus = function (v) {
+            var s = String(v == null ? '' : v).trim();
+            if (/^MARCIA$/i.test(s)) return 'MARCIA';
+            if (/^FERMO$/i.test(s)) return 'FERMO';
+            return '';
+        };
+
+        /** Valori di prova digitati a mano (minuscolo) — non sono stati reali. */
+        window.isStaleSituazioneStatusTestValue = function (raw) {
+            var s = String(raw == null ? '' : raw).trim();
+            return s === 'marcia' || s === 'fermo';
+        };
+
+        window.readSituazioneGiornalieraStatusSnapValue = function (snap, key) {
+            var raw = window.readSituazioneGiornalieraSnapValue(snap, key);
+            if (!raw || window.isStaleSituazioneStatusTestValue(raw)) return '';
+            return window.normalizeSituazioneCompressorStatus(raw);
+        };
+
+        window.purgeInvalidSituazioneStatusSnapshot = function () {
+            var store = window.loadSituazioneGiornalieraSnapshot();
+            var dateKey = window.getLetturaDocDateKey();
+            var snap = store[dateKey];
+            if (!snap) return;
+            var changed = false;
+            ['k10600', 'k10500a', 'k10500b'].forEach(function (key) {
+                var raw = snap[key];
+                if (raw == null || String(raw).trim() === '') return;
+                if (window.isStaleSituazioneStatusTestValue(raw) || !window.normalizeSituazioneCompressorStatus(raw)) {
+                    delete snap[key];
+                    changed = true;
+                }
+            });
+            if (changed) {
+                window.saveSituazioneGiornalieraSnapshot(store);
+            }
+        };
+
         window.readSituazioneGiornalieraStatusValue = function (statusId) {
             var el = document.getElementById(statusId);
             if (!el) return '';
             var t = String(el.innerText || el.textContent || '').trim();
-            if (/^MARCIA$|^FERMO$/i.test(t)) return t.toUpperCase();
-            return t;
+            return window.normalizeSituazioneCompressorStatus(t);
         };
 
         window.readSituazioneGiornalieraVwtPortataValue = function () {
@@ -15904,7 +15941,9 @@ window.updateStoricoButton = async function() {
                 return pick(window.readSituazioneGiornalieraSnapValue(snap, key), window.readSituazioneGiornalieraOsmosiUnitValue(row.unit));
             }
             if (row && row.type === 'status') {
-                return pick(window.readSituazioneGiornalieraSnapValue(snap, key), window.readSituazioneGiornalieraStatusValue(row.statusId));
+                var snapSt = window.readSituazioneGiornalieraStatusSnapValue(snap, key);
+                var plantSt = window.readSituazioneGiornalieraStatusValue(row.statusId);
+                return pick(snapSt, plantSt);
             }
             if (row && row.type === 'notes') {
                 return window.readSituazioneGiornalieraSnapValue(snap, key);
@@ -15977,6 +16016,18 @@ window.updateStoricoButton = async function() {
             var store = window.loadSituazioneGiornalieraSnapshot();
             if (!store[dateKey]) store[dateKey] = {};
             var v = String(value == null ? '' : value).trim();
+            if (['k10600', 'k10500a', 'k10500b'].indexOf(key) >= 0) {
+                if (!v) {
+                    if (store[dateKey][key] != null) {
+                        delete store[dateKey][key];
+                        store[dateKey]._savedAt = Date.now();
+                        window.saveSituazioneGiornalieraSnapshot(store);
+                    }
+                    return;
+                }
+                v = window.normalizeSituazioneCompressorStatus(v);
+                if (!v) return;
+            }
             if (!v) return;
             if (key) store[dateKey][key] = v;
             if (fieldId) {
@@ -16070,7 +16121,13 @@ window.updateStoricoButton = async function() {
                     return;
                 }
                 if (row.type === 'status') {
-                    merge(row.key, window.readSituazioneGiornalieraCellValue(row));
+                    var plantSt = window.readSituazioneGiornalieraStatusValue(row.statusId);
+                    var snapSt = window.readSituazioneGiornalieraStatusSnapValue(snap, row.key);
+                    if (force || !snapSt) {
+                        merge(row.key, plantSt);
+                    } else {
+                        merge(row.key, snapSt);
+                    }
                     return;
                 }
                 if (row.type === 'n2block') {
@@ -16127,6 +16184,17 @@ window.updateStoricoButton = async function() {
                 inp.addEventListener('change', function () { commit(inp); });
                 inp.addEventListener('blur', function () { commit(inp); });
             });
+        };
+
+        window.buildSituazioneCompressorStatusHtml = function (key, val, esc, interactive) {
+            var norm = window.normalizeSituazioneCompressorStatus(val);
+            if (!interactive) {
+                return norm ? esc(norm) : '&nbsp;';
+            }
+            return '<select class="rg-inp sg-inp sg-status" data-sg-key="' + window.escRapportinoAttr(key || '') + '" data-sg-field="">' +
+                '<option value=""' + (norm ? '' : ' selected') + '>—</option>' +
+                '<option value="MARCIA"' + (norm === 'MARCIA' ? ' selected' : '') + '>MARCIA</option>' +
+                '<option value="FERMO"' + (norm === 'FERMO' ? ' selected' : '') + '>FERMO</option></select>';
         };
 
         window.buildSituazioneGiornalieraSinoHtml = function (key, val, esc, interactive) {
@@ -16194,7 +16262,7 @@ window.updateStoricoButton = async function() {
                 var stVal = window.readSituazioneGiornalieraCellValue(row);
                 return '<tr><td class="sg-lbl">' + esc(row.label) + '</td>' +
                     '<td class="sg-um">' + esc(row.hint || '') + '</td>' +
-                    '<td class="sg-val">' + window.buildSituazioneGiornalieraValueHtml(row.key, null, stVal, esc, interactive) + '</td>' +
+                    '<td class="sg-val">' + window.buildSituazioneCompressorStatusHtml(row.key, stVal, esc, interactive) + '</td>' +
                     '<td class="sg-um">' + empty + '</td><td class="sg-val">' + empty + '</td></tr>';
             }
             if (row.type === 'n2block') {
@@ -16354,6 +16422,9 @@ window.updateStoricoButton = async function() {
         window.renderLetturaSituazioneGiornalieraDocView = function (opts) {
             opts = opts || {};
             window.setLetturaDocKind('situazione-giornaliera');
+            if (typeof window.purgeInvalidSituazioneStatusSnapshot === 'function') {
+                window.purgeInvalidSituazioneStatusSnapshot();
+            }
             if (!opts.skipSync && typeof window.syncSituazioneGiornalieraFromPlant === 'function') {
                 window.syncSituazioneGiornalieraFromPlant({ force: true });
             }
@@ -16404,7 +16475,7 @@ window.updateStoricoButton = async function() {
             '.sg-side-block{margin:0 0 4pt}' +
             '.sg-inp{width:100%;max-width:100%;border:none;background:transparent;text-align:center;font-weight:700;font-size:inherit;padding:0;margin:0;outline:none}' +
             '.sg-notes-ta{width:100%;min-height:72px;border:none;background:transparent;font-size:inherit;font-family:inherit;resize:vertical;padding:2pt;outline:none;line-height:1.2}' +
-            '.sg-sino{text-align:center}' +
+            '.sg-sino,.sg-status{text-align:center}' +
             '.lettura-doc--situazione-preview .sg-inp,.lettura-doc--situazione-preview .sg-notes-ta{background:rgba(99,102,241,0.08);border-radius:3px;min-height:22px}' +
             '@media print{.sg-inp,.sg-notes-ta{border:none!important;background:transparent!important}}';
 

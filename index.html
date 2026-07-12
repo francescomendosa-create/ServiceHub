@@ -3471,6 +3471,9 @@ window.colorPreviewNumber = function(tankName, value) {
             if (typeof window.__mergeMissingPlantStatusFromAlt === 'function') {
                 picked = window.__mergeMissingPlantStatusFromAlt(picked, alt);
             }
+            if (typeof window.__mergePlantFieldsPreferNewestEdit === 'function') {
+                picked = window.__mergePlantFieldsPreferNewestEdit(picked, alt);
+            }
             return picked;
         };
 
@@ -3511,6 +3514,10 @@ window.colorPreviewNumber = function(tankName, value) {
             } else if (preBackup && preBackup.plantStatusEdits && typeof window.__mergePlantStatusEditsMaps === 'function') {
                 window.__plantStatusEdits = window.__mergePlantStatusEditsMaps(
                     window.__plantStatusEdits || {}, preBackup.plantStatusEdits);
+            }
+            if (typeof window.__hydratePlantFieldEditMsFromPayload === 'function') {
+                window.__hydratePlantFieldEditMsFromPayload(d);
+                if (preBackup) window.__hydratePlantFieldEditMsFromPayload(preBackup);
             }
             cacheCloudPlantPayload(d);
             if (typeof window.hydrateConducibilitaInputsFromDom === 'function') {
@@ -3739,6 +3746,22 @@ window.colorPreviewNumber = function(tankName, value) {
                 statusEdits = window.__mergePlantStatusEditsMaps(statusEdits, window.__plantStatusEdits);
             }
             if (Object.keys(statusEdits).length) data.plantStatusEdits = statusEdits;
+            var fieldEditMs = {};
+            var localBkFieldEdits = localBkForEdits && localBkForEdits.plantFieldEditMs;
+            if (localBkFieldEdits && typeof window.__mergePlantFieldEditMsMaps === 'function') {
+                fieldEditMs = window.__mergePlantFieldEditMsMaps(fieldEditMs, localBkFieldEdits);
+            }
+            if (window.__plantFieldEditMs && typeof window.__mergePlantFieldEditMsMaps === 'function') {
+                fieldEditMs = window.__mergePlantFieldEditMsMaps(fieldEditMs, window.__plantFieldEditMs);
+            }
+            if (window.tankLevelInputAtMs && typeof window.tankLevelInputAtMs === 'object') {
+                Object.keys(window.tankLevelInputAtMs).forEach(function (fid) {
+                    var ts = Number(window.tankLevelInputAtMs[fid]);
+                    if (!Number.isFinite(ts) || ts <= 0) return;
+                    if (!fieldEditMs[fid] || ts >= Number(fieldEditMs[fid])) fieldEditMs[fid] = ts;
+                });
+            }
+            if (Object.keys(fieldEditMs).length) data.plantFieldEditMs = fieldEditMs;
             return data;
         };
 
@@ -4826,7 +4849,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (window.__isUserTypingInPlantField && window.__isUserTypingInPlantField()) return;
                 var fixed = 0;
                 Object.keys(payload).forEach(function (k) {
-                    if (['hiddenModules', 'isDarkMode', 'lastUpdate', 'manualShift', 'archiveTime', 'createdAt', 'shift', 'syncRevision', 'tankStatuses', 'tankStatusManualAD', 'tankLevelInputAt', 'tankTimelineManualRefs', 'tankTimelineManualInitial'].indexOf(k) >= 0) return;
+                    if (['hiddenModules', 'isDarkMode', 'lastUpdate', 'manualShift', 'archiveTime', 'createdAt', 'shift', 'syncRevision', 'plantFieldEditMs', 'tankStatuses', 'tankStatusManualAD', 'tankLevelInputAt', 'tankTimelineManualRefs', 'tankTimelineManualInitial'].indexOf(k) >= 0) return;
                     if (window.isRapportinoOnlyDataKey && window.isRapportinoOnlyDataKey(k)) return;
                     var targets = typeof window.queryPlantInputsForDataKey === 'function'
                         ? window.queryPlantInputsForDataKey(k)
@@ -4865,6 +4888,22 @@ window.colorPreviewNumber = function(tankName, value) {
             for (var gi = 0; gi < guardKeys.length; gi++) {
                 var last = window.__plantFieldEditMs[guardKeys[gi]];
                 if (last && Date.now() - last < window.__PLANT_REMOTE_GUARD_MS) return false;
+            }
+            var localBackup = typeof window.__readPlantBackupLocal === 'function'
+                ? window.__readPlantBackupLocal() : null;
+            var remoteRef = window.__plantSyncBaseline || window.__cloudPlantCache || {};
+            if (localBackup) {
+                for (var bi = 0; bi < guardKeys.length; bi++) {
+                    var gk = guardKeys[bi];
+                    var localTs = typeof window.__plantFieldEditTimestamp === 'function'
+                        ? window.__plantFieldEditTimestamp(localBackup, gk) : 0;
+                    var remoteTs = typeof window.__plantFieldEditTimestamp === 'function'
+                        ? window.__plantFieldEditTimestamp(remoteRef, gk) : 0;
+                    if (localTs <= remoteTs) continue;
+                    var localVal = localBackup[gk];
+                    if (localVal == null || String(localVal).trim() === '') continue;
+                    return false;
+                }
             }
             return true;
         };
@@ -5039,6 +5078,130 @@ window.colorPreviewNumber = function(tankName, value) {
                 );
             }
             return false;
+        };
+
+        window.__plantFieldEditTimestamp = function (payload, fieldId) {
+            if (!payload || !fieldId) return 0;
+            var edits = payload.plantFieldEditMs;
+            if (edits && edits[fieldId] != null) {
+                var direct = Number(edits[fieldId]);
+                if (Number.isFinite(direct) && direct > 0) return direct;
+            }
+            var normId = typeof window.__normalizeTankInputAtKey === 'function'
+                ? window.__normalizeTankInputAtKey(fieldId) : fieldId;
+            if (normId !== fieldId && edits && edits[normId] != null) {
+                var normDirect = Number(edits[normId]);
+                if (Number.isFinite(normDirect) && normDirect > 0) return normDirect;
+            }
+            var tla = payload.tankLevelInputAt;
+            if (!tla || typeof tla !== 'object') return 0;
+            var raw = tla[fieldId];
+            if (raw == null && normId !== fieldId) raw = tla[normId];
+            if (raw == null) return 0;
+            var ts = Number(typeof raw === 'object' ? raw.ts : raw);
+            return Number.isFinite(ts) && ts > 0 ? ts : 0;
+        };
+
+        window.__getPlantFieldEditMsFromPayload = function (payload) {
+            var out = {};
+            if (!payload || typeof payload !== 'object') return out;
+            if (payload.plantFieldEditMs && typeof payload.plantFieldEditMs === 'object') {
+                Object.keys(payload.plantFieldEditMs).forEach(function (id) {
+                    var ts = Number(payload.plantFieldEditMs[id]);
+                    if (Number.isFinite(ts) && ts > 0) out[id] = ts;
+                });
+            }
+            if (payload.tankLevelInputAt && typeof payload.tankLevelInputAt === 'object') {
+                Object.keys(payload.tankLevelInputAt).forEach(function (id) {
+                    var ts = window.__plantFieldEditTimestamp({ tankLevelInputAt: payload.tankLevelInputAt }, id);
+                    if (ts > 0 && (!out[id] || ts >= Number(out[id]))) out[id] = ts;
+                });
+            }
+            return out;
+        };
+
+        window.__mergePlantFieldEditMsMaps = function (a, b) {
+            var out = Object.assign({}, a || {});
+            Object.keys(b || {}).forEach(function (id) {
+                var bt = Number(b[id]);
+                var at = Number(out[id]);
+                if (Number.isFinite(bt) && bt > 0 && (!Number.isFinite(at) || bt >= at)) out[id] = bt;
+            });
+            return out;
+        };
+
+        window.__mergeTankLevelInputAtPayloadMaps = function (a, b) {
+            var out = Object.assign({}, a || {});
+            Object.keys(b || {}).forEach(function (id) {
+                var bTs = window.__plantFieldEditTimestamp({ tankLevelInputAt: b }, id);
+                var aTs = window.__plantFieldEditTimestamp({ tankLevelInputAt: out }, id);
+                if (bTs > aTs) out[id] = b[id];
+            });
+            return out;
+        };
+
+        window.__hydratePlantFieldEditMsFromPayload = function (payload) {
+            if (!payload) return;
+            window.__plantFieldEditMs = window.__plantFieldEditMs || {};
+            var edits = window.__getPlantFieldEditMsFromPayload(payload);
+            Object.keys(edits).forEach(function (id) {
+                var ts = Number(edits[id]);
+                if (!Number.isFinite(ts) || ts <= 0) return;
+                var cur = Number(window.__plantFieldEditMs[id]);
+                if (!Number.isFinite(cur) || ts >= cur) window.__plantFieldEditMs[id] = ts;
+            });
+        };
+
+        window.__shouldMergePlantFieldKey = function (k, val) {
+            if (['hiddenModules', 'isDarkMode', 'lastUpdate', 'manualShift', 'archiveTime', 'createdAt', 'shift',
+                'syncRevision', 'plantStatusEdits', 'plantStatusEditMs', 'plantFieldEditMs', 'tankStatuses',
+                'tankStatusManualAD', 'tankLevelInputAt', 'tankTimelineManualRefs', 'tankTimelineManualInitial',
+                'tankLevelCompareBaseline', '_lettureQuadSnapshots'].indexOf(k) >= 0) return false;
+            if (window.isRapportinoOnlyDataKey && window.isRapportinoOnlyDataKey(k)) return false;
+            if (k.indexOf('inp-osmosi__') === 0) return false;
+            if (val != null && typeof val === 'object') return false;
+            if (window.__isPlantStatusStorageKey && window.__isPlantStatusStorageKey(k, val)) return false;
+            return true;
+        };
+
+        window.__mergePlantFieldsPreferNewestEdit = function (primary, secondary) {
+            if (!primary || !secondary) return primary || secondary;
+            var out = Object.assign({}, primary);
+            var mergedEdits = window.__mergePlantFieldEditMsMaps(
+                window.__getPlantFieldEditMsFromPayload(primary),
+                window.__getPlantFieldEditMsFromPayload(secondary)
+            );
+            var fieldIds = {};
+            [primary, secondary].forEach(function (payload) {
+                Object.keys(payload).forEach(function (k) {
+                    if (window.__shouldMergePlantFieldKey(k, payload[k])) fieldIds[k] = true;
+                });
+            });
+            Object.keys(mergedEdits).forEach(function (k) { fieldIds[k] = true; });
+            Object.keys(fieldIds).forEach(function (id) {
+                var pt = window.__plantFieldEditTimestamp(primary, id);
+                var st = window.__plantFieldEditTimestamp(secondary, id);
+                var winner = null;
+                if (st > pt) winner = secondary;
+                else if (pt > st) winner = primary;
+                else {
+                    var pVal = primary[id];
+                    var sVal = secondary[id];
+                    var pEmpty = pVal == null || String(pVal).trim() === '';
+                    var sEmpty = sVal == null || String(sVal).trim() === '';
+                    if (pEmpty && !sEmpty) winner = secondary;
+                    else if (!pEmpty && sEmpty) winner = primary;
+                    else return;
+                }
+                if (!winner || winner[id] === undefined) return;
+                out[id] = winner[id];
+            });
+            if (Object.keys(mergedEdits).length) out.plantFieldEditMs = mergedEdits;
+            if (primary.tankLevelInputAt || secondary.tankLevelInputAt) {
+                out.tankLevelInputAt = window.__mergeTankLevelInputAtPayloadMaps(
+                    primary.tankLevelInputAt, secondary.tankLevelInputAt);
+            }
+            return out;
         };
 
         window.__mergeMissingPlantStatusFromAlt = function (primary, secondary) {
@@ -8445,6 +8608,10 @@ window.updateStoricoButton = async function() {
                 true
             );
             window.addEventListener('pagehide', function () {
+                if (!(window.isEditingArchive && window.editingArchiveId) &&
+                    typeof window.flushPlantBackupNow === 'function') {
+                    window.flushPlantBackupNow();
+                }
                 if (__plantPersistTimer) {
                     clearTimeout(__plantPersistTimer);
                     __plantPersistTimer = null;
@@ -8472,6 +8639,10 @@ window.updateStoricoButton = async function() {
                 if (document.visibilityState === 'hidden') {
                     if (typeof window.rigenOnVisibilityChange === 'function') window.rigenOnVisibilityChange();
                     if (typeof window.saveUiScrollRestore === 'function') window.saveUiScrollRestore();
+                    if (!(window.isEditingArchive && window.editingArchiveId) &&
+                        typeof window.flushPlantBackupNow === 'function') {
+                        window.flushPlantBackupNow();
+                    }
                     if (__plantPersistTimer) {
                         clearTimeout(__plantPersistTimer);
                         __plantPersistTimer = null;
@@ -9265,6 +9436,7 @@ window.updateStoricoButton = async function() {
             }
             if (npt.id === 'vwt-notes' && outVal !== '') npt.value = outVal + ' mc';
             else npt.value = outVal;
+            if (typeof window.__touchPlantFieldEdit === 'function') window.__touchPlantFieldEdit(npt);
             if (typeof window.isStoccaggioNumpadTarget === 'function' && window.isStoccaggioNumpadTarget(npt)) {
                 if (typeof window.normalizeStoccaggioInputEl === 'function') window.normalizeStoccaggioInputEl(npt);
                 display.value = npt.value;
@@ -12651,7 +12823,7 @@ window.updateStoricoButton = async function() {
             // NON toccare più gli allarmi qui
             // Gli allarmi sono gestiti separatamente (cloud dedicato)
             for (const [id, val] of Object.entries(data)) {
-                if (['hiddenModules', 'isDarkMode', 'lastUpdate', 'manualShift', 'archiveTime', 'createdAt', 'shift', 'syncRevision', 'plantStatusEdits', 'plantStatusEditMs', 'tankStatuses', 'tankStatusManualAD', 'tankLevelInputAt', 'tankTimelineManualRefs', 'tankTimelineManualInitial'].includes(id)) continue;
+                if (['hiddenModules', 'isDarkMode', 'lastUpdate', 'manualShift', 'archiveTime', 'createdAt', 'shift', 'syncRevision', 'plantStatusEdits', 'plantStatusEditMs', 'plantFieldEditMs', 'tankStatuses', 'tankStatusManualAD', 'tankLevelInputAt', 'tankTimelineManualRefs', 'tankTimelineManualInitial'].includes(id)) continue;
                 if (id === 'ai-chat-input' || id === 'conv-chat-input') continue;
                 if (window.isRapportinoOnlyDataKey && window.isRapportinoOnlyDataKey(id)) continue;
                 if (id === 'inp-osmosi__report') {

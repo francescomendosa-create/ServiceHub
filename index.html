@@ -15336,8 +15336,8 @@ window.updateStoricoButton = async function() {
             return filtered.length;
         };
 
-        window.downloadLetturaShareFile = function () {
-            var file = window.buildLetturaShareFile && window.buildLetturaShareFile();
+        window.downloadLetturaShareFile = function (file) {
+            file = file || (window.buildLetturaShareFile && window.buildLetturaShareFile());
             if (!file) return false;
             var url = URL.createObjectURL(file);
             var a = document.createElement('a');
@@ -15369,13 +15369,21 @@ window.updateStoricoButton = async function() {
                 : (isSituazione
                     ? ('SITUAZIONE GIORNALIERA — ' + dateStr)
                     : ('LETTURE PAG 1 (UTILITIES) — ' + dateStr));
-            var file = window.buildLetturaShareFile && window.buildLetturaShareFile();
             var downloadedMsg = isNotturno
                 ? 'Rapportino A3 orizzontale scaricato (.doc). In Word: Layout → Orientamento orizzontale, formato A3.'
                 : (isSituazione
                     ? 'Situazione giornaliera scaricata (.doc). Aprilo con Word e condividilo da lì.'
                     : 'Documento scaricato. Aprilo con Word e condividilo da lì.');
             var printMsg = 'Anteprima stampa A3 orizzontale — in stampante scegli A3 e orientamento orizzontale (297×420 mm).';
+            var situazioneDocHtml = null;
+            var file = null;
+
+            window.__letturaShareInProgress = true;
+            clearTimeout(window.__sgLiveRefreshTimer);
+
+            function finishShare() {
+                setTimeout(function () { window.__letturaShareInProgress = false; }, 400);
+            }
 
             function notifyDownloaded() {
                 if (typeof window.__serviceHubFlashToast === 'function') {
@@ -15385,20 +15393,43 @@ window.updateStoricoButton = async function() {
                 }
             }
 
+            try {
+                if (isSituazione) {
+                    situazioneDocHtml = window.buildLetturaSituazioneGiornalieraShareDocument();
+                    file = window.buildLetturaSituazioneGiornalieraShareFile(situazioneDocHtml);
+                } else {
+                    if (typeof window.persistLetturaActiveSlotSnapshot === 'function') {
+                        window.persistLetturaActiveSlotSnapshot();
+                    }
+                    file = window.buildLetturaShareFile && window.buildLetturaShareFile();
+                }
+            } catch (err) {
+                finishShare();
+                console.warn('[ServiceHub] share lettura:', err && err.message);
+                if (typeof window.__serviceHubFlashToast === 'function') {
+                    window.__serviceHubFlashToast('Errore durante la preparazione del documento.', true);
+                }
+                return;
+            }
+
+            var skipSituazionePrint = isSituazione && window.__shIsAndroidTablet && window.__shIsAndroidTablet();
+
             if (isNotturno && typeof window.printLetturaNotturnoA3 === 'function') {
                 if (window.printLetturaNotturnoA3()) {
                     if (typeof window.__serviceHubFlashToast === 'function') {
                         window.__serviceHubFlashToast(printMsg, false, 'ok');
                     }
+                    finishShare();
                     return;
                 }
             }
 
-            if (isSituazione && typeof window.printLetturaSituazioneGiornaliera === 'function') {
-                if (window.printLetturaSituazioneGiornaliera()) {
+            if (isSituazione && !skipSituazionePrint && typeof window.printLetturaSituazioneGiornaliera === 'function') {
+                if (window.printLetturaSituazioneGiornaliera(situazioneDocHtml)) {
                     if (typeof window.__serviceHubFlashToast === 'function') {
                         window.__serviceHubFlashToast('Anteprima stampa situazione giornaliera — formato A4 verticale.', false, 'ok');
                     }
+                    finishShare();
                     return;
                 }
             }
@@ -15406,11 +15437,12 @@ window.updateStoricoButton = async function() {
             if (file && window.canShareLetturaFile(file)) {
                 return navigator.share({ files: [file], title: title }).catch(function (err) {
                     if (err && err.name === 'AbortError') return;
-                    if (window.downloadLetturaShareFile()) notifyDownloaded();
-                });
+                    if (window.downloadLetturaShareFile(file)) notifyDownloaded();
+                }).finally(finishShare);
             }
 
-            if (window.downloadLetturaShareFile()) notifyDownloaded();
+            if (window.downloadLetturaShareFile(file)) notifyDownloaded();
+            finishShare();
         };
 
         window.__letturaDocKind = window.__letturaDocKind || 'stoccaggio';
@@ -16734,9 +16766,37 @@ window.updateStoricoButton = async function() {
             window.saveSituazioneGiornalieraSnapshot(store);
         };
 
-        window.flushSituazioneGiornalieraPreviewToSnapshot = function () {
+        window.flushSituazioneGiornalieraPreviewToSnapshot = function (opts) {
+            opts = opts || {};
             var root = document.getElementById('letture-doc-body');
             if (!root) return;
+            if (opts.batch || opts.skipPlantSave) {
+                var dateKey = window.getLetturaDocDateKey();
+                var store = window.loadSituazioneGiornalieraSnapshot();
+                if (!store[dateKey]) store[dateKey] = {};
+                var snap = store[dateKey];
+                var changed = false;
+                root.querySelectorAll('.sg-inp, .sg-notes-ta').forEach(function (inp) {
+                    var v = String(inp.value == null ? '' : inp.value).trim();
+                    if (!v) return;
+                    var key = inp.getAttribute('data-sg-key') || '';
+                    var fieldId = inp.getAttribute('data-sg-field') || '';
+                    if (['k10600', 'k10500a', 'k10500b'].indexOf(key) >= 0) return;
+                    if (key && snap[key] !== v) {
+                        snap[key] = v;
+                        changed = true;
+                    }
+                    if (fieldId && snap[fieldId] !== v) {
+                        snap[fieldId] = v;
+                        changed = true;
+                    }
+                });
+                if (changed) {
+                    snap._savedAt = Date.now();
+                    window.saveSituazioneGiornalieraSnapshot(store);
+                }
+                return;
+            }
             root.querySelectorAll('.sg-inp, .sg-notes-ta').forEach(function (inp) {
                 var v = String(inp.value == null ? '' : inp.value).trim();
                 if (!v) return;
@@ -16844,6 +16904,7 @@ window.updateStoricoButton = async function() {
         };
 
         window.scheduleSituazioneGiornalieraLiveRefresh = function () {
+            if (window.__letturaShareInProgress) return;
             if (window.__letturaDocKind !== 'situazione-giornaliera') return;
             var modal = document.getElementById('letture-doc-modal');
             if (!modal || !modal.classList.contains('active')) return;
@@ -17075,7 +17136,7 @@ window.updateStoricoButton = async function() {
 
         window.buildLetturaSituazioneGiornalieraShareDocument = function () {
             if (typeof window.flushSituazioneGiornalieraPreviewToSnapshot === 'function') {
-                window.flushSituazioneGiornalieraPreviewToSnapshot();
+                window.flushSituazioneGiornalieraPreviewToSnapshot({ batch: true });
             }
             var dateStr = window.formatLetturaDateIt(new Date());
             var body = window.buildLetturaSituazioneGiornalieraHtml({ forShare: true, forWord: true });
@@ -17089,8 +17150,8 @@ window.updateStoricoButton = async function() {
                 '<body class="lettura-print-situazione"><div class="Section1">' + body + '</div></body></html>';
         };
 
-        window.printLetturaSituazioneGiornaliera = function () {
-            var docHtml = window.buildLetturaSituazioneGiornalieraShareDocument();
+        window.printLetturaSituazioneGiornaliera = function (docHtml) {
+            docHtml = docHtml || window.buildLetturaSituazioneGiornalieraShareDocument();
             var w = null;
             try {
                 w = window.open('', '_blank', 'noopener,noreferrer');
@@ -17108,10 +17169,11 @@ window.updateStoricoButton = async function() {
             return true;
         };
 
-        window.buildLetturaSituazioneGiornalieraShareFile = function () {
+        window.buildLetturaSituazioneGiornalieraShareFile = function (docHtml) {
             var dateStr = window.formatLetturaDateIt(new Date()).replace(/\//g, '-');
+            var html = docHtml || window.buildLetturaSituazioneGiornalieraShareDocument();
             return new File(
-                [window.buildLetturaSituazioneGiornalieraShareDocument()],
+                [html],
                 'SITUAZIONE GIORNALIERA ' + dateStr + '.doc',
                 { type: 'application/msword' }
             );

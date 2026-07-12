@@ -13736,17 +13736,16 @@ window.updateStoricoButton = async function() {
             });
         };
 
-        /** Allinea solo campi vuoti (non sovrascrive valori già diversi). */
+        /** Allinea Acqua da Stoccaggio su build pannello (mai Acqua → Stoccaggio: evita valori fantasma). */
         window.__syncPlantLevelSharedFieldsOnPanelBuild = function (panel) {
             var shared = window.DCS_ACQUA_SHARED_FIELD_IDS || ['inp-tk9000', 'inp-tk9201'];
             shared.forEach(function (fid) {
                 var acqua = document.querySelector('#sec-acqua input[id="' + fid + '"]');
                 var stocc = panel && panel.querySelector('input.nott-stocc-inp[id="' + fid + '"]');
                 if (!acqua || !stocc) return;
-                var av = String(acqua.value || '').trim();
                 var sv = String(stocc.value || '').trim();
-                if (av && !sv) stocc.value = av;
-                else if (sv && !av) acqua.value = sv;
+                var av = String(acqua.value || '').trim();
+                if (sv && !av) acqua.value = sv;
             });
         };
 
@@ -14068,9 +14067,15 @@ window.updateStoricoButton = async function() {
         /** Valore live da pannello notturno o sezione stoccaggio (rapportino generale). */
         window.readStoccaggioLiveInputValue = function(fieldId) {
             if (!fieldId) return '';
-            const panel = document.getElementById('stoccaggio-panel-notturno');
-            if (panel) {
-                const inpNott = panel.querySelector('input.nott-stocc-inp[id="' + fieldId + '"]');
+            const panels = [
+                document.getElementById('stoccaggio-panel-notturno'),
+                document.getElementById('sec-stoccaggio-interno')
+            ];
+            for (var pi = 0; pi < panels.length; pi++) {
+                const panel = panels[pi];
+                if (!panel) continue;
+                const inpNott = panel.querySelector('input.nott-stocc-inp[id="' + fieldId + '"]')
+                    || panel.querySelector('input[id="' + fieldId + '"]');
                 if (inpNott && inpNott.value != null && String(inpNott.value).trim() !== '') {
                     var raw = String(inpNott.value).trim();
                     return typeof window.formatStoccaggioLevelValue === 'function'
@@ -14082,7 +14087,11 @@ window.updateStoricoButton = async function() {
 
         window.saveNotturnoStoccLocalSnapshot = function(snap) {
             try {
-                localStorage.setItem('servicehub_nott_stocc_snapshot', JSON.stringify(snap || {}));
+                if (!snap || !Object.keys(snap).length) {
+                    localStorage.removeItem('servicehub_nott_stocc_snapshot');
+                } else {
+                    localStorage.setItem('servicehub_nott_stocc_snapshot', JSON.stringify(snap));
+                }
             } catch (_) {}
         };
 
@@ -14136,68 +14145,41 @@ window.updateStoricoButton = async function() {
             return baseData;
         };
 
-        window.getMergedStoccaggioSnapshotFromStore = function () {
-            const snap = {};
-            const fieldMs = {};
-            const store = window.loadRapportiniStore && window.loadRapportiniStore();
-            if (store && store.items) {
-                Object.keys(store.items).forEach(function (rid) {
-                    const item = store.items[rid];
-                    const d = item && item.data;
-                    if (!d) return;
-                    const itemMs = window.parseRapportinoUpdatedMs(item.updatedAt);
-                    const st = (d._nottStocc && typeof d._nottStocc === 'object') ? d._nottStocc : {};
-                    Object.keys(st).forEach(function (fid) {
-                        const v = st[fid] != null ? String(st[fid]).trim() : '';
-                        if (!v) return;
-                        if (!fieldMs[fid] || itemMs >= fieldMs[fid]) {
-                            snap[fid] = v;
-                            fieldMs[fid] = itemMs;
-                        }
-                    });
-                    (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
-                        const v = d[t.fieldId] != null ? String(d[t.fieldId]).trim() : '';
-                        if (!v) return;
-                        if (!fieldMs[t.fieldId] || itemMs >= fieldMs[t.fieldId]) {
-                            snap[t.fieldId] = v;
-                            fieldMs[t.fieldId] = itemMs;
-                        }
-                    });
-                });
-            }
-            if (!Object.keys(snap).length) {
-                const local = window.loadNotturnoStoccLocalSnapshot && window.loadNotturnoStoccLocalSnapshot();
-                if (local) Object.assign(snap, local);
-            }
-            return Object.keys(snap).length ? snap : null;
-        };
-
-        window.getNotturnoStoccaggioSnapshot = function() {
-            const merged = typeof window.getMergedStoccaggioSnapshotFromStore === 'function'
-                ? window.getMergedStoccaggioSnapshotFromStore() : null;
-            if (merged && Object.keys(merged).length) return merged;
+        /** Snapshot stoccaggio solo dal rapportino attivo (mai merge altri rapportini / localStorage). */
+        window.getActiveRapportinoStoccaggioSnapshot = function () {
             const snap = {};
             const store = window.loadRapportiniStore && window.loadRapportiniStore();
             const rid = window.getStoccaggioRapportinoId ? window.getStoccaggioRapportinoId() : 'notturno';
             const d = store && store.items[rid] && store.items[rid].data;
             if (d && d._nottStocc && typeof d._nottStocc === 'object') {
-                Object.assign(snap, d._nottStocc);
+                Object.keys(d._nottStocc).forEach(function (fid) {
+                    const v = d._nottStocc[fid] != null ? String(d._nottStocc[fid]).trim() : '';
+                    if (v) snap[fid] = v;
+                });
             }
             if (d) {
                 (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
-                    if (d[t.fieldId] != null && String(d[t.fieldId]).trim() !== '') {
-                        snap[t.fieldId] = String(d[t.fieldId]).trim();
-                    }
+                    const v = d[t.fieldId] != null ? String(d[t.fieldId]).trim() : '';
+                    if (v && !snap[t.fieldId]) snap[t.fieldId] = v;
                 });
-            }
-            if (!Object.keys(snap).length) {
-                const local = window.loadNotturnoStoccLocalSnapshot();
-                if (local) Object.assign(snap, local);
             }
             return Object.keys(snap).length ? snap : null;
         };
 
-        window.getStoccaggioInternoFieldRaw = function(fieldId) {
+        window.getMergedStoccaggioSnapshotFromStore = function () {
+            return typeof window.getActiveRapportinoStoccaggioSnapshot === 'function'
+                ? window.getActiveRapportinoStoccaggioSnapshot()
+                : null;
+        };
+
+        window.getNotturnoStoccaggioSnapshot = function() {
+            return typeof window.getActiveRapportinoStoccaggioSnapshot === 'function'
+                ? window.getActiveRapportinoStoccaggioSnapshot()
+                : null;
+        };
+
+        window.getStoccaggioInternoFieldRaw = function(fieldId, opts) {
+            opts = opts || {};
             if (!fieldId) return '';
             const fmt = function (v) {
                 if (v == null || String(v).trim() === '') return '';
@@ -14208,15 +14190,13 @@ window.updateStoricoButton = async function() {
                 ? window.readStoccaggioLiveInputValue(fieldId)
                 : '';
             if (live) return fmt(live);
-            const snap = window.getNotturnoStoccaggioSnapshot();
+            if (opts.liveOnly) return '';
+            const snap = window.getNotturnoStoccaggioSnapshot && window.getNotturnoStoccaggioSnapshot();
             if (snap && snap[fieldId] != null && String(snap[fieldId]).trim() !== '') {
                 return fmt(snap[fieldId]);
             }
-            const localOnly = window.loadNotturnoStoccLocalSnapshot && window.loadNotturnoStoccLocalSnapshot();
-            if (localOnly && localOnly[fieldId] != null && String(localOnly[fieldId]).trim() !== '') {
-                return fmt(localOnly[fieldId]);
-            }
             if (window.isStoccaggioLevelFieldId && window.isStoccaggioLevelFieldId(fieldId)) return '';
+            if (opts.noPlantFallback) return '';
             const backup = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
             if (backup && backup[fieldId] != null && String(backup[fieldId]).trim() !== '') {
                 return fmt(backup[fieldId]);
@@ -17421,12 +17401,12 @@ window.updateStoricoButton = async function() {
             if (typeof window.renderStoccaggioInternoPanel === 'function') {
                 window.renderStoccaggioInternoPanel();
             }
-            const existing = window.getNotturnoStoccaggioSnapshot() || {};
             const snap = {};
             (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
-                const raw = (window.readStoccaggioLiveInputValue
+                const raw = window.readStoccaggioLiveInputValue
                     ? window.readStoccaggioLiveInputValue(t.fieldId)
-                    : window.readStoccaggioPanelInputValue(t.fieldId)) || existing[t.fieldId] || '';
+                    : (window.readStoccaggioPanelInputValue
+                        ? window.readStoccaggioPanelInputValue(t.fieldId) : '');
                 const clean = raw != null ? String(raw).trim() : '';
                 if (clean) {
                     snap[t.fieldId] = typeof window.formatStoccaggioLevelValue === 'function'
@@ -18010,11 +17990,11 @@ window.updateStoricoButton = async function() {
                 window.persistNotturnoStoccaggioToRapportino();
             }
             const titleEl = document.getElementById('lbl-sec-stoccaggio-interno-tendina');
-            const snap = window.getNotturnoStoccaggioSnapshot() || {};
             const rows = [];
             (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
-                let raw = window.getStoccaggioInternoFieldRaw(t.fieldId);
-                if (!raw && snap[t.fieldId] != null) raw = String(snap[t.fieldId]).trim();
+                const raw = window.getStoccaggioInternoFieldRaw
+                    ? window.getStoccaggioInternoFieldRaw(t.fieldId, { noPlantFallback: true })
+                    : '';
                 if (!raw) return;
                 const vis = window.getTankVisualFlagsForDbKey ? window.getTankVisualFlagsForDbKey(t.tankDbKey) : { drain: false, acc: false };
                 var condVal = typeof window.readTankConductivityValue === 'function'
@@ -22483,13 +22463,6 @@ window.updateStoricoButton = async function() {
             }
             const tanks = window.STOCCAGGIO_INTERNO_TANKS || [];
             const saved = window.getNotturnoStoccaggioSnapshot() || {};
-            tanks.forEach(function (t) {
-                if (saved[t.fieldId]) return;
-                const raw = window.getStoccaggioInternoFieldRaw
-                    ? window.getStoccaggioInternoFieldRaw(t.fieldId)
-                    : '';
-                if (raw) saved[t.fieldId] = raw;
-            });
             const splitAt = Math.ceil(tanks.length / 2);
             panel.innerHTML =
                 '<form class="nott-stocc-form" autocomplete="off" autocapitalize="off" onsubmit="return false">' +
@@ -29723,12 +29696,12 @@ window.updateStoricoButton = async function() {
                 if (typeof window.hydrateNotturnoStoccaggioInputsFromStore === 'function') {
                     window.hydrateNotturnoStoccaggioInputsFromStore({ force: true });
                 }
-                if (typeof window.getMergedStoccaggioSnapshotFromStore === 'function' &&
+                if (typeof window.getActiveRapportinoStoccaggioSnapshot === 'function' &&
                     typeof window.setAllPlantInputsById === 'function') {
-                    const mergedSt = window.getMergedStoccaggioSnapshotFromStore();
-                    if (mergedSt) {
-                        Object.keys(mergedSt).forEach(function (fid) {
-                            window.setAllPlantInputsById(fid, mergedSt[fid], { skipChangeEvent: true });
+                    const activeSt = window.getActiveRapportinoStoccaggioSnapshot();
+                    if (activeSt) {
+                        Object.keys(activeSt).forEach(function (fid) {
+                            window.setAllPlantInputsById(fid, activeSt[fid], { skipChangeEvent: true });
                         });
                     }
                 }
@@ -29736,9 +29709,9 @@ window.updateStoricoButton = async function() {
                     window.__copyStoccSharedLevelsToAcqua();
                 }
                 if (typeof window.saveNotturnoStoccLocalSnapshot === 'function' &&
-                    typeof window.getMergedStoccaggioSnapshotFromStore === 'function') {
-                    const mergedSt = window.getMergedStoccaggioSnapshotFromStore();
-                    if (mergedSt) window.saveNotturnoStoccLocalSnapshot(mergedSt);
+                    typeof window.getActiveRapportinoStoccaggioSnapshot === 'function') {
+                    const activeSt = window.getActiveRapportinoStoccaggioSnapshot();
+                    window.saveNotturnoStoccLocalSnapshot(activeSt || {});
                 }
 
                 if (pulledPlant && typeof window.__verifyRemotePlantFieldsApplied === 'function'
@@ -33133,9 +33106,11 @@ window.updateStoricoButton = async function() {
                 osmosiEnabledUnits: typeof window.getOsmosiEnabledUnitsForReport === 'function'
                     ? window.getOsmosiEnabledUnitsForReport() : [],
                 hasSed: !!(selection || portata),
-                hasOsmosis: typeof window.hasActiveOsmosiConfiguration === 'function'
-                    ? window.hasActiveOsmosiConfiguration()
-                    : !!String(osmosiVal || '').trim()
+                hasOsmosis: (typeof window.getOsmosiEnabledUnitsForReport === 'function'
+                    ? window.getOsmosiEnabledUnitsForReport().length > 0
+                    : (typeof window.hasActiveOsmosiConfiguration === 'function'
+                        ? window.hasActiveOsmosiConfiguration()
+                        : !!String(osmosiVal || '').trim()))
             };
         };
 
@@ -33266,10 +33241,9 @@ window.updateStoricoButton = async function() {
                 ? opts.enabledUnits
                 : (typeof window.getOsmosiEnabledUnitsForReport === 'function'
                     ? window.getOsmosiEnabledUnitsForReport() : []);
-            if (!osmosiVal && !enabledUnits.length) return '';
+            if (!enabledUnits.length) return '';
             var base = typeof previewFontBase === 'number' ? previewFontBase : (parseFloat(previewFontBase) || 9);
             var fs = window.scalePreviewFont(base, -1);
-            var fsSm = window.scalePreviewFont(base, -2);
             var raw = String(osmosiVal || '');
             if (typeof window.formatOsmosiReportPreviewValue === 'function') {
                 raw = window.formatOsmosiReportPreviewValue(raw);
@@ -33282,13 +33256,10 @@ window.updateStoricoButton = async function() {
             if (!raw) return '';
             var esc = window.escRapportinoHtml || function (s) { return String(s == null ? '' : s); };
             var enabledStr = enabledUnits.length ? enabledUnits.join('/') : 'OSMOSI';
-            var allUnits = ['A', 'B', 'C'];
-            var disabledUnits = allUnits.filter(function (u) { return enabledUnits.indexOf(u) < 0; });
             return '<div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:0.1px solid #e5e7eb;padding:2px 0;margin-bottom:1px;">' +
                 '<div style="display:flex;flex-direction:column;flex:1;padding-right:6px;border-right:0.6px solid #9ca3af;">' +
                 '<div style="font-size:' + fs + 'px;font-weight:650;text-transform:uppercase;color:#000;margin-bottom:2px;text-decoration:underline;padding-bottom:4px;">ABILITATE</div>' +
                 '<div style="font-size:' + fs + 'px;font-weight:650;text-transform:uppercase;color:#000;">' + esc(enabledStr) + '</div>' +
-                (disabledUnits.length ? '<div style="font-size:' + fsSm + 'px;font-weight:650;text-transform:uppercase;color:#dc2626;margin-top:2px;">DISAB. ' + esc(disabledUnits.join('/')) + '</div>' : '') +
                 '</div>' +
                 '<div style="display:flex;flex-direction:column;flex:1;padding-left:6px;">' +
                 '<div style="font-size:' + fs + 'px;font-weight:650;text-transform:uppercase;color:#000;margin-bottom:2px;text-decoration:underline;padding-bottom:4px;">ASSETTO</div>' +
@@ -33652,9 +33623,6 @@ window.updateStoricoButton = async function() {
             if (window.isNotturnoStoccaggioModuleActive && window.isNotturnoStoccaggioModuleActive()) {
                 if (typeof window.persistNotturnoStoccaggioToRapportino === 'function') {
                     window.persistNotturnoStoccaggioToRapportino();
-                }
-                if (typeof window.hydrateNotturnoStoccaggioInputsFromStore === 'function') {
-                    window.hydrateNotturnoStoccaggioInputsFromStore();
                 }
             }
             if (typeof window.hydrateConducibilitaInputsFromDom === 'function') {
@@ -34357,6 +34325,9 @@ if (hiddenModules.length === 0) {
                         : 'VALORE';
                     let val = inp.value;
                     if (inp.id === 'inp-osmosi') {
+                        var osmUnits = typeof window.getOsmosiEnabledUnitsForReport === 'function'
+                            ? window.getOsmosiEnabledUnitsForReport() : [];
+                        if (!osmUnits.length) return;
                         val = typeof window.resolveOsmosiReportPreviewValue === 'function'
                             ? window.resolveOsmosiReportPreviewValue()
                             : (inp.getAttribute('data-report-value')
@@ -34407,73 +34378,16 @@ if (hiddenModules.length === 0) {
                                 </div>`);
                                 titoliMostrati = true;
                             } 
-                            // PER L'OSMOSI: AGGIUNGIAMO LA LINEA ANCHE QUI!
-                            if (r.label === 'OSMOSI') {
-                                // Estrai le sigle abilitate dal valore in modo più robusto
-                                let enabledList = [];
-                                
-                                // Prova diverse estrazioni
-                                if (r.val.includes('<br>')) {
-                                    // Caso con <br>
-                                    const firstLine = r.val.split('<br>')[0];
-                                    const beforeArrow = firstLine.split(' →')[0];
-                                    enabledList = beforeArrow.split('/').map(u => u.trim()).filter(u => u);
-                                } else if (r.val.includes('→')) {
-                                    // Caso con freccia ma senza <br>
-                                    const beforeArrow = r.val.split(' →')[0];
-                                    enabledList = beforeArrow.split('/').map(u => u.trim()).filter(u => u);
-                                } else {
-                                    // Caso base
-                                    enabledList = r.val.split('/').map(u => u.trim()).filter(u => u && !u.includes('DEMI') && !u.includes('POZZI'));
-                                }
-                                
-                                // Calcola le unità disabilitate (A, B, C meno quelle abilitate)
-                                const allUnits = ['A', 'B', 'C'];
-                                const disabledUnits = allUnits.filter(u => !enabledList.includes(u));
-                                
-
-                                if (isTwoColumns) {
-                                    // Layout a 2 colonne - IDENTICO AL 3 COLONNE
-                                    pch(`<div style="display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 0.1px solid #e5e7eb; padding: 2px 0; margin-bottom: 1px;">
-                                        <div style="display: flex; flex-direction: column; flex: 1; padding-right: 6px; border-right: 0.6px solid #9ca3af;">
-                                            <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000; margin-bottom: 2px; text-decoration: underline; text-decoration-thickness: 0.1px; padding-bottom: 4px;">ABILITATE</div>
-                                            <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000;">${r.label}</div>
-                                            ${disabledUnits && disabledUnits.length > 0 ? `<div style="font-size: ${pfs(-2)}px; font-weight: 650; text-transform: uppercase; color: #dc2626; text-align: left; margin-top: 2px;">DISABILITATE</div>` : ''}
-                                        </div>
-                                        <div style="display: flex; flex-direction: column; flex: 1; padding-left: 6px;">
-                                            <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000; margin-bottom: 2px; text-decoration: underline; text-decoration-thickness: 0.1px; padding-bottom: 4px;">ASSETTO</div>
-                                            <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: ${color}; white-space: nowrap; text-align: left; margin-left: 2px;">${r.val}</div>
-                                            ${disabledUnits.length > 0 ? `<div style="font-size: ${pfs(-2)}px; font-weight: 650; text-transform: uppercase; color: #dc2626; text-align: left; margin-top: 2px; margin-left: 2px;">${disabledUnits.join('/') || ''}</div>` : ''}
-                                        </div>
-                                    </div>
-                                    </div>`);
-                                } else {
-                                    // Layout originale a 3 colonne
-                                    pch(`<div style="display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 0.1px solid #e5e7eb; padding: 2px 0; margin-bottom: 1px; position: relative;">
-                                        <div style="display: flex; flex-direction: column; flex: 1; padding-right: 6px; border-right: 0.6px solid #9ca3af;">
-                                            <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000; margin-bottom: 2px; text-decoration: underline; text-decoration-thickness: 0.1px; padding-bottom: 4px;">ABILITATE</div>
-                                            <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000;">${r.label}</div>
-                                            ${disabledUnits && disabledUnits.length > 0 ? `<div style="font-size: ${pfs(-2)}px; font-weight: 650; text-transform: uppercase; color: #dc2626; text-align: left; margin-top: 2px;">DISABILITATE</div>` : ''}
-                                        </div>
-                                        <div style="display: flex; flex-direction: column; flex: 1; padding-left: 6px;">
-                                            <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000; margin-bottom: 2px; text-decoration: underline; text-decoration-thickness: 0.1px; padding-bottom: 4px;">ASSETTO</div>
-                                            <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: ${color}; white-space: nowrap; text-align: left; margin-left: 2px;">${r.val}</div>
-                                            ${disabledUnits.length > 0 ? `<div style="font-size: ${pfs(-2)}px; font-weight: 650; text-transform: uppercase; color: #dc2626; text-align: left; margin-top: 2px; margin-left: 2px;">${disabledUnits.join('/') || ''}</div>` : ''}
-                                        </div>
-                                    </div>`);
-                                }
-                            } else if (r.label && r.label.includes('OSMOSI')) {
-                                // FALLBACK: se contiene OSMOSI - AGGIUNGIAMO LA LINEA ANCHE QUI!
-                                pch(`<div style="display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 0.1px solid #e5e7eb; padding: 2px 0; margin-bottom: 1px;">
-                                    <div style="display: flex; flex-direction: column; flex: 1; padding-right: 6px; border-right: 0.6px solid #9ca3af;">
-                                        <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000; margin-bottom: 2px; text-decoration: underline; text-decoration-thickness: 0.1px; padding-bottom: 4px;">ABILITATE</div>
-                                        <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000;">${r.label}</div>
-                                    </div>
-                                    <div style="display: flex; flex-direction: column; flex: 1; padding-left: 6px;">
-                                        <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000; margin-bottom: 2px; text-decoration: underline; text-decoration-thickness: 0.1px; padding-bottom: 4px;">ASSETTO</div>
-                                        <div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: ${color}; white-space: nowrap; text-align: left; margin-left: 2px;">${r.val}</div>
-                                    </div>
-                                </div>`);
+                            // OSMOSI: solo unità abilitate + assetto (niente disabilitate)
+                            if (r.label === 'OSMOSI' || (r.label && String(r.label).toUpperCase().indexOf('OSMOSI') >= 0)) {
+                                var osmRowHtml = typeof window.buildOsmosiAssettoReportRowHtml === 'function'
+                                    ? window.buildOsmosiAssettoReportRowHtml(r.val, previewFontBase, {
+                                        enabledUnits: typeof window.getOsmosiEnabledUnitsForReport === 'function'
+                                            ? window.getOsmosiEnabledUnitsForReport() : []
+                                    })
+                                    : '';
+                                if (osmRowHtml) pch(osmRowHtml);
+                                return;
                             } else {
                                 const rowOpts = {
                                     previewFontBase: previewFontBase,

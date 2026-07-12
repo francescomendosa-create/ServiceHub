@@ -17387,6 +17387,10 @@ window.updateStoricoButton = async function() {
             const panel = document.getElementById('stoccaggio-panel-notturno');
             (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
                 if (snap[t.fieldId] == null || String(snap[t.fieldId]).trim() === '') return;
+                if (typeof window.setStoccaggioInternoInputById === 'function') {
+                    window.setStoccaggioInternoInputById(t.fieldId, snap[t.fieldId], { force: !!opts.force });
+                    return;
+                }
                 const el = panel
                     ? panel.querySelector('input.nott-stocc-inp[id="' + t.fieldId + '"]')
                     : document.getElementById(t.fieldId);
@@ -29716,11 +29720,11 @@ window.updateStoricoButton = async function() {
                     window.hydrateNotturnoStoccaggioInputsFromStore({ force: true });
                 }
                 if (typeof window.getActiveRapportinoStoccaggioSnapshot === 'function' &&
-                    typeof window.setAllPlantInputsById === 'function') {
+                    typeof window.setStoccaggioInternoInputById === 'function') {
                     const activeSt = window.getActiveRapportinoStoccaggioSnapshot();
                     if (activeSt) {
                         Object.keys(activeSt).forEach(function (fid) {
-                            window.setAllPlantInputsById(fid, activeSt[fid], { skipChangeEvent: true });
+                            window.setStoccaggioInternoInputById(fid, activeSt[fid], { force: true });
                         });
                     }
                 }
@@ -48521,7 +48525,7 @@ window.runStoccaggioInternoCapture = async function(imageData) {
 
 window.DCS_ACQUA_SHARED_FIELD_IDS = ['inp-tk9000', 'inp-tk9201'];
 
-/** Imposta livello mm su Acqua + Stoccaggio (stessa sigla), mai conducibilità. */
+/** Imposta livello mm su plant/acqua/ambiente — mai su Stoccaggio interno (salvo OCR DCS). */
 window.setAllPlantInputsById = function(fieldId, value, opts) {
     if (!fieldId) return 0;
     opts = opts || {};
@@ -48532,17 +48536,27 @@ window.setAllPlantInputsById = function(fieldId, value, opts) {
     let n = 0;
     const shared = window.DCS_ACQUA_SHARED_FIELD_IDS || ['inp-tk9000', 'inp-tk9201'];
     const targets = [];
+    const allowStocc = !!opts.allowStoccaggio;
 
     function pushUnique(el) {
         if (!el || el.readOnly || targets.indexOf(el) >= 0) return;
+        if (!allowStocc) {
+            if (typeof window.isStoccaggioInternoLevelInput === 'function' && window.isStoccaggioInternoLevelInput(el)) return;
+            if (el.classList && el.classList.contains('nott-stocc-inp')) return;
+            if (el.closest && el.closest('#stoccaggio-panel-notturno')) return;
+        }
         targets.push(el);
     }
 
     if (shared.indexOf(fieldId) >= 0) {
         pushUnique(document.querySelector('#sec-acqua input[id="' + fieldId + '"]'));
-        pushUnique(document.querySelector('#stoccaggio-panel-notturno input.nott-stocc-inp[id="' + fieldId + '"]'));
+        if (allowStocc) {
+            pushUnique(document.querySelector('#stoccaggio-panel-notturno input.nott-stocc-inp[id="' + fieldId + '"]'));
+        }
     } else {
-        pushUnique(document.querySelector('#stoccaggio-panel-notturno input.nott-stocc-inp[id="' + fieldId + '"]'));
+        if (allowStocc) {
+            pushUnique(document.querySelector('#stoccaggio-panel-notturno input.nott-stocc-inp[id="' + fieldId + '"]'));
+        }
         if (typeof window.queryTankLevelAlarmInputs === 'function') {
             window.queryTankLevelAlarmInputs(fieldId).forEach(pushUnique);
         }
@@ -48593,7 +48607,7 @@ window.applyDcsReadingsToAllRapportini = async function(readings) {
 
     let applied = 0;
     relevant.forEach(function(r) {
-        applied += window.setAllPlantInputsById(r.id, r.value) || 0;
+        applied += window.setAllPlantInputsById(r.id, r.value, { allowStoccaggio: true }) || 0;
     });
 
     window.__lastLocalPlantEditMs = Date.now();

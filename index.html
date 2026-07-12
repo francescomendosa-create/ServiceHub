@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="it">
 <head>
     <meta charset="UTF-8">
@@ -5061,6 +5061,9 @@ window.colorPreviewNumber = function(tankName, value) {
             return p.finally(function () {
                 __plantSaveInFlight = null;
                 if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
+                if (typeof window.scheduleSituazioneGiornalieraLiveRefresh === 'function') {
+                    window.scheduleSituazioneGiornalieraLiveRefresh();
+                }
             });
         };
 
@@ -14669,7 +14672,7 @@ window.updateStoricoButton = async function() {
                     window.flushSituazioneGiornalieraPreviewToSnapshot();
                 }
                 if (!opts.skipPlantSync && typeof window.syncSituazioneGiornalieraFromPlant === 'function') {
-                    window.syncSituazioneGiornalieraFromPlant({ force: !!opts.forcePlantSync });
+                    window.syncSituazioneGiornalieraFromPlant({ force: true });
                 }
                 window.renderLetturaSituazioneGiornalieraDocView({ skipSync: true });
             } else {
@@ -15950,19 +15953,20 @@ window.updateStoricoButton = async function() {
 
         window.readSituazioneGiornalieraCondValue = function (condFieldId) {
             if (!condFieldId) return '';
+            var overlap = window.CONDUCTIVITY_LEVEL_OVERLAP_FIELD_IDS || [];
+            var live = '';
+            if (typeof window.readStoredConductivityPlantValue === 'function') {
+                live = String(window.readStoredConductivityPlantValue(condFieldId) || '').trim();
+            }
+            if (!live && overlap.indexOf(condFieldId) < 0) {
+                live = String(window.readRapportinoPlantFieldValue(condFieldId) || '').trim();
+            }
             var dateKey = window.getLetturaDocDateKey();
             var store = window.loadSituazioneGiornalieraSnapshot();
             var snap = store[dateKey] || {};
             var condKey = condFieldId + '__cond';
             var fromSnap = window.readSituazioneGiornalieraSnapValue(snap, condKey);
-            if (fromSnap) return fromSnap;
-            if (typeof window.readStoredConductivityPlantValue === 'function') {
-                var stored = window.readStoredConductivityPlantValue(condFieldId);
-                if (stored) return stored;
-            }
-            var overlap = window.CONDUCTIVITY_LEVEL_OVERLAP_FIELD_IDS || [];
-            if (overlap.indexOf(condFieldId) >= 0) return '';
-            return window.readRapportinoPlantFieldValue(condFieldId);
+            return live || fromSnap || '';
         };
 
         window.readSituazioneGiornalieraCellValue = function (row, opts) {
@@ -15983,15 +15987,6 @@ window.updateStoricoButton = async function() {
             var store = window.loadSituazioneGiornalieraSnapshot();
             var snap = store[dateKey] || {};
 
-            if (row && row.kind === 'vwt-portata') {
-                return pick(window.readSituazioneGiornalieraSnapValue(snap, key), window.readSituazioneGiornalieraVwtPortataValue());
-            }
-            if (row && row.kind === 'vwt') {
-                return pick(window.readSituazioneGiornalieraSnapValue(snap, key), window.readSituazioneGiornalieraVwtValue());
-            }
-            if (row && row.kind === 'osmosi') {
-                return pick(window.readSituazioneGiornalieraSnapValue(snap, key), window.readSituazioneGiornalieraOsmosiUnitValue(row.unit));
-            }
             if (row && row.type === 'status') {
                 return window.readSituazioneGiornalieraBluedownStatus(row);
             }
@@ -16000,6 +15995,15 @@ window.updateStoricoButton = async function() {
             }
             if (row && row.type === 'sino') {
                 return window.readSituazioneGiornalieraSnapValue(snap, key);
+            }
+            if (row && row.kind === 'vwt-portata') {
+                return pick(window.readSituazioneGiornalieraVwtPortataValue(), window.readSituazioneGiornalieraSnapValue(snap, key));
+            }
+            if (row && row.kind === 'vwt') {
+                return pick(window.readSituazioneGiornalieraVwtValue(), window.readSituazioneGiornalieraSnapValue(snap, key));
+            }
+            if (row && row.kind === 'osmosi') {
+                return pick(window.readSituazioneGiornalieraOsmosiUnitValue(row.unit), window.readSituazioneGiornalieraSnapValue(snap, key));
             }
 
             var notturnoKeys = [];
@@ -16013,13 +16017,20 @@ window.updateStoricoButton = async function() {
                 filtraExtra = window.getNotturnoFiltraProduzioneTotaleFormatted();
             }
 
+            if (fieldId) {
+                return pick(
+                    window.readRapportinoPlantFieldValue(fieldId),
+                    window.readSituazioneGiornalieraQuadValue(fieldId),
+                    filtraExtra,
+                    window.readSituazioneGiornalieraFromNotturno(notturnoKeys),
+                    window.readSituazioneGiornalieraSnapValue(snap, key),
+                    window.readSituazioneGiornalieraSnapValue(snap, fieldId)
+                );
+            }
+
             return pick(
                 window.readSituazioneGiornalieraSnapValue(snap, key),
-                fieldId ? window.readSituazioneGiornalieraSnapValue(snap, fieldId) : '',
-                window.readSituazioneGiornalieraFromNotturno(notturnoKeys),
-                fieldId ? window.readSituazioneGiornalieraQuadValue(fieldId) : '',
-                filtraExtra,
-                fieldId ? window.readRapportinoPlantFieldValue(fieldId) : ''
+                window.readSituazioneGiornalieraFromNotturno(notturnoKeys)
             );
         };
 
@@ -16130,22 +16141,29 @@ window.updateStoricoButton = async function() {
                 }
             }
 
+            function mergePlantField(key, fieldId, extraVal) {
+                var live = '';
+                if (fieldId) live = String(window.readRapportinoPlantFieldValue(fieldId) || '').trim();
+                if (!live && extraVal) live = String(extraVal).trim();
+                merge(key, live);
+                if (fieldId) merge(fieldId, live);
+            }
+
             (window.LETTURE_SITUAZIONE_GIORNALIERA_TOP || []).forEach(function (row) {
                 if (!row) return;
                 if (row.type === 'pair') {
-                    var mainVal = window.readSituazioneGiornalieraCellValue(row);
-                    merge(row.key, mainVal);
-                    if (row.fieldId) merge(row.fieldId, mainVal);
+                    var filtraExtra = '';
+                    if (row.fieldId === 'cfil-produzione' && typeof window.getNotturnoFiltraProduzioneTotaleFormatted === 'function') {
+                        filtraExtra = window.getNotturnoFiltraProduzioneTotaleFormatted();
+                    }
+                    mergePlantField(row.key, row.fieldId, filtraExtra);
                     if (row.condFieldId) {
-                        var condVal = window.readSituazioneGiornalieraCondValue(row.condFieldId);
-                        merge(row.condFieldId + '__cond', condVal);
+                        merge(row.condFieldId + '__cond', window.readSituazioneGiornalieraCondValue(row.condFieldId));
                     }
                     return;
                 }
                 if (row.type === 'single') {
-                    var sv = window.readSituazioneGiornalieraCellValue(row);
-                    merge(row.key, sv);
-                    if (row.fieldId) merge(row.fieldId, sv);
+                    mergePlantField(row.key, row.fieldId);
                     return;
                 }
                 if (row.type === 'dual') {
@@ -16164,18 +16182,18 @@ window.updateStoricoButton = async function() {
                 }
                 if (row.type === 'n2block') {
                     (row.items || []).forEach(function (it) {
-                        var nv = window.readSituazioneGiornalieraCellValue(it, { subKey: it.key, fieldId: it.fieldId });
-                        merge(it.key, nv);
-                        if (it.fieldId) merge(it.fieldId, nv);
+                        mergePlantField(it.key, it.fieldId);
                     });
                 }
             });
 
             (window.LETTURE_SITUAZIONE_GIORNALIERA_BOTTOM || []).forEach(function (row) {
                 if (!row) return;
-                var bv = window.readSituazioneGiornalieraCellValue(row);
-                merge(row.key, bv);
-                if (row.fieldId) merge(row.fieldId, bv);
+                if (row.kind === 'vwt-portata' || row.kind === 'osmosi') {
+                    merge(row.key, window.readSituazioneGiornalieraCellValue(row));
+                    return;
+                }
+                mergePlantField(row.key, row.fieldId);
             });
 
             (window.LETTURE_SITUAZIONE_GIORNALIERA_SIDE || []).forEach(function (row) {
@@ -16184,9 +16202,7 @@ window.updateStoricoButton = async function() {
                     merge(row.key, window.readSituazioneGiornalieraCellValue(row));
                     return;
                 }
-                var sv = window.readSituazioneGiornalieraCellValue(row);
-                merge(row.key, sv);
-                if (row.fieldId) merge(row.fieldId, sv);
+                mergePlantField(row.key, row.fieldId);
             });
 
             (window.LETTURE_SITUAZIONE_GIORNALIERA_FOOTER || []).forEach(function (row) {
@@ -16198,6 +16214,21 @@ window.updateStoricoButton = async function() {
                 snap._savedAt = Date.now();
                 window.saveSituazioneGiornalieraSnapshot(store);
             }
+        };
+
+        window.scheduleSituazioneGiornalieraLiveRefresh = function () {
+            if (window.__letturaDocKind !== 'situazione-giornaliera') return;
+            var modal = document.getElementById('letture-doc-modal');
+            if (!modal || !modal.classList.contains('active')) return;
+            clearTimeout(window.__sgLiveRefreshTimer);
+            window.__sgLiveRefreshTimer = setTimeout(function () {
+                if (typeof window.flushSituazioneGiornalieraPreviewToSnapshot === 'function') {
+                    window.flushSituazioneGiornalieraPreviewToSnapshot();
+                }
+                if (typeof window.renderLetturaSituazioneGiornalieraDocView === 'function') {
+                    window.renderLetturaSituazioneGiornalieraDocView({ skipSync: true });
+                }
+            }, 180);
         };
 
         window.bindSituazioneGiornalieraPreviewInputs = function () {
@@ -39743,6 +39774,32 @@ window.convertToHtml = async () => {
             background: #f1f5f9;
         }
         .dark .letture-doc-sheet--situazione .letture-doc-body { background: #1e293b; }
+        @media (max-width: 640px) {
+            #letture-doc-modal .letture-doc-sheet--situazione .letture-doc-toolbar,
+            #letture-doc-modal .letture-doc-sheet--a3 .letture-doc-toolbar {
+                padding-top: calc(20px + env(safe-area-inset-top, 14px));
+                padding-bottom: 12px;
+                padding-left: calc(12px + env(safe-area-inset-left, 0px));
+                padding-right: calc(12px + env(safe-area-inset-right, 0px));
+                align-items: center;
+                min-height: 52px;
+            }
+            #letture-doc-modal .letture-doc-sheet--situazione .letture-doc-toolbar-title,
+            #letture-doc-modal .letture-doc-sheet--a3 .letture-doc-toolbar-title {
+                font-size: 11px;
+                line-height: 1.25;
+                padding-top: 4px;
+            }
+            #letture-doc-modal .letture-doc-sheet--situazione .letture-doc-back,
+            #letture-doc-modal .letture-doc-sheet--situazione .letture-doc-close,
+            #letture-doc-modal .letture-doc-sheet--a3 .letture-doc-back,
+            #letture-doc-modal .letture-doc-sheet--a3 .letture-doc-close {
+                min-height: 40px;
+                min-width: 44px;
+                padding: 10px 12px;
+                touch-action: manipulation;
+            }
+        }
         .letture-doc-body .lettura-doc--situazione-preview {
             font-family: Arial, Helvetica, sans-serif;
             width: 100%;

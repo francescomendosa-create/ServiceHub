@@ -17243,14 +17243,196 @@ window.updateStoricoButton = async function() {
             return true;
         };
 
-        window.buildLetturaSituazioneGiornalieraShareFile = function (docHtml) {
+        window.buildLetturaSituazioneGiornalieraShareFile = function () {
             var dateStr = window.formatLetturaDateIt(new Date()).replace(/\//g, '-');
-            var html = docHtml || window.buildLetturaSituazioneGiornalieraShareDocument();
+            var xml = typeof window.buildLetturaSituazioneGiornalieraExcelDocument === 'function'
+                ? window.buildLetturaSituazioneGiornalieraExcelDocument()
+                : '';
             return new File(
-                [html],
-                'SITUAZIONE GIORNALIERA ' + dateStr + '.doc',
-                { type: 'application/msword' }
+                [xml],
+                'SITUAZIONE GIORNALIERA ' + dateStr + '.xls',
+                { type: 'application/vnd.ms-excel' }
             );
+        };
+
+        window.sgExcelXmlEsc = function (s) {
+            return String(s == null ? '' : s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        };
+
+        window.sgExcelCell = function (value, styleId, opts) {
+            opts = opts || {};
+            var attrs = '';
+            if (styleId) attrs += ' ss:StyleID="' + styleId + '"';
+            if (opts.mergeAcross != null) attrs += ' ss:MergeAcross="' + opts.mergeAcross + '"';
+            if (opts.mergeDown != null) attrs += ' ss:MergeDown="' + opts.mergeDown + '"';
+            var v = window.sgExcelXmlEsc(value == null ? '' : String(value));
+            return '<Cell' + attrs + '><Data ss:Type="String">' + v + '</Data></Cell>';
+        };
+
+        window.sgExcelEmptyCells = function (count, styleId) {
+            var out = '';
+            for (var i = 0; i < count; i++) out += window.sgExcelCell('', styleId);
+            return out;
+        };
+
+        window.sgExcelRow = function (cells) {
+            return '<Row>' + cells + '</Row>';
+        };
+
+        window.buildLetturaSituazioneGiornalieraExcelRows = function () {
+            if (typeof window.flushSituazioneGiornalieraPreviewToSnapshot === 'function') {
+                window.flushSituazioneGiornalieraPreviewToSnapshot({ batch: true });
+            }
+            var rows = [];
+            var dateStr = window.formatLetturaDateIt(new Date());
+            var c = window.sgExcelCell;
+            var r = window.sgExcelRow;
+            var ec = window.sgExcelEmptyCells;
+
+            rows.push(r(
+                c('Sasol Italy S.p.A. — Stabilimento di Augusta', 'hdr', { mergeAcross: 1 }) +
+                c('SITUAZIONE GIORNALIERA', 'hdrTitle', { mergeAcross: 2 }) +
+                c('Giorno ' + dateStr, 'hdr', { mergeAcross: 1 })
+            ));
+
+            (window.LETTURE_SITUAZIONE_GIORNALIERA_TOP || []).forEach(function (row) {
+                if (!row) return;
+                if (row.type === 'pair') {
+                    var mainVal = window.readSituazioneGiornalieraCellValue(row);
+                    var condVal = window.readSituazioneGiornalieraCondValue(row.condFieldId);
+                    rows.push(r(
+                        c(row.label, 'lbl') + c(row.unit || '', 'um') + c(mainVal, 'val') +
+                        c('cond. µS/cm', 'um') + c(condVal, 'val')
+                    ));
+                    return;
+                }
+                if (row.type === 'single') {
+                    var sv = window.readSituazioneGiornalieraCellValue(row);
+                    rows.push(r(
+                        c(row.label, 'lbl') + c(row.unit || '', 'um') + c(sv, 'val') + ec(2, 'val')
+                    ));
+                    return;
+                }
+                if (row.type === 'dual') {
+                    var v1 = window.readSituazioneGiornalieraCellValue(null, { subKey: row.key1 });
+                    var v2 = window.readSituazioneGiornalieraCellValue(null, { subKey: row.key2 });
+                    rows.push(r(
+                        c(row.label, 'lbl') + c(row.unit1 || '', 'um') + c(v1, 'val') +
+                        c(row.unit2 || '', 'um') + c(v2, 'val')
+                    ));
+                    return;
+                }
+                if (row.type === 'torcia') {
+                    (row.rows || []).forEach(function (tr, idx) {
+                        var tv = window.readSituazioneGiornalieraCellValue(null, { subKey: tr.key });
+                        rows.push(r(
+                            c(idx === 0 ? row.label : '', 'lbl') + c(tr.subLabel || '', 'um') + c(tv, 'val') +
+                            c(tr.unit || '', 'um') + ec(1, 'val')
+                        ));
+                    });
+                    return;
+                }
+                if (row.type === 'status') {
+                    var stVal = window.readSituazioneGiornalieraBluedownStatus(row);
+                    rows.push(r(
+                        c(row.label, 'lbl') + ec(1, 'um') + c(stVal, 'valStatus') + ec(2, 'val')
+                    ));
+                    return;
+                }
+                if (row.type === 'n2block') {
+                    (row.items || []).forEach(function (it, idx) {
+                        var nv = window.readSituazioneGiornalieraCellValue(it, { subKey: it.key, fieldId: it.fieldId });
+                        rows.push(r(
+                            c(idx === 0 ? row.label : '', 'lbl') + c(it.unit || it.subLabel || '', 'um') + c(nv, 'val') +
+                            ec(2, 'val')
+                        ));
+                    });
+                }
+            });
+
+            (window.LETTURE_SITUAZIONE_GIORNALIERA_BOTTOM || []).forEach(function (row) {
+                if (!row) return;
+                var bv = window.readSituazioneGiornalieraCellValue(row);
+                rows.push(r(
+                    c(row.label, 'lbl') + c(row.unit || '', 'um') + c(bv, 'val') + ec(2, 'val')
+                ));
+            });
+
+            (window.LETTURE_SITUAZIONE_GIORNALIERA_FOOTER || []).forEach(function (row) {
+                if (!row) return;
+                var fv = window.readSituazioneGiornalieraCellValue(row);
+                rows.push(r(
+                    c(row.label, 'lbl') + c('SI / NO', 'um') + c(fv, 'val') + ec(2, 'val')
+                ));
+            });
+
+            rows.push(r(ec(5, 'lbl')));
+
+            var notesRow = (window.LETTURE_SITUAZIONE_GIORNALIERA_SIDE || []).find(function (x) {
+                return x && x.type === 'notes';
+            });
+            var notesVal = notesRow ? window.readSituazioneGiornalieraCellValue(notesRow) : '';
+            rows.push(r(c('EVENTI SHE', 'th', { mergeAcross: 4 })));
+            rows.push(r(c(notesVal, 'notes', { mergeAcross: 4 })));
+
+            rows.push(r(c('COMPOSIZIONE DEL GAS %', 'th', { mergeAcross: 4 })));
+            (window.LETTURE_SITUAZIONE_GIORNALIERA_SIDE || []).filter(function (x) {
+                return x && x.key && /^gas-/.test(x.key);
+            }).forEach(function (gr) {
+                var gv = window.readSituazioneGiornalieraCellValue(gr);
+                rows.push(r(c(gr.label, 'lbl') + ec(1, 'um') + c(gv, 'val') + ec(2, 'val')));
+            });
+
+            var conoRow = (window.LETTURE_SITUAZIONE_GIORNALIERA_SIDE || []).find(function (x) {
+                return x && x.key === 'cono';
+            });
+            var conoVal = conoRow ? window.readSituazioneGiornalieraCellValue(conoRow) : '';
+            rows.push(r(c('CONO', 'th', { mergeAcross: 4 })));
+            rows.push(r(c(conoVal, 'val', { mergeAcross: 4 })));
+
+            return rows.join('');
+        };
+
+        window.buildLetturaSituazioneGiornalieraExcelDocument = function () {
+            var bodyRows = window.buildLetturaSituazioneGiornalieraExcelRows();
+            return '<?xml version="1.0" encoding="UTF-8"?>\n' +
+                '<?mso-application progid="Excel.Sheet"?>\n' +
+                '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" ' +
+                'xmlns:o="urn:schemas-microsoft-com:office:office" ' +
+                'xmlns:x="urn:schemas-microsoft-com:office:excel" ' +
+                'xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">\n' +
+                '<Styles>\n' +
+                '<Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Vertical="Center" ss:WrapText="1"/>' +
+                '<Font ss:FontName="Arial" ss:Size="10"/><Borders>' +
+                '<Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/>' +
+                '<Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/>' +
+                '<Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/>' +
+                '<Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/>' +
+                '</Borders></Style>\n' +
+                '<Style ss:ID="hdr" ss:Parent="Default"><Font ss:Bold="1" ss:Size="9"/></Style>\n' +
+                '<Style ss:ID="hdrTitle" ss:Parent="Default"><Font ss:Bold="1" ss:Size="12"/><Alignment ss:Horizontal="Center"/></Style>\n' +
+                '<Style ss:ID="lbl" ss:Parent="Default"><Font ss:Bold="1"/></Style>\n' +
+                '<Style ss:ID="um" ss:Parent="Default"><Alignment ss:Horizontal="Center"/><Font ss:Size="9"/></Style>\n' +
+                '<Style ss:ID="val" ss:Parent="Default"><Alignment ss:Horizontal="Center"/><Font ss:Bold="1"/></Style>\n' +
+                '<Style ss:ID="valStatus" ss:Parent="val"><Font ss:Bold="1"/></Style>\n' +
+                '<Style ss:ID="th" ss:Parent="Default"><Font ss:Bold="1"/><Interior ss:Color="#DCDCDC" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center"/></Style>\n' +
+                '<Style ss:ID="notes" ss:Parent="Default"><Alignment ss:Vertical="Top" ss:WrapText="1"/></Style>\n' +
+                '</Styles>\n' +
+                '<Worksheet ss:Name="Situazione giornaliera">\n' +
+                '<Table ss:DefaultColumnWidth="72" ss:DefaultRowHeight="18">\n' +
+                '<Column ss:Width="110"/><Column ss:Width="68"/><Column ss:Width="72"/>' +
+                '<Column ss:Width="68"/><Column ss:Width="72"/>\n' +
+                bodyRows +
+                '</Table>\n' +
+                '<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">' +
+                '<PageSetup><Layout x:Orientation="Portrait"/><Header x:Margin="0.3"/><Footer x:Margin="0.3"/>' +
+                '<PageMargins x:Bottom="0.5" x:Left="0.4" x:Right="0.4" x:Top="0.5"/></PageSetup>' +
+                '<FitToPage/><Print><FitWidth>1</FitWidth><FitHeight>99</FitHeight></Print></WorksheetOptions>\n' +
+                '</Worksheet>\n</Workbook>';
         };
 
         window.renderLetturaSituazioneGiornalieraDocView = function (opts) {

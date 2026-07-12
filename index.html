@@ -3475,7 +3475,16 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!opts.force && rev > 0 && rev < (window.__appliedPlantSyncRevision || 0)) return;
             if (rev > 0) window.__appliedPlantSyncRevision = rev;
             window.__cloudPlantHydrated = true;
-            applyData(d, { forceRemotePlant: true });
+            const preBackup = typeof window.__readPlantBackupLocal === 'function'
+                ? window.__readPlantBackupLocal() : null;
+            applyData(d, { forceRemotePlant: true, prePlantBackup: preBackup });
+            if (d.plantStatusEdits && typeof window.__mergePlantStatusEditsMaps === 'function') {
+                window.__plantStatusEdits = window.__mergePlantStatusEditsMaps(
+                    window.__plantStatusEdits || {}, d.plantStatusEdits);
+            } else if (preBackup && preBackup.plantStatusEdits && typeof window.__mergePlantStatusEditsMaps === 'function') {
+                window.__plantStatusEdits = window.__mergePlantStatusEditsMaps(
+                    window.__plantStatusEdits || {}, preBackup.plantStatusEdits);
+            }
             cacheCloudPlantPayload(d);
             if (typeof window.hydrateConducibilitaInputsFromDom === 'function') {
                 window.hydrateConducibilitaInputsFromDom();
@@ -3691,6 +3700,15 @@ window.colorPreviewNumber = function(tankName, value) {
                     data.tankTimelineManualInitial = tlManual.tankTimelineManualInitial;
                 }
             }
+            var statusEdits = {};
+            var localBkEdits = local && local.plantStatusEdits;
+            if (localBkEdits && typeof window.__mergePlantStatusEditsMaps === 'function') {
+                statusEdits = window.__mergePlantStatusEditsMaps(statusEdits, localBkEdits);
+            }
+            if (window.__plantStatusEdits && typeof window.__mergePlantStatusEditsMaps === 'function') {
+                statusEdits = window.__mergePlantStatusEditsMaps(statusEdits, window.__plantStatusEdits);
+            }
+            if (Object.keys(statusEdits).length) data.plantStatusEdits = statusEdits;
             return data;
         };
 
@@ -4616,6 +4634,7 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__PLANT_REMOTE_GUARD_MS = 1800;
         window.__PLANT_SYNC_VERIFY_DELAY_MS = 1500;
         window.__plantFieldEditMs = {};
+        window.__plantStatusEdits = {};
         window.__plantPendingVerifyFields = {};
         window.__plantCloudSaveTimer = null;
         window.__plantSyncVerifyTimer = null;
@@ -4819,10 +4838,148 @@ window.colorPreviewNumber = function(tankName, value) {
             return true;
         };
 
+        window.__capturePlantStatusStateFromEl = function (el) {
+            if (!el || !el.id) return null;
+            return {
+                text: el.innerText || el.textContent || '',
+                class: el.className || '',
+                style: el.getAttribute('style') || ''
+            };
+        };
+
+        window.__plantStatusEditTimestamp = function (edits, id) {
+            if (!edits || !id) return 0;
+            var e = edits[id];
+            if (!e) return 0;
+            if (typeof e === 'number') {
+                var n = Number(e);
+                return Number.isFinite(n) && n > 0 ? n : 0;
+            }
+            var t = Number(e.t);
+            return Number.isFinite(t) && t > 0 ? t : 0;
+        };
+
+        window.__getPlantStatusEditsFromPayload = function (payload) {
+            if (!payload || typeof payload !== 'object') return {};
+            if (payload.plantStatusEdits && typeof payload.plantStatusEdits === 'object') {
+                return payload.plantStatusEdits;
+            }
+            if (payload.plantStatusEditMs && typeof payload.plantStatusEditMs === 'object') {
+                var legacy = {};
+                Object.keys(payload.plantStatusEditMs).forEach(function (sid) {
+                    var ts = Number(payload.plantStatusEditMs[sid]);
+                    if (!Number.isFinite(ts) || ts <= 0) return;
+                    if (payload[sid] != null) legacy[sid] = { t: ts, state: payload[sid] };
+                });
+                return legacy;
+            }
+            return {};
+        };
+
+        window.__mergePlantStatusEditsMaps = function (a, b) {
+            var out = Object.assign({}, a || {});
+            Object.keys(b || {}).forEach(function (id) {
+                var bt = window.__plantStatusEditTimestamp(b, id);
+                var at = window.__plantStatusEditTimestamp(out, id);
+                if (bt >= at) out[id] = b[id];
+            });
+            return out;
+        };
+
+        window.__mergePlantStatusFieldsPreferNewest = function (primary, secondary) {
+            if (!primary || !secondary) return primary || secondary;
+            var out = Object.assign({}, primary);
+            var pEdits = window.__getPlantStatusEditsFromPayload(primary);
+            var sEdits = window.__getPlantStatusEditsFromPayload(secondary);
+            var mergedEdits = window.__mergePlantStatusEditsMaps(pEdits, sEdits);
+            var statusIds = {};
+            [primary, secondary].forEach(function (payload) {
+                Object.keys(payload).forEach(function (k) {
+                    if (window.__isPlantStatusStorageKey(k, payload[k])) statusIds[k] = true;
+                });
+            });
+            Object.keys(mergedEdits).forEach(function (k) { statusIds[k] = true; });
+            Object.keys(statusIds).forEach(function (id) {
+                var pt = window.__plantStatusEditTimestamp(pEdits, id);
+                var st = window.__plantStatusEditTimestamp(sEdits, id);
+                var winner = null;
+                if (st > pt) winner = secondary;
+                else if (pt > st) winner = primary;
+                else if (primary[id] == null && secondary[id] != null) winner = secondary;
+                else return;
+                if (!winner) return;
+                var fromEdits = (winner.plantStatusEdits || {})[id];
+                if (fromEdits && fromEdits.state != null) out[id] = fromEdits.state;
+                else if (winner[id] != null) out[id] = winner[id];
+            });
+            if (Object.keys(mergedEdits).length) out.plantStatusEdits = mergedEdits;
+            return out;
+        };
+
+        window.__reconcilePlantStatusEditsToDom = function (payload) {
+            if (!payload) return;
+            var edits = window.__getPlantStatusEditsFromPayload(payload);
+            Object.keys(edits).forEach(function (id) {
+                var entry = edits[id];
+                if (!entry || entry.state == null) return;
+                var el = document.getElementById(id);
+                if (!el) {
+                    var hiddenModules = window.hiddenModules || [];
+                    for (var hi = 0; hi < hiddenModules.length; hi++) {
+                        var hiddenSection = document.getElementById(hiddenModules[hi]);
+                        if (hiddenSection) {
+                            el = hiddenSection.querySelector('#' + id);
+                            if (el) break;
+                        }
+                    }
+                }
+                if (!el) el = document.querySelector('#' + id);
+                if (!el) return;
+                var cur = window.__capturePlantStatusStateFromEl(el);
+                var want = entry.state;
+                var curMarcia = String(cur.text || '').trim().toUpperCase().indexOf('MARCIA') >= 0;
+                var wantMarcia = String(want.text || '').trim().toUpperCase().indexOf('MARCIA') >= 0;
+                if (curMarcia === wantMarcia && String(cur.class || '') === String(want.class || '')) return;
+                if (typeof window.__applyPlantStatusFromStored === 'function') {
+                    window.__applyPlantStatusFromStored(el, want, { force: true });
+                }
+            });
+        };
+
+        window.__shouldApplyRemotePlantStatusField = function (id, remoteData, localBackup) {
+            if (!window.__shouldApplyRemoteStatusValue(id)) return false;
+            if (!localBackup && typeof window.__readPlantBackupLocal === 'function') {
+                localBackup = window.__readPlantBackupLocal();
+            }
+            if (!localBackup || !remoteData) return true;
+            var rEdits = window.__getPlantStatusEditsFromPayload(remoteData);
+            var lEdits = window.__getPlantStatusEditsFromPayload(localBackup);
+            var rt = window.__plantStatusEditTimestamp(rEdits, id);
+            var lt = window.__plantStatusEditTimestamp(lEdits, id);
+            return !(lt > rt);
+        };
+
         window.__touchPlantStatusEdit = function (id) {
             if (!id) return;
+            var now = Date.now();
             window.__plantFieldEditMs = window.__plantFieldEditMs || {};
-            window.__plantFieldEditMs[id] = Date.now();
+            window.__plantFieldEditMs[id] = now;
+            var el = document.getElementById(id);
+            if (!el) {
+                var hiddenModules = window.hiddenModules || [];
+                for (var hi = 0; hi < hiddenModules.length; hi++) {
+                    var hiddenSection = document.getElementById(hiddenModules[hi]);
+                    if (hiddenSection) {
+                        el = hiddenSection.querySelector('#' + id);
+                        if (el) break;
+                    }
+                }
+            }
+            if (!el) el = document.querySelector('#' + id);
+            var state = el && typeof window.__capturePlantStatusStateFromEl === 'function'
+                ? window.__capturePlantStatusStateFromEl(el) : null;
+            window.__plantStatusEdits = window.__plantStatusEdits || {};
+            window.__plantStatusEdits[id] = { t: now, state: state || { text: '', class: '', style: '' } };
         };
 
         window.__shouldApplyRemoteStatusValue = function (id) {
@@ -4854,6 +5011,9 @@ window.colorPreviewNumber = function(tankName, value) {
         };
 
         window.__mergeMissingPlantStatusFromAlt = function (primary, secondary) {
+            if (typeof window.__mergePlantStatusFieldsPreferNewest === 'function') {
+                return window.__mergePlantStatusFieldsPreferNewest(primary, secondary);
+            }
             if (!primary || !secondary) return primary;
             const out = Object.assign({}, primary);
             Object.keys(secondary).forEach(function (k) {
@@ -12269,6 +12429,10 @@ window.updateStoricoButton = async function() {
             if (!data) return;
             const forcePlant =
                 opts && opts.forceRemotePlant === true;
+            const localStatusBackup = forcePlant
+                ? ((opts && opts.prePlantBackup) || (typeof window.__readPlantBackupLocal === 'function'
+                    ? window.__readPlantBackupLocal() : null))
+                : null;
             /* Turno UI = orologio. Il campo shift nel cloud è storico, non va bloccato come manualShift. */
             if (opts && opts.forceRemotePlant === true) {
                 manualShift = null;
@@ -12313,7 +12477,7 @@ window.updateStoricoButton = async function() {
             // NON toccare più gli allarmi qui
             // Gli allarmi sono gestiti separatamente (cloud dedicato)
             for (const [id, val] of Object.entries(data)) {
-                if (['hiddenModules', 'isDarkMode', 'lastUpdate', 'manualShift', 'archiveTime', 'createdAt', 'shift', 'syncRevision', 'tankStatuses', 'tankStatusManualAD', 'tankLevelInputAt', 'tankTimelineManualRefs', 'tankTimelineManualInitial'].includes(id)) continue;
+                if (['hiddenModules', 'isDarkMode', 'lastUpdate', 'manualShift', 'archiveTime', 'createdAt', 'shift', 'syncRevision', 'plantStatusEdits', 'plantStatusEditMs', 'tankStatuses', 'tankStatusManualAD', 'tankLevelInputAt', 'tankTimelineManualRefs', 'tankTimelineManualInitial'].includes(id)) continue;
                 if (id === 'ai-chat-input' || id === 'conv-chat-input') continue;
                 if (window.isRapportinoOnlyDataKey && window.isRapportinoOnlyDataKey(id)) continue;
                 if (id === 'inp-osmosi__report') {
@@ -12408,6 +12572,10 @@ window.updateStoricoButton = async function() {
                         if ((fieldId === 'inp-osmosi' || id === 'osmosi') && typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(el);
                     }
                 } else if (el.classList && (el.classList.contains('status-cell-btn') || el.classList.contains('status-header'))) {
+                    if (forcePlant && typeof window.__shouldApplyRemotePlantStatusField === 'function' &&
+                        !window.__shouldApplyRemotePlantStatusField(fieldId, data, localStatusBackup)) {
+                        continue;
+                    }
                     if (typeof window.__applyPlantStatusFromStored === 'function') {
                         window.__applyPlantStatusFromStored(el, val, { force: forcePlant });
                     }
@@ -12419,6 +12587,10 @@ window.updateStoricoButton = async function() {
                         /* gestito sopra / in reconcile */
                     } else if (typeof window.__applyPlantStatusFromStored === 'function' &&
                         (el.classList.contains('status-cell-btn') || el.classList.contains('status-header'))) {
+                        if (forcePlant && typeof window.__shouldApplyRemotePlantStatusField === 'function' &&
+                            !window.__shouldApplyRemotePlantStatusField(fieldId, data, localStatusBackup)) {
+                            continue;
+                        }
                         window.__applyPlantStatusFromStored(el, val, { force: forcePlant });
                     } else {
                         el.innerHTML = val.text;
@@ -12452,6 +12624,16 @@ window.updateStoricoButton = async function() {
 
             if (typeof window.repairBluedownUi === 'function') {
                 window.repairBluedownUi();
+            }
+
+            if (forcePlant && localStatusBackup && typeof window.__mergePlantStatusFieldsPreferNewest === 'function' &&
+                typeof window.__reconcilePlantStatusEditsToDom === 'function') {
+                var statusMerged = window.__mergePlantStatusFieldsPreferNewest(data, localStatusBackup);
+                window.__reconcilePlantStatusEditsToDom(statusMerged);
+                if (statusMerged.plantStatusEdits && typeof window.__mergePlantStatusEditsMaps === 'function') {
+                    window.__plantStatusEdits = window.__mergePlantStatusEditsMaps(
+                        window.__plantStatusEdits || {}, statusMerged.plantStatusEdits);
+                }
             }
 
             updateBoilerInputs();
@@ -29653,8 +29835,8 @@ window.updateStoricoButton = async function() {
                 });
             }
 
-            window.saveData();
             if (typeof window.__touchPlantStatusEdit === 'function') window.__touchPlantStatusEdit(headerId);
+            window.saveData();
             if (typeof window.__flushPlantCloudSaveNow === 'function') {
                 void window.__flushPlantCloudSaveNow(true);
             }

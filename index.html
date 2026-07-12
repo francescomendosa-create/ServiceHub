@@ -11987,6 +11987,96 @@ window.updateStoricoButton = async function() {
             return s.replace(/\s+/g, ' ').trim();
         };
 
+        /** Valore osmosi per report preview / Digital HD / remoto — legge DOM, meta, backup e storage dedicato. */
+        window.resolveOsmosiReportPreviewValue = function () {
+            var formatOut = function (raw) {
+                if (raw == null || String(raw).trim() === '') return '';
+                return typeof window.formatOsmosiReportPreviewValue === 'function'
+                    ? String(window.formatOsmosiReportPreviewValue(raw)).trim()
+                    : String(raw).trim();
+            };
+            var tryMetaBuild = function (metaRaw) {
+                if (!metaRaw) return '';
+                try {
+                    var meta = typeof metaRaw === 'string' ? JSON.parse(metaRaw) : metaRaw;
+                    if (!meta || typeof meta !== 'object') return '';
+                    var demi = Array.isArray(meta.demi) ? meta.demi.slice() : [];
+                    var pozzi = Array.isArray(meta.pozzi) ? meta.pozzi.slice() : [];
+                    var selected = Array.isArray(meta.selected) ? meta.selected.slice() : [];
+                    var prevSel = window.selectedOsmosiUnits;
+                    if (selected.length && typeof window.__normalizeOsmosiUnitsList === 'function') {
+                        window.selectedOsmosiUnits = window.__normalizeOsmosiUnitsList(selected);
+                    }
+                    var built = typeof window.__buildOsmosiInterfaceDisplay === 'function'
+                        ? window.__buildOsmosiInterfaceDisplay(demi, pozzi) : '';
+                    window.selectedOsmosiUnits = prevSel;
+                    return formatOut(built);
+                } catch (_) {
+                    return '';
+                }
+            };
+            var inp = typeof window.__resolveOsmosiInput === 'function'
+                ? window.__resolveOsmosiInput() : document.getElementById('inp-osmosi');
+            var sources = [];
+            if (inp) {
+                sources.push(inp.getAttribute('data-report-value'));
+                sources.push(tryMetaBuild(inp.getAttribute('data-osmosi-meta')));
+                if (inp.value) {
+                    sources.push(inp.value);
+                    if (typeof window.__parseOsmosiUnitsFromInterfaceValue === 'function') {
+                        var parsed = window.__parseOsmosiUnitsFromInterfaceValue(inp.value, {
+                            metaRaw: inp.getAttribute('data-osmosi-meta'),
+                            selectedRaw: inp.getAttribute('data-osmosi-selected') ||
+                                (document.getElementById('osmosi-label-text') &&
+                                    document.getElementById('osmosi-label-text').getAttribute('data-osmosi-selected')),
+                            reportRaw: inp.getAttribute('data-report-value')
+                        });
+                        if (parsed.length && typeof window.__buildOsmosiInterfaceDisplay === 'function') {
+                            var prevSel2 = window.selectedOsmosiUnits;
+                            window.selectedOsmosiUnits = parsed.slice();
+                            var iface = window.__buildOsmosiInterfaceDisplay([], parsed);
+                            window.selectedOsmosiUnits = prevSel2;
+                            sources.push(iface);
+                        }
+                    }
+                }
+            }
+            var backup = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
+            if (backup) {
+                sources.push(backup['inp-osmosi__report']);
+                sources.push(tryMetaBuild(backup['inp-osmosi__meta']));
+                sources.push(backup['inp-osmosi']);
+            }
+            var st = window.__readOsmosiDedicatedState && window.__readOsmosiDedicatedState();
+            if (st) {
+                sources.push(st.report);
+                sources.push(tryMetaBuild(st.meta));
+                sources.push(st.inpValue);
+            }
+            for (var i = 0; i < sources.length; i++) {
+                var out = formatOut(sources[i]);
+                if (out) return out;
+            }
+            if (typeof window.__getOsmosiUnitsFromDom === 'function') {
+                var units = window.__getOsmosiUnitsFromDom();
+                if (units.length) return units.join('/');
+            }
+            return '';
+        };
+
+        window.hasActiveOsmosiConfiguration = function () {
+            if (typeof window.__getOsmosiUnitsFromDom === 'function' && window.__getOsmosiUnitsFromDom().length) {
+                return true;
+            }
+            var inp = typeof window.__resolveOsmosiInput === 'function'
+                ? window.__resolveOsmosiInput() : document.getElementById('inp-osmosi');
+            if (inp && typeof window.__osmosiInterfaceHasActiveConfig === 'function' &&
+                window.__osmosiInterfaceHasActiveConfig(inp.value)) {
+                return true;
+            }
+            return !!String(window.resolveOsmosiReportPreviewValue() || '').trim();
+        };
+
         window.closeOsmosiMatchPopup = (opts) => {
             const cancelFlow = !opts || opts.cancel !== false;
             if (cancelFlow && window.__osmosiFlowSnapshot) {
@@ -32282,8 +32372,10 @@ window.updateStoricoButton = async function() {
                 portata = String(vwtInp.value).replace(/\s*mc\s*$/i, '').trim();
             }
             var osmInp = document.getElementById('inp-osmosi');
-            var osmosiVal = '';
-            if (osmInp) {
+            var osmosiVal = typeof window.resolveOsmosiReportPreviewValue === 'function'
+                ? window.resolveOsmosiReportPreviewValue()
+                : '';
+            if (!osmosiVal && osmInp) {
                 var rawOsm = osmInp.getAttribute('data-report-value') || osmInp.value || '';
                 osmosiVal = typeof window.formatOsmosiReportPreviewValue === 'function'
                     ? window.formatOsmosiReportPreviewValue(rawOsm)
@@ -32294,7 +32386,9 @@ window.updateStoricoButton = async function() {
                 portata: portata,
                 osmosiVal: osmosiVal,
                 hasSed: !!(selection || portata),
-                hasOsmosis: !!String(osmosiVal || '').trim()
+                hasOsmosis: typeof window.hasActiveOsmosiConfiguration === 'function'
+                    ? window.hasActiveOsmosiConfiguration()
+                    : !!String(osmosiVal || '').trim()
             };
         };
 
@@ -33492,10 +33586,14 @@ if (hiddenModules.length === 0) {
                         ? window.resolveReportRowLabel(inp, id, { shortBdMeasures: true, forReportPreview: true })
                         : 'VALORE';
                     let val = inp.value;
-                    if (inp.id === 'inp-osmosi' && inp.getAttribute('data-report-value')) {
-                        val = typeof window.formatOsmosiReportPreviewValue === 'function'
-                            ? window.formatOsmosiReportPreviewValue(inp.getAttribute('data-report-value'))
-                            : inp.getAttribute('data-report-value').replace(/<br\s*\/?>/gi, ', ');
+                    if (inp.id === 'inp-osmosi') {
+                        val = typeof window.resolveOsmosiReportPreviewValue === 'function'
+                            ? window.resolveOsmosiReportPreviewValue()
+                            : (inp.getAttribute('data-report-value')
+                                ? (typeof window.formatOsmosiReportPreviewValue === 'function'
+                                    ? window.formatOsmosiReportPreviewValue(inp.getAttribute('data-report-value'))
+                                    : inp.getAttribute('data-report-value').replace(/<br\s*\/?>/gi, ', '))
+                                : inp.value);
                     }
                     if (id === 'sec-stoccaggio-interno' && window.formatStoccaggioInternoReportValue) {
                         val = window.formatStoccaggioInternoReportValue(inp);
@@ -34501,10 +34599,14 @@ window.buildDigitalCardsHTML = function() {
                                     ? window.resolveReportRowLabel(inp, moduleId, { shortBdMeasures: false, forReportPreview: true })
                                     : 'VALORE';
                                 let val = inp.value;
-                                if (inp.id === 'inp-osmosi' && inp.getAttribute('data-report-value')) {
-                                    val = typeof window.formatOsmosiReportPreviewValue === 'function'
-                                        ? window.formatOsmosiReportPreviewValue(inp.getAttribute('data-report-value'))
-                                        : inp.getAttribute('data-report-value').replace(/<br\s*\/?>/gi, ', ');
+                                if (inp.id === 'inp-osmosi') {
+                                    val = typeof window.resolveOsmosiReportPreviewValue === 'function'
+                                        ? window.resolveOsmosiReportPreviewValue()
+                                        : (inp.getAttribute('data-report-value')
+                                            ? (typeof window.formatOsmosiReportPreviewValue === 'function'
+                                                ? window.formatOsmosiReportPreviewValue(inp.getAttribute('data-report-value'))
+                                                : inp.getAttribute('data-report-value').replace(/<br\s*\/?>/gi, ', '))
+                                            : inp.value);
                                 }
                                 if (moduleId === 'sec-stoccaggio-interno' && window.formatStoccaggioInternoReportValue) {
                                     val = window.formatStoccaggioInternoReportValue(inp);

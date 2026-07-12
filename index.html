@@ -4881,6 +4881,7 @@ window.colorPreviewNumber = function(tankName, value) {
                         if (!window.__shouldApplyRemoteValueToInput(el)) return;
                         var expected = payload[k] == null ? '' : String(payload[k]);
                         var domVal = String(el.value == null ? '' : el.value);
+                        if (expected.trim() === '' && domVal.trim() !== '') return;
                         if (!window.__plantValueEquals(domVal, expected)) {
                             el.value = expected;
                             fixed++;
@@ -4917,14 +4918,22 @@ window.colorPreviewNumber = function(tankName, value) {
             if (localBackup) {
                 for (var bi = 0; bi < guardKeys.length; bi++) {
                     var gk = guardKeys[bi];
+                    var localVal = localBackup[gk];
+                    var localHas = localVal != null && String(localVal).trim() !== '';
+                    if (!localHas) continue;
                     var localTs = typeof window.__plantFieldEditTimestamp === 'function'
                         ? window.__plantFieldEditTimestamp(localBackup, gk) : 0;
                     var remoteTs = typeof window.__plantFieldEditTimestamp === 'function'
                         ? window.__plantFieldEditTimestamp(remoteRef, gk) : 0;
-                    if (localTs <= remoteTs) continue;
-                    var localVal = localBackup[gk];
-                    if (localVal == null || String(localVal).trim() === '') continue;
-                    return false;
+                    var remoteVal = remoteRef[gk];
+                    var remoteEmpty = remoteVal == null || String(remoteVal).trim() === '';
+                    if (localTs > remoteTs) return false;
+                    if (remoteEmpty && localTs >= remoteTs) return false;
+                    var domEl = document.getElementById(gk);
+                    if (domEl && domEl.value != null && String(domEl.value).trim() !== '' &&
+                        remoteEmpty && localTs >= remoteTs) {
+                        return false;
+                    }
                 }
             }
             return true;
@@ -5214,6 +5223,19 @@ window.colorPreviewNumber = function(tankName, value) {
                     if (pEmpty && !sEmpty) winner = secondary;
                     else if (!pEmpty && sEmpty) winner = primary;
                     else return;
+                }
+                if (!winner || winner[id] === undefined) return;
+                var winVal = winner[id];
+                var losePayload = winner === primary ? secondary : primary;
+                var loseVal = losePayload[id];
+                var winEmpty = winVal == null || String(winVal).trim() === '';
+                var loseHas = loseVal != null && String(loseVal).trim() !== '';
+                if (winEmpty && loseHas) {
+                    var winTs = winner === primary ? pt : st;
+                    var loseTs = winner === primary ? st : pt;
+                    if (!(winTs > loseTs && loseTs > 0)) {
+                        winner = losePayload;
+                    }
                 }
                 if (!winner || winner[id] === undefined) return;
                 out[id] = winner[id];
@@ -29673,10 +29695,14 @@ window.updateStoricoButton = async function() {
 
                 if (plantSnap && plantSnap.exists()) {
                     let serverStripped = window.__stripRapportinoKeysFromPlantPayload(plantSnap.data());
-                    if (typeof window.__mergeOsmosiFieldsFromSources === 'function') {
-                        serverStripped = window.__mergeOsmosiFieldsFromSources(serverStripped);
+                    const backup = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
+                    const backupStripped = backup ? window.__stripRapportinoKeysFromPlantPayload(backup) : null;
+                    let merged = typeof window.__pickNewestPlantPayload === 'function'
+                        ? window.__pickNewestPlantPayload(serverStripped, backupStripped) : serverStripped;
+                    if (merged && typeof window.__mergeOsmosiFieldsFromSources === 'function') {
+                        merged = window.__mergeOsmosiFieldsFromSources(merged);
                     }
-                    __applyRemotePlantPayload(serverStripped, { force: true, quick: false });
+                    __applyRemotePlantPayload(merged || serverStripped, { force: true, quick: false, skipBackupMerge: true });
                     pulledPlant = true;
                 }
 
@@ -32377,6 +32403,9 @@ window.updateStoricoButton = async function() {
             if (!Number.isFinite(ts) || ts <= 0) ts = Date.now();
             window.tankLevelInputAtMs[normId] = ts;
             window.tankLevelInputAtMm[normId] = mm;
+            window.__plantFieldEditMs = window.__plantFieldEditMs || {};
+            window.__plantFieldEditMs[normId] = ts;
+            if (id !== normId) window.__plantFieldEditMs[id] = ts;
             window.__persistTankLevelInputAt();
             if (!opts.skipTimelineInitialBootstrap &&
                 typeof window.ensureTankTimelineManualInitialFromFirstInput === 'function') {

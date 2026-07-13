@@ -3508,6 +3508,11 @@ window.colorPreviewNumber = function(tankName, value) {
         const __applyRemotePlantPayload = function (d, opts) {
             opts = opts || {};
             if (!d || typeof d !== 'object') return;
+            if (!opts.fromLetturaDefer && !opts.force &&
+                typeof window.isLetturaDocModalActive === 'function' && window.isLetturaDocModalActive()) {
+                window.__pendingPlantApplyWhileLettura = { d: d, opts: opts };
+                return;
+            }
             if (!opts.force && typeof window.__deferHeavyUiWork === 'function' &&
                 window.__deferHeavyUiWork(function () { __applyRemotePlantPayload(d, Object.assign({}, opts, { force: true })); })) {
                 return;
@@ -3582,6 +3587,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 window.hydrateConducibilitaInputsFromDom();
             }
         };
+        window.__applyRemotePlantPayload = __applyRemotePlantPayload;
 
         window.flushPlantBackupNow = function () {
             if (window.isEditingArchive && window.editingArchiveId) return null;
@@ -8649,6 +8655,7 @@ window.updateStoricoButton = async function() {
                     const t = e.target;
                     if (!t || t.tagName !== 'INPUT') return;
                     if (typeof window.__touchConductivityCacheFromInput === 'function') window.__touchConductivityCacheFromInput(t);
+                    if (typeof window.__mirrorAcquaSharedToStoccaggio === 'function') window.__mirrorAcquaSharedToStoccaggio(t);
                     if (typeof window.__mirrorConducibilitaSharedFields === 'function') window.__mirrorConducibilitaSharedFields(t);
                 },
                 true
@@ -13723,52 +13730,97 @@ window.updateStoricoButton = async function() {
             }
         };
 
-        /** Copia livello (mm) solo da Stoccaggio interno → Acqua (mai il contrario). */
+        /** TK 9000 / TK 9201: stesso livello mm su scheda Acqua e Stoccaggio interno. */
+        window.isDcsAcquaSharedLevelField = function (fieldId) {
+            var shared = window.DCS_ACQUA_SHARED_FIELD_IDS || ['inp-tk9000', 'inp-tk9201'];
+            return !!(fieldId && shared.indexOf(fieldId) >= 0);
+        };
+
+        window.readDcsAcquaSharedLevelValue = function (fieldId, opts) {
+            opts = opts || {};
+            if (!window.isDcsAcquaSharedLevelField(fieldId)) return '';
+            var fmt = function (v) {
+                if (v == null || String(v).trim() === '') return '';
+                return typeof window.formatStoccaggioLevelValue === 'function'
+                    ? window.formatStoccaggioLevelValue(v) : String(v).trim();
+            };
+            var acquaInp = document.querySelector('#sec-acqua input[id="' + fieldId + '"]');
+            if (acquaInp && acquaInp.value != null && String(acquaInp.value).trim() !== '') {
+                return fmt(acquaInp.value);
+            }
+            var stoccInp = document.querySelector('#stoccaggio-panel-notturno input.nott-stocc-inp[id="' + fieldId + '"]');
+            if (stoccInp && stoccInp.value != null && String(stoccInp.value).trim() !== '') {
+                return fmt(stoccInp.value);
+            }
+            if (opts.liveOnly) return '';
+            var snap = window.getNotturnoStoccaggioSnapshot && window.getNotturnoStoccaggioSnapshot();
+            if (snap && snap[fieldId] != null && String(snap[fieldId]).trim() !== '') {
+                return fmt(snap[fieldId]);
+            }
+            if (opts.noPlantFallback) return '';
+            var backup = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
+            if (backup && backup[fieldId] != null && String(backup[fieldId]).trim() !== '') {
+                return fmt(backup[fieldId]);
+            }
+            if (window.__cloudPlantCache && window.__cloudPlantCache[fieldId] != null
+                && String(window.__cloudPlantCache[fieldId]).trim() !== '') {
+                return fmt(window.__cloudPlantCache[fieldId]);
+            }
+            return '';
+        };
+
+        window.__syncDcsAcquaSharedLevelInputs = function (fieldId, val, skipEl) {
+            if (!window.isDcsAcquaSharedLevelField(fieldId)) return;
+            var fmtVal = typeof window.formatStoccaggioLevelValue === 'function'
+                ? window.formatStoccaggioLevelValue(val) : String(val == null ? '' : val).trim();
+            if (!fmtVal) return;
+            [
+                document.querySelector('#sec-acqua input[id="' + fieldId + '"]'),
+                document.querySelector('#stoccaggio-panel-notturno input.nott-stocc-inp[id="' + fieldId + '"]')
+            ].forEach(function (el) {
+                if (!el || el === skipEl || el.readOnly) return;
+                if (String(el.value || '').trim() === fmtVal) return;
+                el.value = fmtVal;
+                if (typeof window.refreshAlarmVisualForField === 'function') {
+                    window.refreshAlarmVisualForField(el, true);
+                }
+            });
+            if (typeof window.refreshStoccaggioInternoTons === 'function') {
+                window.refreshStoccaggioInternoTons(fieldId);
+            }
+        };
+
+        /** Allinea TK 9000 / TK 9201 tra scheda Acqua e Stoccaggio interno (bidirezionale). */
         window.__mirrorAcquaSharedToStoccaggio = function (input) {
             if (!input || !input.id) return;
             if (typeof window.isTankLevelAlarmInput === 'function' && !window.isTankLevelAlarmInput(input)) return;
-            var shared = window.DCS_ACQUA_SHARED_FIELD_IDS || ['inp-tk9000', 'inp-tk9201'];
-            var fid = input.id;
-            if (shared.indexOf(fid) < 0) return;
-
-            var fromStocc = !!(input.closest && input.closest('#stoccaggio-panel-notturno')
-                && input.classList && input.classList.contains('nott-stocc-inp'));
-            if (!fromStocc) return;
-
-            var val = input.value;
-            var acqua = document.querySelector('#sec-acqua input[id="' + fid + '"]');
-            if (acqua && acqua !== input && !acqua.readOnly && acqua.value !== val) {
-                acqua.value = val;
-                if (typeof window.refreshAlarmVisualForField === 'function') {
-                    window.refreshAlarmVisualForField(acqua, true);
-                }
-            }
-            if (typeof window.refreshStoccaggioInternoTons === 'function') window.refreshStoccaggioInternoTons(fid);
+            if (!window.isDcsAcquaSharedLevelField(input.id)) return;
+            window.__syncDcsAcquaSharedLevelInputs(input.id, input.value, input);
         };
 
-        /** Copia TK 9000 / TK 9201 da Stoccaggio interno → scheda Acqua (solo se Acqua vuota). */
+        /** Allinea TK 9000 / TK 9201 tra Acqua e Stoccaggio (usa il valore presente). */
         window.__copyStoccSharedLevelsToAcqua = function () {
             var shared = window.DCS_ACQUA_SHARED_FIELD_IDS || ['inp-tk9000', 'inp-tk9201'];
             shared.forEach(function (fid) {
                 var stoccInp = document.querySelector('#stoccaggio-panel-notturno input.nott-stocc-inp[id="' + fid + '"]');
                 var acquaInp = document.querySelector('#sec-acqua input[id="' + fid + '"]');
-                if (!stoccInp || !acquaInp || acquaInp.readOnly) return;
-                var sv = String(stoccInp.value || '').trim();
-                var av = String(acquaInp.value || '').trim();
-                if (sv && !av) acquaInp.value = sv;
+                var sv = stoccInp ? String(stoccInp.value || '').trim() : '';
+                var av = acquaInp ? String(acquaInp.value || '').trim() : '';
+                var best = sv || av;
+                if (best) window.__syncDcsAcquaSharedLevelInputs(fid, best);
             });
         };
 
-        /** Allinea Acqua da Stoccaggio su build pannello (mai Acqua → Stoccaggio: evita valori fantasma). */
+        /** Allinea Acqua ↔ Stoccaggio su build pannello. */
         window.__syncPlantLevelSharedFieldsOnPanelBuild = function (panel) {
             var shared = window.DCS_ACQUA_SHARED_FIELD_IDS || ['inp-tk9000', 'inp-tk9201'];
             shared.forEach(function (fid) {
                 var acqua = document.querySelector('#sec-acqua input[id="' + fid + '"]');
                 var stocc = panel && panel.querySelector('input.nott-stocc-inp[id="' + fid + '"]');
-                if (!acqua || !stocc) return;
-                var sv = String(stocc.value || '').trim();
-                var av = String(acqua.value || '').trim();
-                if (sv && !av) acqua.value = sv;
+                var sv = stocc ? String(stocc.value || '').trim() : '';
+                var av = acqua ? String(acqua.value || '').trim() : '';
+                var best = sv || av;
+                if (best) window.__syncDcsAcquaSharedLevelInputs(fid, best);
             });
         };
 
@@ -14083,6 +14135,10 @@ window.updateStoricoButton = async function() {
         /** Valore live da pannello notturno o sezione stoccaggio (rapportino generale). */
         window.readStoccaggioLiveInputValue = function(fieldId) {
             if (!fieldId) return '';
+            if (window.isDcsAcquaSharedLevelField && window.isDcsAcquaSharedLevelField(fieldId)) {
+                var sharedLive = window.readDcsAcquaSharedLevelValue(fieldId, { liveOnly: true });
+                if (sharedLive) return sharedLive;
+            }
             const panels = [
                 document.getElementById('stoccaggio-panel-notturno'),
                 document.getElementById('sec-stoccaggio-interno')
@@ -14229,6 +14285,11 @@ window.updateStoricoButton = async function() {
         window.getStoccaggioInternoFieldRaw = function(fieldId, opts) {
             opts = opts || {};
             if (!fieldId) return '';
+            if (window.isDcsAcquaSharedLevelField && window.isDcsAcquaSharedLevelField(fieldId)) {
+                var sharedVal = window.readDcsAcquaSharedLevelValue(fieldId, opts);
+                if (sharedVal) return sharedVal;
+                if (opts.liveOnly || opts.noPlantFallback) return '';
+            }
             const fmt = function (v) {
                 if (v == null || String(v).trim() === '') return '';
                 return typeof window.formatStoccaggioLevelValue === 'function'
@@ -14364,6 +14425,10 @@ window.updateStoricoButton = async function() {
 
         window.readLetturaFieldValue = function (fieldId) {
             if (!fieldId) return '';
+            if (window.isDcsAcquaSharedLevelField && window.isDcsAcquaSharedLevelField(fieldId)) {
+                var shared = window.readDcsAcquaSharedLevelValue(fieldId);
+                if (shared) return String(shared).trim();
+            }
             if (typeof window.getStoccaggioInternoFieldRaw === 'function') {
                 var st = window.getStoccaggioInternoFieldRaw(fieldId);
                 if (st) return String(st).trim();
@@ -15345,6 +15410,48 @@ window.updateStoricoButton = async function() {
         window.closeLetturaDocModal = function () {
             var modal = document.getElementById('letture-doc-modal');
             if (modal) modal.classList.remove('active');
+            clearTimeout(window.__sgLiveRefreshTimer);
+            if (typeof window.__releaseLetturaShareState === 'function') {
+                window.__releaseLetturaShareState();
+            }
+            if (typeof window.__closeLetturaPrintWindow === 'function') {
+                window.__closeLetturaPrintWindow();
+            }
+            requestAnimationFrame(function () {
+                if (typeof window.__flushPendingLetturaDeferredWork === 'function') {
+                    window.__flushPendingLetturaDeferredWork();
+                }
+            });
+        };
+
+        window.isLetturaDocModalActive = function () {
+            var modal = document.getElementById('letture-doc-modal');
+            return !!(modal && modal.classList.contains('active'));
+        };
+
+        window.__releaseLetturaShareState = function () {
+            clearTimeout(window.__letturaShareReleaseTimer);
+            window.__letturaShareInProgress = false;
+        };
+
+        window.__closeLetturaPrintWindow = function () {
+            var w = window.__letturaPrintWin;
+            window.__letturaPrintWin = null;
+            if (!w || w.closed) return;
+            try { w.close(); } catch (_) {}
+        };
+
+        window.__flushPendingLetturaDeferredWork = function () {
+            var plantP = window.__pendingPlantApplyWhileLettura;
+            window.__pendingPlantApplyWhileLettura = null;
+            if (plantP && plantP.d && typeof window.__applyRemotePlantPayload === 'function') {
+                window.__applyRemotePlantPayload(plantP.d, Object.assign({}, plantP.opts || {}, { fromLetturaDefer: true }));
+            }
+            var rappP = window.__pendingRapportiniApplyWhileLettura;
+            window.__pendingRapportiniApplyWhileLettura = null;
+            if (rappP && typeof window.__applyDeferredRapportiniWhileLettura === 'function') {
+                window.__applyDeferredRapportiniWhileLettura(rappP);
+            }
         };
 
         window.refreshLetturaDocView = function (opts) {
@@ -15452,8 +15559,13 @@ window.updateStoricoButton = async function() {
 
             window.__letturaShareInProgress = true;
             clearTimeout(window.__sgLiveRefreshTimer);
+            clearTimeout(window.__letturaShareReleaseTimer);
+            window.__letturaShareReleaseTimer = setTimeout(function () {
+                window.__letturaShareInProgress = false;
+            }, 12000);
 
             function finishShare() {
+                clearTimeout(window.__letturaShareReleaseTimer);
                 setTimeout(function () { window.__letturaShareInProgress = false; }, 400);
             }
 
@@ -15469,6 +15581,11 @@ window.updateStoricoButton = async function() {
                 if (isSituazione) {
                     situazioneDocHtml = window.buildLetturaSituazioneGiornalieraShareDocument();
                     file = window.buildLetturaSituazioneGiornalieraShareFile(situazioneDocHtml);
+                } else if (isNotturno) {
+                    if (typeof window.flushRapportinoNotturnoPreviewToSnapshot === 'function') {
+                        window.flushRapportinoNotturnoPreviewToSnapshot({ batch: true });
+                    }
+                    file = window.buildLetturaShareFile && window.buildLetturaShareFile();
                 } else {
                     if (typeof window.persistLetturaActiveSlotSnapshot === 'function') {
                         window.persistLetturaActiveSlotSnapshot();
@@ -15626,6 +15743,10 @@ window.updateStoricoButton = async function() {
 
         window.readRapportinoPlantFieldValue = function (fieldId) {
             if (!fieldId) return '';
+            if (window.isDcsAcquaSharedLevelField && window.isDcsAcquaSharedLevelField(fieldId)) {
+                var shared = window.readDcsAcquaSharedLevelValue(fieldId);
+                if (shared) return String(shared).trim();
+            }
             var v = window.readLetturaFieldValue(fieldId);
             if (v) return v;
             try {
@@ -15742,9 +15863,52 @@ window.updateStoricoButton = async function() {
             ]).concat(extraPlant));
         };
 
-        window.flushRapportinoNotturnoPreviewToSnapshot = function () {
+        window.flushRapportinoNotturnoPreviewToSnapshot = function (opts) {
+            opts = opts || {};
             var root = document.getElementById('letture-doc-body');
             if (!root) return;
+            if (opts.batch || opts.skipPlantSave) {
+                var dateKey = window.getLetturaDocDateKey();
+                var store = window.loadRapportinoNotturnoGiornalieroSnapshot();
+                if (!store[dateKey]) store[dateKey] = {};
+                var snap = store[dateKey];
+                var changed = false;
+                root.querySelectorAll('.rg-inp, .rg-notes-ta').forEach(function (inp) {
+                    var v = String(inp.value == null ? '' : inp.value).trim();
+                    if (!v) return;
+                    var key = inp.getAttribute('data-rg-key') || '';
+                    var fieldId = inp.getAttribute('data-rg-field') || '';
+                    if (key && snap[key] !== v) {
+                        snap[key] = v;
+                        changed = true;
+                    }
+                    if (fieldId && snap[fieldId] !== v) {
+                        snap[fieldId] = v;
+                        changed = true;
+                    }
+                    if (key && window.RAPPORTINO_NOTTURNO_LINKED_KEYS && window.RAPPORTINO_NOTTURNO_LINKED_KEYS[key]) {
+                        window.RAPPORTINO_NOTTURNO_LINKED_KEYS[key].forEach(function (lk) {
+                            if (snap[lk] !== v) {
+                                snap[lk] = v;
+                                changed = true;
+                            }
+                        });
+                    }
+                    if (fieldId && window.RAPPORTINO_NOTTURNO_FIELD_TO_KEYS && window.RAPPORTINO_NOTTURNO_FIELD_TO_KEYS[fieldId]) {
+                        window.RAPPORTINO_NOTTURNO_FIELD_TO_KEYS[fieldId].forEach(function (mk) {
+                            if (snap[mk] !== v) {
+                                snap[mk] = v;
+                                changed = true;
+                            }
+                        });
+                    }
+                });
+                if (changed) {
+                    snap._savedAt = Date.now();
+                    window.saveRapportinoNotturnoGiornalieroSnapshot(store);
+                }
+                return;
+            }
             root.querySelectorAll('.rg-inp, .rg-notes-ta').forEach(function (inp) {
                 var v = String(inp.value == null ? '' : inp.value).trim();
                 if (!v) return;
@@ -16149,7 +16313,8 @@ window.updateStoricoButton = async function() {
             return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
         };
 
-        window.saveRapportinoNotturnoPreviewCell = function (key, fieldId, value) {
+        window.saveRapportinoNotturnoPreviewCell = function (key, fieldId, value, opts) {
+            opts = opts || {};
             var dateKey = window.getLetturaDocDateKey();
             var store = window.loadRapportinoNotturnoGiornalieroSnapshot();
             if (!store[dateKey]) store[dateKey] = {};
@@ -16173,7 +16338,7 @@ window.updateStoricoButton = async function() {
             }
             store[dateKey]._savedAt = Date.now();
             window.saveRapportinoNotturnoGiornalieroSnapshot(store);
-            if (fieldId) {
+            if (fieldId && !opts.skipPlantSave) {
                 if (typeof window.isStoccaggioLevelFieldId === 'function'
                     && window.isStoccaggioLevelFieldId(fieldId)
                     && typeof window.setAllPlantInputsById === 'function') {
@@ -16406,7 +16571,7 @@ window.updateStoricoButton = async function() {
 
         window.buildLetturaNotturnoGiornalieroShareDocument = function () {
             if (typeof window.flushRapportinoNotturnoPreviewToSnapshot === 'function') {
-                window.flushRapportinoNotturnoPreviewToSnapshot();
+                window.flushRapportinoNotturnoPreviewToSnapshot({ batch: true });
             }
             var dateStr = window.formatLetturaDateIt(new Date());
             var body = window.buildLetturaNotturnoGiornalieroHtml({ forShare: true, forWord: true });
@@ -16422,6 +16587,9 @@ window.updateStoricoButton = async function() {
 
         window.printLetturaNotturnoA3 = function () {
             var docHtml = window.buildLetturaNotturnoGiornalieroShareDocument();
+            if (typeof window.__closeLetturaPrintWindow === 'function') {
+                window.__closeLetturaPrintWindow();
+            }
             var w = null;
             try {
                 w = window.open('', '_blank', 'noopener,noreferrer');
@@ -16429,6 +16597,7 @@ window.updateStoricoButton = async function() {
                 w = null;
             }
             if (!w) return false;
+            window.__letturaPrintWin = w;
             w.document.open();
             w.document.write(docHtml);
             w.document.close();
@@ -16986,13 +17155,17 @@ window.updateStoricoButton = async function() {
             if (!modal || !modal.classList.contains('active')) return;
             clearTimeout(window.__sgLiveRefreshTimer);
             window.__sgLiveRefreshTimer = setTimeout(function () {
+                if (window.__letturaShareInProgress) return;
                 if (typeof window.flushSituazioneGiornalieraPreviewToSnapshot === 'function') {
-                    window.flushSituazioneGiornalieraPreviewToSnapshot();
+                    window.flushSituazioneGiornalieraPreviewToSnapshot({ batch: true });
+                }
+                if (typeof window.syncSituazioneGiornalieraFromPlant === 'function') {
+                    window.syncSituazioneGiornalieraFromPlant();
                 }
                 if (typeof window.renderLetturaSituazioneGiornalieraDocView === 'function') {
                     window.renderLetturaSituazioneGiornalieraDocView({ skipSync: true });
                 }
-            }, 180);
+            }, 1200);
         };
 
         window.bindSituazioneGiornalieraPreviewInputs = function () {
@@ -17262,6 +17435,9 @@ window.updateStoricoButton = async function() {
 
         window.printLetturaSituazioneGiornaliera = function (docHtml) {
             docHtml = docHtml || window.buildLetturaSituazioneGiornalieraShareDocument();
+            if (typeof window.__closeLetturaPrintWindow === 'function') {
+                window.__closeLetturaPrintWindow();
+            }
             var w = null;
             try {
                 w = window.open('', '_blank', 'noopener,noreferrer');
@@ -17269,6 +17445,7 @@ window.updateStoricoButton = async function() {
                 w = null;
             }
             if (!w) return false;
+            window.__letturaPrintWin = w;
             w.document.open();
             w.document.write(docHtml);
             w.document.close();
@@ -18059,6 +18236,9 @@ window.updateStoricoButton = async function() {
         };
 
         window.getNotturnoStoccaggioReportData = function() {
+            if (typeof window.__copyStoccSharedLevelsToAcqua === 'function') {
+                window.__copyStoccSharedLevelsToAcqua();
+            }
             if (typeof window.persistNotturnoStoccaggioToRapportino === 'function') {
                 window.persistNotturnoStoccaggioToRapportino();
             }
@@ -25799,6 +25979,18 @@ window.updateStoricoButton = async function() {
             window.__rapportiniApplyingFromCloud = true;
             window.__rapportiniStore = merged;
             window.__rapportiniApplyingFromCloud = false;
+            if (!opts.fromLetturaDefer && !opts.force &&
+                typeof window.isLetturaDocModalActive === 'function' && window.isLetturaDocModalActive()) {
+                window.__pendingRapportiniApplyWhileLettura = {
+                    remoteWon: remoteWon,
+                    activeItemDataChanged: activeItemDataChanged,
+                    notturnoStoccChanged: notturnoStoccChanged,
+                    merged: merged,
+                    deviceActiveId: deviceActiveId
+                };
+                if (typeof window.persistSessionPrefs === 'function') window.persistSessionPrefs();
+                return;
+            }
             if (remoteWon || opts.force || activeItemDataChanged) {
                 const applyActive = function () {
                     if (typeof window.applyDeviceHiddenModulesForActiveRapportino === 'function') {
@@ -25830,6 +26022,35 @@ window.updateStoricoButton = async function() {
                 }
             }
             if (typeof window.persistSessionPrefs === 'function') window.persistSessionPrefs();
+        };
+
+        window.__applyDeferredRapportiniWhileLettura = function (pending) {
+            if (!pending || !pending.merged) return;
+            var merged = pending.merged;
+            var deviceActiveId = pending.deviceActiveId;
+            if (pending.remoteWon || pending.activeItemDataChanged) {
+                if (typeof window.applyDeviceHiddenModulesForActiveRapportino === 'function') {
+                    window.applyDeviceHiddenModulesForActiveRapportino();
+                }
+                if (merged.items[deviceActiveId] && typeof window.applyRapportinoItem === 'function') {
+                    if (window.__cloudPlantHydrated) {
+                        window.applyRapportinoItem(merged.items[deviceActiveId]);
+                    } else {
+                        window.__pendingActiveRapportinoItem = merged.items[deviceActiveId];
+                    }
+                }
+                if (typeof window.syncChemCountsFromFirestore === 'function') {
+                    window.syncChemCountsFromFirestore();
+                }
+                if (typeof window.updateRapportinoSettingsButton === 'function') {
+                    window.updateRapportinoSettingsButton();
+                }
+            }
+            if (pending.notturnoStoccChanged || pending.remoteWon) {
+                if (typeof window.hydrateNotturnoStoccaggioInputsFromStore === 'function') {
+                    window.hydrateNotturnoStoccaggioInputsFromStore();
+                }
+            }
         };
 
         window.saveRapportiniStore = function(store, opts) {
@@ -29121,15 +29342,21 @@ window.updateStoricoButton = async function() {
             if (typeof window.enforceAcquaLevelSigleInDom === 'function') {
                 window.enforceAcquaLevelSigleInDom();
             }
+            if (typeof window.__copyStoccSharedLevelsToAcqua === 'function') {
+                window.__copyStoccSharedLevelsToAcqua();
+            }
             var tendinaLbl = document.getElementById('lbl-sec-acqua');
             var title = (tendinaLbl && tendinaLbl.textContent.trim()) || 'ACQUA';
             var rows = [];
             var fieldIds = window.ACQUA_LEVEL_FIELD_IDS || ['inp-tk9000', 'inp-tk9201', 'tk101', 'inp-s133'];
             fieldIds.forEach(function (fieldId) {
                 var raw = '';
-                var inp = document.getElementById(fieldId);
+                var inp = document.querySelector('#sec-acqua input[id="' + fieldId + '"]');
                 if (inp && String(inp.value || '').trim()) {
                     raw = String(inp.value).trim();
+                }
+                if (!raw && typeof window.readDcsAcquaSharedLevelValue === 'function') {
+                    raw = String(window.readDcsAcquaSharedLevelValue(fieldId) || '').trim();
                 }
                 if (!raw && typeof window.readLetturaFieldValue === 'function') {
                     raw = String(window.readLetturaFieldValue(fieldId) || '').trim();
@@ -48770,7 +48997,7 @@ window.runStoccaggioInternoCapture = async function(imageData) {
 
 window.DCS_ACQUA_SHARED_FIELD_IDS = ['inp-tk9000', 'inp-tk9201'];
 
-/** Imposta livello mm su plant/acqua/ambiente — mai su Stoccaggio interno (salvo OCR DCS). */
+/** Imposta livello mm su plant/acqua/ambiente; TK 9000/9201 anche su Stoccaggio interno. */
 window.setAllPlantInputsById = function(fieldId, value, opts) {
     if (!fieldId) return 0;
     opts = opts || {};
@@ -48795,9 +49022,7 @@ window.setAllPlantInputsById = function(fieldId, value, opts) {
 
     if (shared.indexOf(fieldId) >= 0) {
         pushUnique(document.querySelector('#sec-acqua input[id="' + fieldId + '"]'));
-        if (allowStocc) {
-            pushUnique(document.querySelector('#stoccaggio-panel-notturno input.nott-stocc-inp[id="' + fieldId + '"]'));
-        }
+        pushUnique(document.querySelector('#stoccaggio-panel-notturno input.nott-stocc-inp[id="' + fieldId + '"]'));
     } else {
         if (allowStocc) {
             pushUnique(document.querySelector('#stoccaggio-panel-notturno input.nott-stocc-inp[id="' + fieldId + '"]'));

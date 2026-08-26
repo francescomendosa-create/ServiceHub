@@ -23261,7 +23261,12 @@ window.updateStoricoButton = async function() {
         window.togglePreviewViewMode = function() {
             window.__previewViewMode = window.isPreviewNotesMode() ? 'report' : 'notes';
             if (typeof window.syncPreviewViewModeUi === 'function') window.syncPreviewViewModeUi();
+            if (typeof window.resetPreviewSheetZoom === 'function') window.resetPreviewSheetZoom();
+            if (typeof window.applyAutoPreviewFontScale === 'function') {
+                window.applyAutoPreviewFontScale({ rebuild: false });
+            }
             if (typeof buildPreview === 'function') buildPreview();
+            if (typeof window.scheduleAutoPreviewSheetFit === 'function') window.scheduleAutoPreviewSheetFit();
         };
 
         window.syncPreviewViewModeUi = function() {
@@ -31192,11 +31197,16 @@ window.updateStoricoButton = async function() {
             previewScreen.classList.add('active');
             if (typeof window.syncPreviewViewModeUi === 'function') window.syncPreviewViewModeUi();
             if (typeof window.resetPreviewSheetZoom === 'function') window.resetPreviewSheetZoom();
-            if (typeof window.resetPreviewFontScale === 'function') window.resetPreviewFontScale();
+            if (typeof window.applyAutoPreviewFontScale === 'function') {
+                window.applyAutoPreviewFontScale({ rebuild: false });
+            } else if (typeof window.resetPreviewFontScale === 'function') {
+                window.resetPreviewFontScale();
+            }
             buildPreview();
             if (typeof window.updatePreviewFontScaleButtons === 'function') window.updatePreviewFontScaleButtons();
             if (typeof window.initPreviewSheetZoom === 'function') window.initPreviewSheetZoom();
             if (typeof window.__initPreviewA4Guide === 'function') window.__initPreviewA4Guide();
+            if (typeof window.scheduleAutoPreviewSheetFit === 'function') window.scheduleAutoPreviewSheetFit();
 
             void window.ensureBackupHistoryFresh({
                 timeoutMs: 8000,
@@ -31445,15 +31455,104 @@ window.updateStoricoButton = async function() {
                 setZoomMode(false, false);
             };
 
+            /** Ingrandisce il foglio A4 per riempire il viewport (dopo auto-scala testo). */
+            window.applyPreviewSheetAutoFit = function () {
+                var e = els();
+                if (!e.scroll || !e.sheet || !e.stage) return;
+                var viewport = document.getElementById('preview-sheet-viewport');
+                if (!viewport) return;
+                if (typeof window.isPreviewNotesMode === 'function' && window.isPreviewNotesMode()) return;
+
+                var availW = Math.max(0, viewport.clientWidth - 20);
+                var sheetW = e.sheet.offsetWidth;
+                if (!sheetW || !availW) return;
+
+                var targetScale = (availW / sheetW) * 0.98;
+                if (targetScale < 1.06) return;
+
+                targetScale = Math.min(state.maxScale, Math.max(1.14, targetScale));
+                if (!state.zoomActive) captureBaseOffset();
+                setZoomAnchorDom(true);
+                state.zoomActive = true;
+                e.scroll.classList.add('preview-zoom-active');
+
+                var vp = viewportOriginInScroll();
+                state.scale = targetScale;
+                state.tx = Math.max(8, (availW - sheetW * targetScale) / 2);
+                state.ty = Math.max(6, state.ty || 0);
+                applyTransform(true);
+            };
+
         (function initPreviewFontScaleModule() {
             window.PREVIEW_FONT_SCALE_STEP = 0.06;
             window.PREVIEW_FONT_SCALE_MIN = 0.72;
-            window.PREVIEW_FONT_SCALE_MAX = 1.48;
+            window.PREVIEW_FONT_SCALE_MAX = 1.65;
             window.PREVIEW_TITLE_FONT_SCALE_CAP = 1;
             window.__previewFontScale = 1;
 
             window.getPreviewFontScale = function () {
                 return window.__previewFontScale || 1;
+            };
+
+            /** Scala testo anteprima in base a viewport, densità moduli e modalità note. */
+            window.computeAutoPreviewFontScale = function () {
+                var isNotes = typeof window.isPreviewNotesMode === 'function' && window.isPreviewNotesMode();
+                var modules = window.getPrintableReportModuleIds
+                    ? window.getPrintableReportModuleIds()
+                    : (window.hiddenModules || hiddenModules || []);
+                var modCount = (modules && modules.length) || 0;
+                var scroll = document.getElementById('preview-scroll-area');
+                var vw = scroll && scroll.clientWidth > 0 ? scroll.clientWidth : window.innerWidth;
+                var sheet = document.getElementById('preview-sheet');
+                var sheetW = sheet && sheet.offsetWidth > 0 ? sheet.offsetWidth : 397;
+                var widthFit = sheetW > 0 ? ((vw - 72) / sheetW) : 1;
+                var isPhone = typeof window.isServiceHubPhone === 'function' && window.isServiceHubPhone();
+                var scale;
+
+                if (isNotes) {
+                    scale = Math.min(window.PREVIEW_FONT_SCALE_MAX, Math.max(1.18, widthFit * 0.96));
+                } else if (modCount >= 8) {
+                    scale = 1.12;
+                } else if (modCount >= 6) {
+                    scale = 1.22;
+                } else if (modCount >= 4) {
+                    scale = 1.32;
+                } else if (modCount >= 2) {
+                    scale = 1.42;
+                } else {
+                    scale = 1.52;
+                }
+                if (isPhone) {
+                    scale = Math.max(scale, Math.min(window.PREVIEW_FONT_SCALE_MAX, widthFit * 0.94));
+                } else {
+                    scale = Math.max(scale, Math.min(window.PREVIEW_FONT_SCALE_MAX, widthFit * 0.9));
+                }
+                return Math.max(
+                    window.PREVIEW_FONT_SCALE_MIN,
+                    Math.min(window.PREVIEW_FONT_SCALE_MAX, +scale.toFixed(3))
+                );
+            };
+
+            window.applyAutoPreviewFontScale = function (opts) {
+                opts = opts || {};
+                window.__previewFontScale = window.computeAutoPreviewFontScale();
+                window.__previewFontScaleAuto = true;
+                window.updatePreviewFontScaleButtons();
+                if (opts.rebuild === false) return;
+                var screen = document.getElementById('preview-screen');
+                if (screen && screen.classList.contains('active') && typeof buildPreview === 'function') {
+                    buildPreview();
+                }
+            };
+
+            window.scheduleAutoPreviewSheetFit = function () {
+                requestAnimationFrame(function () {
+                    requestAnimationFrame(function () {
+                        if (typeof window.applyPreviewSheetAutoFit === 'function') {
+                            window.applyPreviewSheetAutoFit();
+                        }
+                    });
+                });
             };
 
             window.scalePreviewPx = function (px) {
@@ -31489,6 +31588,7 @@ window.updateStoricoButton = async function() {
 
             window.resetPreviewFontScale = function () {
                 window.__previewFontScale = 1;
+                window.__previewFontScaleAuto = false;
                 var sheet = document.getElementById('preview-sheet');
                 if (sheet) {
                     sheet.style.zoom = '';
@@ -31506,6 +31606,7 @@ window.updateStoricoButton = async function() {
                     Math.min(window.PREVIEW_FONT_SCALE_MAX, +next.toFixed(3))
                 );
                 window.__previewFontScale = next;
+                window.__previewFontScaleAuto = false;
                 window.updatePreviewFontScaleButtons();
                 var screen = document.getElementById('preview-screen');
                 if (screen && screen.classList.contains('active') && typeof buildPreview === 'function') {
@@ -34157,18 +34258,21 @@ window.updateStoricoButton = async function() {
                 previewFontBase = 17;
             } else {
                 previewColumns = '1fr 1fr 1fr';
-                if (hiddenModules.length >= 7) {
+                if (hiddenModules.length >= 8) {
                     previewGap = '8px';
-                    previewFontBase = 7;
-                } else if (hiddenModules.length >= 5) {
-                    previewGap = '10px';
                     previewFontBase = 8;
-                } else if (hiddenModules.length >= 3) {
-                    previewGap = '12px';
+                } else if (hiddenModules.length >= 6) {
+                    previewGap = '9px';
                     previewFontBase = 9;
+                } else if (hiddenModules.length >= 4) {
+                    previewGap = '11px';
+                    previewFontBase = 10;
+                } else if (hiddenModules.length >= 2) {
+                    previewGap = '14px';
+                    previewFontBase = 11;
                 } else {
-                    previewGap = '20px';
-                    previewFontBase = 9;
+                    previewGap = '18px';
+                    previewFontBase = 12;
                 }
             }
 
@@ -35995,6 +36099,43 @@ window.applyDigitalPhoneLayoutIfNeeded = function (root) {
     }
 };
 
+/** Sceglie la card Digital con più dati (righe valorizzate) per l'apertura ingrandita automatica. */
+window.pickAutoDigitalPreviewCard = function (root) {
+    root = root || document.getElementById('digital-preview-container');
+    if (!root) return null;
+    var best = null;
+    var bestScore = -1;
+    root.querySelectorAll('.digital-card[data-module-id]').forEach(function (card) {
+        var score = 0;
+        card.querySelectorAll('.digital-row, .digital-stocc-row').forEach(function (row) {
+            var val = row.querySelector('.digital-row-value, .digital-stocc-value, .digital-stocc-level-line');
+            var txt = val ? String(val.textContent || '').replace(/\s+/g, ' ').trim() : '';
+            if (txt && txt !== '—' && txt !== '-') score += 1;
+        });
+        if (card.querySelector('.digital-rows--stocc')) score += 4;
+        var mod = card.getAttribute('data-module-id') || '';
+        if (mod === 'sec-stoccaggio-interno') score += 3;
+        if (mod === 'sec-conducibilita') score += 2;
+        if (mod === 'sec-acqua') score += 2;
+        if (mod === 'TREND_SPECIAL') score += 1;
+        if (score > bestScore) {
+            bestScore = score;
+            best = card;
+        }
+    });
+    return bestScore >= 2 ? best : null;
+};
+
+window.autoExpandDigitalPreviewByData = function (root) {
+    root = root || document.getElementById('digital-preview-container');
+    if (!root || root.classList.contains('digital-focus-active')) return;
+    var card = typeof window.pickAutoDigitalPreviewCard === 'function'
+        ? window.pickAutoDigitalPreviewCard(root) : null;
+    if (card && typeof window.expandDigitalModule === 'function') {
+        window.expandDigitalModule(card);
+    }
+};
+
 window.openDigitalPreview = async function () {
     try {
         var now = Date.now();
@@ -37282,6 +37423,11 @@ window.openDigitalPreview = async function () {
 
     if (typeof window.applyDigitalPhoneLayoutIfNeeded === 'function') {
         window.applyDigitalPhoneLayoutIfNeeded(digitalContainer);
+    }
+    if (typeof window.autoExpandDigitalPreviewByData === 'function') {
+        requestAnimationFrame(function () {
+            window.autoExpandDigitalPreviewByData(digitalContainer);
+        });
     }
 
     void window.ensureBackupHistoryFresh({

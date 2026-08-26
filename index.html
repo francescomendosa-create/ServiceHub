@@ -23266,7 +23266,7 @@ window.updateStoricoButton = async function() {
                 window.applyAutoPreviewFontScale({ rebuild: false });
             }
             if (typeof buildPreview === 'function') buildPreview();
-            if (typeof window.scheduleAutoPreviewSheetFit === 'function') window.scheduleAutoPreviewSheetFit();
+            if (typeof window.scheduleAutoPreviewFontFit === 'function') window.scheduleAutoPreviewFontFit();
         };
 
         window.syncPreviewViewModeUi = function() {
@@ -31206,7 +31206,7 @@ window.updateStoricoButton = async function() {
             if (typeof window.updatePreviewFontScaleButtons === 'function') window.updatePreviewFontScaleButtons();
             if (typeof window.initPreviewSheetZoom === 'function') window.initPreviewSheetZoom();
             if (typeof window.__initPreviewA4Guide === 'function') window.__initPreviewA4Guide();
-            if (typeof window.scheduleAutoPreviewSheetFit === 'function') window.scheduleAutoPreviewSheetFit();
+            if (typeof window.scheduleAutoPreviewFontFit === 'function') window.scheduleAutoPreviewFontFit();
 
             void window.ensureBackupHistoryFresh({
                 timeoutMs: 8000,
@@ -31455,38 +31455,10 @@ window.updateStoricoButton = async function() {
                 setZoomMode(false, false);
             };
 
-            /** Ingrandisce il foglio A4 per riempire il viewport (dopo auto-scala testo). */
-            window.applyPreviewSheetAutoFit = function () {
-                var e = els();
-                if (!e.scroll || !e.sheet || !e.stage) return;
-                var viewport = document.getElementById('preview-sheet-viewport');
-                if (!viewport) return;
-                if (typeof window.isPreviewNotesMode === 'function' && window.isPreviewNotesMode()) return;
-
-                var availW = Math.max(0, viewport.clientWidth - 20);
-                var sheetW = e.sheet.offsetWidth;
-                if (!sheetW || !availW) return;
-
-                var targetScale = (availW / sheetW) * 0.98;
-                if (targetScale < 1.06) return;
-
-                targetScale = Math.min(state.maxScale, Math.max(1.14, targetScale));
-                if (!state.zoomActive) captureBaseOffset();
-                setZoomAnchorDom(true);
-                state.zoomActive = true;
-                e.scroll.classList.add('preview-zoom-active');
-
-                var vp = viewportOriginInScroll();
-                state.scale = targetScale;
-                state.tx = Math.max(8, (availW - sheetW * targetScale) / 2);
-                state.ty = Math.max(6, state.ty || 0);
-                applyTransform(true);
-            };
-
         (function initPreviewFontScaleModule() {
             window.PREVIEW_FONT_SCALE_STEP = 0.06;
-            window.PREVIEW_FONT_SCALE_MIN = 0.72;
-            window.PREVIEW_FONT_SCALE_MAX = 1.65;
+            window.PREVIEW_FONT_SCALE_MIN = 0.68;
+            window.PREVIEW_FONT_SCALE_MAX = 1.72;
             window.PREVIEW_TITLE_FONT_SCALE_CAP = 1;
             window.__previewFontScale = 1;
 
@@ -31494,39 +31466,76 @@ window.updateStoricoButton = async function() {
                 return window.__previewFontScale || 1;
             };
 
-            /** Scala testo anteprima in base a viewport, densità moduli e modalità note. */
-            window.computeAutoPreviewFontScale = function () {
-                var isNotes = typeof window.isPreviewNotesMode === 'function' && window.isPreviewNotesMode();
+            /** Stima densità contenuto report (moduli + schede pesanti). */
+            window.estimatePreviewReportDensity = function () {
                 var modules = window.getPrintableReportModuleIds
                     ? window.getPrintableReportModuleIds()
                     : (window.hiddenModules || hiddenModules || []);
                 var modCount = (modules && modules.length) || 0;
-                var scroll = document.getElementById('preview-scroll-area');
-                var vw = scroll && scroll.clientWidth > 0 ? scroll.clientWidth : window.innerWidth;
-                var sheet = document.getElementById('preview-sheet');
-                var sheetW = sheet && sheet.offsetWidth > 0 ? sheet.offsetWidth : 397;
-                var widthFit = sheetW > 0 ? ((vw - 72) / sheetW) : 1;
-                var isPhone = typeof window.isServiceHubPhone === 'function' && window.isServiceHubPhone();
+                var weight = modCount * 4;
+                (modules || []).forEach(function (id) {
+                    if (id === 'sec-stoccaggio-interno') weight += 20;
+                    else if (id === 'sec-conducibilita') weight += 7;
+                    else if (id === 'sec-chemicals') weight += 9;
+                    else if (id === 'sec-contatore-filtra' || id === 'sec-filtra') weight += 11;
+                    else if (id === 'sec-well' || id === 'sec-chpp') weight += 9;
+                    else if (id === 'sec-bluedown') weight += 14;
+                    else if (id === 'sec-acqua') weight += 5;
+                    else if (id === 'sec-scam') weight += 6;
+                });
+                if (window.hasConducibilitaReportData && window.hasConducibilitaReportData()) weight += 5;
+                try {
+                    var stocc = window.getNotturnoStoccaggioReportData && window.getNotturnoStoccaggioReportData();
+                    if (stocc && stocc.rows && stocc.rows.length) weight += stocc.rows.length * 2;
+                } catch (_) {}
+                try {
+                    var tt = window.getTankLevelTrend && window.getTankLevelTrend();
+                    if (tt && tt.length) weight += 14;
+                    var at = window.getAnalisiTrend && window.getAnalisiTrend();
+                    if (at && at.length) weight += 12;
+                } catch (_) {}
+                return { modCount: modCount, weight: weight };
+            };
+
+            window.countPreviewA4Pages = function () {
+                var container = document.getElementById('preview-sheet');
+                if (!container) return 1;
+                if (typeof window.isPreviewNotesMode === 'function' && window.isPreviewNotesMode()) return 1;
+                var pagePx = typeof window.__ensureA4PagePx === 'function'
+                    ? window.__ensureA4PagePx(container) : 0;
+                if (!pagePx) return 1;
+                return Math.max(1, Math.ceil((container.scrollHeight - 2) / pagePx));
+            };
+
+            /** Partenza ingrandita; si riduce solo se il contenuto non entra in pagina A4. */
+            window.computeAutoPreviewFontScale = function () {
+                var isNotes = typeof window.isPreviewNotesMode === 'function' && window.isPreviewNotesMode();
+                if (isNotes) {
+                    return Math.max(
+                        window.PREVIEW_FONT_SCALE_MIN,
+                        Math.min(window.PREVIEW_FONT_SCALE_MAX, 1.32)
+                    );
+                }
+                var density = typeof window.estimatePreviewReportDensity === 'function'
+                    ? window.estimatePreviewReportDensity()
+                    : { modCount: 0, weight: 0 };
+                var modCount = density.modCount || 0;
+                var weight = density.weight || 0;
                 var scale;
 
-                if (isNotes) {
-                    scale = Math.min(window.PREVIEW_FONT_SCALE_MAX, Math.max(1.18, widthFit * 0.96));
-                } else if (modCount >= 8) {
-                    scale = 1.12;
-                } else if (modCount >= 6) {
-                    scale = 1.22;
-                } else if (modCount >= 4) {
-                    scale = 1.32;
-                } else if (modCount >= 2) {
-                    scale = 1.42;
-                } else {
-                    scale = 1.52;
-                }
-                if (isPhone) {
-                    scale = Math.max(scale, Math.min(window.PREVIEW_FONT_SCALE_MAX, widthFit * 0.94));
-                } else {
-                    scale = Math.max(scale, Math.min(window.PREVIEW_FONT_SCALE_MAX, widthFit * 0.9));
-                }
+                if (modCount <= 1) scale = 1.72;
+                else if (modCount <= 2) scale = 1.64;
+                else if (modCount <= 4) scale = 1.52;
+                else if (modCount <= 6) scale = 1.38;
+                else if (modCount <= 8) scale = 1.24;
+                else if (modCount <= 10) scale = 1.12;
+                else scale = 1.02;
+
+                if (weight > 55) scale *= 0.94;
+                if (weight > 80) scale *= 0.91;
+                if (weight > 105) scale *= 0.88;
+                if (weight > 130) scale *= 0.85;
+
                 return Math.max(
                     window.PREVIEW_FONT_SCALE_MIN,
                     Math.min(window.PREVIEW_FONT_SCALE_MAX, +scale.toFixed(3))
@@ -31545,11 +31554,48 @@ window.updateStoricoButton = async function() {
                 }
             };
 
-            window.scheduleAutoPreviewSheetFit = function () {
+            /** Dopo layout A4: rimpicciolisce testo/numeri finché il report rientra meglio in pagina. */
+            window.refinePreviewFontScaleAfterLayout = function (pass) {
+                pass = pass || 0;
+                if (pass > 6) return;
+                if (window.__previewFontScaleAuto === false) return;
+                var screen = document.getElementById('preview-screen');
+                if (!screen || !screen.classList.contains('active')) return;
+                if (typeof window.isPreviewNotesMode === 'function' && window.isPreviewNotesMode()) return;
+
+                var pages = typeof window.countPreviewA4Pages === 'function'
+                    ? window.countPreviewA4Pages() : 1;
+                var cur = window.getPreviewFontScale();
+
+                if (pages <= 1) {
+                    window.updatePreviewFontScaleButtons();
+                    return;
+                }
+
+                var ratio = 1 / pages;
+                var next = cur * ratio * 0.93;
+                next = Math.max(
+                    window.PREVIEW_FONT_SCALE_MIN,
+                    Math.min(cur - 0.025, +next.toFixed(3))
+                );
+                if (next >= cur - 0.015) return;
+
+                window.__previewFontScale = next;
+                window.updatePreviewFontScaleButtons();
+                if (typeof buildPreview === 'function') buildPreview();
+                requestAnimationFrame(function () {
+                    if (typeof window.__layoutPreviewA4 === 'function') window.__layoutPreviewA4();
+                    requestAnimationFrame(function () {
+                        window.refinePreviewFontScaleAfterLayout(pass + 1);
+                    });
+                });
+            };
+
+            window.scheduleAutoPreviewFontFit = function () {
                 requestAnimationFrame(function () {
                     requestAnimationFrame(function () {
-                        if (typeof window.applyPreviewSheetAutoFit === 'function') {
-                            window.applyPreviewSheetAutoFit();
+                        if (typeof window.refinePreviewFontScaleAfterLayout === 'function') {
+                            window.refinePreviewFontScaleAfterLayout(0);
                         }
                     });
                 });
@@ -34258,21 +34304,24 @@ window.updateStoricoButton = async function() {
                 previewFontBase = 17;
             } else {
                 previewColumns = '1fr 1fr 1fr';
-                if (hiddenModules.length >= 8) {
+                if (hiddenModules.length >= 10) {
+                    previewGap = '7px';
+                    previewFontBase = 7;
+                } else if (hiddenModules.length >= 8) {
                     previewGap = '8px';
                     previewFontBase = 8;
                 } else if (hiddenModules.length >= 6) {
                     previewGap = '9px';
-                    previewFontBase = 9;
+                    previewFontBase = 10;
                 } else if (hiddenModules.length >= 4) {
                     previewGap = '11px';
-                    previewFontBase = 10;
+                    previewFontBase = 11;
                 } else if (hiddenModules.length >= 2) {
                     previewGap = '14px';
-                    previewFontBase = 11;
+                    previewFontBase = 12;
                 } else {
                     previewGap = '18px';
-                    previewFontBase = 12;
+                    previewFontBase = 13;
                 }
             }
 

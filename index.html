@@ -164,7 +164,6 @@
     }
     if (/Android/i.test(ua) && Math.min(window.screen.width, window.screen.height) >= 600) {
         html.classList.add('sh-android-tablet-boot');
-        html.setAttribute('writingsuggestions', 'false');
     }
     try {
         var raw = localStorage.getItem('servicehub_session_prefs');
@@ -1785,13 +1784,41 @@ window.colorPreviewNumber = function(tankName, value) {
         };
 
         /** Solo UI input / S Pen — non tocca cloud né saveData. */
-        /* Tracciamento penna globale.
-           Su Android i TouchEvent NON espongono `touchType` (è una proprietà solo iOS/Safari):
-           l'unico segnale affidabile della S Pen è `pointerType === 'pen'`. Il pointerdown della
-           penna precede sempre i touch/mouse di compatibilità dello stesso gesto, quindi teniamo
-           una finestra temporale per riconoscere anche quegli eventi come "penna". */
+        /* Samsung S Pen: su Android `touchType` non esiste. Il segnale è `pointerType === 'pen'`.
+           Dopo alcuni campi l'IME si spegne se: writingsuggestions=false, inputmode=decimal,
+           cambio type a caldo, o applyData/color/frecce sul blur tra un campo e l'altro.
+           Teniamo una sessione lunga che copre il passaggio da un input al successivo. */
+        window.__SPEN_SESSION_MS = 12000;
         window.__shPenLastEventTs = 0;
+        window.__shSpenLastFieldTs = 0;
         window.__shPenIsDown = false;
+        window.__shMarkSpenActivity = function (fromPen) {
+            var now = Date.now();
+            if (fromPen) window.__shPenLastEventTs = now;
+            window.__shSpenLastFieldTs = now;
+            if (document.body) document.body.classList.add('sh-stylus-pen-active');
+            clearTimeout(window.__spenSessionEndTimer);
+            window.__spenSessionEndTimer = setTimeout(function () {
+                window.__shPenIsDown = false;
+                if (document.body) document.body.classList.remove('sh-stylus-pen-active');
+                if (typeof window.__flushSpenDeferredWork === 'function') window.__flushSpenDeferredWork();
+            }, window.__SPEN_SESSION_MS || 12000);
+        };
+        window.__shSpenSessionActive = function () {
+            if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return false;
+            if (window.__shPenIsDown) return true;
+            var now = Date.now();
+            var win = window.__SPEN_SESSION_MS || 12000;
+            if ((now - (window.__shPenLastEventTs || 0)) < win) return true;
+            if ((now - (window.__shSpenLastFieldTs || 0)) < win) return true;
+            var ae = document.activeElement;
+            if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA') &&
+                ae.closest && ae.closest('.main-container') &&
+                !ae.closest('#settings-modal') && !ae.closest('#management-modal') && !ae.closest('#shift-modal')) {
+                return true;
+            }
+            return false;
+        };
         window.__shPenRecentlyActive = function (ms) {
             if (window.__shPenIsDown) return true;
             return (Date.now() - (window.__shPenLastEventTs || 0)) < (ms || 700);
@@ -1809,24 +1836,42 @@ window.colorPreviewNumber = function(tankName, value) {
             }
             return false;
         };
+        window.__flushSpenDeferredWork = function () {
+            if (window.__shSpenSessionActive && window.__shSpenSessionActive()) return;
+            var pendingPlant = window.__pendingPlantApplyWhileSpen;
+            window.__pendingPlantApplyWhileSpen = null;
+            if (pendingPlant && pendingPlant.d && typeof window.__applyRemotePlantPayload === 'function') {
+                window.__applyRemotePlantPayload(pendingPlant.d, Object.assign({}, pendingPlant.opts || {}, { fromSpenDefer: true }));
+            }
+            if (window.__pendingSpenCloudFlush) {
+                window.__pendingSpenCloudFlush = false;
+                if (typeof window.__flushPlantCloudSaveNow === 'function') {
+                    void window.__flushPlantCloudSaveNow(true);
+                }
+            }
+            if (window.__pendingSpenColorTanks) {
+                window.__pendingSpenColorTanks = false;
+                if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
+            }
+            if (window.__pendingTankArrowsRefresh && typeof window.refreshAllTankLevelArrows === 'function') {
+                window.__pendingTankArrowsRefresh = false;
+                window.refreshAllTankLevelArrows();
+            }
+            if (window.__pendingSpenPrimeAll) {
+                window.__pendingSpenPrimeAll = false;
+                if (typeof window.__primeAllAndroidSpenInputs === 'function') window.__primeAllAndroidSpenInputs();
+            }
+        };
         (function () {
             if (window.__shPenTrackerReady) return;
             window.__shPenTrackerReady = true;
             var markPen = function (down) {
                 return function (ev) {
                     if (!ev || ev.pointerType !== 'pen') return;
-                    window.__shPenLastEventTs = Date.now();
                     if (down === true) window.__shPenIsDown = true;
                     else if (down === false) window.__shPenIsDown = false;
-                    if (down === true) {
-                        clearTimeout(window.__spenPenLiftTimer);
-                        document.body && document.body.classList.add('sh-stylus-pen-active');
-                    } else if (down === false) {
-                        clearTimeout(window.__spenPenLiftTimer);
-                        window.__spenPenLiftTimer = setTimeout(function () {
-                            document.body && document.body.classList.remove('sh-stylus-pen-active');
-                        }, 600);
-                    }
+                    window.__shMarkSpenActivity(true);
+                    if (typeof window.__releaseSpenStuckLocks === 'function') window.__releaseSpenStuckLocks();
                 };
             };
             document.addEventListener('pointerdown', markPen(true), { capture: true, passive: true });
@@ -1837,59 +1882,55 @@ window.colorPreviewNumber = function(tankName, value) {
 
         window.__primeAndroidSpenInput = function (el) {
             if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
-            if (!el || el.getAttribute('data-sh-spen-input') === '1') return;
+            if (!el || el.nodeType !== 1) return;
             if (el.type === 'hidden' || el.type === 'file' || el.type === 'checkbox' || el.type === 'radio') return;
-            // Non riconfigurare l'input mentre è a fuoco: cambiare type/attributi durante la
-            // scrittura annullerebbe la sessione di riconoscimento della S Pen.
+            if (window.__shSpenSessionActive && window.__shSpenSessionActive()) {
+                window.__pendingSpenPrimeAll = true;
+                return;
+            }
             if (el === document.activeElement) return;
-            el.setAttribute('data-sh-spen-input', '1');
-            el.setAttribute('writingsuggestions', 'false');
+            el.removeAttribute('writingsuggestions');
+            if (el.getAttribute('inputmode') === 'decimal' || el.getAttribute('inputmode') === 'numeric') {
+                el.removeAttribute('inputmode');
+            }
+            if (el.type === 'tel' && !el.readOnly) el.type = 'text';
             el.setAttribute('autocomplete', 'off');
             el.setAttribute('autocorrect', 'off');
             el.setAttribute('spellcheck', 'false');
             el.setAttribute('autocapitalize', 'off');
-            if (!el.hasAttribute('inputmode')) el.setAttribute('inputmode', 'decimal');
-            if (el.type === 'tel' && !el.readOnly) el.type = 'text';
+            el.setAttribute('data-sh-spen-input', '1');
         };
 
-        /** True quando la S Pen sta scrivendo: campo dell'impianto a fuoco su tablet Android.
-         *  Mentre è true non tocchiamo il DOM (niente priming/refresh) per non interrompere
-         *  la sessione di riconoscimento della scrittura. */
+        /** True per tutta la sessione penna (anche nel salto da un campo all'altro). */
         window.__shSpenIsWriting = function () {
-            if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return false;
-            var ae = document.activeElement;
-            if (!ae || (ae.tagName !== 'INPUT' && ae.tagName !== 'TEXTAREA')) return false;
-            if (!ae.closest || !ae.closest('.main-container')) return false;
-            if (ae.closest('#settings-modal') || ae.closest('#management-modal') || ae.closest('#shift-modal')) return false;
-            return true;
+            return !!(window.__shSpenSessionActive && window.__shSpenSessionActive());
         };
 
-        /** Prepara SUBITO (eager) tutti gli input non ancora inizializzati, così sono pronti
-         *  alla scrittura prima ancora di toccarli con la penna. Cheap: agisce solo sui campi
-         *  non inizializzati e salta quello a fuoco. Nessun differimento: il primo numero
-         *  dev'essere accettato immediatamente. */
         window.__primeAllAndroidSpenInputs = function () {
             if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
-            document.querySelectorAll(
-                '.main-container input:not([data-sh-spen-input="1"]), .main-container textarea:not([data-sh-spen-input="1"])'
-            ).forEach(window.__primeAndroidSpenInput);
+            if (window.__shSpenSessionActive && window.__shSpenSessionActive()) {
+                window.__pendingSpenPrimeAll = true;
+                return;
+            }
+            document.querySelectorAll('.main-container input, .main-container textarea').forEach(window.__primeAndroidSpenInput);
         };
 
         window.__initAndroidSpenSupport = function () {
             if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
-            document.documentElement.setAttribute('writingsuggestions', 'false');
+            document.documentElement.removeAttribute('writingsuggestions');
             if (document.body) {
-                document.body.setAttribute('writingsuggestions', 'false');
+                document.body.removeAttribute('writingsuggestions');
                 document.body.classList.add('sh-device-android-tablet');
             }
             var mc = document.querySelector('.main-container');
-            if (mc) mc.setAttribute('writingsuggestions', 'false');
+            if (mc) mc.removeAttribute('writingsuggestions');
             window.__primeAllAndroidSpenInputs();
             if (window.__androidSpenObserver) return;
-            // Observer: prepara SUBITO gli input appena aggiunti (re-render pannelli), così sono
-            // scrivibili immediatamente. Agisce solo sui nodi realmente aggiunti (niente scansione
-            // dell'intero body a ogni mutazione).
             window.__androidSpenObserver = new MutationObserver(function (mutations) {
+                if (window.__shSpenSessionActive && window.__shSpenSessionActive()) {
+                    window.__pendingSpenPrimeAll = true;
+                    return;
+                }
                 for (var i = 0; i < mutations.length; i++) {
                     var added = mutations[i].addedNodes;
                     for (var j = 0; j < added.length; j++) {
@@ -1906,29 +1947,24 @@ window.colorPreviewNumber = function(tankName, value) {
             window.__androidSpenObserver.observe(document.body, { childList: true, subtree: true });
             if (window.__androidSpenListenersReady) return;
             window.__androidSpenListenersReady = true;
-            document.addEventListener('pointerdown', function (e) {
+            document.addEventListener('focusin', function (e) {
                 if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
                 var t = e.target;
-                if (!t || !t.closest || !t.closest('.main-container')) return;
-                if (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA') return;
+                if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) return;
+                if (!t.closest || !t.closest('.main-container')) return;
+                if (t.closest('#settings-modal') || t.closest('#management-modal') || t.closest('#shift-modal')) return;
+                window.__shMarkSpenActivity(!!(window.__shPenIsDown || window.__shPenRecentlyActive(800)));
                 if (typeof window.__releaseSpenStuckLocks === 'function') window.__releaseSpenStuckLocks();
-                if (window.__isStylusPointerEvent(e)) {
-                    document.body.classList.add('sh-stylus-pen-active');
-                    clearTimeout(window.__spenPenLiftTimer);
-                }
             }, true);
-            document.addEventListener('pointerup', function (e) {
+            document.addEventListener('input', function (e) {
                 if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
-                if (!window.__isStylusPointerEvent(e)) return;
-                clearTimeout(window.__spenPenLiftTimer);
-                window.__spenPenLiftTimer = setTimeout(function () {
-                    document.body.classList.remove('sh-stylus-pen-active');
-                }, 350);
+                var t = e.target;
+                if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) return;
+                if (!t.closest || !t.closest('.main-container')) return;
+                window.__shMarkSpenActivity(!!(window.__shPenIsDown || window.__shPenRecentlyActive(800)));
             }, true);
-            // Watchdog: garantisce che nessuno stato residuo (shield/lock) blocchi la penna,
-            // senza mai intervenire mentre si sta scrivendo.
             setInterval(function () {
-                if (window.__shSpenIsWriting && window.__shSpenIsWriting()) return;
+                if (window.__shSpenSessionActive && window.__shSpenSessionActive()) return;
                 if (window.__isUserPressingLabel && window.__isUserPressingLabel()) return;
                 var shieldStuck = window.__postLongPressShieldActive === true;
                 var lockStuck = document.body.classList.contains('sh-long-press-lock');
@@ -3065,6 +3101,7 @@ window.colorPreviewNumber = function(tankName, value) {
             clearTimeout(window.__postLongPressShieldTimer);
         };
         window.__activatePostLongPressShield = function () {
+            if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) return;
             const ms = window.__postLongPressShieldMs();
             let el = document.getElementById('sh-post-long-press-shield');
             if (!el) {
@@ -3563,6 +3600,10 @@ window.colorPreviewNumber = function(tankName, value) {
         const __applyRemotePlantPayload = function (d, opts) {
             opts = opts || {};
             if (!d || typeof d !== 'object') return;
+            if (!opts.fromSpenDefer && window.__shSpenSessionActive && window.__shSpenSessionActive()) {
+                window.__pendingPlantApplyWhileSpen = { d: d, opts: opts };
+                return;
+            }
             if (!opts.fromLetturaDefer && !opts.force &&
                 typeof window.isLetturaDocModalActive === 'function' && window.isLetturaDocModalActive()) {
                 window.__pendingPlantApplyWhileLettura = { d: d, opts: opts };
@@ -4513,6 +4554,10 @@ window.colorPreviewNumber = function(tankName, value) {
 
         // Funzione per colorare input serbatoi — ogni copia livello (Acqua, Stoccaggio, Ambiente) col proprio valore
         window.colorTankInput = function (input, forceMin) {
+            if (window.__shSpenSessionActive && window.__shSpenSessionActive()) {
+                window.__pendingSpenColorTanks = true;
+                return;
+            }
             if (!input || !input.id) return;
 
             var fieldId = input.id;
@@ -4626,6 +4671,10 @@ window.colorPreviewNumber = function(tankName, value) {
 
         // Funzione per applicare colorazione a tutti gli input dei serbatoi
         window.colorAllTankInputs = function() {
+            if (window.__shSpenSessionActive && window.__shSpenSessionActive()) {
+                window.__pendingSpenColorTanks = true;
+                return;
+            }
             const tankInputIds = [
                 'inp-s818', 'inp-s817', 'inp-s846', 'inp-s848', 'inp-s854', 'inp-s864', 'inp-s121',
                 'inp-tk9000', 'inp-s133', 'inp-tk9201', 'inp-tk9204', 'inp-tk9205', 'inp-tk10000',
@@ -4682,6 +4731,10 @@ window.colorPreviewNumber = function(tankName, value) {
 
         /** Colorazione allarme su un solo campo — solo cache locale, nessuna rete. */
         window.refreshAlarmVisualForField = function (el, forceMin) {
+            if (window.__shSpenSessionActive && window.__shSpenSessionActive()) {
+                window.__pendingSpenColorTanks = true;
+                return;
+            }
             if (!el || !el.id) return;
             if (['ph', 'cloro', 'reintegro'].includes(el.id)) {
                 if (typeof window.colorScamInputs === 'function') window.colorScamInputs(forceMin);
@@ -4778,6 +4831,7 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__plantSyncVerifyTimer = null;
 
         window.__isUserTypingInPlantField = function () {
+            if (window.__shSpenSessionActive && window.__shSpenSessionActive()) return true;
             var ae = document.activeElement;
             if (!ae || (ae.tagName !== 'INPUT' && ae.tagName !== 'TEXTAREA')) return false;
             if (!ae.closest || !ae.closest('.main-container')) return false;
@@ -8862,6 +8916,14 @@ window.updateStoricoButton = async function() {
                     if (__plantPersistTimer) {
                         clearTimeout(__plantPersistTimer);
                         __plantPersistTimer = null;
+                    }
+                    if (window.__shSpenSessionActive && window.__shSpenSessionActive()) {
+                        if (!(window.isEditingArchive && window.editingArchiveId) &&
+                            typeof window.flushPlantBackupNow === 'function') {
+                            window.flushPlantBackupNow();
+                        }
+                        window.__pendingSpenCloudFlush = true;
+                        return;
                     }
                     if (typeof window.__flushPlantCloudSaveNow === 'function') {
                         void window.__flushPlantCloudSaveNow(true);
@@ -30655,6 +30717,9 @@ window.updateStoricoButton = async function() {
             if (window.__lastLocalPlantSaveMs && Date.now() - window.__lastLocalPlantSaveMs < 4000) {
                 return Promise.resolve();
             }
+            if (window.__shSpenSessionActive && window.__shSpenSessionActive()) {
+                return Promise.resolve();
+            }
             const active = document.activeElement;
             if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
                 return Promise.resolve();
@@ -33878,6 +33943,10 @@ window.updateStoricoButton = async function() {
         };
 
         window.updateTankLevelArrowForInput = function(input) {
+            if (window.__shSpenSessionActive && window.__shSpenSessionActive()) {
+                window.__pendingTankArrowsRefresh = true;
+                return;
+            }
             if (!input || !input.id) return;
             if (typeof window.isMeasureTrendArrowFieldId === 'function') {
                 if (!window.isMeasureTrendArrowFieldId(input.id)) return;
@@ -33982,17 +34051,8 @@ window.updateStoricoButton = async function() {
         window.refreshAllTankLevelArrows = function() {
             // Tablet Android: mentre la S Pen scrive non muoviamo il DOM vicino agli input
             // (frecce nei contenitori label), altrimenti la sessione di scrittura si interrompe.
-            // Rimandiamo il refresh a fine scrittura.
             if (window.__shSpenIsWriting && window.__shSpenIsWriting()) {
-                if (!window.__pendingTankArrowsRefresh) {
-                    window.__pendingTankArrowsRefresh = true;
-                    setTimeout(function () {
-                        window.__pendingTankArrowsRefresh = false;
-                        if (typeof window.refreshAllTankLevelArrows === 'function') {
-                            window.refreshAllTankLevelArrows();
-                        }
-                    }, 600);
-                }
+                window.__pendingTankArrowsRefresh = true;
                 return;
             }
             window.__pendingTankArrowsRefresh = false;
@@ -39666,6 +39726,10 @@ window.convertToHtml = async () => {
             -webkit-user-select: text !important;
             user-select: text !important;
         }
+        body.sh-stylus-pen-active #sh-post-long-press-shield {
+            display: none !important;
+            pointer-events: none !important;
+        }
         body.sh-instant-layout .col-section { transition: none !important; }
         body.sh-instant-layout .nott-filtra-tendina-body,
         body.sh-instant-layout .nott-stocc-tendina-body,
@@ -43918,7 +43982,7 @@ window.convertToHtml = async () => {
         }
     </style>
 </head>
-<body class="splash-active" writingsuggestions="false">
+<body class="splash-active">
 <script>
 (function () {
     if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) {
@@ -47399,6 +47463,10 @@ window.thresholdsForAlarmFieldId = function (rawId) {
 /** Allarmi: solo colore del numero (come serbatoi / SCAM), senza sfondo rosso/giallo/verde.
  *  forceMin true = ricalcolo completo (sync / uscita campo); altrimenti le soglie MIN si sopprimono solo per prefissi corti mentre digiti. */
 window.applyAlarmLevelFillToField = function (el, forceMin) {
+    if (window.__shSpenSessionActive && window.__shSpenSessionActive()) {
+        window.__pendingSpenColorTanks = true;
+        return;
+    }
     if (!el || !el.id) return;
     const storageKey = typeof window.getAlarmStorageKeyForElement === 'function'
         ? window.getAlarmStorageKeyForElement(el)

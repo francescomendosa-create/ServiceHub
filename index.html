@@ -1785,13 +1785,55 @@ window.colorPreviewNumber = function(tankName, value) {
         };
 
         /** Solo UI input / S Pen — non tocca cloud né saveData. */
+        /* Tracciamento penna globale.
+           Su Android i TouchEvent NON espongono `touchType` (è una proprietà solo iOS/Safari):
+           l'unico segnale affidabile della S Pen è `pointerType === 'pen'`. Il pointerdown della
+           penna precede sempre i touch/mouse di compatibilità dello stesso gesto, quindi teniamo
+           una finestra temporale per riconoscere anche quegli eventi come "penna". */
+        window.__shPenLastEventTs = 0;
+        window.__shPenIsDown = false;
+        window.__shPenRecentlyActive = function (ms) {
+            if (window.__shPenIsDown) return true;
+            return (Date.now() - (window.__shPenLastEventTs || 0)) < (ms || 700);
+        };
         window.__isStylusPointerEvent = function (e) {
             if (!e) return false;
             if (e.pointerType === 'pen') return true;
+            if (e.pointerType === 'touch' || e.pointerType === 'mouse') return false;
             var t = e.touches && e.touches[0];
             if (t && (t.touchType === 'stylus' || t.touchType === 'pen')) return true;
+            if (e.type === 'touchstart' || e.type === 'touchmove' || e.type === 'touchend' ||
+                e.type === 'touchcancel' || e.type === 'mousedown' || e.type === 'mouseup' ||
+                e.type === 'click') {
+                return window.__shPenRecentlyActive(700);
+            }
             return false;
         };
+        (function () {
+            if (window.__shPenTrackerReady) return;
+            window.__shPenTrackerReady = true;
+            var markPen = function (down) {
+                return function (ev) {
+                    if (!ev || ev.pointerType !== 'pen') return;
+                    window.__shPenLastEventTs = Date.now();
+                    if (down === true) window.__shPenIsDown = true;
+                    else if (down === false) window.__shPenIsDown = false;
+                    if (down === true) {
+                        clearTimeout(window.__spenPenLiftTimer);
+                        document.body && document.body.classList.add('sh-stylus-pen-active');
+                    } else if (down === false) {
+                        clearTimeout(window.__spenPenLiftTimer);
+                        window.__spenPenLiftTimer = setTimeout(function () {
+                            document.body && document.body.classList.remove('sh-stylus-pen-active');
+                        }, 600);
+                    }
+                };
+            };
+            document.addEventListener('pointerdown', markPen(true), { capture: true, passive: true });
+            document.addEventListener('pointermove', markPen(null), { capture: true, passive: true });
+            document.addEventListener('pointerup', markPen(false), { capture: true, passive: true });
+            document.addEventListener('pointercancel', markPen(false), { capture: true, passive: true });
+        })();
 
         window.__primeAndroidSpenInput = function (el) {
             if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;

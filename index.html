@@ -958,7 +958,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v471';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v472';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto… il testo compare qui';
         window.ensureAiQuickChatPlaceholder = function() {
@@ -1240,14 +1240,24 @@ window.colorPreviewNumber = function(tankName, value) {
             });
             return false;
         };
-        /** Dettatura browser (SpeechRecognition) — testo live, ZERO Gemini. */
+        /** Dettatura browser — su iPhone start() DEVE essere sincrona nel tap (anche PWA). */
         window.__aiDictationTap = function(ev) {
             window.__unlockServiceHubUi();
-            try {
-                if (ev) { ev.preventDefault(); ev.stopPropagation(); }
-            } catch (eP) {}
+            var isIos = /iPhone|iPod/i.test(navigator.userAgent || '');
+            /* Su iOS il click arriva dopo touchstart: non deve stoppare la dettatura appena avviata */
+            if (isIos && ev && ev.type === 'click' && window.__aiMicTouchAt &&
+                Date.now() - window.__aiMicTouchAt < 900) {
+                return false;
+            }
+            /* Su iOS non fare preventDefault: spezza il gesto e in PWA la dettatura non parte */
+            if (!isIos) {
+                try {
+                    if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+                } catch (eP) {}
+            }
+            if (ev && ev.type === 'touchstart') window.__aiMicTouchAt = Date.now();
             var now = Date.now();
-            if (window.__aiMicTapAt && now - window.__aiMicTapAt < 450) return false;
+            if (window.__aiMicTapAt && now - window.__aiMicTapAt < 400) return false;
             window.__aiMicTapAt = now;
 
             var chat = document.getElementById('ai-learning-section');
@@ -1260,7 +1270,6 @@ window.colorPreviewNumber = function(tankName, value) {
                 return false;
             }
 
-            /* Stop se già in ascolto */
             if (typeof window.__aiIsListeningNow === 'function' && window.__aiIsListeningNow()) {
                 if (window.__aiSpeech && window.__aiSpeech.wantListen && typeof window.__aiQuickSpeechStop === 'function') {
                     window.__aiQuickSpeechStop();
@@ -1274,19 +1283,14 @@ window.colorPreviewNumber = function(tankName, value) {
 
             var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SR) {
-                var pwa = typeof window.isServiceHubStandalone === 'function' && window.isServiceHubStandalone();
-                alert(pwa
-                    ? 'Dettatura non disponibile nella app dalla Home. Apri ServiceHub in Safari dal sito.'
-                    : 'Dettatura non supportata. Su iPhone usa Safari; su PC usa Chrome o Edge.');
+                alert('Dettatura non disponibile su questo browser. Su iPhone usa Safari aggiornato.');
                 return false;
             }
 
-            /* iPhone: gesto + getUserMedia poi webkitSpeechRecognition */
-            if (/iPhone|iPod/i.test(navigator.userAgent || '')) {
+            if (isIos) {
                 return window.__aiMicTapCore(ev);
             }
 
-            /* Android / PC / iPad: SpeechRecognition continuo con testo live */
             var S = window.__aiSpeechBoot && window.__aiSpeechBoot();
             if (!S || typeof S.start !== 'function') {
                 alert('Assistente vocale non pronto. Chiudi e riapri Impostazioni.');
@@ -1304,8 +1308,7 @@ window.colorPreviewNumber = function(tankName, value) {
             var recognition = new SpeechRecognition();
             recognition.lang = 'it-IT';
             recognition.interimResults = true;
-            /* iOS Safari: continuous=true spesso non dà risultati → false + restart */
-            recognition.continuous = false;
+            recognition.continuous = true;
             recognition.maxAlternatives = 1;
             recognition.onresult = function(e) {
                 if (!e || !e.results) return;
@@ -1317,14 +1320,26 @@ window.colorPreviewNumber = function(tankName, value) {
                 all = String(all || '').replace(/^\s+/, '');
                 if (!all) return;
                 var sep = st.prefix && all ? ' ' : '';
-                inp.value = st.prefix + sep + all;
+                try {
+                    var desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+                    var val = st.prefix + sep + all;
+                    if (desc && desc.set) desc.set.call(inp, val);
+                    else inp.value = val;
+                } catch (eV) {
+                    inp.value = st.prefix + sep + all;
+                }
+                try { inp.dispatchEvent(new Event('input', { bubbles: true })); } catch (eI) {}
                 inp.scrollLeft = inp.scrollWidth;
                 try { inp.setSelectionRange(inp.value.length, inp.value.length); } catch (e2) {}
-                try { inp.focus(); } catch (e3) {}
+                try { inp.focus({ preventScroll: true }); } catch (e3) {
+                    try { inp.focus(); } catch (e4) {}
+                }
                 if (typeof window.syncAiChatClearBtn === 'function') window.syncAiChatClearBtn();
                 window.__aiSetDictationHint('Ascolto… continua a parlare');
             };
             recognition.onstart = function() {
+                st.listening = true;
+                window.__aiMicUiRec();
                 window.__aiSetDictationHint('Ascolto… il testo compare mentre parli');
             };
             recognition.onend = function() {
@@ -1341,11 +1356,12 @@ window.colorPreviewNumber = function(tankName, value) {
                             st.rec = r2;
                             if (r2) r2.start();
                         } catch (eR) {
+                            /* restart fallito: lascia il testo già scritto */
                             st.listening = false;
                             window.__aiMicUiIdle();
                             window.__aiSetDictationHint('');
                         }
-                    }, 120);
+                    }, 80);
                 } else {
                     window.__aiSetDictationHint('');
                 }
@@ -1355,23 +1371,25 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (code === 'aborted' || code === 'no-speech') return;
                 if (code === 'not-allowed' || code === 'service-not-allowed') {
                     st.listening = false;
-                    window.__aiIosMicStopAll();
+                    if (st.rec) { try { st.rec.stop(); } catch (e0) {} }
+                    st.rec = null;
+                    window.__aiReleaseIosMicStream();
+                    window.__aiMicUiIdle();
                     window.__aiSetDictationHint('');
-                    alert('Microfono o dettatura bloccati. Su iPhone: Impostazioni → Safari → Microfono, e apri il sito in Safari (non dall\'icona Home).');
+                    alert('Microfono bloccato. Consenti il microfono per ServiceHub (Impostazioni iPhone → Safari / ServiceHub).');
                 }
             };
             return recognition;
         };
+        /** iPhone/PWA: avvia SpeechRecognition SUBITO nel tap (niente await getUserMedia). */
         window.__aiMicTapCore = function(ev) {
             window.__unlockServiceHubUi();
-            try {
-                if (ev) { ev.preventDefault(); ev.stopPropagation(); }
-            } catch (eP) {}
-            var chat = document.getElementById('ai-learning-section');
-            if (chat && chat.style.display !== 'block' && !chat.classList.contains('ai-chat-visible')) {
-                if (typeof window.__aiOpenQuickChat === 'function') window.__aiOpenQuickChat();
-            }
             var inputField = window.__aiQuickChatInputEl();
+            if (!inputField) {
+                var chat = document.getElementById('ai-learning-section');
+                if (chat && typeof window.__aiOpenQuickChat === 'function') window.__aiOpenQuickChat();
+                inputField = window.__aiQuickChatInputEl();
+            }
             if (!inputField) {
                 alert('Tocca il robot in basso per aprire la chat.');
                 return false;
@@ -1386,10 +1404,7 @@ window.colorPreviewNumber = function(tankName, value) {
             }
 
             if (!(window.webkitSpeechRecognition || window.SpeechRecognition)) {
-                var pwa = typeof window.isServiceHubStandalone === 'function' && window.isServiceHubStandalone();
-                alert(pwa
-                    ? 'Dettatura non disponibile nella app dalla Home. Apri francescomendosa-create.github.io/ServiceHub/ in Safari.'
-                    : 'Dettatura non disponibile. Apri ServiceHub in Safari.');
+                alert('Dettatura non disponibile. Aggiorna iOS/Safari e riprova.');
                 return false;
             }
 
@@ -1399,42 +1414,40 @@ window.colorPreviewNumber = function(tankName, value) {
             window.__aiMicUiRec();
             window.__aiSetDictationHint('Ascolto…');
 
-            var startRec = function() {
-                if (!st.listening) return;
-                var recognition = window.__ensureIosSpeechRec(inputField);
-                st.rec = recognition;
-                if (!recognition) {
-                    st.listening = false;
-                    window.__aiMicUiIdle();
-                    window.__aiSetDictationHint('');
-                    alert('Dettatura non avviata. Riprova in Safari.');
-                    return;
-                }
-                try {
-                    recognition.start();
-                } catch (err) {
-                    st.listening = false;
-                    window.__aiReleaseIosMicStream();
-                    window.__aiMicUiIdle();
-                    window.__aiSetDictationHint('');
-                    alert('Dettatura: ' + (err && err.message ? err.message : 'riprova'));
-                }
-            };
+            var recognition = window.__ensureIosSpeechRec(inputField);
+            st.rec = recognition;
+            if (!recognition) {
+                st.listening = false;
+                window.__aiMicUiIdle();
+                window.__aiSetDictationHint('');
+                alert('Dettatura non avviata. Riprova.');
+                return false;
+            }
+            try {
+                recognition.start();
+            } catch (err) {
+                st.listening = false;
+                st.rec = null;
+                window.__aiMicUiIdle();
+                window.__aiSetDictationHint('');
+                alert('Dettatura: ' + (err && err.message ? err.message : 'riprova col microfono'));
+                return false;
+            }
 
+            /* Microfono in parallelo (non blocca lo start): tiene vivo l'audio in PWA */
             if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
                 navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
                     if (!st.listening) {
                         stream.getTracks().forEach(function(t) { try { t.stop(); } catch (e0) {} });
                         return;
                     }
+                    if (st.micStream) {
+                        try {
+                            st.micStream.getTracks().forEach(function(t) { try { t.stop(); } catch (e1) {} });
+                        } catch (e2) {}
+                    }
                     st.micStream = stream;
-                    startRec();
-                }).catch(function(err) {
-                    /* Anche senza getUserMedia, prova SpeechRecognition (iOS a volte lo gestisce da solo) */
-                    startRec();
-                });
-            } else {
-                startRec();
+                }).catch(function() { /* ok: SpeechRecognition gestisce da solo */ });
             }
             return false;
         };
@@ -1737,6 +1750,9 @@ window.colorPreviewNumber = function(tankName, value) {
         window.wireAiMicButton = function() {
             var mic = document.getElementById('ai-mic-btn');
             if (mic) mic.onclick = function(ev) { return window.__aiDictationTap(ev); };
+            if (mic && /iPhone|iPod/i.test(navigator.userAgent || '')) {
+                mic.ontouchstart = function(ev) { return window.__aiDictationTap(ev); };
+            }
         };
         window.__aiIsListeningNow = function() {
             var S = window.__aiSpeech;
@@ -45767,14 +45783,14 @@ window.convertToHtml = async () => {
 
             </div>
             <div id="ai-settings-dock" onclick="event.stopPropagation()">
-                <div id="ai-learning-section" aria-hidden="true" data-ai-speech-ver="195">
+                <div id="ai-learning-section" aria-hidden="true" data-ai-speech-ver="196">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                         <button type="button" onclick="exportAIMemory()" style="background:#1e293b;border:1px solid #334155;color:#60a5fa;width:32px;height:32px;cursor:pointer;border-radius:6px;font-size:10px;display:flex;align-items:center;justify-content:center;touch-action:manipulation;" title="Esporta memoria AI">↓</button>
                         <button type="button" id="open-conversation-btn" onclick="return window.openAiConversationFromSettings(event);" style="background:transparent;border:none;color:#60a5fa;cursor:pointer;font-size:18px;padding:8px;border-radius:5px;touch-action:manipulation;" title="Apri conversazione completa"><i class="fas fa-comments"></i></button>
                         <button type="button" onclick="importAIMemory()" style="background:#1e293b;border:1px solid #334155;color:#22c55e;width:32px;height:32px;cursor:pointer;border-radius:6px;font-size:10px;display:flex;align-items:center;justify-content:center;touch-action:manipulation;" title="Importa memoria AI">↑</button>
                     </div>
                     <div style="display:flex;gap:10px;margin-bottom:10px;align-items:center;">
-                        <button type="button" id="ai-mic-btn" onclick="return window.__aiDictationTap(event);" style="background:#ef4444;border:none;color:white;border-radius:10px;width:56px;height:52px;min-width:56px;min-height:52px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;touch-action:manipulation;-webkit-tap-highlight-color:transparent;pointer-events:auto;position:relative;z-index:210;-webkit-user-select:none;user-select:none;">
+                        <button type="button" id="ai-mic-btn" ontouchstart="if(/iPhone|iPod/i.test(navigator.userAgent||''))return window.__aiDictationTap(event);" onclick="return window.__aiDictationTap(event);" style="background:#ef4444;border:none;color:white;border-radius:10px;width:56px;height:52px;min-width:56px;min-height:52px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;touch-action:manipulation;-webkit-tap-highlight-color:transparent;pointer-events:auto;position:relative;z-index:210;-webkit-user-select:none;user-select:none;">
                             <i class="fas fa-microphone" id="mic-icon" style="pointer-events:none;"></i>
                         </button>
                         <input type="text" id="ai-chat-input" autocomplete="off" autocorrect="off" spellcheck="false" data-device-local="1" placeholder="Parla o scrivi…" style="flex:1;min-width:0;padding:12px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:white;font-size:16px;">
@@ -54790,7 +54806,7 @@ function fixAIPanel() {
     if (window.__aiSpeechWired === window.SERVICEHUB_BUILD) return;
 
     var chatSection = document.getElementById('ai-learning-section');
-    if (chatSection && chatSection.dataset) chatSection.dataset.aiSpeechVer = '195';
+    if (chatSection && chatSection.dataset) chatSection.dataset.aiSpeechVer = '196';
 
     if (typeof window.ensureAiQuickChatPlaceholder === 'function') window.ensureAiQuickChatPlaceholder();
 
@@ -54803,7 +54819,22 @@ function fixAIPanel() {
     var quickStatus = document.getElementById('ai-quick-chat-status');
     if (!inputField || !micBtn || !sendBtn || !document.getElementById('ai-settings-dock')) return;
 
-    micBtn.onclick = function(ev) { return window.__aiDictationTap(ev); };
+    var isIosPhone = /iPhone|iPod/i.test(navigator.userAgent || '');
+    if (isIosPhone) {
+        /* touchstart = gesto valido in PWA; click arriva troppo tardi */
+        micBtn.ontouchstart = function(ev) {
+            return window.__aiDictationTap(ev);
+        };
+        micBtn.onclick = function(ev) {
+            if (window.__aiMicTouchAt && Date.now() - window.__aiMicTouchAt < 800) {
+                try { ev.preventDefault(); } catch (e0) {}
+                return false;
+            }
+            return window.__aiDictationTap(ev);
+        };
+    } else {
+        micBtn.onclick = function(ev) { return window.__aiDictationTap(ev); };
+    }
 
     inputField.addEventListener('keydown', function(e) {
         if (e.key === 'Enter') { e.preventDefault(); window.aiSendTap(e); }

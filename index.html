@@ -958,7 +958,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v477';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v478';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -54052,6 +54052,7 @@ window.buildGeminiFormuleOperative = function() {
         livello_dopo_scarico: 'livello_nuovo_mm = livello_attuale_mm - (tonnellate_tolte / coefficiente) * 1000',
         filtra_fine_ciclo: 'rimanente = fine_ciclo - produzione_attuale; ore = rimanente / portata_mc_h',
         filtra_portata_per_orario: 'portata_mc_h = rimanente / ore_fino_a_orario_target',
+        riciclo_fanghi: 'riciclo_mc_h = P11011A/B - ingresso_impianto_mc_h (Analisi 2)',
         unita: { livello: 'mm', massa: 't', filtra_volume: 'mc', filtra_portata: 'mc/h' },
         fonti: {
             coefficienti: 'databaseSerbatoi / TANK_DATABASE',
@@ -54282,6 +54283,107 @@ window.geminiCalcolaFiltraEta = function(opts) {
     return window.geminiCalcolaFiltraScenario(opts || {});
 };
 
+window.geminiReadImpiantoIngressoMc = function() {
+    var parseN = window.geminiParseNumLoose || function(v) {
+        return parseFloat(String(v == null ? '' : v).replace(',', '.').replace(/[^\d.\-]/g, ''));
+    };
+    var ids = ['analisi-sigla-1-input', 'inp-vwt-notes', 'vwt-notes'];
+    for (var i = 0; i < ids.length; i++) {
+        var el = document.getElementById(ids[i]);
+        if (!el) continue;
+        var n = parseN(el.value);
+        if (Number.isFinite(n) && n > 0) return n;
+    }
+    try {
+        var ass = typeof window.getWwtAmbAssettoData === 'function' ? window.getWwtAmbAssettoData() : null;
+        if (ass && ass.portata) {
+            var p = parseN(ass.portata);
+            if (Number.isFinite(p) && p > 0) return p;
+        }
+    } catch (e) {}
+    return null;
+};
+
+window.buildGeminiAnalisi2Snapshot = function() {
+    var parseN = window.geminiParseNumLoose || function(v) {
+        return parseFloat(String(v == null ? '' : v).replace(',', '.').replace(/[^\d.\-]/g, ''));
+    };
+    var readId = function(id) {
+        var el = document.getElementById(id);
+        return el ? String(el.value || '').trim() : '';
+    };
+    var ingressoScheda = parseN(readId('analisi-sigla-1-input'));
+    var p11011Scheda = parseN(readId('analisi-sigla-2-input'));
+    var ricicloScheda = parseN(readId('analisi-sigla-3-input'));
+    var ingressoLive = window.geminiReadImpiantoIngressoMc();
+    var ingresso = Number.isFinite(ingressoScheda) && ingressoScheda > 0 ? ingressoScheda : ingressoLive;
+    var ricicloCalc = (Number.isFinite(p11011Scheda) && Number.isFinite(ingresso))
+        ? Math.max(0, p11011Scheda - ingresso) : null;
+    return {
+        pagina: 'ANALISI 2',
+        ingresso_impianto_mc_h: Number.isFinite(ingresso) ? ingresso : null,
+        ingresso_in_analisi2: Number.isFinite(ingressoScheda) ? ingressoScheda : null,
+        p11011_ab_mc_h: Number.isFinite(p11011Scheda) ? p11011Scheda : null,
+        riciclo_fanghi_mc_h: Number.isFinite(ricicloScheda) ? ricicloScheda : ricicloCalc,
+        riciclo_calcolato: ricicloCalc,
+        formula: 'riciclo_fanghi = P11011A/B − INGRESSO (portata impianto / sediflottatore)',
+        alias_pompa: ['11/A', '11/B', '11A', '11B', 'P11011A', 'P11011B', 'P 11011 A', 'P 11011 B', 'P11011A/B'],
+        alias_ingresso: ['impianto', 'ingresso', 'portata impianto', 'a quanto è messo l\'impianto', 'sediflottatore'],
+        alias_riciclo: ['riciclo', 'riciclo fanghi', 'fanghi']
+    };
+};
+
+window.geminiCalcolaRicicloFanghi = function(opts) {
+    opts = opts || {};
+    var parseN = window.geminiParseNumLoose;
+    var snap = typeof window.buildGeminiAnalisi2Snapshot === 'function'
+        ? window.buildGeminiAnalisi2Snapshot() : {};
+    var p11011 = parseN(opts.portata != null ? opts.portata
+        : (opts.p11011 != null ? opts.p11011
+            : (opts.pompa != null ? opts.pompa : opts.undici)));
+    if (!Number.isFinite(p11011) || p11011 < 0) p11011 = snap.p11011_ab_mc_h;
+    var ingresso = parseN(opts.ingresso != null ? opts.ingresso
+        : (opts.impianto != null ? opts.impianto : opts.portata_impianto));
+    if (!Number.isFinite(ingresso) || ingresso < 0) ingresso = snap.ingresso_impianto_mc_h;
+    var pompaLabel = String(opts.pompa_nome || opts.linea || opts.unita || '').trim();
+    if (!pompaLabel) {
+        var rawNome = String(opts.sigla || opts.dispositivo || '');
+        if (/11\s*[\\\/\-]?\s*B|11011\s*[\\\/\-]?\s*B/i.test(rawNome)) pompaLabel = 'P 11011/B';
+        else if (/11\s*[\\\/\-]?\s*A|11011\s*[\\\/\-]?\s*A/i.test(rawNome)) pompaLabel = 'P 11011/A';
+        else pompaLabel = 'P 11011 A/B';
+    }
+
+    if (!Number.isFinite(ingresso)) {
+        return {
+            ok: false,
+            snapshot: snap,
+            messaggio: 'Non vedo la portata impianto (ingresso Analisi 2 / sediflottatore). Dimmi a quanto è messo l\'impianto in mc/h.'
+        };
+    }
+    if (!Number.isFinite(p11011)) {
+        return {
+            ok: false,
+            snapshot: snap,
+            ingresso_mc_h: ingresso,
+            messaggio: 'Dimmi la portata della 11/A o 11/B (P 11011 A/B) in mc/h: riciclo fanghi = pompa − ingresso.'
+        };
+    }
+    var riciclo = Math.max(0, p11011 - ingresso);
+    riciclo = Math.round(riciclo * 10) / 10;
+    var msg = 'Impianto (ingresso) ' + (Math.round(ingresso * 10) / 10) + ' mc/h, ' +
+        pompaLabel + ' ' + (Math.round(p11011 * 10) / 10) + ' mc/h → riciclo fanghi ' + riciclo + ' mc/h ' +
+        '(Analisi 2: riciclo = P11011 − ingresso).';
+    return {
+        ok: true,
+        snapshot: snap,
+        pompa: pompaLabel,
+        p11011_mc_h: Math.round(p11011 * 10) / 10,
+        ingresso_mc_h: Math.round(ingresso * 10) / 10,
+        riciclo_fanghi_mc_h: riciclo,
+        messaggio: msg
+    };
+};
+
 /** Velocità mm/ora da archivi reali (non riassunto). */
 window.buildGeminiVelocitaStimate = function() {
     var archivi = typeof window.collectRealArchives === 'function'
@@ -54352,6 +54454,14 @@ window.buildGeminiRiassuntoTesto = function(ctx) {
             ' mc / portata ' + (cf.portata_mc_h != null ? cf.portata_mc_h + ' mc/h' : 'MANCANTE') +
             (cf.orario_fine_previsto ? (' → fine ≈ ' + cf.orario_fine_previsto) : '') +
             (cf.stato_filtra ? (' [' + cf.stato_filtra + ']') : ''));
+    }
+    var a2 = ctx.analisi2;
+    if (a2) {
+        lines.push('ANALISI 2 riciclo fanghi: ingresso impianto ' +
+            (a2.ingresso_impianto_mc_h != null ? a2.ingresso_impianto_mc_h + ' mc/h' : '?') +
+            ', P11011A/B ' + (a2.p11011_ab_mc_h != null ? a2.p11011_ab_mc_h + ' mc/h' : '(se detta a voce)') +
+            ', riciclo = P11011 − ingresso' +
+            (a2.riciclo_calcolato != null ? (' → ' + a2.riciclo_calcolato + ' mc/h') : ''));
     }
     lines.push('Archivi storico disponibili: ' + ((ctx.storicoArchivi || []).length));
     if (ctx.note) lines.push('Note: ' + String(ctx.note).slice(0, 200));
@@ -54465,6 +54575,14 @@ window.buildGeminiPlantContext = function(opts) {
         conteggioFiltra = { errore: String(eFil && eFil.message ? eFil.message : eFil) };
     }
 
+    var analisi2 = {};
+    try {
+        analisi2 = typeof window.buildGeminiAnalisi2Snapshot === 'function'
+            ? window.buildGeminiAnalisi2Snapshot() : {};
+    } catch (eA2) {
+        analisi2 = { errore: String(eA2 && eA2.message ? eA2.message : eA2) };
+    }
+
     var formuleOperative = typeof window.buildGeminiFormuleOperative === 'function'
         ? window.buildGeminiFormuleOperative() : {};
 
@@ -54554,6 +54672,7 @@ window.buildGeminiPlantContext = function(opts) {
         calcoliTonnellate: calcoliTonnellate,
         formuleOperative: formuleOperative,
         conteggioFiltra: conteggioFiltra,
+        analisi2: analisi2,
         livelliAllarme: (function() {
             try { return window.getAlarmConfig ? window.getAlarmConfig() : {}; } catch (e) { return {}; }
         })(),
@@ -55147,6 +55266,27 @@ window.applyGeminiCalcolaFiltra = function(pairs) {
     };
 };
 
+window.applyGeminiCalcolaRiciclo = function(pairs) {
+    pairs = pairs || {};
+    var res = typeof window.geminiCalcolaRicicloFanghi === 'function'
+        ? window.geminiCalcolaRicicloFanghi(pairs) : null;
+    if (!res) return null;
+    var applica = /^(1|si|sì|true|salva|applica)$/i.test(String(pairs.applica || pairs.salva || ''));
+    if (applica && res.ok) {
+        var pEl = document.getElementById('analisi-sigla-2-input');
+        var iEl = document.getElementById('analisi-sigla-1-input');
+        if (pEl && res.p11011_mc_h != null) pEl.value = String(res.p11011_mc_h);
+        if (iEl && res.ingresso_mc_h != null) iEl.value = String(res.ingresso_mc_h);
+        if (typeof window.updateRiciclo === 'function') window.updateRiciclo();
+        if (typeof window.saveData === 'function') window.saveData(true);
+    }
+    return {
+        kind: 'calcolo-riciclo',
+        label: 'Riciclo fanghi',
+        value: res.messaggio
+    };
+};
+
 window.applyGeminiOpenPopup = function(tipo, tankRef) {
     var t = String(tipo || '').toLowerCase();
     if (t === 'sed' || t === 'sediflottatore' || t === 'vwt' || t === 'wwt') {
@@ -55322,6 +55462,12 @@ window.applyGeminiChatActions = function(responseText) {
     }
     stripTag(/\[CALCOLA_FILTRA:\s*[^\]]*\]/gi);
 
+    var ricRe = /\[CALCOLA_RICICLO:\s*([^\]]*)\]/gi;
+    while ((sm = ricRe.exec(text)) !== null) {
+        pushApplied(window.applyGeminiCalcolaRiciclo(parsePairs(sm[1])));
+    }
+    stripTag(/\[CALCOLA_RICICLO:\s*[^\]]*\]/gi);
+
     /* Apri popup UI */
     var popRe = /\[APRI_POPUP:\s*([^\]]+)\]/gi;
     while ((sm = popRe.exec(text)) !== null) {
@@ -55382,7 +55528,7 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
 
     const istruzioneChat = "Sei Jennifer, assistente tecnica integrata in STABILE 2026 (ServiceHub). " +
         "Hai accesso COMPLETO al JSON sotto: livelliSerbatoiCorrenti, calcoliTonnellate (coefficienti, mm_per_tonnellata, max), " +
-        "formuleOperative, conteggioFiltra (produzione, portata, fine_ciclo, ETA), assettoAmbiente, statiSerbatoi, " +
+        "formuleOperative, conteggioFiltra, analisi2 (ingresso impianto, P11011A/B, riciclo fanghi), assettoAmbiente, statiSerbatoi, " +
         "controlliVocali, statusButtons, velocitaStimate, inputValues. " +
         "NON dire mai 'Nessun dato' se ci sono valori nel JSON. " +
         "CALCOLI: usa SEMPRE le formule in formuleOperative e i coefficienti in calcoliTonnellate/databaseSerbatoi. " +
@@ -55398,6 +55544,11 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
         "(e aggiungi portata= se l'ha detta, così confronti). " +
         "NON scrivere in scheda se sta solo chiedendo un calcolo. IMPOSTA_CFIL solo se chiede di salvarla. " +
         "rimanente = fine_ciclo - produzione; ore = rimanente/portata; portata_target = rimanente/ore_fino_orario. " +
+        "ANALISI 2 / RICICLO FANGHI: 11/A e 11/B = pompe P 11011/A e P 11011/B (stesso campo P11011A/B). " +
+        "'A quanto è messo l\'impianto' = INGRESSO (portata sediflottatore / assettoAmbiente.portata / analisi2.ingresso_impianto_mc_h). " +
+        "Formula: riciclo_fanghi = portata_P11011 − ingresso. " +
+        "Se dice 'portata 11/B 180, a quanto il riciclo' → [CALCOLA_RICICLO: portata=180; sigla=11/B]. " +
+        "Se l'ingresso è già in app usalo; se lo dice a voce passa ingresso= nel tag. " +
         "Quando l'utente chiede di IMPOSTARE qualcosa nell'interfaccia, DEVI eseguire con i TAG (anche più insieme). " +
         "L'app applica SOLO i tag: senza tag non cambia nulla. Se l'app conferma con ✓ la modifica/calcolo è reale. " +
         "\nTAG DISPONIBILI:\n" +
@@ -55413,12 +55564,14 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
         "9) Calcolo serbatoio: [CALCOLA_SERBATOIO: serbatoio=S817; livello_mm=2000; tonnellate_aggiunte=200].\n" +
         "10) Calcolo FILTRA (senza obbligo di scrivere in scheda): [CALCOLA_FILTRA: portata=60] " +
         "oppure [CALCOLA_FILTRA: orario_fine=18:00] oppure [CALCOLA_FILTRA: portata=60; fine_ciclo=1800].\n" +
+        "10b) Riciclo fanghi Analisi 2: [CALCOLA_RICICLO: portata=180; sigla=11/B] (ingresso da impianto se già in app).\n" +
         "11) Popup: [APRI_POPUP: tipo=osmosi|sed|portata|analisi|stato|conducibilita].\n" +
         "12) Note report: [SCRIVI_NOTE: testo].\n" +
         "Esempi: 'S817 a 2000 mm + 200 t' → [CALCOLA_SERBATOIO: serbatoio=S817; livello_mm=2000; tonnellate_aggiunte=200]; " +
         "'filtra a 60 quando finisce' → [CALCOLA_FILTRA: portata=60]; " +
         "'a quanto la metto per finire alle 18' → [CALCOLA_FILTRA: orario_fine=18:00]; " +
-        "'fine ciclo 1800 portata 50 quando finisce' → [CALCOLA_FILTRA: portata=50; fine_ciclo=1800]. " +
+        "'fine ciclo 1800 portata 50 quando finisce' → [CALCOLA_FILTRA: portata=50; fine_ciclo=1800]; " +
+        "'11/B a 180 a quanto il riciclo' → [CALCOLA_RICICLO: portata=180; sigla=11/B]. " +
         "Rispondi in italiano, breve e operativo, citando i numeri del calcolo. MEMORIA: " + memoriaAI;
 
     let datiJson = window.trimGeminiContextJson(datiImpianto, imageData ? 14000 : (isChat ? 28000 : 32000));

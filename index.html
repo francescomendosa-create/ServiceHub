@@ -54338,27 +54338,19 @@ window.applyGeminiTankAdp = function(tankRef, statiRaw) {
         el = document.querySelector('.tank-status-single[data-tank="' + tankId + '"]');
     }
     if (!el && !document.querySelector('[data-tank="' + tankId + '"]')) {
-        /* accetta comunque se è in tankLists */
-        var known = false;
-        Object.keys(window.tankLists || {}).forEach(function(k) {
-            if ((window.tankLists[k] || []).indexOf(tankId) >= 0) known = true;
+        var found = '';
+        document.querySelectorAll('.tank-status-single[data-tank]').forEach(function(node) {
+            if (found) return;
+            var dt = String(node.getAttribute('data-tank') || '');
+            var norm = dt.toUpperCase().replace(/[-\s]/g, '');
+            var want = tankId.toUpperCase().replace(/[-\s]/g, '');
+            if (norm === want || norm.indexOf(want) >= 0 || want.indexOf(norm) >= 0) found = dt;
         });
-        if (!known && window.tankLists) {
-            ['accumulo', 'drenaggi', 'parallelo'].forEach(function(k) {
-                (window.tankLists[k] || []).forEach(function(name) {
-                    if (String(name).replace(/\s+/g, '').toUpperCase() === tankId.replace(/-/g, '')) {
-                        tankId = name.indexOf('BACINO') >= 0
-                            ? name.replace(/\s+/g, '-').replace('BACINO-TK', 'BACINO-TK')
-                            : name.replace(/\s+/g, '');
-                        if (name === 'BACINO TK 8092') tankId = 'BACINO-TK8092';
-                        if (name === 'BACINO TK 8093') tankId = 'BACINO-TK8093';
-                        if (name === 'UNITA DAF' || name === 'UNITÀ DAF') tankId = 'UNITA-DAF';
-                        known = true;
-                    }
-                });
-            });
+        if (found) tankId = found;
+        else if (!(window.tankStatuses && window.tankStatuses[tankId] != null)) {
+            /* crea comunque la chiave se sigla tipica Ambiente */
+            if (!/^(A10605|S\d+|TK\d+|LURGI|SF3|UNITA-DAF|BACINO-TK\d+)$/i.test(tankId)) return null;
         }
-        if (!known && !window.tankStatuses) return null;
     }
     var stati = [];
     if (statiRaw == null || String(statiRaw).trim() === '' || /^nessun|reset|clear|vuoto|---$/i.test(String(statiRaw))) {
@@ -54591,18 +54583,26 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
         "Per scrivere nel report usa: [SCRIVI_NOTE: testo].";
 
     const istruzioneChat = "Sei Jennifer, assistente tecnica integrata in STABILE 2026 (ServiceHub). " +
-        "Hai accesso COMPLETO al JSON sotto: livelliSerbatoiCorrenti, calcoliTonnellate (con campo_id per ogni serbatoio), velocitaStimate (mm/ora pre-calcolate), " +
-        "trendSerbatoiTurno, storicoArchivi, inputValues, schede e note. " +
-        "NON dire mai 'Nessun dato' se livelliSerbatoiCorrenti o inputValues contengono valori: usa quelli. " +
-        "Quando l'utente chiede di impostare, aggiornare o aggiungere un livello a un serbatoio, DEVI eseguire la modifica con il tag (puoi usarne più di uno): " +
-        "[IMPOSTA_LIVELLO: serbatoio=TK9000; valore=3500] oppure [IMPOSTA_LIVELLO: campo_id=inp-tk9000; valore=3500]. " +
-        "Usa campo_id da calcoliTonnellate nel JSON. Valore sempre in mm. NON dire 'ho impostato' se non hai scritto il tag: l'app applica SOLO i tag. " +
-        "Se l'app conferma con ✓, la modifica è reale su tutte le schede. " +
-        "Per stime tempo a un livello target (es. 300 mm): usa velocitaStimate.mm_per_ora se direzione=discesa, " +
-        "formula tempo_ore = (livello_attuale - target) / |mm_per_ora|. Se velocitaStimate è vuoto ma c'è storicoArchivi, calcola tu. " +
-        "Se mancano punti storici, spiega che serve almeno 2 salvataggi. " +
-        "Rispondi in italiano, chiaro e operativo. MEMORIA: " + memoriaAI + " " +
-        "Per aggiungere note al report: [SCRIVI_NOTE: testo].";
+        "Hai accesso COMPLETO al JSON sotto (livelli, assettoAmbiente, statiSerbatoi, controlliVocali, calcoliTonnellate, ecc.). " +
+        "NON dire mai 'Nessun dato' se ci sono valori nel JSON. " +
+        "Quando l'utente chiede di IMPOSTARE qualcosa nell'interfaccia, DEVI eseguire con i TAG qui sotto (anche più tag insieme). " +
+        "L'app applica SOLO i tag: senza tag non cambia nulla. Se l'app conferma con ✓ la modifica è reale. " +
+        "\nTAG DISPONIBILI:\n" +
+        "1) Livello serbatoio: [IMPOSTA_LIVELLO: serbatoio=TK9000; valore=3500] oppure [IMPOSTA_LIVELLO: campo_id=inp-tk9000; valore=3500] (mm).\n" +
+        "2) Sediflottatore (Ambiente/WWT): [IMPOSTA_SED: scelta=A] oppure scelta=B | A+B | A-11005 | Serie.\n" +
+        "3) Portata sediflottatore (mc): [IMPOSTA_PORTATA_SED: valore=120].\n" +
+        "4) Osmosi: [IMPOSTA_OSMOSI: unita=A+B; destinazione=POZZI] oppure unita=A+B+C; A=POZZI; B=DEMI; C=DEMI. Unità C è sempre DEMI.\n" +
+        "5) Accumulo/Drenaggio/Parallelo: [IMPOSTA_STATO_SERBATOIO: serbatoio=S817; stati=Accumulo] oppure stati=Drenaggio+Parallelo oppure stati= (reset).\n" +
+        "6) Marcia/Fermo macchina: [IMPOSTA_MARCIA: id=sa-A; stato=MARCIA] (id = id bottone stato, es. sa-A, sa-B, stat-mk-A).\n" +
+        "7) Aprire popup scelta UI: [APRI_POPUP: tipo=osmosi] oppure tipo=sed | portata | analisi | stato; serbatoio=S817.\n" +
+        "8) Note report: [SCRIVI_NOTE: testo].\n" +
+        "Esempi vocali: 'metti sediflottatore B' → [IMPOSTA_SED: scelta=B]; " +
+        "'osmosi A e B a pozzi' → [IMPOSTA_OSMOSI: unita=A+B; destinazione=POZZI]; " +
+        "'S817 in accumulo' → [IMPOSTA_STATO_SERBATOIO: serbatoio=S817; stati=Accumulo]; " +
+        "'portata sed 150' → [IMPOSTA_PORTATA_SED: valore=150]. " +
+        "Usa assettoAmbiente nel JSON per sapere cosa c'è ora. " +
+        "Per stime tempo a un livello target usa velocitaStimate. " +
+        "Rispondi in italiano, breve e operativo. MEMORIA: " + memoriaAI;
 
     let datiJson = window.trimGeminiContextJson(datiImpianto, imageData ? 14000 : (isChat ? 28000 : 32000));
     const riassuntoTesto = window.buildGeminiRiassuntoTesto(datiImpianto);
@@ -54689,11 +54689,12 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
             if (actionRes.applied && actionRes.applied.length) {
                 var confirmLines = actionRes.applied.map(function(a) {
                     var extra = a.targets > 1 ? ' (' + a.targets + ' campi)' : '';
-                    return '✓ ' + a.label + ' → ' + a.value + ' mm' + extra;
+                    return '✓ ' + (a.label || a.kind || 'OK') + ' → ' + (a.value != null ? a.value : '') + extra;
                 }).join('\n');
                 testoRisposta = (testoRisposta ? testoRisposta + '\n\n' : '') + confirmLines;
-            } else if (/\b(impostato|aggiornato|inserito|scritto)\b/i.test(testoRisposta) && /livell|serbatoio|tk\s*\d/i.test(testoRisposta)) {
-                testoRisposta += '\n\n⚠ Non applicato in scheda: manca il tag [IMPOSTA_LIVELLO: ...]. Riprova chiedendo esplicitamente il valore in mm.';
+            } else if (/\b(impostato|aggiornato|inserito|scritto|messo|imposto)\b/i.test(testoRisposta) &&
+                /(livell|serbatoio|tk\s*\d|sediflott|osmosi|portata|accumul|drenagg|parallelo)/i.test(testoRisposta)) {
+                testoRisposta += '\n\n⚠ Non applicato in scheda: manca il tag di comando. Ripeti chiedendo esplicitamente (es. sediflottatore B, osmosi A+B, S817 accumulo).';
             }
         }
         window.__geminiUnavailable = false;

@@ -54080,6 +54080,16 @@ window.buildGeminiPlantContext = function(opts) {
         databaseSerbatoi: window.TANK_DATABASE || {},
         livelliMaxSerbatoi: window.TANK_MAX || {},
         statiSerbatoi: window.tankStatuses || {},
+        assettoAmbiente: (typeof window.getWwtAmbAssettoData === 'function')
+            ? window.getWwtAmbAssettoData()
+            : null,
+        controlliVocali: {
+            sediflottatore: ['A', 'B', 'A+B', 'A-11005', 'Serie'],
+            osmosiUnita: ['A', 'B', 'C', 'A+B', 'B+C', 'A+C', 'A+B+C'],
+            destinazioniOsmosi: ['DEMI', 'POZZI'],
+            statiSerbatoio: ['Accumulo', 'Drenaggio', 'Parallelo'],
+            marcia: ['MARCIA', 'FERMO']
+        },
         calcoliTonnellate: calcoliTonnellate,
         livelliAllarme: (function() {
             try { return window.getAlarmConfig ? window.getAlarmConfig() : {}; } catch (e) { return {}; }
@@ -54194,56 +54204,342 @@ window.applyGeminiPlantFieldValue = function(fieldId, num) {
     return n;
 };
 
+window.resolveGeminiSedSelection = function(raw) {
+    var t = String(raw || '').trim();
+    if (!t) return '';
+    var map = {
+        'A': 'Dis A', 'SED A': 'Dis A', 'DIS A': 'Dis A', 'SEDA': 'Dis A',
+        'SEDIFLOTTATORE A': 'Dis A', 'SEDIFLOTTATOREA': 'Dis A',
+        'B': 'Dis B', 'SED B': 'Dis B', 'DIS B': 'Dis B', 'SEDB': 'Dis B',
+        'SEDIFLOTTATORE B': 'Dis B', 'SEDIFLOTTATOREB': 'Dis B',
+        'A+B': 'Dis A+B', 'A/B': 'Dis A+B', 'AB': 'Dis A+B', 'SED A+B': 'Dis A+B',
+        'SED A/B': 'Dis A+B', 'DIS A+B': 'Dis A+B', 'SEDIFLOTTATORE A/B': 'Dis A+B',
+        'A-11005': 'A-11005', 'A11005': 'A-11005', '11005': 'A-11005',
+        'SERIE': 'Serie', 'Serie': 'Serie'
+    };
+    var key = t.toUpperCase().replace(/\s+/g, ' ').trim();
+    if (map[key]) return map[key];
+    if (map[t]) return map[t];
+    if (window.__VWT_INTERFACE_BY_SELECTION && window.__VWT_INTERFACE_BY_SELECTION[t]) return t;
+    if (window.__legacyVwtTextToSelection) {
+        var leg = window.__legacyVwtTextToSelection(t);
+        if (leg) return leg;
+    }
+    return '';
+};
+
+window.applyGeminiSediflottatore = function(choice) {
+    var sel = window.resolveGeminiSedSelection(choice);
+    if (!sel || typeof window.selectVwtOption !== 'function') return null;
+    window.selectVwtOption(sel);
+    var label = typeof window.__getVwtReportLabel === 'function'
+        ? window.__getVwtReportLabel(sel) : sel;
+    return { kind: 'sed', label: 'Sediflottatore', value: label, selection: sel };
+};
+
+window.applyGeminiPortataSed = function(valore) {
+    var num = parseFloat(String(valore == null ? '' : valore).replace(',', '.').replace(/[^\d.-]/g, ''));
+    if (!Number.isFinite(num) || num < 0) return null;
+    var str = String(Math.round(num * 100) / 100);
+    var vwtNotes = document.getElementById('vwt-notes');
+    var inpVwtNotes = document.getElementById('inp-vwt-notes');
+    var meterInput = document.getElementById('vwt-meter-input');
+    if (vwtNotes) vwtNotes.value = str + ' mc';
+    if (inpVwtNotes) inpVwtNotes.value = str + ' mc';
+    if (meterInput) meterInput.value = str;
+    if (typeof window.__applyAmbDisplayFieldStyles === 'function') window.__applyAmbDisplayFieldStyles();
+    if (typeof window.updateNutrientiCalcolati === 'function') window.updateNutrientiCalcolati();
+    if (typeof window.saveData === 'function') window.saveData(true);
+    return { kind: 'portata-sed', label: 'Portata sediflottatore', value: str + ' mc' };
+};
+
+window.applyGeminiOsmosiConfig = function(pairs) {
+    pairs = pairs || {};
+    var unitsRaw = pairs.unita || pairs.unit || pairs.unita_osmosi || pairs.osmosi || pairs.scelta || '';
+    var units = [];
+    if (unitsRaw) {
+        units = String(unitsRaw).replace(/^OSMOSI\s*/i, '').split(/[+/,]/)
+            .map(function(u) { return u.trim().toUpperCase(); })
+            .filter(function(u) { return u === 'A' || u === 'B' || u === 'C'; });
+    }
+    if (!units.length && typeof window.__normalizeOsmosiUnitsList === 'function') {
+        units = window.__normalizeOsmosiUnitsList(window.selectedOsmosiUnits || []);
+    }
+    if (!units.length) return null;
+    if (typeof window.selectOsmosiOption === 'function') {
+        window.selectOsmosiOption('OSMOSI ' + units.join('+'), { deferLabel: false });
+    } else if (typeof window.__syncOsmosiLabelFromSelection === 'function') {
+        window.selectedOsmosiUnits = units.slice();
+        window.__syncOsmosiLabelFromSelection(units);
+    }
+    var defaultDest = String(pairs.destinazione || pairs.dest || pairs.tutte || 'POZZI').toUpperCase();
+    if (defaultDest.indexOf('DEMI') >= 0) defaultDest = 'DEMI';
+    else defaultDest = 'POZZI';
+    var demi = [];
+    var pozzi = [];
+    units.forEach(function(u) {
+        var dest = pairs[u] || pairs[u.toLowerCase()] || defaultDest;
+        dest = String(dest).toUpperCase();
+        if (u === 'C' || dest.indexOf('DEMI') >= 0) demi.push(u);
+        else pozzi.push(u);
+    });
+    if (typeof window.__osmosiUnitsIncludeC === 'function' && window.__osmosiUnitsIncludeC(units)) {
+        if (demi.indexOf('C') < 0) demi.push('C');
+        pozzi = pozzi.filter(function(u) { return u !== 'C'; });
+    }
+    var reportHtml = '';
+    if (demi.length && pozzi.length) {
+        reportHtml = demi.join('/') + ' DEMI, ' + pozzi.join('/') + ' POZZI';
+    } else if (demi.length) {
+        reportHtml = units.length === 1 ? (demi.join('/') + ' DEMI') : 'TUTTE A DEMI';
+    } else {
+        reportHtml = units.length === 1 ? (pozzi.join('/') + ' POZZI') : 'TUTTE A POZZI';
+    }
+    if (typeof window.__commitOsmosiInterfaceState === 'function') {
+        window.__commitOsmosiInterfaceState(demi, pozzi, reportHtml);
+    }
+    if (typeof window.saveData === 'function') window.saveData(true);
+    return {
+        kind: 'osmosi',
+        label: 'Osmosi ' + units.join('+'),
+        value: reportHtml
+    };
+};
+
+window.applyGeminiTankAdp = function(tankRef, statiRaw) {
+    var tankId = '';
+    if (typeof window.resolveGeminiPlantFieldId === 'function') {
+        var fid = window.resolveGeminiPlantFieldId(tankRef);
+        if (fid && window.DIGITAL_TANK_FIELD_MAP) {
+            Object.keys(window.DIGITAL_TANK_FIELD_MAP).forEach(function(k) {
+                if (window.DIGITAL_TANK_FIELD_MAP[k] === tankRef || k === fid) {
+                    tankId = window.DIGITAL_TANK_FIELD_MAP[k] || tankId;
+                }
+            });
+        }
+    }
+    if (!tankId) {
+        tankId = String(tankRef || '').trim().toUpperCase()
+            .replace(/\s+/g, '')
+            .replace(/^BACINO[-_]?TK/, 'BACINO-TK')
+            .replace(/^UNITA[-_]?DAF$/, 'UNITA-DAF');
+        if (tankId === 'BACINOTK8092') tankId = 'BACINO-TK8092';
+        if (tankId === 'BACINOTK8093') tankId = 'BACINO-TK8093';
+        if (tankId === 'S148AB' || tankId === 'S148A/B') tankId = 'S148';
+    }
+    if (!tankId) return null;
+    var el = document.querySelector('.tank-status-single[data-tank="' + tankId + '"]');
+    if (!el) {
+        var alt = tankId.replace(/-/g, '');
+        document.querySelectorAll('.tank-status-single[data-tank]').forEach(function(node) {
+            var dt = node.getAttribute('data-tank') || '';
+            if (dt.toUpperCase().replace(/[-\s]/g, '') === alt) tankId = dt;
+        });
+        el = document.querySelector('.tank-status-single[data-tank="' + tankId + '"]');
+    }
+    if (!el && !document.querySelector('[data-tank="' + tankId + '"]')) {
+        /* accetta comunque se è in tankLists */
+        var known = false;
+        Object.keys(window.tankLists || {}).forEach(function(k) {
+            if ((window.tankLists[k] || []).indexOf(tankId) >= 0) known = true;
+        });
+        if (!known && window.tankLists) {
+            ['accumulo', 'drenaggi', 'parallelo'].forEach(function(k) {
+                (window.tankLists[k] || []).forEach(function(name) {
+                    if (String(name).replace(/\s+/g, '').toUpperCase() === tankId.replace(/-/g, '')) {
+                        tankId = name.indexOf('BACINO') >= 0
+                            ? name.replace(/\s+/g, '-').replace('BACINO-TK', 'BACINO-TK')
+                            : name.replace(/\s+/g, '');
+                        if (name === 'BACINO TK 8092') tankId = 'BACINO-TK8092';
+                        if (name === 'BACINO TK 8093') tankId = 'BACINO-TK8093';
+                        if (name === 'UNITA DAF' || name === 'UNITÀ DAF') tankId = 'UNITA-DAF';
+                        known = true;
+                    }
+                });
+            });
+        }
+        if (!known && !window.tankStatuses) return null;
+    }
+    var stati = [];
+    if (statiRaw == null || String(statiRaw).trim() === '' || /^nessun|reset|clear|vuoto|---$/i.test(String(statiRaw))) {
+        stati = [];
+    } else {
+        stati = String(statiRaw).split(/[+/,|;]/).map(function(s) {
+            return window.__normalizeTankStatusLabel ? window.__normalizeTankStatusLabel(s) : s;
+        }).filter(Boolean);
+    }
+    if (typeof window.__applyTankStatusToMemoryAndUI === 'function') {
+        window.__applyTankStatusToMemoryAndUI(tankId, stati);
+    }
+    if (typeof window.saveData === 'function') window.saveData(true);
+    return {
+        kind: 'stato-serbatoio',
+        label: 'Stato ' + tankId,
+        value: stati.length ? stati.join('+') : '---'
+    };
+};
+
+window.applyGeminiMarciaStatus = function(idRaw, statoRaw) {
+    var id = String(idRaw || '').trim();
+    if (!id) return null;
+    var stato = String(statoRaw || '').trim().toUpperCase();
+    if (stato.indexOf('MARCIA') >= 0) stato = 'MARCIA';
+    else if (stato.indexOf('FERMO') >= 0 || stato.indexOf('ARRESTO') >= 0) stato = 'FERMO';
+    else return null;
+    var el = document.getElementById(id);
+    if (!el) return null;
+    if (typeof window.__applyPlantStatusFromStored === 'function') {
+        window.__applyPlantStatusFromStored(el, stato, { force: true });
+    } else {
+        el.innerText = stato;
+        if (el.classList && el.classList.contains('status-cell-btn')) {
+            el.className = 'status-cell-btn ' + (stato === 'MARCIA' ? 'bg-marcia' : 'bg-fermo');
+        }
+    }
+    if (typeof window.__touchPlantStatusEdit === 'function') window.__touchPlantStatusEdit(id);
+    if (typeof window.saveData === 'function') window.saveData(true);
+    return { kind: 'marcia', label: id, value: stato };
+};
+
+window.applyGeminiOpenPopup = function(tipo, tankRef) {
+    var t = String(tipo || '').toLowerCase();
+    if (t === 'sed' || t === 'sediflottatore' || t === 'vwt' || t === 'wwt') {
+        if (typeof window.openVwtPopup === 'function') window.openVwtPopup();
+        return { kind: 'popup', label: 'Popup', value: 'Sediflottatore / WWT' };
+    }
+    if (t === 'portata' || t === 'portata-sed' || t === 'meter') {
+        if (typeof window.openVwtMeterPopup === 'function') window.openVwtMeterPopup();
+        return { kind: 'popup', label: 'Popup', value: 'Portata sediflottatore' };
+    }
+    if (t === 'osmosi' || t === 'osmosis') {
+        if (typeof window.openOsmosiPopup === 'function') window.openOsmosiPopup();
+        return { kind: 'popup', label: 'Popup', value: 'Osmosi' };
+    }
+    if (t === 'stato' || t === 'serbatoio' || t === 'adp') {
+        var tankId = String(tankRef || '').trim();
+        if (tankId && typeof window.openTankStatusPopup === 'function') {
+            window.openTankStatusPopup(tankId);
+            return { kind: 'popup', label: 'Popup stato', value: tankId };
+        }
+    }
+    if (t === 'analisi') {
+        if (typeof window.openAnalisiPopup === 'function') window.openAnalisiPopup();
+        return { kind: 'popup', label: 'Popup', value: 'Analisi' };
+    }
+    return null;
+};
+
 window.applyGeminiChatActions = function(responseText) {
     if (!responseText) return { text: responseText || '', applied: [] };
     var text = String(responseText);
     var applied = [];
     var seen = {};
-    var patterns = [
-        /\[IMPOSTA_(?:LIVELLO|CAMPO):\s*([^\]]+)\]/gi,
-        /IMPOSTA_(?:LIVELLO|CAMPO):\s*(serbatoio\s*=\s*[^;\n]+(?:;\s*valore\s*=\s*[^;\n]+)?|campo_id\s*=\s*[^;\n]+(?:;\s*valore\s*=\s*[^;\n]+)?)/gi
-    ];
 
-    function parseAndApply(inner) {
-        if (!inner) return;
+    function parsePairs(inner) {
         var pairs = {};
-        inner.split(/[;,]/).forEach(function(part) {
+        String(inner || '').split(/[;,]/).forEach(function(part) {
             var eqIdx = part.indexOf('=');
             if (eqIdx < 0) return;
             var key = part.slice(0, eqIdx).trim().toLowerCase().replace(/\s+/g, '_');
             var val = part.slice(eqIdx + 1).trim();
             if (key) pairs[key] = val;
         });
-        var fieldId = pairs.campo_id || pairs.campo || pairs.field_id || pairs.id;
-        if (!fieldId && (pairs.serbatoio || pairs.tank || pairs.tk)) {
-            fieldId = window.resolveGeminiPlantFieldId(pairs.serbatoio || pairs.tank || pairs.tk);
-        } else if (fieldId) {
-            fieldId = window.resolveGeminiPlantFieldId(fieldId);
-        }
-        var valueRaw = pairs.valore || pairs.livello || pairs.value || pairs.mm;
-        if (!fieldId || valueRaw == null || valueRaw === '') return;
-        var num = parseFloat(String(valueRaw).replace(',', '.').replace(/[^\d.-]/g, ''));
-        if (!Number.isFinite(num)) return;
-        var dedupeKey = fieldId + '=' + num;
-        if (seen[dedupeKey]) return;
-        var n = window.applyGeminiPlantFieldValue(fieldId, num);
-        if (!n) return;
-        seen[dedupeKey] = true;
-        var label = typeof window.formatTrendDisplayLabel === 'function'
-            ? window.formatTrendDisplayLabel(fieldId, false)
-            : (typeof window.getTankName === 'function' ? window.getTankName(fieldId) : fieldId);
-        applied.push({ fieldId: fieldId, label: label, value: num, targets: n });
+        return pairs;
     }
 
-    patterns.forEach(function(re) {
+    function pushApplied(item) {
+        if (!item) return;
+        var key = (item.kind || '') + '|' + (item.label || '') + '|' + (item.value || '');
+        if (seen[key]) return;
+        seen[key] = true;
+        applied.push(item);
+    }
+
+    function stripTag(re) {
+        text = text.replace(re, '');
+    }
+
+    /* Livelli / campi numerici */
+    var levelPatterns = [
+        /\[IMPOSTA_(?:LIVELLO|CAMPO):\s*([^\]]+)\]/gi,
+        /IMPOSTA_(?:LIVELLO|CAMPO):\s*(serbatoio\s*=\s*[^;\n]+(?:;\s*valore\s*=\s*[^;\n]+)?|campo_id\s*=\s*[^;\n]+(?:;\s*valore\s*=\s*[^;\n]+)?)/gi
+    ];
+    levelPatterns.forEach(function(re) {
         var m;
         while ((m = re.exec(text)) !== null) {
-            parseAndApply(m[1]);
+            var pairs = parsePairs(m[1]);
+            var fieldId = pairs.campo_id || pairs.campo || pairs.field_id || pairs.id;
+            if (!fieldId && (pairs.serbatoio || pairs.tank || pairs.tk)) {
+                fieldId = window.resolveGeminiPlantFieldId(pairs.serbatoio || pairs.tank || pairs.tk);
+            } else if (fieldId) {
+                fieldId = window.resolveGeminiPlantFieldId(fieldId);
+            }
+            var valueRaw = pairs.valore || pairs.livello || pairs.value || pairs.mm;
+            if (!fieldId || valueRaw == null || valueRaw === '') continue;
+            var num = parseFloat(String(valueRaw).replace(',', '.').replace(/[^\d.-]/g, ''));
+            if (!Number.isFinite(num)) continue;
+            var n = window.applyGeminiPlantFieldValue(fieldId, num);
+            if (!n) continue;
+            var label = typeof window.formatTrendDisplayLabel === 'function'
+                ? window.formatTrendDisplayLabel(fieldId, false)
+                : fieldId;
+            pushApplied({ kind: 'livello', label: label, value: num + ' mm', targets: n });
         }
     });
+    stripTag(/\[IMPOSTA_(?:LIVELLO|CAMPO):\s*[^\]]+\]/gi);
+    stripTag(/IMPOSTA_(?:LIVELLO|CAMPO):\s*(serbatoio\s*=\s*[^;\n]+(?:;\s*valore\s*=\s*[^;\n]+)?|campo_id\s*=\s*[^;\n]+(?:;\s*valore\s*=\s*[^;\n]+)?)/gi);
 
-    text = text.replace(/\[IMPOSTA_(?:LIVELLO|CAMPO):\s*[^\]]+\]/gi, '');
-    text = text.replace(/IMPOSTA_(?:LIVELLO|CAMPO):\s*(serbatoio\s*=\s*[^;\n]+(?:;\s*valore\s*=\s*[^;\n]+)?|campo_id\s*=\s*[^;\n]+(?:;\s*valore\s*=\s*[^;\n]+)?)/gi, '');
+    /* Sediflottatore */
+    var sedRe = /\[IMPOSTA_SED(?:IFLOTTATORE)?:\s*([^\]]+)\]/gi;
+    var sm;
+    while ((sm = sedRe.exec(text)) !== null) {
+        var sp = parsePairs(sm[1]);
+        pushApplied(window.applyGeminiSediflottatore(sp.scelta || sp.sed || sp.valore || sp.unita || sm[1]));
+    }
+    stripTag(/\[IMPOSTA_SED(?:IFLOTTATORE)?:\s*[^\]]+\]/gi);
+
+    /* Portata sed */
+    var portRe = /\[IMPOSTA_PORTATA_SED:\s*([^\]]+)\]/gi;
+    while ((sm = portRe.exec(text)) !== null) {
+        var pp = parsePairs(sm[1]);
+        pushApplied(window.applyGeminiPortataSed(pp.valore || pp.portata || pp.mc || sm[1]));
+    }
+    stripTag(/\[IMPOSTA_PORTATA_SED:\s*[^\]]+\]/gi);
+
+    /* Osmosi */
+    var osmRe = /\[IMPOSTA_OSMOSI:\s*([^\]]+)\]/gi;
+    while ((sm = osmRe.exec(text)) !== null) {
+        pushApplied(window.applyGeminiOsmosiConfig(parsePairs(sm[1])));
+    }
+    stripTag(/\[IMPOSTA_OSMOSI:\s*[^\]]+\]/gi);
+
+    /* Stato serbatoio A/D/P */
+    var stRe = /\[IMPOSTA_STATO_SERBATOIO:\s*([^\]]+)\]/gi;
+    while ((sm = stRe.exec(text)) !== null) {
+        var stp = parsePairs(sm[1]);
+        pushApplied(window.applyGeminiTankAdp(
+            stp.serbatoio || stp.tank || stp.sigla || stp.id,
+            stp.stati != null ? stp.stati : (stp.stato != null ? stp.stato : stp.valore)
+        ));
+    }
+    stripTag(/\[IMPOSTA_STATO_SERBATOIO:\s*[^\]]+\]/gi);
+
+    /* Marcia/Fermo */
+    var marRe = /\[IMPOSTA_MARCIA:\s*([^\]]+)\]/gi;
+    while ((sm = marRe.exec(text)) !== null) {
+        var mp = parsePairs(sm[1]);
+        pushApplied(window.applyGeminiMarciaStatus(mp.id || mp.campo_id || mp.campo, mp.stato || mp.valore));
+    }
+    stripTag(/\[IMPOSTA_MARCIA:\s*[^\]]+\]/gi);
+
+    /* Apri popup UI */
+    var popRe = /\[APRI_POPUP:\s*([^\]]+)\]/gi;
+    while ((sm = popRe.exec(text)) !== null) {
+        var op = parsePairs(sm[1]);
+        pushApplied(window.applyGeminiOpenPopup(op.tipo || op.popup || sm[1], op.serbatoio || op.tank));
+    }
+    stripTag(/\[APRI_POPUP:\s*[^\]]+\]/gi);
+
     text = text.replace(/\n{3,}/g, '\n\n').trim();
 
     if (applied.length) {
@@ -54251,6 +54547,9 @@ window.applyGeminiChatActions = function(responseText) {
         else if (typeof window.colorScamInputs === 'function') window.colorScamInputs();
         if (typeof window.saveData === 'function') window.saveData(true);
         if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
+        if (typeof window.__flushPlantCloudSaveNow === 'function') {
+            try { window.__flushPlantCloudSaveNow(true); } catch (eF) {}
+        }
     }
     return { text: text, applied: applied };
 };

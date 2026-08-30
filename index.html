@@ -958,7 +958,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v476';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v477';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -54036,10 +54036,10 @@ window.buildGeminiConteggioFiltraSnapshot = function() {
         conducibilita_filtra: fCondEl ? String(fCondEl.value || '').trim() : '',
         ora_attuale: String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0'),
         campi_mancanti: missing,
-        formula: 'rimanente_mc = fine_ciclo_mc - produzione_attuale_mc; ore = rimanente_mc / portata_mc_h; orario_fine = ora_attuale + ore',
+        formula: 'rimanente_mc = fine_ciclo_mc - produzione_attuale_mc; ore = rimanente_mc / portata_mc_h; orario_fine = ora_attuale + ore; portata_per_orario = rimanente_mc / ore_fino_a_orario_target',
         nota: missing.indexOf('portata_mc_h') >= 0
-            ? 'Portata assente: chiedi all\'utente la portata in mc/h oppure impostala con [IMPOSTA_CFIL: campo=portata; valore=60] e poi ricalcola.'
-            : ''
+            ? 'Portata NON in scheda: se l\'utente la dice nella domanda (es. 60 mc/h) usala subito in [CALCOLA_FILTRA: portata=60] SENZA obbligarlo a scriverla in app. Se chiede la portata per finire a un orario: [CALCOLA_FILTRA: orario_fine=18:00].'
+            : 'Puoi ricalcolare con una portata o un fine ciclo detti a voce, anche diversi dalla scheda, con [CALCOLA_FILTRA: portata=60; fine_ciclo=1800].'
     };
 };
 
@@ -54051,6 +54051,7 @@ window.buildGeminiFormuleOperative = function() {
         livello_dopo_carico: 'livello_nuovo_mm = livello_attuale_mm + (tonnellate_aggiunte / coefficiente) * 1000',
         livello_dopo_scarico: 'livello_nuovo_mm = livello_attuale_mm - (tonnellate_tolte / coefficiente) * 1000',
         filtra_fine_ciclo: 'rimanente = fine_ciclo - produzione_attuale; ore = rimanente / portata_mc_h',
+        filtra_portata_per_orario: 'portata_mc_h = rimanente / ore_fino_a_orario_target',
         unita: { livello: 'mm', massa: 't', filtra_volume: 'mc', filtra_portata: 'mc/h' },
         fonti: {
             coefficienti: 'databaseSerbatoi / TANK_DATABASE',
@@ -54164,25 +54165,121 @@ window.geminiCalcolaSerbatoioScenario = function(opts) {
     };
 };
 
-window.geminiCalcolaFiltraEta = function() {
-    var snap = window.buildGeminiConteggioFiltraSnapshot();
-    if (snap.campi_mancanti && snap.campi_mancanti.length) {
+window.geminiParseNumLoose = function(v) {
+    if (v == null || v === '') return NaN;
+    if (typeof window.parseCfilNumber === 'function') return window.parseCfilNumber(v);
+    return parseFloat(String(v).replace(',', '.').replace(/[^\d.\-]/g, ''));
+};
+
+window.geminiParseClockMinutes = function(raw) {
+    if (raw == null || String(raw).trim() === '') return null;
+    if (typeof window.parseCfilTimeValue === 'function') {
+        var fromCfil = window.parseCfilTimeValue(raw);
+        if (fromCfil != null) return fromCfil;
+    }
+    var s = String(raw).trim().toLowerCase().replace(/\s+/g, ' ');
+    var hm = s.match(/(\d{1,2})[:\.](\d{2})/);
+    if (hm) {
+        var h1 = parseInt(hm[1], 10);
+        var m1 = parseInt(hm[2], 10);
+        if (h1 >= 0 && h1 <= 23 && m1 >= 0 && m1 <= 59) return h1 * 60 + m1;
+    }
+    var onlyH = s.match(/(?:alle\s+|ore\s+)?(\d{1,2})\b/);
+    if (onlyH) {
+        var h2 = parseInt(onlyH[1], 10);
+        if (h2 >= 0 && h2 <= 23) return h2 * 60;
+    }
+    return null;
+};
+
+window.geminiCalcolaFiltraScenario = function(opts) {
+    opts = opts || {};
+    var snap = typeof window.buildGeminiConteggioFiltraSnapshot === 'function'
+        ? window.buildGeminiConteggioFiltraSnapshot() : {};
+    var parseN = window.geminiParseNumLoose;
+    var fine = parseN(opts.fine_ciclo != null ? opts.fine_ciclo : opts.fine);
+    if (!Number.isFinite(fine) || fine <= 0) fine = snap.fine_ciclo_mc;
+    if (!Number.isFinite(fine) || fine <= 0) {
+        fine = parseN(window.CONTEGGIO_FILTRA_DEFAULT_FINE_CICLO || '1500');
+    }
+    var prod = parseN(opts.produzione != null ? opts.produzione : opts.prod);
+    if (!Number.isFinite(prod) || prod < 0) {
+        prod = snap.produzione_attuale_mc;
+    }
+    if (!Number.isFinite(prod) || prod < 0) prod = 0;
+    if (prod > fine) prod = fine;
+    var rimanente = typeof window.cfilCalcRimanente === 'function'
+        ? window.cfilCalcRimanente(prod, fine)
+        : Math.max(0, fine - prod);
+    var portata = parseN(opts.portata);
+    if (!Number.isFinite(portata) || portata <= 0) portata = snap.portata_mc_h;
+    var targetMin = window.geminiParseClockMinutes(
+        opts.orario_fine != null ? opts.orario_fine
+            : (opts.orario_target != null ? opts.orario_target : opts.fine_alle)
+    );
+    var hoursToTarget = null;
+    var targetClock = null;
+    if (targetMin != null) {
+        hoursToTarget = typeof window.cfilMinutesUntilFromNow === 'function'
+            ? window.cfilMinutesUntilFromNow(targetMin) / 60
+            : null;
+        targetClock = typeof window.formatCfilClockTime === 'function'
+            ? window.formatCfilClockTime(targetMin) : String(opts.orario_fine);
+    }
+
+    var parts = [];
+    parts.push('Fine ciclo ' + fine + ' mc, già prodotti ' + (Math.round(prod * 10) / 10) +
+        ' mc → restano ' + (Math.round(rimanente * 10) / 10) + ' mc');
+
+    var etaHours = null;
+    var etaClock = null;
+    if (Number.isFinite(portata) && portata > 0) {
+        etaHours = rimanente / portata;
+        if (typeof window.cfilAddHoursToNowMinutes === 'function' &&
+            typeof window.formatCfilClockTime === 'function') {
+            etaClock = window.formatCfilClockTime(window.cfilAddHoursToNowMinutes(etaHours));
+        }
+        parts.push('Con portata ' + (Math.round(portata * 10) / 10) + ' mc/h finisce tra ' +
+            (Math.round(etaHours * 100) / 100) + ' h ≈ ore ' + (etaClock || '?'));
+    }
+
+    var portataPerOra = null;
+    if (targetMin != null && hoursToTarget != null && hoursToTarget > 0) {
+        portataPerOra = rimanente / hoursToTarget;
+        parts.push('Per finire alle ' + targetClock + ' servono ' +
+            (Math.round(portataPerOra * 10) / 10) + ' mc/h');
+    } else if (targetMin != null && hoursToTarget != null && hoursToTarget <= 0) {
+        parts.push('Orario ' + targetClock + ' già passato o troppo vicino');
+    }
+
+    if (!Number.isFinite(portata) && portataPerOra == null) {
         return {
             ok: false,
-            mancanti: snap.campi_mancanti,
             snapshot: snap,
-            messaggio: snap.nota || ('Mancano: ' + snap.campi_mancanti.join(', '))
+            rimanente_mc: Math.round(rimanente * 10) / 10,
+            fine_ciclo_mc: fine,
+            produzione_mc: prod,
+            messaggio: 'Dimmi la portata in mc/h (anche solo a voce, non serve scriverla in scheda) oppure a che ora deve finire.'
         };
     }
+
     return {
         ok: true,
         snapshot: snap,
-        rimanente_mc: snap.rimanente_mc,
-        ore: snap.ore_alla_fine_calcolate,
-        orario_fine: snap.orario_fine_previsto,
-        messaggio: 'Fine ciclo tra ' + snap.ore_alla_fine_calcolate + ' h ≈ ore ' + snap.orario_fine_previsto +
-            ' (rimangono ' + snap.rimanente_mc + ' mc su fine ciclo ' + snap.fine_ciclo_mc + ' mc, portata ' + snap.portata_mc_h + ' mc/h)'
+        rimanente_mc: Math.round(rimanente * 10) / 10,
+        fine_ciclo_mc: fine,
+        produzione_mc: prod,
+        portata_usata: Number.isFinite(portata) ? portata : null,
+        ore: etaHours != null ? Math.round(etaHours * 100) / 100 : null,
+        orario_fine: etaClock,
+        portata_per_orario: portataPerOra != null ? Math.round(portataPerOra * 10) / 10 : null,
+        orario_target: targetClock,
+        messaggio: parts.join('. ') + '.'
     };
+};
+
+window.geminiCalcolaFiltraEta = function(opts) {
+    return window.geminiCalcolaFiltraScenario(opts || {});
 };
 
 /** Velocità mm/ora da archivi reali (non riassunto). */
@@ -55020,28 +55117,32 @@ window.applyGeminiCalcolaSerbatoio = function(pairs) {
 
 window.applyGeminiCalcolaFiltra = function(pairs) {
     pairs = pairs || {};
-    if (pairs.portata != null && String(pairs.portata).trim() !== '') {
-        window.applyGeminiCfilField({ campo: 'portata', valore: pairs.portata });
+    var applica = /^(1|si|sì|true|salva|applica)$/i.test(String(pairs.applica || pairs.salva || ''));
+    if (applica) {
+        if (pairs.portata != null && String(pairs.portata).trim() !== '') {
+            window.applyGeminiCfilField({ campo: 'portata', valore: pairs.portata });
+        }
+        if (pairs.produzione != null && String(pairs.produzione).trim() !== '') {
+            window.applyGeminiCfilField({ campo: 'produzione', valore: pairs.produzione });
+        }
+        if (pairs.fine_ciclo != null && String(pairs.fine_ciclo).trim() !== '') {
+            window.applyGeminiCfilField({ campo: 'fine_ciclo', valore: pairs.fine_ciclo });
+        }
     }
-    if (pairs.produzione != null && String(pairs.produzione).trim() !== '') {
-        window.applyGeminiCfilField({ campo: 'produzione', valore: pairs.produzione });
-    }
-    if (pairs.fine_ciclo != null && String(pairs.fine_ciclo).trim() !== '') {
-        window.applyGeminiCfilField({ campo: 'fine_ciclo', valore: pairs.fine_ciclo });
-    }
-    var res = typeof window.geminiCalcolaFiltraEta === 'function'
-        ? window.geminiCalcolaFiltraEta() : null;
+    var res = typeof window.geminiCalcolaFiltraScenario === 'function'
+        ? window.geminiCalcolaFiltraScenario(pairs)
+        : (typeof window.geminiCalcolaFiltraEta === 'function' ? window.geminiCalcolaFiltraEta(pairs) : null);
     if (!res) return null;
     if (!res.ok) {
         return {
             kind: 'calcolo-filtra',
             label: 'FILTRA',
-            value: res.messaggio || 'Dati incompleti (serve portata mc/h)'
+            value: res.messaggio || 'Dati incompleti'
         };
     }
     return {
         kind: 'calcolo-filtra',
-        label: 'FILTRA fine ciclo',
+        label: 'FILTRA',
         value: res.messaggio
     };
 };
@@ -55287,11 +55388,16 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
         "CALCOLI: usa SEMPRE le formule in formuleOperative e i coefficienti in calcoliTonnellate/databaseSerbatoi. " +
         "t = (mm/1000)*coeff; mm = (t/coeff)*1000. Per scenari 'aggiungo X tonnellate' emetti " +
         "[CALCOLA_SERBATOIO: serbatoio=S817; livello_mm=2000; tonnellate_aggiunte=200] (livello_mm opzionale se già in scheda). " +
-        "FILTRA: leggi conteggioFiltra. fine_ciclo tipico 1500 mc (impostazioni/conteggio). " +
-        "rimanente = fine_ciclo - produzione_attuale; ore = rimanente / portata_mc_h. " +
-        "Se portata manca, CHIEDI all'utente la portata in mc/h OPPURE proponi di inserirla con " +
-        "[IMPOSTA_CFIL: campo=portata; valore=60] e poi [CALCOLA_FILTRA:]. " +
-        "Per 'quando finisce la filtra' usa sempre [CALCOLA_FILTRA:]. " +
+        "FILTRA: fine_ciclo = quello in conteggioFiltra (es. 1500), salvo se l'utente ne dice un altro. " +
+        "produzione_attuale = quella in scheda (0 se vuota). " +
+        "Se l'utente DICE una portata (es. 60) usala SUBITO nel tag anche se NON è scritta in app: " +
+        "[CALCOLA_FILTRA: portata=60]. Non dire che manca se te l'ha già detta. " +
+        "Se dice un altro fine ciclo: [CALCOLA_FILTRA: portata=60; fine_ciclo=1800]. " +
+        "Se chiede A CHE ORA FINISCE: [CALCOLA_FILTRA: portata=60]. " +
+        "Se chiede A QUANTO METTERE LA PORTATA per finire a un'ora: [CALCOLA_FILTRA: orario_fine=18:00] " +
+        "(e aggiungi portata= se l'ha detta, così confronti). " +
+        "NON scrivere in scheda se sta solo chiedendo un calcolo. IMPOSTA_CFIL solo se chiede di salvarla. " +
+        "rimanente = fine_ciclo - produzione; ore = rimanente/portata; portata_target = rimanente/ore_fino_orario. " +
         "Quando l'utente chiede di IMPOSTARE qualcosa nell'interfaccia, DEVI eseguire con i TAG (anche più insieme). " +
         "L'app applica SOLO i tag: senza tag non cambia nulla. Se l'app conferma con ✓ la modifica/calcolo è reale. " +
         "\nTAG DISPONIBILI:\n" +
@@ -55305,12 +55411,14 @@ window.callGeminiAPI = async function(promptText, isChat = false, imageData = nu
         "(anche blowdown 105A, caldaia A/D, FILTRA, pozzo 2…).\n" +
         "8) Conteggo FILTRA: [IMPOSTA_CFIL: campo=portata; valore=60] oppure campo=produzione|fine_ciclo.\n" +
         "9) Calcolo serbatoio: [CALCOLA_SERBATOIO: serbatoio=S817; livello_mm=2000; tonnellate_aggiunte=200].\n" +
-        "10) Calcolo fine FILTRA: [CALCOLA_FILTRA:] oppure [CALCOLA_FILTRA: portata=60].\n" +
+        "10) Calcolo FILTRA (senza obbligo di scrivere in scheda): [CALCOLA_FILTRA: portata=60] " +
+        "oppure [CALCOLA_FILTRA: orario_fine=18:00] oppure [CALCOLA_FILTRA: portata=60; fine_ciclo=1800].\n" +
         "11) Popup: [APRI_POPUP: tipo=osmosi|sed|portata|analisi|stato|conducibilita].\n" +
         "12) Note report: [SCRIVI_NOTE: testo].\n" +
         "Esempi: 'S817 a 2000 mm + 200 t' → [CALCOLA_SERBATOIO: serbatoio=S817; livello_mm=2000; tonnellate_aggiunte=200]; " +
-        "'quando finisce la filtra' → [CALCOLA_FILTRA:]; " +
-        "'portata filtra 60' → [IMPOSTA_CFIL: campo=portata; valore=60]. " +
+        "'filtra a 60 quando finisce' → [CALCOLA_FILTRA: portata=60]; " +
+        "'a quanto la metto per finire alle 18' → [CALCOLA_FILTRA: orario_fine=18:00]; " +
+        "'fine ciclo 1800 portata 50 quando finisce' → [CALCOLA_FILTRA: portata=50; fine_ciclo=1800]. " +
         "Rispondi in italiano, breve e operativo, citando i numeri del calcolo. MEMORIA: " + memoriaAI;
 
     let datiJson = window.trimGeminiContextJson(datiImpianto, imageData ? 14000 : (isChat ? 28000 : 32000));

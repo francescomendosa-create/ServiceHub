@@ -958,21 +958,39 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v469';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v470';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
-        window.AI_QUICK_CHAT_LISTENING = 'Ascolto… il testo compare qui';
+        window.AI_QUICK_CHAT_LISTENING = 'Ascolto… tocca STOP a fine frase';
         window.ensureAiQuickChatPlaceholder = function() {
             var ai = document.getElementById('ai-chat-input');
             if (ai) {
-                var listening = (window.__aiSpeech && window.__aiSpeech.wantListen) ||
+                var listening = (window.__aiGeminiMic && window.__aiGeminiMic.on) ||
                     (window.__aiSpeechIOS && window.__aiSpeechIOS.listening) ||
-                    (window.__aiGeminiMic && window.__aiGeminiMic.on);
+                    (window.__aiSpeech && window.__aiSpeech.wantListen);
                 ai.placeholder = listening
                     ? window.AI_QUICK_CHAT_LISTENING
                     : window.AI_QUICK_CHAT_PLACEHOLDER;
             }
             var conv = document.getElementById('conv-chat-input');
             if (conv) conv.placeholder = 'Scrivi qui e invia…';
+        };
+        window.__aiSetDictationHint = function(msg) {
+            var panel = document.getElementById('ai-quick-chat-panel');
+            var status = document.getElementById('ai-quick-chat-status');
+            if (!status) return;
+            if (!msg) {
+                if (status.dataset.dictationHint === '1') {
+                    status.textContent = '';
+                    status.style.display = 'none';
+                    status.dataset.dictationHint = '';
+                    if (panel && !status.textContent) panel.style.display = 'none';
+                }
+                return;
+            }
+            status.dataset.dictationHint = '1';
+            status.textContent = msg;
+            status.style.display = 'block';
+            if (panel) panel.style.display = 'block';
         };
         window.__aiGeminiMic = { on: false, rec: null, stream: null, chunks: [] };
         window.__aiSpeechIOS = { rec: null, listening: false, prefix: '', micStream: null };
@@ -1059,6 +1077,10 @@ window.colorPreviewNumber = function(tankName, value) {
             if (typeof window.runGeminiWithKeyRotation !== 'function') {
                 throw new Error('Gemini non pronto. Inserisci chiave in Impostazioni → Implementa IA.');
             }
+            if (typeof window.getGeminiApiKeysList === 'function' && !window.getGeminiApiKeysList().length) {
+                throw new Error('Nessuna chiave Gemini. Aprila in Impostazioni → Implementa IA.');
+            }
+            window.__aiSetDictationHint('Trascrizione in corso…');
             var b64 = await new Promise(function(resolve, reject) {
                 var reader = new FileReader();
                 reader.onload = function() {
@@ -1068,64 +1090,114 @@ window.colorPreviewNumber = function(tankName, value) {
                 reader.onerror = reject;
                 reader.readAsDataURL(blob);
             });
-            var mime = blob.type || 'audio/mp4';
+            var mime = blob.type || 'audio/webm';
+            if (mime.indexOf(';') >= 0) mime = mime.split(';')[0].trim();
             var parts = [
                 { inline_data: { mime_type: mime, data: b64 } },
-                { text: 'Trascrivi in italiano SOLO le parole parlate. Solo testo, niente commenti.' }
+                { text: 'Trascrivi in italiano SOLO le parole parlate dall\'utente. Rispondi con il solo testo trascritto, senza virgolette, senza markdown, senza commenti.' }
             ];
             var out = await window.runGeminiWithKeyRotation(parts, {
                 models: ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash-lite'],
-                timeoutMs: 50000,
+                timeoutMs: 55000,
                 generationConfig: { temperature: 0, maxOutputTokens: 1024 }
             });
             var text = String(out && out.text ? out.text : '').trim();
-            if (!text) throw new Error('Nessun testo riconosciuto.');
+            text = text.replace(/^["'«]+|["»']+$/g, '').replace(/^```[\s\S]*?\n|```$/g, '').trim();
+            if (!text) throw new Error('Nessun testo riconosciuto. Riprova parlando più vicino al microfono.');
             var inp = window.__aiQuickChatInputEl && window.__aiQuickChatInputEl() || inputField;
             var prefix = String(inp.value || '').replace(/\s+$/, '');
+            /* Se in ascolto avevamo lasciato un marker, non tenerlo */
+            if (/^●?\s*Ascolto/i.test(prefix)) prefix = '';
             inp.value = prefix ? (prefix + ' ' + text) : text;
             try { inp.dispatchEvent(new Event('input', { bubbles: true })); } catch (eI) {}
             try { inp.focus(); } catch (eF) {}
             if (typeof window.syncAiChatClearBtn === 'function') window.syncAiChatClearBtn();
+            window.__aiSetDictationHint('');
+            if (typeof window.ensureAiQuickChatPlaceholder === 'function') window.ensureAiQuickChatPlaceholder();
             return text;
         };
         window.__aiStartRecorderOnStream = function(inputField, stream) {
             var gm = window.__aiGeminiMic;
             var st = window.__aiSpeechIOS;
             if (!stream || !inputField) return;
+            if (!window.MediaRecorder) {
+                stream.getTracks().forEach(function(t) { try { t.stop(); } catch (e0) {} });
+                alert('Registrazione audio non supportata in questo browser. Usa Chrome o Edge.');
+                window.__aiMicUiIdle();
+                return;
+            }
             gm.on = true;
             gm.stream = stream;
             st.micStream = stream;
+            st.listening = true;
             gm.chunks = [];
-            var mime = 'audio/mp4';
-            if (window.MediaRecorder) {
-                if (MediaRecorder.isTypeSupported('audio/mp4')) mime = 'audio/mp4';
-                else if (MediaRecorder.isTypeSupported('audio/aac')) mime = 'audio/aac';
-                else if (MediaRecorder.isTypeSupported('audio/webm')) mime = 'audio/webm';
+            var mime = '';
+            var candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/aac'];
+            for (var ci = 0; ci < candidates.length; ci++) {
+                try {
+                    if (MediaRecorder.isTypeSupported(candidates[ci])) {
+                        mime = candidates[ci];
+                        break;
+                    }
+                } catch (eC) {}
             }
             var recorder;
             try {
-                recorder = new MediaRecorder(stream, { mimeType: mime });
+                recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
             } catch (eM) {
-                recorder = new MediaRecorder(stream);
-                mime = recorder.mimeType || 'audio/mp4';
+                try {
+                    recorder = new MediaRecorder(stream);
+                } catch (eM2) {
+                    stream.getTracks().forEach(function(t) { try { t.stop(); } catch (e3) {} });
+                    gm.on = false;
+                    st.listening = false;
+                    window.__aiMicUiIdle();
+                    alert('Impossibile avviare il microfono.');
+                    return;
+                }
             }
+            mime = recorder.mimeType || mime || 'audio/webm';
             gm.rec = recorder;
-            recorder.ondataavailable = function(e) { if (e.data && e.data.size) gm.chunks.push(e.data); };
+            gm.mime = mime;
+            recorder.ondataavailable = function(e) {
+                if (e.data && e.data.size) gm.chunks.push(e.data);
+            };
+            recorder.onerror = function() {
+                window.__aiSetDictationHint('Errore registrazione microfono.');
+            };
             recorder.onstop = function() {
-                var blob = new Blob(gm.chunks, { type: mime });
+                var blobType = (gm.mime || mime || 'audio/webm').split(';')[0];
+                var blob = new Blob(gm.chunks, { type: blobType });
                 window.__aiReleaseIosMicStream();
                 gm.stream = null;
                 gm.rec = null;
                 gm.on = false;
                 st.listening = false;
                 window.__aiMicUiIdle();
-                if (!blob.size) return;
+                if (!blob.size) {
+                    window.__aiSetDictationHint('');
+                    alert('Nessun audio registrato. Tocca di nuovo il microfono e parla.');
+                    return;
+                }
                 var inp = window.__aiQuickChatInputEl() || inputField;
+                window.__aiSetDictationHint('Trascrizione in corso…');
                 window.__aiTranscribeGeminiAudio(blob, inp).catch(function(err) {
+                    window.__aiSetDictationHint('');
                     alert('Dettatura: ' + (err && err.message ? err.message : String(err)));
                 });
             };
-            recorder.start(300);
+            try {
+                recorder.start(250);
+            } catch (eStart) {
+                stream.getTracks().forEach(function(t) { try { t.stop(); } catch (e4) {} });
+                gm.on = false;
+                st.listening = false;
+                window.__aiMicUiIdle();
+                alert('Microfono: avvio registrazione fallito.');
+                return;
+            }
+            window.__aiSetDictationHint('Ascolto… parla, poi tocca STOP (o ✓) per scrivere nella chat');
+            if (typeof window.ensureAiQuickChatPlaceholder === 'function') window.ensureAiQuickChatPlaceholder();
         };
         window.__aiGeminiMicTap = function(inputField) {
             var gm = window.__aiGeminiMic;
@@ -1136,14 +1208,25 @@ window.colorPreviewNumber = function(tankName, value) {
                 return false;
             }
             if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                alert('Microfono non disponibile. Usa HTTPS e consenti il microfono.');
+                alert('Microfono non disponibile. Usa HTTPS (GitHub Pages) e consenti il microfono.');
+                return false;
+            }
+            if (typeof window.getGeminiApiKeysList === 'function' && !window.getGeminiApiKeysList().length) {
+                alert('Per la dettatura serve una chiave Gemini (Impostazioni → Implementa IA).');
                 return false;
             }
             window.__aiMicUiRec();
             gm.on = true;
             st.listening = true;
-            navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
-                if (!st.listening) {
+            window.__aiSetDictationHint('Richiesta accesso microfono…');
+            navigator.mediaDevices.getUserMedia({
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    channelCount: 1
+                }
+            }).then(function(stream) {
+                if (!st.listening && !gm.on) {
                     stream.getTracks().forEach(function(t) { try { t.stop(); } catch (e1) {} });
                     return;
                 }
@@ -1152,9 +1235,59 @@ window.colorPreviewNumber = function(tankName, value) {
                 gm.on = false;
                 st.listening = false;
                 window.__aiMicUiIdle();
-                alert('Microfono: ' + (err && err.message ? err.message : 'consenti microfono in Impostazioni iPhone'));
+                window.__aiSetDictationHint('');
+                var msg = err && err.message ? err.message : String(err);
+                if (err && (err.name === 'NotAllowedError' || /denied|permission/i.test(msg))) {
+                    alert('Microfono bloccato. Consenti il microfono per questo sito (icona lucchetto → Microfono).');
+                } else {
+                    alert('Microfono: ' + msg);
+                }
             });
             return false;
+        };
+        /** Dettatura unica: registra audio → Gemini scrive nella riga chat → poi Invio. */
+        window.__aiDictationTap = function(ev) {
+            window.__unlockServiceHubUi();
+            try {
+                if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+            } catch (eP) {}
+            var now = Date.now();
+            if (window.__aiMicTapAt && now - window.__aiMicTapAt < 450) return false;
+            window.__aiMicTapAt = now;
+
+            var chat = document.getElementById('ai-learning-section');
+            if (chat && chat.style.display !== 'block' && !chat.classList.contains('ai-chat-visible')) {
+                if (typeof window.__aiOpenQuickChat === 'function') window.__aiOpenQuickChat();
+            }
+            var inputField = window.__aiQuickChatInputEl && window.__aiQuickChatInputEl();
+            if (!inputField) {
+                alert('Tocca il robot in basso per aprire la chat.');
+                return false;
+            }
+
+            var gm = window.__aiGeminiMic;
+            if (gm && gm.on && gm.rec && gm.rec.state !== 'inactive') {
+                try { gm.rec.stop(); } catch (eS) {}
+                return false;
+            }
+            if (window.__aiSpeech && window.__aiSpeech.wantListen && typeof window.__aiQuickSpeechStop === 'function') {
+                window.__aiQuickSpeechStop();
+            }
+            if (window.__aiSpeechIOS && window.__aiSpeechIOS.listening &&
+                window.__aiSpeechIOS.rec !== gm.rec && typeof window.__aiIosMicStopAll === 'function') {
+                /* se era speech-only, stop; altrimenti Gemini gestisce */
+            }
+
+            window.__aiQuickSpeechStop = function() {
+                var g = window.__aiGeminiMic;
+                if (g && g.on && g.rec && g.rec.state !== 'inactive') {
+                    try { g.rec.stop(); } catch (e0) {}
+                    return;
+                }
+                if (typeof window.__aiIosMicStopAll === 'function') window.__aiIosMicStopAll();
+            };
+
+            return window.__aiGeminiMicTap(inputField);
         };
         window.__ensureIosSpeechRec = function(inputField) {
             var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1560,20 +1693,18 @@ window.colorPreviewNumber = function(tankName, value) {
             return false;
         };
         window.__aiMicTapRouter = function(ev) {
-            if (/iPhone|iPod/i.test(navigator.userAgent || '')) {
-                return window.__aiMicTapCore(ev);
-            }
-            return window.__aiMicClick(ev);
+            return window.__aiDictationTap(ev);
         };
         window.aiMicTapFromUi = window.__aiMicTapRouter;
         window.wireAiMicButton = function() {
-            /* onclick inline su #ai-mic-btn — un solo handler per PC/Android/iPhone */
+            var mic = document.getElementById('ai-mic-btn');
+            if (mic) mic.onclick = function(ev) { return window.__aiDictationTap(ev); };
         };
         window.__aiIsListeningNow = function() {
+            if (window.__aiGeminiMic && window.__aiGeminiMic.on) return true;
             var S = window.__aiSpeech;
             if (S && (S.wantListen || S.listening)) return true;
             if (window.__aiSpeechIOS && window.__aiSpeechIOS.listening) return true;
-            if (window.__aiGeminiMic && window.__aiGeminiMic.on) return true;
             return false;
         };
         window.aiSendTap = function (ev) {
@@ -1581,15 +1712,15 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (ev) { ev.preventDefault(); ev.stopPropagation(); }
             } catch (e0) {}
             if (typeof window.__clearPostLongPressShield === 'function') window.__clearPostLongPressShield();
-            /* In ascolto: ferma il mic e lascia il testo nella riga — non inviare ancora */
+            /* In ascolto: ferma registrazione → Gemini scrive nella riga; non inviare ancora */
             if (typeof window.__aiIsListeningNow === 'function' && window.__aiIsListeningNow()) {
-                if (typeof window.__aiQuickSpeechStop === 'function') window.__aiQuickSpeechStop();
-                if (typeof window.__aiIosMicStopAll === 'function') window.__aiIosMicStopAll();
-                if (typeof window.__aiMicUiIdle === 'function') window.__aiMicUiIdle();
-                var inpKeep = window.__aiQuickChatInputEl && window.__aiQuickChatInputEl();
-                if (inpKeep) {
-                    try { inpKeep.focus(); } catch (eF) {}
-                    if (typeof window.syncAiChatClearBtn === 'function') window.syncAiChatClearBtn();
+                var g = window.__aiGeminiMic;
+                if (g && g.on && g.rec && g.rec.state !== 'inactive') {
+                    try { g.rec.stop(); } catch (e1) {}
+                } else if (typeof window.__aiQuickSpeechStop === 'function') {
+                    window.__aiQuickSpeechStop();
+                } else if (typeof window.__aiIosMicStopAll === 'function') {
+                    window.__aiIosMicStopAll();
                 }
                 return false;
             }
@@ -45604,14 +45735,14 @@ window.convertToHtml = async () => {
 
             </div>
             <div id="ai-settings-dock" onclick="event.stopPropagation()">
-                <div id="ai-learning-section" aria-hidden="true" data-ai-speech-ver="193">
+                <div id="ai-learning-section" aria-hidden="true" data-ai-speech-ver="194">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                         <button type="button" onclick="exportAIMemory()" style="background:#1e293b;border:1px solid #334155;color:#60a5fa;width:32px;height:32px;cursor:pointer;border-radius:6px;font-size:10px;display:flex;align-items:center;justify-content:center;touch-action:manipulation;" title="Esporta memoria AI">↓</button>
                         <button type="button" id="open-conversation-btn" onclick="return window.openAiConversationFromSettings(event);" style="background:transparent;border:none;color:#60a5fa;cursor:pointer;font-size:18px;padding:8px;border-radius:5px;touch-action:manipulation;" title="Apri conversazione completa"><i class="fas fa-comments"></i></button>
                         <button type="button" onclick="importAIMemory()" style="background:#1e293b;border:1px solid #334155;color:#22c55e;width:32px;height:32px;cursor:pointer;border-radius:6px;font-size:10px;display:flex;align-items:center;justify-content:center;touch-action:manipulation;" title="Importa memoria AI">↑</button>
                     </div>
                     <div style="display:flex;gap:10px;margin-bottom:10px;align-items:center;">
-                        <button type="button" id="ai-mic-btn" onclick="return window.__aiMicTapRouter(event);" style="background:#ef4444;border:none;color:white;border-radius:10px;width:56px;height:52px;min-width:56px;min-height:52px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;touch-action:manipulation;-webkit-tap-highlight-color:transparent;pointer-events:auto;position:relative;z-index:210;-webkit-user-select:none;user-select:none;">
+                        <button type="button" id="ai-mic-btn" onclick="return window.__aiDictationTap(event);" style="background:#ef4444;border:none;color:white;border-radius:10px;width:56px;height:52px;min-width:56px;min-height:52px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;touch-action:manipulation;-webkit-tap-highlight-color:transparent;pointer-events:auto;position:relative;z-index:210;-webkit-user-select:none;user-select:none;">
                             <i class="fas fa-microphone" id="mic-icon" style="pointer-events:none;"></i>
                         </button>
                         <input type="text" id="ai-chat-input" autocomplete="off" autocorrect="off" spellcheck="false" data-device-local="1" placeholder="Parla o scrivi…" style="flex:1;min-width:0;padding:12px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:white;font-size:16px;">
@@ -54327,7 +54458,7 @@ function fixAIPanel() {
     if (window.__aiSpeechWired === window.SERVICEHUB_BUILD) return;
 
     var chatSection = document.getElementById('ai-learning-section');
-    if (chatSection && chatSection.dataset) chatSection.dataset.aiSpeechVer = '193';
+    if (chatSection && chatSection.dataset) chatSection.dataset.aiSpeechVer = '194';
 
     if (typeof window.ensureAiQuickChatPlaceholder === 'function') window.ensureAiQuickChatPlaceholder();
 
@@ -54340,10 +54471,7 @@ function fixAIPanel() {
     var quickStatus = document.getElementById('ai-quick-chat-status');
     if (!inputField || !micBtn || !sendBtn || !document.getElementById('ai-settings-dock')) return;
 
-    micBtn.onclick = function(ev) { return window.__aiMicTapRouter(ev); };
-    if (!/iPhone|iPod/i.test(navigator.userAgent || '')) {
-        if (typeof window.__aiSpeechBoot === 'function') window.__aiSpeechBoot();
-    }
+    micBtn.onclick = function(ev) { return window.__aiDictationTap(ev); };
 
     inputField.addEventListener('keydown', function(e) {
         if (e.key === 'Enter') { e.preventDefault(); window.aiSendTap(e); }

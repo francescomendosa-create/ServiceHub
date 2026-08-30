@@ -413,18 +413,24 @@
     }
     if (!box) return;
     var msgs = state.comunicaMessages || [];
-    if (!msgs.length) {
-      box.innerHTML = '<p class="sw-comunica-empty">Tocca <b>Dettare</b>, usa il microfono della tastiera Watch, poi Invio.</p>';
+    var lastAi = null;
+    for (var i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i] && msgs[i].role === 'assistant' && String(msgs[i].text || '').trim()) {
+        lastAi = msgs[i];
+        break;
+      }
+    }
+    if (!lastAi) {
+      if (state.comunicaStatus === 'pending' || state.comunicaStatus === 'processing') {
+        box.innerHTML = '<p class="sw-comunica-empty">In attesa della risposta…</p>';
+      } else {
+        box.innerHTML = '<p class="sw-comunica-empty">Tocca <b>Dettare</b>, usa il microfono della tastiera Watch, poi Invio.</p>';
+      }
       return;
     }
-    box.innerHTML = msgs.map(function (m) {
-      var role = m && m.role === 'assistant' ? 'ai' : 'tu';
-      var label = role === 'ai' ? 'Gemini' : 'Tu';
-      return '<div class="sw-comunica-bubble sw-comunica-bubble--' + role + '">' +
-        '<span class="sw-comunica-role">' + label + '</span>' +
-        '<div class="sw-comunica-text">' + escapeHtml(m.text || '') + '</div></div>';
-    }).join('');
-    try { box.scrollTop = box.scrollHeight; } catch (_) {}
+    box.innerHTML = '<span class="sw-comunica-last-label">Ultima risposta</span>' +
+      '<p class="sw-comunica-last-text">' + escapeHtml(lastAi.text) + '</p>';
+    try { box.scrollTop = 0; } catch (_) {}
   }
 
   function openComunicaDictate() {

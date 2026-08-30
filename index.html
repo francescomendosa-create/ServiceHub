@@ -47969,7 +47969,23 @@ window.isDcsOverviewStrumentiText = function(text) {
         ( /STREAM\s*E\s*C-?TIP/.test(t) && /ACQUA-?POTABILIZZ/.test(t) );
 };
 
+/** Schermo HOLD-UP (sinottico serbatoi TK8092 / S-817 / LI_817HU), distinto da Overview Strumenti. */
+window.isDcsHoldUpScreen = function(raw, json) {
+    if (json && (json.tipo === 'dcs-hold-up' || json.tipo === 'hold-up' || json.tipo === 'dcs-holdup')) {
+        return true;
+    }
+    const t = String(raw || '').toUpperCase();
+    if (!t) return false;
+    if (/HOLD[\s\-_]*UP/.test(t)) return true;
+    if (/LI[_\s\-]?817\s*HU/.test(t) && /LI[_\s\-]?818\s*HU/.test(t)) return true;
+    if (/TOT\.?\s*ZONA\s*(OVEST|NORD|SUD)/.test(t) && /S[\s\-]?817/.test(t) && /S[\s\-]?818/.test(t)) {
+        return true;
+    }
+    return false;
+};
+
 window.isDcsOverviewScreen = function(raw, json) {
+    if (window.isDcsHoldUpScreen(raw, json)) return false;
     if (json && (json.tipo === 'dcs-overview-strumenti' || json.tipo === 'overview-strumenti')) return true;
     return window.isDcsOverviewStrumentiText(raw);
 };
@@ -47977,6 +47993,8 @@ window.isDcsOverviewScreen = function(raw, json) {
 window.resolveFieldIdFromInstrumentTag = function(tagText, siglaText) {
     const tag = String(tagText || '').toUpperCase().replace(/\s+/g, '');
     const sig = window.normalizeDcsKey(siglaText);
+    if (/LI_?817HU|LI817HU/.test(tag)) return 'inp-s817';
+    if (/LI_?818HU|LI818HU/.test(tag)) return 'inp-s818';
     if (/9100.?LI.?818|9100LI818/.test(tag)) return 'inp-s818';
     if (/9106.?LI.?103|9106LI103/.test(tag)) return 'inp-s148-ab';
     if (/9100.?LI.?846|9100LI846/.test(tag)) return 'inp-s846';
@@ -48048,8 +48066,54 @@ window.extractInstrumentTagLevel = function(raw, json, tagPattern) {
     return null;
 };
 
-/** Regole Overview Strumenti: S-121 mai; S-817 ignorato; 9100-LI-818 → S-818. */
+/** HOLD-UP: S-817 da LI_817HU (non confondere con Overview Strumenti). */
+window.applyHoldUpScreenRules = function(readings, raw, json) {
+    let out = (readings || []).slice().filter(function(r) {
+        return !!(r && r.id && r.id !== 'inp-s121');
+    });
+
+    function upsert(id, value, source) {
+        if (!id || !window.isValidOcrValue(value)) return;
+        out = out.filter(function(r) { return r.id !== id; });
+        out.push({
+            id: id,
+            value: value,
+            confidence: 'alta',
+            source: source,
+            method: 'holdup-tag'
+        });
+    }
+
+    const li817 = window.extractInstrumentTagLevel(raw, json, 'LI_817HU') ||
+        window.extractInstrumentTagLevel(raw, json, 'LI817HU') ||
+        window.extractInstrumentTagLevel(raw, json, 'LI-817HU');
+    if (li817) upsert('inp-s817', li817, 'S-817 · LI_817HU');
+
+    const li818 = window.extractInstrumentTagLevel(raw, json, 'LI_818HU') ||
+        window.extractInstrumentTagLevel(raw, json, 'LI818HU') ||
+        window.extractInstrumentTagLevel(raw, json, 'LI-818HU');
+    if (li818) upsert('inp-s818', li818, 'S-818 · LI_818HU');
+
+    const li813 = window.extractInstrumentTagLevel(raw, json, 'LI_813HU') ||
+        window.extractInstrumentTagLevel(raw, json, 'LI813HU');
+    if (li813) upsert('inp-s813', li813, 'S-813 · LI_813HU');
+
+    const li819 = window.extractInstrumentTagLevel(raw, json, 'LI_819HU') ||
+        window.extractInstrumentTagLevel(raw, json, 'LI819HU');
+    if (li819) upsert('inp-s819', li819, 'S-819 · LI_819HU');
+
+    const li864 = window.extractInstrumentTagLevel(raw, json, 'LI_864HU') ||
+        window.extractInstrumentTagLevel(raw, json, 'LI864HU');
+    if (li864) upsert('inp-s864', li864, 'S-864 · LI_864HU');
+
+    return out;
+};
+
+/** Regole Overview Strumenti: S-121 mai; S-817 ignorato; 9100-LI-818 → S-818. HOLD-UP: S-817 da LI_817HU. */
 window.applyOverviewStrumentiRules = function(readings, raw, json, isOverview) {
+    if (window.isDcsHoldUpScreen(raw, json)) {
+        return window.applyHoldUpScreenRules(readings, raw, json);
+    }
     if (!isOverview) return readings || [];
     let out = (readings || []).slice();
 
@@ -50241,13 +50305,19 @@ window.buildGeminiUnifiedCapturePrompt = function(fields) {
     return 'Sei un operatore che legge un QUADRO DCS / sinottico serbatoi da FOTO.\n\n' +
         'COMPITO: riconosci il tipo schermo e leggi sigle + valori. Rispondi SOLO JSON valido.\n\n' +
         'TIPO SCHERMO (campo tipo):\n' +
+        '- "dcs-hold-up" se scheda HOLD-UP / OVERVIEW W (serbatoi TK-8092, S-817, S-818, A-10605, tag LI_817HU…)\n' +
         '- "dcs-overview-strumenti" se titolo OVERVIEW STRUMENTI (4 quadranti: VASCHE API, ACQUA-POTABILIZZ, STREAM, POZZI TORCIA)\n' +
         '- "dcs-tabella" se tabella SERBATOIO | DESCRIZIONE | LIVELLO (Stoccaggio)\n' +
         '- "dcs-vasche-api" se GESTIONE VASCHE API\n\n' +
+        'HOLD-UP — REGOLE OBBLIGATORIE:\n' +
+        '1) S-817 è un serbatoio REALE: leggi il livello dal tag LI_817HU (mm) → campo_id inp-s817. NON ignorarlo.\n' +
+        '2) S-818 → LI_818HU → inp-s818; S-813 → LI_813HU; S-819 → LI_819HU; S-864 → LI_864HU.\n' +
+        '3) Usa il valore del box livello principale (es. LI_817HU), NON i box *_B (es. LI_817HU_B).\n' +
+        '4) Leggi anche TK-8092, TK-8093, TK8066, TK8063, A-10605 se visibili.\n\n' +
         'OVERVIEW STRUMENTI — REGOLE OBBLIGATORIE:\n' +
         '1) IGNORA COMPLETAMENTE "Livello S-121" (sezione ACQUA-POTABILIZZ, spesso 0.0 mm con icona fault): non inserire in JSON, mai campo_id inp-s121.\n' +
         '   Il tag 90-LT-121 compare anche in POZZI TORCIA come "Press. Piloti" (pressione kg/cm2): non è il livello S-121, non usare inp-s121.\n' +
-        '2) Riga S-817 con valore accanto al tag 9100-LI-818: il livello mm va su S-818 (inp-s818), NON su S-817 (ignora S-817 su Overview).\n' +
+        '2) Riga S-817 con valore accanto al tag 9100-LI-818: il livello mm va su S-818 (inp-s818), NON su S-817 (ignora S-817 solo su Overview Strumenti).\n' +
         '3) Leggi: S-148→inp-s148-ab, S-846→inp-s846, S-854→inp-s854, A-10605→inp-a10605, LURGI→inp-lurgi.\n' +
         '4) Pozzi (POZZI TORCIA): stati_pozzi con pozzo 2-5 e stato ON/OFF → MARCIA o FERMO, campo_id stat-well-N.\n\n' +
         'STOCCAGGIO / TABELLA:\n' + dcsLines + '\n\n' +
@@ -50255,6 +50325,11 @@ window.buildGeminiUnifiedCapturePrompt = function(fields) {
         'Per ogni riga: serbatoio/sigla, tag_strumento se visibile, livello (mm), campo_id.\n' +
         'FORMATO NUMERI: interi senza decimali (4590, 6992). Mai 4590.0 né 4590,0. Decimali solo se reali in foto (es. 506.85), senza zeri finali.\n' +
         'applica_ora = tutte le righe da applicare ora.\n\n' +
+        'JSON esempio HOLD-UP:\n' +
+        '{"tipo":"dcs-hold-up","applica_ora":[' +
+        '{"serbatoio":"S-817","tag_strumento":"LI_817HU","livello":"1267","campo_id":"inp-s817"},' +
+        '{"serbatoio":"S-818","tag_strumento":"LI_818HU","livello":"5693","campo_id":"inp-s818"}' +
+        ']}\n\n' +
         'JSON esempio Overview:\n' +
         '{"tipo":"dcs-overview-strumenti","applica_ora":[' +
         '{"serbatoio":"S-148","tag_strumento":"9106-LI-103","livello":"4590","campo_id":"inp-s148-ab"},' +
@@ -50384,13 +50459,14 @@ window.runGeminiPrimaryCapture = async function(imageData, fields) {
     }
     const readings = window.extractGeminiCaptureReadings(raw, fields);
     const json = window.parseSmartCaptureJson(raw);
-    const isOverview = window.isDcsOverviewScreen(raw, json);
+    const isHoldUp = window.isDcsHoldUpScreen(raw, json);
+    const isOverview = !isHoldUp && window.isDcsOverviewScreen(raw, json);
     const isConsumi = window.isDcsConsumiProduzioneScreen(raw, json);
-    const isDcs = !isOverview && !isConsumi && window.readingsIncludeDcsStoccaggio(readings);
+    const isDcs = !isOverview && !isHoldUp && !isConsumi && window.readingsIncludeDcsStoccaggio(readings);
     return {
         readings: readings,
         engine: 'gemini-primary',
-        profile: isOverview ? 'dcs-overview-strumenti' : (isConsumi ? 'dcs-consumi-produzione' : (isDcs ? 'dcs-acqua' : 'tank')),
+        profile: isHoldUp ? 'dcs-hold-up' : (isOverview ? 'dcs-overview-strumenti' : (isConsumi ? 'dcs-consumi-produzione' : (isDcs ? 'dcs-acqua' : 'tank'))),
         catalogSize: readings.length,
         rawTextPreview: String(raw).slice(0, 400),
         rawGemini: String(raw || ''),
@@ -52420,6 +52496,7 @@ window.showSmartCaptureConfirm = function(parsed) {
     const isDcsAcqua = parsed && (parsed.profile === 'dcs-acqua' || parsed.profile === 'dcs-stoccaggio-interno');
     const isConsumiProd = parsed && parsed.profile === 'dcs-consumi-produzione';
     const isOverview = parsed && parsed.profile === 'dcs-overview-strumenti';
+    const isHoldUp = parsed && parsed.profile === 'dcs-hold-up';
     const fieldMap = {};
     let fields;
     if (letturaMode && typeof window.buildLetturaCaptureFieldMap === 'function') {
@@ -52508,7 +52585,10 @@ window.showSmartCaptureConfirm = function(parsed) {
         hint.textContent = 'Report Consumi e Produzione · colonna IERI → rapportino notturno' +
             (parsed.engine ? ' · ' + parsed.engine : '');
     } else if (hint) {
-        hint.textContent = isOverview
+        hint.textContent = isHoldUp
+            ? ('HOLD-UP · S-817 da LI_817HU → S 817' +
+                (parsed.engine ? ' · ' + parsed.engine : ''))
+            : (isOverview
             ? ('Overview Strumenti · S-121 ignorato · 9100-LI-818 → S 818 · pozzi MARCIA/FERMO' +
                 (parsed.engine ? ' · ' + parsed.engine : ''))
             : (isDcsAcqua
@@ -52517,7 +52597,7 @@ window.showSmartCaptureConfirm = function(parsed) {
                 : 'Gemini DCS → Stoccaggio Notturno. TK 9000 / 9201 anche su Generale (Acqua).') +
                 (parsed.engine ? ' Motore: ' + parsed.engine + '.' : '') +
                 (parsed.catalogSize ? ' (' + parsed.catalogSize + ' letti.)' : ''))
-            : 'Ogni sigla letta dalla foto va nel campo corrispondente del rapportino (Ambiente 1 / 2 / Acqua)');
+            : 'Ogni sigla letta dalla foto va nel campo corrispondente del rapportino (Ambiente 1 / 2 / Acqua)'));
     }
 
     modal.classList.add('active');

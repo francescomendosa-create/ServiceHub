@@ -958,7 +958,8 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v475';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v476';
+        window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v17';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
         window.AI_QUICK_CHAT_IOS_KB = 'Parla o scrivi…';
@@ -1840,7 +1841,7 @@ window.colorPreviewNumber = function(tankName, value) {
             if (typeof window.fixAIPanel === 'function') window.fixAIPanel();
             return false;
         };
-        window.SERVICE_WATCH_BUILD = '2026.06.12-watch-numpad-only-v16';
+        window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v17';
         window.SERVICEHUB_PHONE_SECTIONS_KEY = 'servicehub_phone_sections_v1';
         window.SERVICEHUB_DEVICE_UI_STATE_KEY = 'servicehub_device_ui_state_v1';
         /** Origine separata per Service Remote — Chrome/Android consente una sola PWA per dominio github.io. */
@@ -4469,6 +4470,9 @@ window.colorPreviewNumber = function(tankName, value) {
                 })
                 .finally(function () {
                     __wirePlantSnapshotListener();
+                    if (typeof window.__wireWatchGeminiBridge === 'function') {
+                        window.__wireWatchGeminiBridge(db, appId, onSnapshot, doc, setDoc);
+                    }
                 });
 
             const settingsDoc = doc(db, 'artifacts', appId, 'sharedDial', 'settings');
@@ -45953,6 +45957,15 @@ window.convertToHtml = async () => {
                             <span class="sw-module-toggle-dot"></span>
                         </button>
                     </div>
+                    <div class="sw-module-row mt-4">
+                        <div>
+                            <p class="font-black uppercase text-sm tracking-tight">Comunica</p>
+                            <p class="text-[9px] font-bold text-slate-500 dark:text-slate-400 mt-1">Dettatura → chat Gemini sull'app · risposta sull'orologio</p>
+                        </div>
+                        <button type="button" id="sw-module-comunica-toggle" class="sw-module-toggle" onclick="window.toggleServiceWatchModule('comunica')" aria-pressed="false" aria-label="Abilita Comunica su Apple Watch">
+                            <span class="sw-module-toggle-dot"></span>
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -46808,17 +46821,20 @@ window.readServiceWatchConfigRaw = function () {
             if (p && p.modules) return p;
         }
     } catch (_) {}
-    return { modules: { chemicals: { enabled: false }, contatori: { enabled: false } } };
+    return { modules: { chemicals: { enabled: false }, contatori: { enabled: false }, comunica: { enabled: false } } };
 };
 
 window.loadServiceWatchConfig = function () {
     if (window.__serviceWatchConfig) return window.__serviceWatchConfig;
     window.__serviceWatchConfig = window.readServiceWatchConfigRaw();
     if (!window.__serviceWatchConfig.modules) {
-        window.__serviceWatchConfig.modules = { chemicals: { enabled: false }, contatori: { enabled: false } };
+        window.__serviceWatchConfig.modules = { chemicals: { enabled: false }, contatori: { enabled: false }, comunica: { enabled: false } };
     }
     if (!window.__serviceWatchConfig.modules.contatori) {
         window.__serviceWatchConfig.modules.contatori = { enabled: false };
+    }
+    if (!window.__serviceWatchConfig.modules.comunica) {
+        window.__serviceWatchConfig.modules.comunica = { enabled: false };
     }
     return window.__serviceWatchConfig;
 };
@@ -46921,6 +46937,12 @@ window.syncServiceWatchSettingsUI = function () {
     if (cntBtn) {
         cntBtn.classList.toggle('on', cntOn);
         cntBtn.setAttribute('aria-pressed', cntOn ? 'true' : 'false');
+    }
+    var comOn = !!(cfg.modules && cfg.modules.comunica && cfg.modules.comunica.enabled);
+    var comBtn = document.getElementById('sw-module-comunica-toggle');
+    if (comBtn) {
+        comBtn.classList.toggle('on', comOn);
+        comBtn.setAttribute('aria-pressed', comOn ? 'true' : 'false');
     }
 };
 
@@ -55534,6 +55556,117 @@ window.__aiSendQuickChat = async function() {
     if (typeof window.resetQuickChatSmall === 'function') window.resetQuickChatSmall(true);
     if (typeof window.showConversationModal === 'function') {
         await window.showConversationModal('');
+    }
+};
+
+/** Bridge Watch → Gemini: ascolta sharedDial/watchGemini e processa i comandi pending. */
+window.__wireWatchGeminiBridge = function(db, appId, onSnapshotFn, docFn, setDocFn) {
+    if (!db || !appId || typeof onSnapshotFn !== 'function' || typeof docFn !== 'function') return;
+    if (window.__shUnsubWatchGemini) {
+        try { window.__shUnsubWatchGemini(); } catch (_) {}
+        window.__shUnsubWatchGemini = null;
+    }
+    var watchDoc = docFn(db, 'artifacts', appId, 'sharedDial', 'watchGemini');
+    window.__watchGeminiDocRef = watchDoc;
+    window.__watchGeminiSetDoc = setDocFn;
+    window.__shUnsubWatchGemini = onSnapshotFn(watchDoc, function(snap) {
+        if (!snap || !snap.exists()) return;
+        var md = snap.metadata;
+        if (md && md.hasPendingWrites) return;
+        var data = snap.data() || {};
+        if (typeof window.__handleWatchGeminiSnapshot === 'function') {
+            void window.__handleWatchGeminiSnapshot(data);
+        }
+    }, function(err) {
+        console.warn('[ServiceHub] watchGemini:', err && err.message);
+    });
+};
+
+window.__watchGeminiAppendMessages = function(prev, role, text, id) {
+    var list = Array.isArray(prev) ? prev.slice() : [];
+    list.push({
+        id: id || (Date.now() + '-' + Math.random().toString(36).slice(2, 7)),
+        role: role,
+        text: String(text || '').trim(),
+        at: new Date().toISOString()
+    });
+    if (list.length > 24) list = list.slice(-24);
+    return list;
+};
+
+window.__handleWatchGeminiSnapshot = async function(data) {
+    if (!data || data.status !== 'pending') return;
+    var reqId = String(data.requestId || '');
+    var text = String(data.requestText || '').trim();
+    if (!reqId || !text) return;
+    if (window.__watchGeminiLastHandledId === reqId) return;
+    if (window.__watchGeminiBusy) return;
+    if (typeof window.getGeminiApiKeysList === 'function' && !window.getGeminiApiKeysList().length) {
+        return;
+    }
+    window.__watchGeminiBusy = true;
+    window.__watchGeminiLastHandledId = reqId;
+    var setDocFn = window.__watchGeminiSetDoc;
+    var docRef = window.__watchGeminiDocRef;
+    var messages = Array.isArray(data.messages) ? data.messages.slice() : [];
+    var alreadyUser = messages.some(function(m) {
+        return m && (m.id === reqId + '-u' || (m.role === 'user' && String(m.text || '').trim() === text));
+    });
+    if (!alreadyUser) {
+        messages = window.__watchGeminiAppendMessages(messages, 'user', text, reqId + '-u');
+    }
+
+    try {
+        if (setDocFn && docRef) {
+            await setDocFn(docRef, {
+                status: 'processing',
+                processingAt: new Date().toISOString(),
+                messages: messages
+            }, { merge: true });
+        }
+        if (typeof window.__aiOpenQuickChat === 'function') window.__aiOpenQuickChat();
+        var inp = document.getElementById('ai-chat-input');
+        if (inp) inp.value = text;
+        if (typeof window.syncAiChatClearBtn === 'function') window.syncAiChatClearBtn();
+
+        var res = await window.callGeminiAPIWithTimeout(text, true, null, 55000);
+        var reply = String(res == null ? '' : res).trim() || '(nessuna risposta)';
+        if (typeof window.appendAIChatExchange === 'function') {
+            await window.appendAIChatExchange('[Watch] ' + text, reply);
+        }
+        if (typeof window.updateGeminiContextBadgeUI === 'function') window.updateGeminiContextBadgeUI();
+        messages = window.__watchGeminiAppendMessages(messages, 'assistant', reply, reqId + '-a');
+        if (setDocFn && docRef) {
+            await setDocFn(docRef, {
+                status: 'done',
+                responseText: reply,
+                responseAt: new Date().toISOString(),
+                error: '',
+                messages: messages
+            }, { merge: true });
+        }
+        if (typeof window.resetQuickChatSmall === 'function') window.resetQuickChatSmall(true);
+    } catch (err) {
+        var errText = typeof window.formatGeminiError === 'function'
+            ? window.formatGeminiError(err && err.message)
+            : String(err && err.message ? err.message : err);
+        messages = window.__watchGeminiAppendMessages(messages, 'assistant', errText, reqId + '-e');
+        if (typeof window.appendAIChatExchange === 'function') {
+            try { await window.appendAIChatExchange('[Watch] ' + text, errText); } catch (_) {}
+        }
+        if (setDocFn && docRef) {
+            try {
+                await setDocFn(docRef, {
+                    status: 'error',
+                    responseText: errText,
+                    responseAt: new Date().toISOString(),
+                    error: errText,
+                    messages: messages
+                }, { merge: true });
+            } catch (_) {}
+        }
+    } finally {
+        window.__watchGeminiBusy = false;
     }
 };
 

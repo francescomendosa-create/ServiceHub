@@ -958,7 +958,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v487';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v490';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -12906,6 +12906,50 @@ window.updateStoricoButton = async function() {
             return s;
         };
 
+        /** ASSETTO report: una riga per osmosi, con "=" (es. "A = POZZI" / "B = DEMI"). */
+        window.formatOsmosiAssettoDestLines = function (raw) {
+            var s = String(raw == null ? '' : raw).trim();
+            if (!s) return [];
+            if (typeof window.formatOsmosiReportPreviewValue === 'function') {
+                s = window.formatOsmosiReportPreviewValue(s);
+            }
+            s = String(s || '').replace(/<br\s*\/?>/gi, ', ').replace(/\s+/g, ' ').trim().toUpperCase();
+            if (!s) return [];
+            if (s === 'DEMI' || s === 'POZZI' || /^TUTTE\s+A\s+(DEMI|POZZI)$/.test(s)) return [s];
+            var lines = [];
+            var pushUnitsDest = function (unitsPart, dest) {
+                dest = String(dest || '').toUpperCase();
+                String(unitsPart || '').split(/[\/,]+/).forEach(function (u) {
+                    u = String(u || '').replace(/^=/, '').trim().toUpperCase();
+                    u = u.replace(/\s+/g, '');
+                    if (!u || u === 'TUTTE') return;
+                    lines.push(u + ' = ' + dest);
+                });
+            };
+            var segs = s.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+            segs.forEach(function (seg) {
+                var m = seg.match(/^(.+?)\s*=\s*(DEMI|POZZI)$/) ||
+                    seg.match(/^(.+?)\s+(DEMI|POZZI)$/);
+                if (m) pushUnitsDest(m[1], m[2]);
+                else lines.push(seg);
+            });
+            if (lines.length <= 1) {
+                var mixed = s.match(/^(.+?)\s+(DEMI|POZZI)\s+(.+?)\s+(DEMI|POZZI)$/);
+                if (mixed) {
+                    lines = [];
+                    pushUnitsDest(mixed[1], mixed[2]);
+                    pushUnitsDest(mixed[3], mixed[4]);
+                }
+            }
+            lines.sort(function (a, b) {
+                var ua = (a.match(/^([A-Z0-9]+)/) || [])[1] || '';
+                var ub = (b.match(/^([A-Z0-9]+)/) || [])[1] || '';
+                if (ua === ub) return a < b ? -1 : a > b ? 1 : 0;
+                return ua < ub ? -1 : 1;
+            });
+            return lines.length ? lines : [s];
+        };
+
         window.__isBareOsmosiReportValue = function (raw) {
             var u = String(raw || '').trim().toUpperCase();
             return !u || u === 'OSMOSI';
@@ -13708,8 +13752,14 @@ window.updateStoricoButton = async function() {
         /** Sigle presenti sia come livello (mm) in stoccaggio/acqua sia come conducibilità (µS/cm): non sincronizzare tra contesti. */
         window.CONDUCTIVITY_LEVEL_OVERLAP_FIELD_IDS = ['inp-tk9000', 'inp-tk9201', 'inp-tk9204', 'inp-s133'];
 
-        /** Livelli serbatoi lavaggi (Generale, orizzontale come Conducibilità) — plant condiviso, %. */
-        window.LIVELLI_LAVAGGI_SCHEDA_TITLE = 'LIVELLI SERBATOI LAVAGGI';
+        /** Livelli CEB (Generale, orizzontale come Conducibilità) — plant condiviso, %. */
+        window.LIVELLI_LAVAGGI_SCHEDA_TITLE = 'LIVELLI CEB';
+        window.resolveLivelliLavaggiSchedaTitle = function (stored) {
+            var canon = window.LIVELLI_LAVAGGI_SCHEDA_TITLE || 'LIVELLI CEB';
+            var t = String(stored == null ? '' : stored).trim();
+            if (!t || /^livelli serbatoi lavaggi$/i.test(t)) return canon;
+            return t;
+        };
         window.LIVELLI_LAVAGGI_UNIT = '%';
         window.LIVELLI_LAVAGGI_SHARED_FIELD_IDS = ['inp-tk11039', 'inp-tk11038', 'inp-tk11037', 'inp-tk11019'];
         window.LIVELLI_LAVAGGI_FIELDS_META = [
@@ -13726,7 +13776,7 @@ window.updateStoricoButton = async function() {
         window.buildLivelliLavaggiModuleConfig = function () {
             return {
                 enabled: true,
-                title: window.LIVELLI_LAVAGGI_SCHEDA_TITLE || 'LIVELLI SERBATOI LAVAGGI',
+                title: window.LIVELLI_LAVAGGI_SCHEDA_TITLE || 'LIVELLI CEB',
                 orientation: 'horizontal',
                 layout: 'livelli-lavaggi-fields',
                 fields: window.collectFieldsForLivelliLavaggiSection()
@@ -14613,7 +14663,7 @@ window.updateStoricoButton = async function() {
             { id: 'sec-stoccaggio-interno', name: 'STOCCAGGIO INTERNO' },
             { id: 'sec-chemicals', name: 'CHEMICALS' },
             { id: 'sec-conducibilita', name: 'CONDUCIBILITÀ' },
-            { id: 'sec-livelli-lavaggi', name: 'LIVELLI SERBATOI LAVAGGI' },
+            { id: 'sec-livelli-lavaggi', name: window.LIVELLI_LAVAGGI_SCHEDA_TITLE || 'LIVELLI CEB' },
             { id: 'sec-contatori', name: 'Contatori H2O' },
             { id: 'sec-conteggio-filtra', name: 'CONTEGGIO FILTRA' },
             { id: 'sec-rigenerazione', name: 'RIGENERAZIONE' },
@@ -18835,6 +18885,7 @@ window.updateStoricoButton = async function() {
             if (!Number.isFinite(minFs) || minFs < 5) minFs = 6.5;
             var guard = 0;
             var overflows = window.reportPreviewRowOverflows;
+            var statusDidShrink = false;
             while (guard++ < 18) {
                 var changed = false;
                 var osmRows = root.querySelectorAll('.report-preview-osmosi-assetto');
@@ -18873,6 +18924,7 @@ window.updateStoricoButton = async function() {
                 }
                 var cards = root.querySelectorAll('.rp-page-block');
                 var ci;
+                var didStatusThisPass = false;
                 for (ci = 0; ci < cards.length; ci++) {
                     var statusRows = cards[ci].querySelectorAll('.report-preview-row--status');
                     if (!statusRows.length) continue;
@@ -18882,12 +18934,51 @@ window.updateStoricoButton = async function() {
                         if (overflows(statusRows[sr])) { anyOv = true; break; }
                     }
                     if (!anyOv) continue;
+                    if (statusDidShrink) continue;
                     for (sr = 0; sr < statusRows.length; sr++) {
                         var val = statusRows[sr].querySelector('.report-preview-val');
-                        if (window.shrinkReportPreviewFont(val, minFs)) changed = true;
+                        if (!val) continue;
+                        var curSt = parseFloat(val.style.fontSize) ||
+                            parseFloat(window.getComputedStyle(val).fontSize);
+                        if (!Number.isFinite(curSt)) continue;
+                        if (window.shrinkReportPreviewFont(val, curSt - 0.6)) changed = true;
+                    }
+                    didStatusThisPass = true;
+                }
+                if (didStatusThisPass) statusDidShrink = true;
+                var tankVals = root.querySelectorAll(
+                    '.report-preview-row--tank-val .report-preview-val, .stocc-report-preview-val'
+                );
+                if (tankVals.length) {
+                    var tv;
+                    var tankMin = Infinity;
+                    for (tv = 0; tv < tankVals.length; tv++) {
+                        var tankFs = parseFloat(tankVals[tv].style.fontSize) ||
+                            parseFloat(window.getComputedStyle(tankVals[tv]).fontSize);
+                        if (Number.isFinite(tankFs) && tankFs < tankMin) tankMin = tankFs;
+                    }
+                    if (Number.isFinite(tankMin) && tankMin < Infinity) {
+                        for (tv = 0; tv < tankVals.length; tv++) {
+                            var curFs = parseFloat(tankVals[tv].style.fontSize) ||
+                                parseFloat(window.getComputedStyle(tankVals[tv]).fontSize);
+                            if (Number.isFinite(curFs) && curFs > tankMin + 0.05) {
+                                tankVals[tv].style.fontSize = tankMin.toFixed(1) + 'px';
+                                changed = true;
+                            }
+                        }
+                    }
+                    var tankRows = root.querySelectorAll('.report-preview-row--tank-val, .stocc-report-preview-row');
+                    var tankOv = false;
+                    for (tv = 0; tv < tankRows.length; tv++) {
+                        if (overflows(tankRows[tv])) { tankOv = true; break; }
+                    }
+                    if (tankOv) {
+                        for (tv = 0; tv < tankVals.length; tv++) {
+                            if (window.shrinkReportPreviewFont(tankVals[tv], minFs)) changed = true;
+                        }
                     }
                 }
-                var other = root.querySelectorAll('.report-preview-row:not(.report-preview-row--status):not(.report-preview-row--sed-assetto)');
+                var other = root.querySelectorAll('.report-preview-row:not(.report-preview-row--status):not(.report-preview-row--sed-assetto):not(.report-preview-row--tank-val)');
                 var oi;
                 for (oi = 0; oi < other.length; oi++) {
                     var row = other[oi];
@@ -19065,7 +19156,8 @@ window.updateStoricoButton = async function() {
                     }
                     h += window.buildReportPreviewRowHtml
                         ? window.buildReportPreviewRowHtml(r.label, val, {
-                            previewFontBase: previewFontBase, siglaCh: siglaCh, noValUppercase: true
+                            previewFontBase: previewFontBase, siglaCh: siglaCh, noValUppercase: true,
+                            rowClass: 'report-preview-row--tank-val'
                         })
                         : '';
                 });
@@ -19243,6 +19335,7 @@ window.updateStoricoButton = async function() {
                 : '';
             var arrowPad = labelParts.arrow ? 'padding-right:0.9em;' : '';
             var rowClass = 'report-preview-row' + (isStatus ? ' report-preview-row--status' : '');
+            if (opts.rowClass) rowClass += ' ' + String(opts.rowClass);
             var gapPx = Number(window.REPORT_PREVIEW_SIGLA_GAP_PX);
             if (!Number.isFinite(gapPx) || gapPx < 1) gapPx = 4;
             var rowStyle = 'display:flex; align-items:baseline; justify-content:flex-start; gap:0; border-bottom:0.1px solid #eee; padding:3px 0; min-width:0; overflow:visible;';
@@ -26913,15 +27006,18 @@ window.updateStoricoButton = async function() {
                             ? window.buildLivelliLavaggiModuleConfig()
                             : {
                                 enabled: true,
-                                title: 'LIVELLI SERBATOI LAVAGGI',
+                                title: window.LIVELLI_LAVAGGI_SCHEDA_TITLE || 'LIVELLI CEB',
                                 orientation: 'horizontal',
                                 layout: 'livelli-lavaggi-fields'
                             };
                         changed = true;
                     } else {
                         const lav = item.schedeConfig.modules['sec-livelli-lavaggi'];
-                        if (!lav.title) {
-                            lav.title = window.LIVELLI_LAVAGGI_SCHEDA_TITLE || 'LIVELLI SERBATOI LAVAGGI';
+                        var lavCanon = window.resolveLivelliLavaggiSchedaTitle
+                            ? window.resolveLivelliLavaggiSchedaTitle(lav.title)
+                            : (window.LIVELLI_LAVAGGI_SCHEDA_TITLE || 'LIVELLI CEB');
+                        if (lav.title !== lavCanon) {
+                            lav.title = lavCanon;
                             changed = true;
                         }
                         if (lav.orientation !== 'horizontal' || lav.layout !== 'livelli-lavaggi-fields') {
@@ -28176,7 +28272,7 @@ window.updateStoricoButton = async function() {
                         ? window.buildLivelliLavaggiModuleConfig()
                         : {
                             enabled: true,
-                            title: 'LIVELLI SERBATOI LAVAGGI',
+                            title: window.LIVELLI_LAVAGGI_SCHEDA_TITLE || 'LIVELLI CEB',
                             orientation: 'horizontal',
                             layout: 'livelli-lavaggi-fields',
                             fields: window.collectFieldsForLivelliLavaggiSection
@@ -29396,7 +29492,9 @@ window.updateStoricoButton = async function() {
             }
             tendina.style.display = 'block';
             if (tendinaTitle) {
-                tendinaTitle.textContent = (lavMod && lavMod.title) || window.LIVELLI_LAVAGGI_SCHEDA_TITLE || 'LIVELLI SERBATOI LAVAGGI';
+                tendinaTitle.textContent = window.resolveLivelliLavaggiSchedaTitle
+                    ? window.resolveLivelliLavaggiSchedaTitle(lavMod && lavMod.title)
+                    : ((lavMod && lavMod.title) || window.LIVELLI_LAVAGGI_SCHEDA_TITLE || 'LIVELLI CEB');
             }
         };
 
@@ -29442,9 +29540,12 @@ window.updateStoricoButton = async function() {
             const item = store && store.activeId && store.items[store.activeId];
             const lavMod = item && item.schedeConfig && item.schedeConfig.modules && item.schedeConfig.modules['sec-livelli-lavaggi'];
             const tendinaLbl = document.getElementById('lbl-sec-livelli-lavaggi-tendina');
-            const title = (lavMod && lavMod.title) ||
-                (tendinaLbl && tendinaLbl.textContent.trim()) ||
-                window.LIVELLI_LAVAGGI_SCHEDA_TITLE || 'LIVELLI SERBATOI LAVAGGI';
+            const title = window.resolveLivelliLavaggiSchedaTitle
+                ? window.resolveLivelliLavaggiSchedaTitle((lavMod && lavMod.title) ||
+                    (tendinaLbl && tendinaLbl.textContent))
+                : ((lavMod && lavMod.title) ||
+                    (tendinaLbl && tendinaLbl.textContent.trim()) ||
+                    window.LIVELLI_LAVAGGI_SCHEDA_TITLE || 'LIVELLI CEB');
             const metaById = {};
             (window.LIVELLI_LAVAGGI_FIELDS_META || []).forEach(function (f) {
                 if (f && f.id) metaById[f.id] = f;
@@ -29487,7 +29588,8 @@ window.updateStoricoButton = async function() {
                 if (window.buildReportPreviewRowHtml) {
                     body += window.buildReportPreviewRowHtml(r.label, r.val || r.num, {
                         previewFontBase: base,
-                        noValUppercase: true
+                        noValUppercase: true,
+                        rowClass: 'report-preview-row--tank-val'
                     });
                 } else {
                     body += '<div style="display:flex;align-items:baseline;gap:0.55ch;border-bottom:0.1px solid #eee;padding:3px 0;">' +
@@ -31090,7 +31192,8 @@ window.updateStoricoButton = async function() {
                         isStatus: false,
                         noValUppercase: true,
                         siglaCh: siglaCh,
-                        gapCh: window.REPORT_PREVIEW_SIGLA_GAP_CH
+                        gapCh: window.REPORT_PREVIEW_SIGLA_GAP_CH,
+                        rowClass: 'report-preview-row--tank-val'
                     });
                 } else {
                     rowsHtml += '<div style="display:flex; align-items:baseline; border-bottom:0.1px solid #eee; padding:3px 0;">' +
@@ -31864,7 +31967,9 @@ window.updateStoricoButton = async function() {
                 if (id === 'sec-livelli-lavaggi') {
                     const t = document.getElementById('lbl-sec-livelli-lavaggi-tendina');
                     if (t) labelText = t.textContent.trim();
-                    else labelText = window.LIVELLI_LAVAGGI_SCHEDA_TITLE || 'LIVELLI SERBATOI LAVAGGI';
+                    else labelText = window.resolveLivelliLavaggiSchedaTitle
+                        ? window.resolveLivelliLavaggiSchedaTitle()
+                        : (window.LIVELLI_LAVAGGI_SCHEDA_TITLE || 'LIVELLI CEB');
                 }
                 if (id === 'sec-contatori') {
                     const store = window.loadRapportiniStore && window.loadRapportiniStore();
@@ -33014,20 +33119,22 @@ window.updateStoricoButton = async function() {
                 return window.scalePreviewPx(base + (delta || 0));
             };
 
-            /** MARCIA/FERMO: crescono poco, poi si fermano e si rimpiccioliscono se si ingrandisce ancora. */
+            /** MARCIA/FERMO: crescono fino al cap; una sola riduzione, poi quello è il minimo. */
             window.scalePreviewStatusFont = function (unscaledBase, delta) {
                 var base = typeof unscaledBase === 'number' ? unscaledBase : parseFloat(unscaledBase);
                 if (!Number.isFinite(base)) base = 9;
                 var cap = window.PREVIEW_STATUS_FONT_SCALE_CAP;
                 if (!Number.isFinite(cap) || cap <= 0) cap = 1.08;
                 var s = window.getPreviewFontScale();
-                var statusS = s;
+                var step = window.PREVIEW_FONT_SCALE_STEP;
+                if (!Number.isFinite(step) || step <= 0) step = 0.06;
+                var statusS;
                 if (s > cap) {
-                    statusS = Math.max(0.72, cap - (s - cap) * 0.45);
+                    statusS = cap - step * 0.45;
                 } else {
                     statusS = Math.min(s, cap);
                 }
-                return Math.max(6.5, Math.round((base + (delta || 0)) * statusS * 10) / 10);
+                return Math.round((base + (delta || 0)) * statusS * 10) / 10;
             };
 
             /** Titolo intestazione report: scala con zoom fino al cap, poi resta fisso (una riga). */
@@ -35321,6 +35428,13 @@ window.updateStoricoButton = async function() {
             var enabledStr = unitsTxt
                 ? (/^osmosi\b/i.test(unitsTxt) ? unitsTxt : ('OSMOSI ' + unitsTxt))
                 : 'OSMOSI';
+            var destLines = typeof window.formatOsmosiAssettoDestLines === 'function'
+                ? window.formatOsmosiAssettoDestLines(raw)
+                : [raw];
+            if (!destLines.length) destLines = [raw];
+            var destHtml = destLines.map(function (line) {
+                return '<div class="report-preview-osmosi-dest" style="white-space:nowrap;">' + esc(line) + '</div>';
+            }).join('');
             return '<div class="report-preview-osmosi-assetto" style="display:flex;flex-wrap:wrap;align-items:flex-start;border-bottom:0.1px solid #e5e7eb;padding:2px 0;margin-bottom:1px;min-width:0;">' +
                 '<div class="report-preview-osmosi-col report-preview-osmosi-col--abilitate" style="display:flex;flex-direction:column;flex:1 1 5.5em;min-width:0;padding-right:6px;border-right:0.6px solid #9ca3af;box-sizing:border-box;">' +
                 '<div style="font-size:' + fs + 'px;font-weight:650;text-transform:uppercase;color:#000;margin-bottom:2px;text-decoration:underline;padding-bottom:4px;">ABILITATE</div>' +
@@ -35328,7 +35442,7 @@ window.updateStoricoButton = async function() {
                 '</div>' +
                 '<div class="report-preview-osmosi-col report-preview-osmosi-col--assetto" style="display:flex;flex-direction:column;flex:1 1 6em;min-width:0;padding-left:6px;box-sizing:border-box;">' +
                 '<div style="font-size:' + fs + 'px;font-weight:650;text-transform:uppercase;color:#000;margin-bottom:2px;text-decoration:underline;padding-bottom:4px;">ASSETTO</div>' +
-                '<div class="report-preview-osmosi-assetto-val" style="font-size:' + fs + 'px;font-weight:650;text-transform:uppercase;color:#000;white-space:normal;margin-left:0;">' + esc(raw) + '</div>' +
+                '<div class="report-preview-osmosi-assetto-val" style="font-size:' + fs + 'px;font-weight:650;text-transform:uppercase;color:#000;margin-left:0;">' + destHtml + '</div>' +
                 '</div></div>';
         };
 
@@ -35467,7 +35581,8 @@ window.updateStoricoButton = async function() {
                     }
                     body += window.buildReportPreviewRowHtml
                         ? window.buildReportPreviewRowHtml(r.label, val, {
-                            previewFontBase: previewFontBase, siglaCh: siglaCh, noValUppercase: true
+                            previewFontBase: previewFontBase, siglaCh: siglaCh, noValUppercase: true,
+                            rowClass: 'report-preview-row--tank-val'
                         })
                         : '';
                 });
@@ -35556,9 +35671,17 @@ window.updateStoricoButton = async function() {
                     var osmEnabled = assetto.osmosiEnabledUnits && assetto.osmosiEnabledUnits.length
                         ? assetto.osmosiEnabledUnits.join('/')
                         : 'OSMOSI';
+                    var osmDestLines = typeof window.formatOsmosiAssettoDestLines === 'function'
+                        ? window.formatOsmosiAssettoDestLines(assetto.osmosiVal)
+                        : [assetto.osmosiVal];
+                    if (!osmDestLines.length) osmDestLines = [assetto.osmosiVal];
                     html += '<div class="digital-row digital-row--osmosi-assetto"><span class="digital-row-label">OSMOSI ' +
                         esc(osmEnabled) + '</span>' +
-                        '<span class="digital-row-value digital-row-value--text">' + esc(assetto.osmosiVal) + '</span></div>';
+                        '<span class="digital-row-value digital-row-value--text digital-osmosi-assetto-val">' +
+                        osmDestLines.map(function (line) {
+                            return '<span class="digital-osmosi-dest">' + esc(line) + '</span>';
+                        }).join('') +
+                        '</span></div>';
                 }
                 html += '</div>';
             }
@@ -37217,7 +37340,9 @@ window.buildDigitalCardsHTML = function() {
                 'sec-stoccaggio-interno': 'STOCCAGGIO INTERNO',
                 'sec-chemicals': 'CHEMICALS',
                 'sec-conducibilita': 'CONDUCIBILITÀ',
-                'sec-livelli-lavaggi': 'LIVELLI SERBATOI LAVAGGI',
+                'sec-livelli-lavaggi': (window.resolveLivelliLavaggiSchedaTitle
+                    ? window.resolveLivelliLavaggiSchedaTitle()
+                    : (window.LIVELLI_LAVAGGI_SCHEDA_TITLE || 'LIVELLI CEB')),
                 'GESTIONE_SERBATOI_SPECIAL': 'GESTIONE SERBATOI',
                 'DIGITAL_SERBATOI_LIVELLI_SPECIAL': 'SERBATOI',
                 'TREND_SPECIAL': 'TREND LIVELLI'
@@ -37246,6 +37371,9 @@ window.buildDigitalCardsHTML = function() {
                 }
                 if (moduleId === 'sec-contatori' && window.getContatoriReportData) {
                     cardTitle = window.getContatoriReportData().title;
+                }
+                if (moduleId === 'sec-livelli-lavaggi' && window.hasLivelliLavaggiReportData && window.hasLivelliLavaggiReportData()) {
+                    cardTitle = window.getLivelliLavaggiReportData().title;
                 }
                 if (!cardTitle) return '';
                 
@@ -40889,6 +41017,18 @@ window.convertToHtml = async () => {
             width: 100%;
             max-width: 100%;
         }
+        #capture-content .report-preview-osmosi-assetto-val,
+        #preview-screen .report-preview-osmosi-assetto-val {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 0;
+        }
+        #capture-content .report-preview-osmosi-dest,
+        #preview-screen .report-preview-osmosi-dest {
+            white-space: nowrap;
+            display: block;
+        }
         #capture-content .report-preview-row--sed-assetto,
         #preview-screen .report-preview-row--sed-assetto {
             flex-wrap: wrap;
@@ -40943,6 +41083,10 @@ window.convertToHtml = async () => {
             white-space: nowrap;
             overflow: visible;
             font-weight: 600 !important;
+        }
+        #capture-content .report-preview-row--tank-val .report-preview-val,
+        #preview-screen .report-preview-row--tank-val .report-preview-val {
+            white-space: nowrap !important;
         }
         #capture-content .stocc-report-preview-sigla,
         #preview-screen .stocc-report-preview-sigla {
@@ -45886,11 +46030,11 @@ window.convertToHtml = async () => {
         </div>
 
         <!-- Livelli serbatoi lavaggi: tendina orizzontale (Generale) -->
-        <div id="rapportino-livelli-lavaggi-tendina" class="rapportino-livelli-lavaggi-tendina rapportino-livelli-lavaggi-tendina-collapsed" style="display: none;" aria-label="Livelli serbatoi lavaggi">
+        <div id="rapportino-livelli-lavaggi-tendina" class="rapportino-livelli-lavaggi-tendina rapportino-livelli-lavaggi-tendina-collapsed" style="display: none;" aria-label="Livelli CEB">
             <button type="button" class="cond-tendina-bar" aria-expanded="false"
                 ontouchstart="window.startPress(event, 'sec-livelli-lavaggi')" ontouchmove="window.movePress(event)" ontouchend="window.endPressLivelliLavaggiTendina(event)"
                 onmousedown="window.startPress(event, 'sec-livelli-lavaggi')" onmouseup="window.endPressLivelliLavaggiTendina(event)">
-                <span class="cond-tendina-title" id="lbl-sec-livelli-lavaggi-tendina">LIVELLI SERBATOI LAVAGGI</span>
+                <span class="cond-tendina-title" id="lbl-sec-livelli-lavaggi-tendina">LIVELLI CEB</span>
                 <span class="cond-tendina-chevron" id="lavaggi-tendina-chevron" aria-hidden="true">▼</span>
             </button>
             <div id="rapportino-livelli-lavaggi-tendina-body" class="cond-tendina-body">

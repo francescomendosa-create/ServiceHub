@@ -958,7 +958,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v503';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v504';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -14195,15 +14195,24 @@ window.updateStoricoButton = async function() {
             'inp-s813': 1,
             'inp-s864': 1,
             'inp-tk8066': 1,
-            'inp-bacino-tk8093': 1,
-            'inp-tk8093': 1,
             'inp-s819': 1
+        };
+        /** OCR/foto: un solo decimale dopo la virgola (es. TK 8093 → 1234,5 non 1234,56). */
+        window.ONE_DECIMAL_OCR_TANK_FIELD_IDS = {
+            'inp-bacino-tk8093': 1,
+            'inp-tk8093': 1
         };
         window.isIntegerOnlyTankField = function (fieldId) {
             if (!fieldId) return false;
             var id = typeof window.normalizeTrendFieldId === 'function'
                 ? window.normalizeTrendFieldId(fieldId) : String(fieldId);
             return !!(window.INTEGER_ONLY_TANK_FIELD_IDS && window.INTEGER_ONLY_TANK_FIELD_IDS[id]);
+        };
+        window.isOneDecimalOcrTankField = function (fieldId) {
+            if (!fieldId) return false;
+            var id = typeof window.normalizeTrendFieldId === 'function'
+                ? window.normalizeTrendFieldId(fieldId) : String(fieldId);
+            return !!(window.ONE_DECIMAL_OCR_TANK_FIELD_IDS && window.ONE_DECIMAL_OCR_TANK_FIELD_IDS[id]);
         };
         window.formatIntegerOnlyTankValue = function (raw) {
             if (raw == null) return '';
@@ -14213,8 +14222,24 @@ window.updateStoricoButton = async function() {
             if (!cut || cut === '-') return '';
             return cut;
         };
+        /** Arrotonda a 1 cifra dopo la virgola (formato italiano con ,). */
+        window.formatOneDecimalOcrTankValue = function (raw) {
+            if (raw == null) return '';
+            var s = String(raw).trim().replace(/\s/g, '');
+            if (!s) return '';
+            var n = parseFloat(s.replace(',', '.').replace(/[^\d.-]/g, ''));
+            if (!Number.isFinite(n)) return s;
+            var rounded = Math.round(n * 10) / 10;
+            if (Math.abs(rounded - Math.round(rounded)) < 1e-9) {
+                return String(Math.round(rounded));
+            }
+            return rounded.toFixed(1).replace('.', ',');
+        };
         window.applyIntegerOnlyTankValue = function (fieldId, raw) {
             if (raw == null || raw === '') return raw == null ? '' : String(raw);
+            if (window.isOneDecimalOcrTankField && window.isOneDecimalOcrTankField(fieldId)) {
+                return window.formatOneDecimalOcrTankValue(raw);
+            }
             if (!window.isIntegerOnlyTankField(fieldId)) return raw;
             return window.formatIntegerOnlyTankValue(raw);
         };
@@ -52367,6 +52392,9 @@ window.parseGeminiTankPairsJson = function(json, fields) {
         if (id === 'inp-s121') return;
         if (/^S.?121$/i.test(String(sigla).trim()) && /LIVELLO|90.?LT.?121/i.test(String(p.descrizione || p.description || ''))) return;
         if (!id || used.has(id)) return;
+        if (typeof window.applyIntegerOnlyTankValue === 'function') {
+            val = window.applyIntegerOnlyTankValue(id, val);
+        }
         if (typeof window.isLikelyTankCapacityMisread === 'function' && window.isLikelyTankCapacityMisread(id, val)) return;
         used.add(id);
         const field = fields.find(function(f) { return f.id === id; });
@@ -52499,9 +52527,13 @@ window.normalizeGeminiTankReadings = function(rawReadings, fields) {
         if (!id || used.has(id)) return;
         const field = fields.find(function(f) { return f.id === id; });
         if (!field) return;
-        if (typeof window.isLikelyTankCapacityMisread === 'function' && window.isLikelyTankCapacityMisread(id, val)) return;
+        var outVal = val;
+        if (typeof window.applyIntegerOnlyTankValue === 'function') {
+            outVal = window.applyIntegerOnlyTankValue(id, outVal);
+        }
+        if (typeof window.isLikelyTankCapacityMisread === 'function' && window.isLikelyTankCapacityMisread(id, outVal)) return;
         used.add(id);
-        out.push({ id: id, value: val, confidence: r.confidence || 'alta', source: field.label });
+        out.push({ id: id, value: outVal, confidence: r.confidence || 'alta', source: field.label });
     });
     return out;
 };

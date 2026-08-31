@@ -958,7 +958,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v480';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v481';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -18770,6 +18770,121 @@ window.updateStoricoButton = async function() {
             return out;
         };
 
+        window.reportPreviewRowOverflows = function (row) {
+            if (!row) return false;
+            if (row.scrollWidth > row.clientWidth + 1) return true;
+            var card = row.closest('.rp-page-block') || row.parentElement;
+            if (!card) return false;
+            var rb = row.getBoundingClientRect();
+            var cb = card.getBoundingClientRect();
+            if (!(cb.width > 4) || !(rb.width > 0)) return false;
+            if (rb.right > cb.right + 1.5) return true;
+            var a = row.querySelector('.report-preview-sigla, .report-preview-sed-label');
+            var b = row.querySelector('.report-preview-val, .report-preview-sed-portata');
+            if (a && b) {
+                var ab = a.getBoundingClientRect();
+                var bb = b.getBoundingClientRect();
+                if (bb.width > 0 && Math.abs(ab.top - bb.top) < 10 && bb.left + 0.5 < ab.right) return true;
+            }
+            return false;
+        };
+
+        window.alignReportPreviewStatusColumns = function (root) {
+            var cards = root.querySelectorAll('.rp-page-block');
+            var i;
+            for (i = 0; i < cards.length; i++) {
+                var rows = cards[i].querySelectorAll('.report-preview-row--status');
+                if (rows.length < 2) continue;
+                var maxW = 0;
+                var r;
+                for (r = 0; r < rows.length; r++) {
+                    var sigla = rows[r].querySelector('.report-preview-sigla');
+                    if (!sigla) continue;
+                    sigla.style.minWidth = '0px';
+                    sigla.style.flex = '0 0 auto';
+                }
+                for (r = 0; r < rows.length; r++) {
+                    var s2 = rows[r].querySelector('.report-preview-sigla');
+                    if (!s2) continue;
+                    maxW = Math.max(maxW, s2.getBoundingClientRect().width);
+                }
+                if (maxW < 4) continue;
+                var px = (Math.ceil(maxW * 10) / 10) + 'px';
+                for (r = 0; r < rows.length; r++) {
+                    var s3 = rows[r].querySelector('.report-preview-sigla');
+                    if (s3) s3.style.minWidth = px;
+                }
+            }
+        };
+
+        window.shrinkReportPreviewFont = function (el, minPx) {
+            if (!el) return false;
+            var fs = parseFloat(el.style.fontSize) || parseFloat(window.getComputedStyle(el).fontSize);
+            if (!Number.isFinite(fs) || fs <= minPx) return false;
+            el.style.fontSize = Math.max(minPx, fs - 0.6).toFixed(1) + 'px';
+            return true;
+        };
+
+        /** Rileva sovrapposizioni dopo lo zoom: a capo portata sediflottatore, riduce MARCIA/FERMO. */
+        window.fitReportPreviewOverflow = function (root) {
+            root = root || document.getElementById('capture-content') || document.getElementById('preview-sheet');
+            if (!root) return;
+            window.alignReportPreviewStatusColumns(root);
+            var minFs = 6.5;
+            var guard = 0;
+            var overflows = window.reportPreviewRowOverflows;
+            while (guard++ < 18) {
+                var changed = false;
+                var sedRows = root.querySelectorAll('.report-preview-row--sed-assetto');
+                var si;
+                for (si = 0; si < sedRows.length; si++) {
+                    var sed = sedRows[si];
+                    if (!overflows(sed)) continue;
+                    if (!sed.classList.contains('is-portata-wrap')) {
+                        sed.classList.add('is-portata-wrap');
+                        changed = true;
+                        continue;
+                    }
+                    var parts = sed.querySelectorAll('.report-preview-sed-label, .report-preview-sed-portata');
+                    var pi;
+                    for (pi = 0; pi < parts.length; pi++) {
+                        if (window.shrinkReportPreviewFont(parts[pi], minFs)) changed = true;
+                    }
+                }
+                var cards = root.querySelectorAll('.rp-page-block');
+                var ci;
+                for (ci = 0; ci < cards.length; ci++) {
+                    var statusRows = cards[ci].querySelectorAll('.report-preview-row--status');
+                    if (!statusRows.length) continue;
+                    var anyOv = false;
+                    var sr;
+                    for (sr = 0; sr < statusRows.length; sr++) {
+                        if (overflows(statusRows[sr])) { anyOv = true; break; }
+                    }
+                    if (!anyOv) continue;
+                    for (sr = 0; sr < statusRows.length; sr++) {
+                        var val = statusRows[sr].querySelector('.report-preview-val');
+                        if (window.shrinkReportPreviewFont(val, minFs)) changed = true;
+                    }
+                }
+                var other = root.querySelectorAll('.report-preview-row:not(.report-preview-row--status):not(.report-preview-row--sed-assetto)');
+                var oi;
+                for (oi = 0; oi < other.length; oi++) {
+                    var row = other[oi];
+                    if (!overflows(row)) continue;
+                    var v = row.querySelector('.report-preview-val');
+                    if (!v) continue;
+                    if (v.style.whiteSpace !== 'normal') {
+                        v.style.whiteSpace = 'normal';
+                        changed = true;
+                        continue;
+                    }
+                    if (window.shrinkReportPreviewFont(v, minFs)) changed = true;
+                }
+                if (!changed) break;
+            }
+        };
+
         window.getReportPreviewModuleOrder = function (moduleId) {
             var map = {
                 'sec-wvt': 50,
@@ -19059,12 +19174,22 @@ window.updateStoricoButton = async function() {
                 ? window.buildReportPreviewTrendArrowHtml(labelParts.arrow, labelParts.dir, base, labelFs)
                 : '';
             var arrowPad = labelParts.arrow ? 'padding-right:0.9em;' : '';
+            var rowClass = 'report-preview-row' + (isStatus ? ' report-preview-row--status' : '');
             var rowStyle = 'display:flex; align-items:baseline; justify-content:flex-start; gap:0; border-bottom:0.1px solid #eee; padding:3px 0; min-width:0; overflow:hidden;';
             if (opts.borderTop) rowStyle += ' border-top:0.6px solid #000; padding:4px 0;';
+            var siglaMin = 'min-width:0;';
+            var siglaFlex = 'flex:0 1 auto;';
+            var alignCh = Number(opts.alignSiglaCh);
+            if (isStatus) {
+                siglaFlex = 'flex:0 0 auto;';
+                if (Number.isFinite(alignCh) && alignCh > 0) {
+                    siglaMin = 'min-width:' + alignCh + 'ch;';
+                }
+            }
             var valTransform = opts.noValUppercase ? 'none' : 'uppercase';
             return (
-                '<div class="report-preview-row" style="' + rowStyle + '">' +
-                '<span class="report-preview-sigla" style="display:inline-block; position:relative; width:auto; max-width:calc(100% - 3.2em); min-width:0; flex:0 1 auto; font-size:' + labelFs + 'px; font-weight:600; text-transform:uppercase; text-align:left; white-space:nowrap; overflow:hidden; ' + arrowPad + '">' +
+                '<div class="' + rowClass + '" style="' + rowStyle + '">' +
+                '<span class="report-preview-sigla" style="display:inline-block; position:relative; width:auto; max-width:' + (isStatus ? 'none' : 'calc(100% - 3.2em)') + '; ' + siglaMin + ' ' + siglaFlex + ' font-size:' + labelFs + 'px; font-weight:600; text-transform:uppercase; text-align:left; white-space:nowrap; overflow:hidden; ' + arrowPad + '">' +
                 safeLabel +
                 arrowHtml +
                 '</span>' +
@@ -32503,7 +32628,9 @@ window.updateStoricoButton = async function() {
 
         /** Applica paginazione (schede intere per pagina) e poi ridisegna la guida A4. */
         window.__layoutPreviewA4 = function () {
+            if (typeof window.fitReportPreviewOverflow === 'function') window.fitReportPreviewOverflow();
             window.applyPreviewA4Pagination();
+            if (typeof window.fitReportPreviewOverflow === 'function') window.fitReportPreviewOverflow();
             window.renderPreviewA4Guide();
         };
 
@@ -35053,7 +35180,10 @@ window.updateStoricoButton = async function() {
             var lineHtml = '<strong>' + esc(prefix) + '</strong>' + esc(suffix) + ' = ' + esc(valStr);
             return {
                 html: lineHtml,
-                plain: prefix + suffix + ' = ' + valStr
+                plain: prefix + suffix + ' = ' + valStr,
+                prefix: prefix,
+                suffix: suffix,
+                valStr: valStr
             };
         };
 
@@ -35061,16 +35191,25 @@ window.updateStoricoButton = async function() {
             var base = typeof previewFontBase === 'number' ? previewFontBase : (parseFloat(previewFontBase) || 9);
             var fs = window.scalePreviewFont(base, -1);
             var line = window.formatWwtSedAssettoLine(sedLabel, portata);
-            return '<div class="report-preview-row report-preview-row--sed-assetto" style="display:flex;align-items:baseline;border-bottom:0.1px solid #eee;padding:3px 0;">' +
-                '<span class="report-preview-sed-assetto" style="font-size:' + fs + 'px;font-weight:600;color:#000;white-space:nowrap;">' +
-                line.html + '</span></div>';
+            var esc = window.escRapportinoHtml || function (s) {
+                return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            };
+            return '<div class="report-preview-row report-preview-row--sed-assetto" style="display:flex;flex-wrap:wrap;align-items:baseline;gap:0.4em;border-bottom:0.1px solid #eee;padding:3px 0;min-width:0;">' +
+                '<span class="report-preview-sed-label" style="font-size:' + fs + 'px;font-weight:600;color:#000;min-width:0;">' +
+                '<strong>' + esc(line.prefix) + '</strong>' + esc(line.suffix) + ' =' +
+                '</span>' +
+                '<span class="report-preview-sed-portata" style="font-size:' + fs + 'px;font-weight:600;color:#000;white-space:nowrap;">' +
+                esc(line.valStr) + '</span></div>';
         };
 
         window.buildWwtSedAssettoDigitalRowHtml = function (sedLabel, portata, escFn) {
             var esc = escFn || function (s) { return String(s == null ? '' : s); };
             var line = window.formatWwtSedAssettoLine(sedLabel, portata);
             return '<div class="digital-row digital-row--sed-assetto">' +
-                '<span class="digital-sed-assetto-line digital-row-value digital-row-value--text">' + line.html + '</span></div>';
+                '<span class="digital-sed-assetto-line digital-row-value digital-row-value--text">' +
+                '<span class="digital-sed-label"><strong>' + esc(line.prefix) + '</strong>' + esc(line.suffix) + ' =</span>' +
+                '<span class="digital-sed-portata">' + esc(line.valStr) + '</span>' +
+                '</span></div>';
         };
 
         window.buildOsmosiAssettoReportRowHtml = function (osmosiVal, previewFontBase, opts) {
@@ -36217,6 +36356,15 @@ if (hiddenModules.length === 0) {
                         const cardStyle = window.reportPreviewModuleWrapStyle();
                         pch(`<div style="${cardStyle}"><div style="font-size: ${pfs(-1)}px; font-weight: 650; text-transform: uppercase; color: #000; border-bottom: 0.5px solid #000; padding-bottom: 4px; margin-bottom: 5px; letter-spacing: 0.3px;">${displayTitle}</div><div style="display: flex; flex-direction: column;">`);
                         
+                        var statusAlignCh = 0;
+                        rows.forEach(function (r) {
+                            if (!r || !r.isStatus) return;
+                            var txt = window.stripReportPreviewLabelText
+                                ? window.stripReportPreviewLabelText(r.label)
+                                : String(r.label || '').replace(/\s+/g, ' ').trim();
+                            if (txt.length > statusAlignCh) statusAlignCh = txt.length;
+                        });
+
                         // AGGIUNGI I TITOLI "SERBATOI" E "LIVELLI" SOLO PER I SERBATOI REALI IN AMBIENTE 1
                         let titoliMostrati = false;
                         rows.forEach(r => { let color = r.isStatus ? (r.active ? '#059669' : '#dc2626') : '#000';
@@ -36262,7 +36410,8 @@ if (hiddenModules.length === 0) {
                                     valColor: color,
                                     isStatus: !!r.isStatus,
                                     siglaCh: globalReportPreviewSiglaCh,
-                                    gapCh: window.REPORT_PREVIEW_SIGLA_GAP_CH
+                                    gapCh: window.REPORT_PREVIEW_SIGLA_GAP_CH,
+                                    alignSiglaCh: r.isStatus ? statusAlignCh : 0
                                 };
                                 if (r.label === 'SG 9400D' || r.label === 'POZZO 2') rowOpts.borderTop = true;
                                 pch(window.buildReportPreviewRowHtml
@@ -40582,6 +40731,29 @@ window.convertToHtml = async () => {
             gap: 0;
             min-width: 0;
             overflow: hidden;
+        }
+        #capture-content .report-preview-row--sed-assetto,
+        #preview-screen .report-preview-row--sed-assetto {
+            flex-wrap: wrap;
+            gap: 0.4em;
+            overflow: hidden;
+        }
+        #capture-content .report-preview-sed-label,
+        #preview-screen .report-preview-sed-label {
+            min-width: 0;
+        }
+        #capture-content .report-preview-sed-portata,
+        #preview-screen .report-preview-sed-portata {
+            white-space: nowrap;
+        }
+        #capture-content .report-preview-row--sed-assetto.is-portata-wrap .report-preview-sed-portata,
+        #preview-screen .report-preview-row--sed-assetto.is-portata-wrap .report-preview-sed-portata {
+            flex: 1 0 100%;
+        }
+        #capture-content .report-preview-row--status .report-preview-sigla,
+        #preview-screen .report-preview-row--status .report-preview-sigla {
+            flex: 0 0 auto;
+            max-width: none;
         }
         #capture-content .report-preview-sigla,
         #preview-screen .report-preview-sigla,

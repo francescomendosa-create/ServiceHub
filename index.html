@@ -958,7 +958,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v499';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v500';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -32722,7 +32722,9 @@ window.updateStoricoButton = async function() {
             });
 
             // Altezza reale di ogni scheda (larghezza colonna costante fra le pagine → misura valida).
-            var GAP_V = 4;
+            var tighten = Number(window.__previewBorderTighten);
+            if (!Number.isFinite(tighten)) tighten = 0;
+            var GAP_V = 6 - 2 * Math.max(0, Math.min(1, tighten));
             var measured = blocks.map(function (el) {
                 return { el: el, h: el.getBoundingClientRect().height + GAP_V };
             });
@@ -32868,12 +32870,80 @@ window.updateStoricoButton = async function() {
             container.appendChild(guide);
         };
 
+        window.PREVIEW_BORDER_LOOSE = { sheetY: 16, sheetX: 16, capture: 8, headerMb: 10, headerPb: 4 };
+        window.PREVIEW_BORDER_TIGHT = { sheetY: 3, sheetX: 4, capture: 3, headerMb: 4, headerPb: 2 };
+        window.PREVIEW_BORDER_ZOOM_SPAN = 0.72;
+
+        window.getPreviewBorderTightenFromZoom = function () {
+            var s = typeof window.getPreviewFontScale === 'function' ? window.getPreviewFontScale() : 1;
+            if (!(s > 1)) return 0;
+            var span = Number(window.PREVIEW_BORDER_ZOOM_SPAN);
+            if (!Number.isFinite(span) || span < 0.2) span = 0.72;
+            return Math.max(0, Math.min(1, (s - 1) / span));
+        };
+
+        window.applyPreviewAdaptiveBorders = function (t) {
+            t = Math.max(0, Math.min(1, Number(t) || 0));
+            window.__previewBorderTighten = t;
+            if (typeof window.isPreviewNotesMode === 'function' && window.isPreviewNotesMode()) return;
+            var L = window.PREVIEW_BORDER_LOOSE;
+            var H = window.PREVIEW_BORDER_TIGHT;
+            var mix = function (a, b) { return a + (b - a) * t; };
+            var sheet = document.getElementById('preview-sheet');
+            var cap = document.getElementById('capture-content');
+            var header = sheet && sheet.querySelector('.report-preview-header');
+            if (sheet) {
+                sheet.style.padding = mix(L.sheetY, H.sheetY).toFixed(1) + 'px ' +
+                    mix(L.sheetX, H.sheetX).toFixed(1) + 'px';
+            }
+            if (cap && !cap.classList.contains('preview-notes-capture')) {
+                cap.style.padding = mix(L.capture, H.capture).toFixed(1) + 'px';
+            }
+            if (header) {
+                header.style.marginBottom = mix(L.headerMb, H.headerMb).toFixed(1) + 'px';
+                header.style.paddingBottom = mix(L.headerPb, H.headerPb).toFixed(1) + 'px';
+            }
+        };
+
+        window.__previewHasSecondPage = function () {
+            var sheet = document.getElementById('preview-sheet');
+            if (!sheet) return false;
+            var pages = sheet.querySelectorAll('.rp-page');
+            if (pages.length > 1) return true;
+            var pagePx = typeof window.__ensureA4PagePx === 'function' ? window.__ensureA4PagePx(sheet) : 0;
+            if (!pagePx) return false;
+            return sheet.getBoundingClientRect().height > pagePx + 3;
+        };
+
         /** Applica paginazione (schede intere per pagina) e poi ridisegna la guida A4. */
         window.__layoutPreviewA4 = function () {
-            if (typeof window.fitReportPreviewOverflow === 'function') window.fitReportPreviewOverflow();
-            window.applyPreviewA4Pagination();
-            if (typeof window.fitReportPreviewOverflow === 'function') window.fitReportPreviewOverflow();
-            window.renderPreviewA4Guide();
+            if (window.__a4LayoutBusy) return;
+            window.__a4LayoutBusy = true;
+            try {
+                var t = typeof window.getPreviewBorderTightenFromZoom === 'function'
+                    ? window.getPreviewBorderTightenFromZoom() : 0;
+                if (typeof window.applyPreviewAdaptiveBorders === 'function') {
+                    window.applyPreviewAdaptiveBorders(t);
+                }
+                if (typeof window.fitReportPreviewOverflow === 'function') window.fitReportPreviewOverflow();
+                window.applyPreviewA4Pagination();
+                if (typeof window.fitReportPreviewOverflow === 'function') window.fitReportPreviewOverflow();
+                var scale = typeof window.getPreviewFontScale === 'function' ? window.getPreviewFontScale() : 1;
+                var guard = 0;
+                while (scale > 1.001 && t < 0.999 && guard++ < 5 &&
+                    typeof window.__previewHasSecondPage === 'function' && window.__previewHasSecondPage()) {
+                    t = Math.min(1, t + 0.2);
+                    window.applyPreviewAdaptiveBorders(t);
+                    window.applyPreviewA4Pagination();
+                    if (typeof window.fitReportPreviewOverflow === 'function') window.fitReportPreviewOverflow();
+                }
+                window.renderPreviewA4Guide();
+            } finally {
+                window.__a4LayoutBusy = false;
+                if (window.__a4GuideObserver && window.__a4GuideObserver.takeRecords) {
+                    window.__a4GuideObserver.takeRecords();
+                }
+            }
         };
 
         window.__initPreviewA4Guide = function () {
@@ -35963,13 +36033,13 @@ window.updateStoricoButton = async function() {
                     '<div style="font-size:' + px(24) + ';font-weight:700;color:#0f172a;margin-top:10px;">' + dateStr + '</div>' +
                     '<div style="font-size:' + px(16) + ';font-weight:600;color:#1d4ed8;margin-top:8px;">' + currentShiftText + '</div>' +
                     '</div>'
-                : (isNotesMode ? '' : '<div class="report-preview-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #000; padding-bottom: 2px; margin-bottom: 4px;">' +
+                : (isNotesMode ? '' : '<div class="report-preview-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #000; padding-bottom: 4px; margin-bottom: 10px;">' +
                     '<div style="display: flex; align-items: center; gap: 25px;">' +
                     '<h1 style="margin: 0; font-size: ' + pxTitle(12) + '; font-weight: 700; letter-spacing: -1px; text-transform: uppercase; font-style: italic; white-space: nowrap; flex-shrink: 0;">REPORT GIORNALIERO OPERATIVO</h1>' +
                     '<div style="font-size: ' + px(8) + '; font-weight: 650; color: #000;">' + dateStr + '</div></div>' +
                     '<div style="font-size: ' + pf(-1) + '; font-weight: 700; color: #2563eb; text-transform: uppercase;">' + currentShiftText + '</div></div>');
 
-let html = `<div id="capture-content" class="${isNotesMode ? 'preview-notes-capture' : ''}${isFuochistaNotes ? ' preview-notes-fuochista' : ''}" style="font-family: ${isNotesMode ? window.PREVIEW_NOTES_FONT_STACK : "'Helvetica Neue', Helvetica, Arial, sans-serif"}; font-style: ${isNotesMode ? 'italic' : 'normal'}; color: #1a1a1a; padding: ${isFuochistaNotes ? '8px 6px 10px' : (isNotesMode ? '20px 16px 28px' : '3px')}; font-size:${isFuochistaNotes ? px(14) : previewFont};">${headerBlock}`; 
+let html = `<div id="capture-content" class="${isNotesMode ? 'preview-notes-capture' : ''}${isFuochistaNotes ? ' preview-notes-fuochista' : ''}" style="font-family: ${isNotesMode ? window.PREVIEW_NOTES_FONT_STACK : "'Helvetica Neue', Helvetica, Arial, sans-serif"}; font-style: ${isNotesMode ? 'italic' : 'normal'}; color: #1a1a1a; padding: ${isFuochistaNotes ? '8px 6px 10px' : (isNotesMode ? '20px 16px 28px' : '8px')}; font-size:${isFuochistaNotes ? px(14) : previewFont};">${headerBlock}`; 
 
 if (hiddenModules.length === 0) { 
     html += '<div style="padding:20px;text-align:center;color:#999;font-style:italic;font-weight:650;font-size:' + px(8) + ';">Nessun modulo selezionato per l\'invio</div></div>'; 
@@ -43194,7 +43264,7 @@ window.convertToHtml = async () => {
             cursor: grabbing;
         }
         
-        .a4-sheet { width: 105mm; background: white; min-height: 148.5mm; height: fit-content; margin: 0 auto; box-sizing: border-box; position: relative; padding: 3px 4px 3px 4px; }
+        .a4-sheet { width: 105mm; background: white; min-height: 148.5mm; height: fit-content; margin: 0 auto; box-sizing: border-box; position: relative; padding: 16px; }
         /* Guida A4: tratteggio che mostra il perimetro di ogni pagina A4 nell'anteprima report,
            per capire se il contenuto entra nel foglio. Solo a schermo (esclusa da stampa/cattura). */
         .preview-a4-guide { position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 6; }

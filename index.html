@@ -958,7 +958,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v501';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v503';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -3908,6 +3908,9 @@ window.colorPreviewNumber = function(tankName, value) {
             const preBackup = typeof window.__readPlantBackupLocal === 'function'
                 ? window.__readPlantBackupLocal() : null;
             applyData(d, { forceRemotePlant: true, prePlantBackup: preBackup });
+            if (typeof window.__applyInstantLevelsToDOM === 'function') {
+                window.__applyInstantLevelsToDOM();
+            }
             if (d.plantStatusEdits && typeof window.__mergePlantStatusEditsMaps === 'function') {
                 window.__plantStatusEdits = window.__mergePlantStatusEditsMaps(
                     window.__plantStatusEdits || {}, d.plantStatusEdits);
@@ -3962,6 +3965,131 @@ window.colorPreviewNumber = function(tankName, value) {
         };
         window.__applyRemotePlantPayload = __applyRemotePlantPayload;
 
+        window.STABILE_INSTANT_LEVELS_KEY = 'stabileInstantLevels';
+
+        window.__readInstantLevelsLocal = function () {
+            try {
+                var raw = localStorage.getItem(window.STABILE_INSTANT_LEVELS_KEY);
+                if (!raw) return null;
+                var p = JSON.parse(raw);
+                if (p && p.values && typeof p.values === 'object') return p;
+            } catch (_) {}
+            return null;
+        };
+
+        window.__clearInstantLevelsLocal = function () {
+            try { localStorage.removeItem(window.STABILE_INSTANT_LEVELS_KEY); } catch (_) {}
+        };
+
+        window.__collectFilledInputValuesFromDOM = function () {
+            var values = {};
+            document.querySelectorAll('input[id]').forEach(function (inp) {
+                if (!inp.id) return;
+                if (inp.id === 'ai-chat-input' || inp.id === 'conv-chat-input') return;
+                if (inp.getAttribute && inp.getAttribute('data-device-local') === '1') return;
+                var v = inp.value;
+                if (v == null || String(v).trim() === '') return;
+                values[inp.id] = String(v);
+            });
+            return values;
+        };
+
+        window.__persistInstantLevelsNow = function () {
+            if (window.isEditingArchive && window.editingArchiveId) return null;
+            if (window.__userResetInProgress) return null;
+            var live = window.__collectFilledInputValuesFromDOM();
+            var prev = window.__readInstantLevelsLocal();
+            var merged = {};
+            if (prev && prev.values) {
+                Object.keys(prev.values).forEach(function (k) {
+                    if (prev.values[k] != null && String(prev.values[k]).trim() !== '') {
+                        merged[k] = String(prev.values[k]);
+                    }
+                });
+            }
+            var liveN = 0;
+            Object.keys(live).forEach(function (k) {
+                merged[k] = live[k];
+                liveN++;
+            });
+            if (window.__plantFieldEditMs) {
+                Object.keys(window.__plantFieldEditMs).forEach(function (k) {
+                    var el = document.getElementById(k);
+                    if (!el || el.tagName !== 'INPUT') return;
+                    if (el.value == null || String(el.value).trim() === '') {
+                        delete merged[k];
+                    }
+                });
+            }
+            if (liveN === 0 && prev && prev.values && Object.keys(prev.values).length) {
+                return prev;
+            }
+            var snap = {
+                values: merged,
+                updatedAt: new Date().toISOString(),
+                updatedMs: Date.now()
+            };
+            try {
+                localStorage.setItem(window.STABILE_INSTANT_LEVELS_KEY, JSON.stringify(snap));
+            } catch (_) {}
+            return snap;
+        };
+
+        window.__applyInstantLevelsToDOM = function (opts) {
+            opts = opts || {};
+            if (window.__userResetInProgress) return 0;
+            var sources = [];
+            var instant = window.__readInstantLevelsLocal();
+            if (instant && instant.values) sources.push(instant.values);
+            var backup = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
+            if (backup) sources.push(backup);
+            var rapp = window.__rapportiniStore || (window.loadRapportiniStore && window.loadRapportiniStore());
+            if (rapp && rapp.items && rapp.activeId && rapp.items[rapp.activeId] && rapp.items[rapp.activeId].data) {
+                sources.push(rapp.items[rapp.activeId].data);
+            }
+            if (!sources.length) return 0;
+            var applied = {};
+            var n = 0;
+            sources.forEach(function (data) {
+                if (!data || typeof data !== 'object') return;
+                Object.keys(data).forEach(function (id) {
+                    if (applied[id]) return;
+                    if (typeof data[id] === 'object') return;
+                    var val = data[id];
+                    if (val == null || String(val).trim() === '') return;
+                    var nodes = document.querySelectorAll('input[id="' + String(id).replace(/"/g, '') + '"]');
+                    if (!nodes.length) return;
+                    nodes.forEach(function (el) {
+                        if (!opts.force && el.value != null && String(el.value).trim() !== '') return;
+                        el.value = String(val);
+                        n++;
+                    });
+                    applied[id] = true;
+                });
+            });
+            return n;
+        };
+
+        window.__mergePlantPayloadKeepFilled = function (incoming, existing) {
+            if (!existing) return incoming;
+            if (!incoming) return existing;
+            var out = Object.assign({}, existing, incoming);
+            Object.keys(existing).forEach(function (k) {
+                if (window.__PLANT_RESTORE_SKIP_KEYS && window.__PLANT_RESTORE_SKIP_KEYS[k]) return;
+                var ev = existing[k];
+                var iv = incoming[k];
+                var eFilled = ev != null && (typeof ev === 'object' || String(ev).trim() !== '');
+                var iEmpty = iv == null || (typeof iv !== 'object' && String(iv).trim() === '');
+                if (eFilled && iEmpty) out[k] = ev;
+            });
+            if (existing.plantFieldEditMs || incoming.plantFieldEditMs) {
+                out.plantFieldEditMs = window.__mergePlantFieldEditMsMaps
+                    ? window.__mergePlantFieldEditMsMaps(existing.plantFieldEditMs || {}, incoming.plantFieldEditMs || {})
+                    : Object.assign({}, existing.plantFieldEditMs || {}, incoming.plantFieldEditMs || {});
+            }
+            return out;
+        };
+
         window.flushPlantBackupNow = function () {
             if (window.isEditingArchive && window.editingArchiveId) return null;
             if (typeof window.persistLetturaActiveSlotSnapshot === 'function') {
@@ -3971,9 +4099,20 @@ window.colorPreviewNumber = function(tankName, value) {
                 window.__hydrateOsmosiLabelFromRightValue();
             }
             if (typeof window.buildPlantPayloadFromDOM !== 'function') return null;
-            const data = window.buildPlantPayloadFromDOM({ bumpRevision: false });
+            var data = window.buildPlantPayloadFromDOM({ bumpRevision: false });
+            var existing = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
+            if (!window.__userResetInProgress && existing && typeof window.__mergePlantPayloadKeepFilled === 'function') {
+                var inN = window.__countMeaningfulPlantFields ? window.__countMeaningfulPlantFields(data) : 0;
+                var exN = window.__countMeaningfulPlantFields ? window.__countMeaningfulPlantFields(existing) : 0;
+                if (exN >= 2 && inN < exN) {
+                    data = window.__mergePlantPayloadKeepFilled(data, existing);
+                }
+            }
             data.lastUpdate = new Date().toISOString();
             __writePlantLocalBackup(data);
+            if (typeof window.__persistInstantLevelsNow === 'function') {
+                window.__persistInstantLevelsNow();
+            }
             window.__lastLocalPlantSaveMs = Date.now();
             return data;
         };
@@ -4272,12 +4411,23 @@ window.colorPreviewNumber = function(tankName, value) {
                 window.__hydrateOsmosiLabelFromRightValue();
             }
             if (typeof window.buildPlantPayloadFromDOM !== 'function') return;
-            const snap = window.buildPlantPayloadFromDOM({ bumpRevision: false });
+            var snap = window.buildPlantPayloadFromDOM({ bumpRevision: false });
+            var existing = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
+            if (!window.__userResetInProgress && existing && typeof window.__mergePlantPayloadKeepFilled === 'function') {
+                var inN = window.__countMeaningfulPlantFields ? window.__countMeaningfulPlantFields(snap) : 0;
+                var exN = window.__countMeaningfulPlantFields ? window.__countMeaningfulPlantFields(existing) : 0;
+                if (exN >= 2 && inN < exN) {
+                    snap = window.__mergePlantPayloadKeepFilled(snap, existing);
+                }
+            }
             if (syncMeta) {
                 if (syncMeta.syncRevision) snap.syncRevision = syncMeta.syncRevision;
                 if (syncMeta.lastUpdate) snap.lastUpdate = syncMeta.lastUpdate;
             }
             __writePlantLocalBackup(snap);
+            if (typeof window.__persistInstantLevelsNow === 'function') {
+                window.__persistInstantLevelsNow();
+            }
             return snap;
         };
 
@@ -5326,6 +5476,7 @@ window.colorPreviewNumber = function(tankName, value) {
                     var remoteEmpty = remoteVal == null || String(remoteVal).trim() === '';
                     if (localTs > remoteTs) return false;
                     if (remoteEmpty && localTs >= remoteTs) return false;
+                    if (remoteEmpty && localHas) return false;
                     var domEl = document.getElementById(gk);
                     if (domEl && domEl.value != null && String(domEl.value).trim() !== '' &&
                         remoteEmpty && localTs >= remoteTs) {
@@ -6040,6 +6191,10 @@ window.colorPreviewNumber = function(tankName, value) {
         window.resetAllData = async function() {
             const confirmBtn = document.getElementById('btn-reset-confirm');
             const originalText = confirmBtn.innerHTML;
+            window.__userResetInProgress = true;
+            if (typeof window.__clearInstantLevelsLocal === 'function') {
+                window.__clearInstantLevelsLocal();
+            }
             
             // 1. Pulisci tutti gli input
             document.querySelectorAll('input').forEach(input => {
@@ -6089,6 +6244,7 @@ window.colorPreviewNumber = function(tankName, value) {
             confirmBtn.classList.replace('bg-red-600', 'bg-emerald-600');
             
             await window.saveData();
+            window.__userResetInProgress = false;
             
             setTimeout(() => {
                 confirmBtn.innerHTML = originalText;
@@ -6485,6 +6641,10 @@ window.colorPreviewNumber = function(tankName, value) {
             }
 
             window.__persistLastAppliedTotalResetAt(remoteTs);
+            window.__userResetInProgress = true;
+            if (typeof window.__clearInstantLevelsLocal === 'function') {
+                window.__clearInstantLevelsLocal();
+            }
             window.__suppressConductivityPlantFallback = true;
             window.clearTankLevelInputAtAll();
             window.clearTimelineLocalStorageAll();
@@ -6523,12 +6683,17 @@ window.colorPreviewNumber = function(tankName, value) {
             }
             window.__reapplyActiveRapportinoAfterTotalReset();
             window.__suppressConductivityPlantFallback = false;
+            window.__userResetInProgress = false;
             return true;
         };
 
         // Funzione per eseguire il reset totale completo
         window.executeTotalReset = async () => {
             try {
+                window.__userResetInProgress = true;
+                if (typeof window.__clearInstantLevelsLocal === 'function') {
+                    window.__clearInstantLevelsLocal();
+                }
                 // 1. Reset dati correnti (come resetAllData)
                 document.querySelectorAll('input').forEach(input => {
                     input.value = "";
@@ -6605,6 +6770,7 @@ window.colorPreviewNumber = function(tankName, value) {
                     window.clearAllConductivityPlantStorage();
                 }
                 window.__suppressConductivityPlantFallback = false;
+                window.__userResetInProgress = false;
 
                 // 5. Chiudi la modale e mostra feedback
                 closeResetModal();
@@ -6622,6 +6788,7 @@ window.colorPreviewNumber = function(tankName, value) {
             } catch (error) {
                 console.error('Errore durante il reset totale:', error);
                 window.__suppressConductivityPlantFallback = false;
+                window.__userResetInProgress = false;
                 closeResetModal();
                 
                 // Mostra messaggio di errore
@@ -9052,6 +9219,9 @@ window.updateStoricoButton = async function() {
             __migratePlantBackupToStabileCurrentData();
             if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
                 window.__applyPlantFromLocalStorageFallback();
+            }
+            if (typeof window.__applyInstantLevelsToDOM === 'function') {
+                window.__applyInstantLevelsToDOM();
             }
 
             const sessPrefs = typeof window.readSessionPrefs === 'function' ? window.readSessionPrefs() : null;
@@ -13466,6 +13636,9 @@ window.updateStoricoButton = async function() {
                         }
                         if (forcePlant) {
                             if (!window.__shouldApplyRemoteValueToInput(el)) return;
+                            var localFilledForce = el.value != null && String(el.value).trim() !== '';
+                            var incomingEmptyForce = writeVal == null || String(writeVal).trim() === '';
+                            if (incomingEmptyForce && localFilledForce && !window.__userResetInProgress) return;
                             el.value = writeVal;
                             if ((fieldId === 'inp-osmosi' || id === 'osmosi') && typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(el);
                         } else if (document.activeElement !== el) {
@@ -13488,6 +13661,9 @@ window.updateStoricoButton = async function() {
                     }
                     if (forcePlant) {
                         if (!window.__shouldApplyRemoteValueToInput(el)) continue;
+                        var localFilledSingle = el.value != null && String(el.value).trim() !== '';
+                        var incomingEmptySingle = writeValSingle == null || String(writeValSingle).trim() === '';
+                        if (incomingEmptySingle && localFilledSingle && !window.__userResetInProgress) continue;
                         el.value = writeValSingle;
                         if ((fieldId === 'inp-osmosi' || id === 'osmosi') && typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(el);
                     } else if (document.activeElement !== el) {
@@ -27895,6 +28071,9 @@ window.updateStoricoButton = async function() {
             if (typeof window.applyDeviceUiStateForRapportino === 'function') {
                 window.applyDeviceUiStateForRapportino(rid);
             }
+            if (typeof window.__applyInstantLevelsToDOM === 'function') {
+                window.__applyInstantLevelsToDOM();
+            }
             requestAnimationFrame(function () {
                 if (typeof window.applyRapportinoDashboardVisibility === 'function') {
                     window.applyRapportinoDashboardVisibility(item.schedeConfig, { rapportinoId: rid, hiddenModules: hiddenModules });
@@ -27920,6 +28099,9 @@ window.updateStoricoButton = async function() {
                 if (typeof window.wireAllPlantNumpadHandlers === 'function') window.wireAllPlantNumpadHandlers();
                 if (typeof window.enforceStoccaggioLevelValuesInDom === 'function') {
                     window.enforceStoccaggioLevelValuesInDom();
+                }
+                if (typeof window.__applyInstantLevelsToDOM === 'function') {
+                    window.__applyInstantLevelsToDOM();
                 }
             });
             if (keepExpanded) {
@@ -32572,6 +32754,15 @@ window.updateStoricoButton = async function() {
             window.saveData();
             window.closeShiftPopup();
         };
+        window.resetSettingsSheetScroll = function () {
+            var modal = document.getElementById('settings-modal');
+            var sheet = document.querySelector('#settings-modal .settings-sheet');
+            var body = document.querySelector('#settings-modal .settings-sheet-body');
+            if (modal) modal.scrollTop = 0;
+            if (sheet) sheet.scrollTop = 0;
+            if (body) body.scrollTop = 0;
+        };
+
         window.openSettings = () => { 
     forceBlur(); 
     window.setSmartCaptureLoading && window.setSmartCaptureLoading(false);
@@ -32589,10 +32780,18 @@ window.updateStoricoButton = async function() {
         settingsSheet.style.left = '';
         settingsSheet.style.width = '';
         settingsSheet.style.height = '';
-        settingsSheet.scrollTop = 0;
     }
+    if (typeof window.resetSettingsSheetScroll === 'function') window.resetSettingsSheetScroll();
 
     document.getElementById('settings-modal').classList.add('active');
+    if (typeof window.resetSettingsSheetScroll === 'function') {
+        window.resetSettingsSheetScroll();
+        requestAnimationFrame(function () {
+            window.resetSettingsSheetScroll();
+            requestAnimationFrame(window.resetSettingsSheetScroll);
+        });
+        setTimeout(window.resetSettingsSheetScroll, 80);
+    }
     if (/iPhone|iPod/i.test(navigator.userAgent || '') && typeof window.__aiOpenQuickChat === 'function') {
         window.__aiOpenQuickChat();
     }

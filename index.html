@@ -125,13 +125,16 @@
         * {
             touch-action: manipulation;
         }
-        /* Tablet Android: S Pen — nessun pan/zoom sui campi, altrimenti Chrome manda pointercancel e il tratto muore */
+        /* Tablet Android: il dito deve poter scorrere. touch-action:none solo sul campo mentre si scrive con la S Pen. */
+        html.sh-android-tablet-boot .main-container {
+            touch-action: pan-y;
+        }
         html.sh-android-tablet-boot .main-container input:not([type="hidden"]):not([readonly]),
-        html.sh-android-tablet-boot .main-container textarea:not([readonly]),
-        html.sh-android-tablet-boot .main-container .amb-input-box,
-        html.sh-android-tablet-boot .main-container .nott-stocc-inp-cell,
-        html.sh-android-tablet-boot .main-container td:has(> input),
-        html.sh-android-tablet-boot .main-container td:has(> textarea) {
+        html.sh-android-tablet-boot .main-container textarea:not([readonly]) {
+            touch-action: pan-y;
+        }
+        html.sh-android-tablet-boot body.sh-spen-ink-open .main-container input:not([type="hidden"]):not([readonly]):focus,
+        html.sh-android-tablet-boot body.sh-spen-ink-open .main-container textarea:not([readonly]):focus {
             touch-action: none !important;
         }
         html.sh-android-tablet-boot #sh-spen-ink-host {
@@ -160,8 +163,9 @@
         }
         html.sh-android-tablet-boot,
         html.sh-android-tablet-boot body {
-            touch-action: manipulation;
-            -ms-touch-action: manipulation;
+            touch-action: pan-y;
+            -ms-touch-action: pan-y;
+            overscroll-behavior-y: contain;
         }
 
         /* Smartphone: nascondi UI principale finché lo splash è attivo (evita flash GESTIONE MODULI su iOS) */
@@ -1018,7 +1022,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v518';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v519';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -2128,7 +2132,8 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__shSpenEnabled = function () {
             return !!(window.__shIsAndroidTablet && window.__shIsAndroidTablet());
         };
-        window.__SPEN_SESSION_MS = 2800;
+        window.__SPEN_SESSION_MS = 1800;
+        window.__SPEN_COMMIT_MS = 320;
         window.__shPenLastEventTs = 0;
         window.__shSpenLastFieldTs = 0;
         window.__shPenIsDown = false;
@@ -2149,6 +2154,7 @@ window.colorPreviewNumber = function(tankName, value) {
             window.__shSpenOnPenMove = function () {};
             window.__shSpenOnPenUp = function () {};
             window.__shSpenForceEndStroke = function () {};
+            window.__shSpenCommitNow = function () {};
         } else {
         window.__shPenLastEventTs = 0;
         window.__shSpenLastFieldTs = 0;
@@ -2195,16 +2201,11 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__isStylusPointerEvent = function (e) {
             if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return false;
             if (!e) return false;
-            if (e.pointerType === 'pen') return true;
             if (e.pointerType === 'touch' || e.pointerType === 'mouse') return false;
+            if (e.pointerType === 'pen') return true;
             var t = e.touches && e.touches[0];
             if (t && (t.touchType === 'stylus' || t.touchType === 'pen')) return true;
-            if (e.type === 'touchstart' || e.type === 'touchmove' || e.type === 'touchend' ||
-                e.type === 'touchcancel' || e.type === 'mousedown' || e.type === 'mouseup' ||
-                e.type === 'click') {
-                return window.__shPenRecentlyActive(700);
-            }
-            return false;
+            return !!(window.__shPenIsDown && e.type && String(e.type).indexOf('touch') === 0);
         };
         window.__flushSpenDeferredWork = function () {
             if (window.__shSpenSessionActive && window.__shSpenSessionActive()) return;
@@ -2243,14 +2244,24 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (down === true) {
                     window.__shPenIsDown = true;
                     window.__shPenPointerId = ev.pointerId;
+                    if (typeof window.__releaseSpenStuckLocks === 'function') window.__releaseSpenStuckLocks();
                 } else if (down === false) {
                     window.__shPenIsDown = false;
                     window.__shPenPointerId = null;
                 }
                 window.__shMarkSpenActivity(true);
-                if (typeof window.__releaseSpenStuckLocks === 'function') window.__releaseSpenStuckLocks();
             };
             document.addEventListener('pointerdown', function (ev) {
+                if (ev.pointerType === 'touch' || ev.pointerType === 'mouse') {
+                    window.__shPenIsDown = false;
+                    window.__shPenPointerId = null;
+                    if (document.body) document.body.classList.remove('sh-stylus-pen-active');
+                    if (window.__shSpenInk && window.__shSpenInk.active &&
+                        typeof window.__shSpenCommitNow === 'function') {
+                        window.__shSpenCommitNow();
+                    }
+                    return;
+                }
                 onPen(ev, true);
                 if (typeof window.__shSpenOnPenDown === 'function') window.__shSpenOnPenDown(ev);
             }, { capture: true, passive: true });
@@ -2590,19 +2601,25 @@ window.colorPreviewNumber = function(tankName, value) {
 
             function redraw() {
                 if (!ink.ctx || !ink.hostRect) return;
-                ink.ctx.clearRect(0, 0, ink.hostRect.w, ink.hostRect.h);
-                ink.ctx.beginPath();
-                for (var s = 0; s < ink.strokes.length; s++) {
-                    var pts = ink.strokes[s];
-                    if (!pts || !pts.length) continue;
-                    ink.ctx.moveTo(pts[0].x, pts[0].y);
-                    for (var i = 1; i < pts.length; i++) ink.ctx.lineTo(pts[i].x, pts[i].y);
-                }
-                if (ink.current && ink.current.length) {
-                    ink.ctx.moveTo(ink.current[0].x, ink.current[0].y);
-                    for (var j = 1; j < ink.current.length; j++) ink.ctx.lineTo(ink.current[j].x, ink.current[j].y);
-                }
-                ink.ctx.stroke();
+                if (ink.redrawQueued) return;
+                ink.redrawQueued = true;
+                requestAnimationFrame(function () {
+                    ink.redrawQueued = false;
+                    if (!ink.ctx || !ink.hostRect) return;
+                    ink.ctx.clearRect(0, 0, ink.hostRect.w, ink.hostRect.h);
+                    ink.ctx.beginPath();
+                    for (var s = 0; s < ink.strokes.length; s++) {
+                        var pts = ink.strokes[s];
+                        if (!pts || !pts.length) continue;
+                        ink.ctx.moveTo(pts[0].x, pts[0].y);
+                        for (var i = 1; i < pts.length; i++) ink.ctx.lineTo(pts[i].x, pts[i].y);
+                    }
+                    if (ink.current && ink.current.length) {
+                        ink.ctx.moveTo(ink.current[0].x, ink.current[0].y);
+                        for (var j = 1; j < ink.current.length; j++) ink.ctx.lineTo(ink.current[j].x, ink.current[j].y);
+                    }
+                    ink.ctx.stroke();
+                });
             }
 
             function addPtsFromEvent(ev) {
@@ -2731,8 +2748,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 return '';
             }
 
-            function finishAndCommit(attempt) {
-                attempt = attempt || 0;
+            function finishAndCommit() {
                 var input = boundInput();
                 if (!ink.active || !input) {
                     closeInk(false);
@@ -2745,37 +2761,24 @@ window.colorPreviewNumber = function(tankName, value) {
                     return;
                 }
                 if (!ink.strokes.length) {
-                    if (attempt < 1) {
-                        ink.commitTimer = setTimeout(function () { finishAndCommit(attempt + 1); }, 700);
-                        return;
-                    }
                     closeInk(false);
                     return;
                 }
-                window.__shSpenRecognizeStrokes().then(function (text) {
-                    var target = boundInput() || input;
-                    var num = window.__shSpenNormalizeNumber(text);
-                    if (!num) return window.__shSpenOcrInkCanvas().then(function (ocr) {
-                        return { target: target, num: window.__shSpenNormalizeNumber(ocr) };
-                    });
-                    return { target: target, num: num };
-                }).then(function (got) {
+                var pred = ink.pendingPred || window.__shSpenRecognizeStrokes();
+                ink.pendingPred = null;
+                pred.then(function (text) {
                     if (!ink.active) return;
-                    var target = (got && got.target) || boundInput() || input;
-                    var num = got && got.num;
+                    var target = boundInput() || input;
                     var imeNow = liveImeNumber(target);
                     if (imeNow) {
                         window.__shSpenCommitNumber(target, imeNow);
                         closeInk(true);
                         return;
                     }
+                    var num = window.__shSpenNormalizeNumber(text);
                     if (num) {
                         window.__shSpenCommitNumber(target, num);
                         closeInk(true);
-                        return;
-                    }
-                    if (attempt < 1) {
-                        ink.commitTimer = setTimeout(function () { finishAndCommit(attempt + 1); }, 800);
                         return;
                     }
                     closeInk(false);
@@ -2784,10 +2787,27 @@ window.colorPreviewNumber = function(tankName, value) {
                 });
             }
 
-            function scheduleCommit() {
+            function scheduleCommit(immediate) {
                 clearTimeout(ink.commitTimer);
-                ink.commitTimer = setTimeout(function () { finishAndCommit(0); }, 1400);
+                var input = boundInput();
+                var penBusy = !!(window.__shPenIsDown || ink.current);
+                if (!penBusy && input && liveImeNumber(input)) {
+                    finishAndCommit();
+                    return;
+                }
+                if (immediate && !penBusy) {
+                    finishAndCommit();
+                    return;
+                }
+                if (ink.strokes.length && !ink.pendingPred && !penBusy) {
+                    ink.pendingPred = window.__shSpenRecognizeStrokes();
+                }
+                ink.commitTimer = setTimeout(function () { finishAndCommit(); }, window.__SPEN_COMMIT_MS || 320);
             }
+
+            window.__shSpenCommitNow = function () {
+                scheduleCommit(true);
+            };
 
             function closeInk(keepValue) {
                 clearTimeout(ink.commitTimer);
@@ -2798,6 +2818,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 ink.pointerId = null;
                 ink.input = null;
                 ink.inputId = '';
+                ink.pendingPred = null;
                 hideHost();
                 if (document.body) document.body.classList.remove('sh-spen-ink-open');
                 if (!keepValue && typeof window.__flushSpenDeferredWork === 'function') {
@@ -2816,7 +2837,7 @@ window.colorPreviewNumber = function(tankName, value) {
                     return;
                 }
                 var same = ink.active && ink.inputId && input.id && ink.inputId === input.id;
-                if (ink.active && !same) finishAndCommit(0);
+                if (ink.active && !same) finishAndCommit();
                 if (!ink.active || !same) {
                     ink.active = true;
                     ink.input = input;
@@ -2834,6 +2855,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 ink.pointerId = ev.pointerId;
                 ink.startMs = Date.now();
                 ink.current = [];
+                ink.pendingPred = null;
                 addPtsFromEvent(ev);
                 redraw();
                 clearTimeout(ink.commitTimer);
@@ -2876,6 +2898,7 @@ window.colorPreviewNumber = function(tankName, value) {
 
             window.__shSpenNoteImeCommit = function (el) {
                 if (!ink.active || ink.input !== el) return;
+                if (window.__shPenIsDown || ink.current) return;
                 scheduleCommit();
             };
 
@@ -2884,8 +2907,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (!ink.active) return;
                 if (ev.pointerType === 'pen') return;
                 if (ev.target && ev.target.closest && ev.target.closest('#sh-spen-ink-host')) return;
-                if (ink.input && (ev.target === ink.input || (ink.input.contains && ink.input.contains(ev.target)))) return;
-                scheduleCommit();
+                scheduleCommit(true);
             }, true);
             void window.__shSpenEnsureRecognizer();
         };
@@ -42111,14 +42133,14 @@ window.convertToHtml = async () => {
             pointer-events: auto !important;
         }
         body.sh-device-android-tablet .main-container input:not([readonly]),
-        body.sh-device-android-tablet .main-container textarea:not([readonly]),
-        body.sh-device-android-tablet .main-container .amb-input-box,
-        body.sh-device-android-tablet .main-container .nott-stocc-inp-cell,
-        body.sh-device-android-tablet .main-container td:has(> input),
-        body.sh-device-android-tablet .main-container td:has(> textarea) {
+        body.sh-device-android-tablet .main-container textarea:not([readonly]) {
+            touch-action: pan-y;
+            -webkit-user-select: text;
+            user-select: text;
+        }
+        body.sh-device-android-tablet.sh-spen-ink-open .main-container input:not([readonly]):focus,
+        body.sh-device-android-tablet.sh-spen-ink-open .main-container textarea:not([readonly]):focus {
             touch-action: none !important;
-            -webkit-user-select: text !important;
-            user-select: text !important;
         }
         body.sh-stylus-pen-active #sh-post-long-press-shield {
             display: none !important;

@@ -1018,7 +1018,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v516';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v518';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -2208,9 +2208,10 @@ window.colorPreviewNumber = function(tankName, value) {
         };
         window.__flushSpenDeferredWork = function () {
             if (window.__shSpenSessionActive && window.__shSpenSessionActive()) return;
+            var recentSpen = window.__shSpenLastCommitTs && (Date.now() - window.__shSpenLastCommitTs) < 8000;
             var pendingPlant = window.__pendingPlantApplyWhileSpen;
             window.__pendingPlantApplyWhileSpen = null;
-            if (pendingPlant && pendingPlant.d && typeof window.__applyRemotePlantPayload === 'function') {
+            if (pendingPlant && pendingPlant.d && !recentSpen && typeof window.__applyRemotePlantPayload === 'function') {
                 window.__applyRemotePlantPayload(pendingPlant.d, Object.assign({}, pendingPlant.opts || {}, { fromSpenDefer: true }));
             }
             if (window.__pendingSpenCloudFlush) {
@@ -2255,8 +2256,11 @@ window.colorPreviewNumber = function(tankName, value) {
             }, { capture: true, passive: true });
             document.addEventListener('pointermove', function (ev) {
                 if (ev.pointerType !== 'pen') return;
-                if (!window.__isPenContactEvent(ev)) return;
-                onPen(ev, null);
+                var ink = window.__shSpenInk;
+                var inkStroke = !!(ink && ink.active && ink.current &&
+                    (ink.pointerId == null || ink.pointerId === ev.pointerId));
+                if (!inkStroke && !window.__isPenContactEvent(ev)) return;
+                if (window.__isPenContactEvent(ev) || inkStroke) onPen(ev, null);
                 if (typeof window.__shSpenOnPenMove === 'function') window.__shSpenOnPenMove(ev);
             }, { capture: true, passive: true });
             document.addEventListener('pointerup', function (ev) {
@@ -2289,15 +2293,15 @@ window.colorPreviewNumber = function(tankName, value) {
             }, 400);
         })();
 
-        window.__primeAndroidSpenInput = function (el) {
+        window.__primeAndroidSpenInput = function (el, force) {
             if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
             if (!el || el.nodeType !== 1) return;
             if (el.type === 'hidden' || el.type === 'file' || el.type === 'checkbox' || el.type === 'radio') return;
-            if (window.__shSpenSessionActive && window.__shSpenSessionActive()) {
+            if (!force && window.__shSpenSessionActive && window.__shSpenSessionActive()) {
                 window.__pendingSpenPrimeAll = true;
                 return;
             }
-            if (el === document.activeElement) return;
+            if (!force && el === document.activeElement) return;
             el.removeAttribute('writingsuggestions');
             if (el.getAttribute('inputmode') === 'decimal' || el.getAttribute('inputmode') === 'numeric') {
                 el.removeAttribute('inputmode');
@@ -2477,14 +2481,16 @@ window.colorPreviewNumber = function(tankName, value) {
             if (typeof window.applyIntegerOnlyTankValue === 'function') {
                 cleaned = window.applyIntegerOnlyTankValue(input.id, cleaned);
             }
-            if (input.value === cleaned) return true;
+            if (!cleaned) return false;
             input.value = cleaned;
+            window.__shSpenLastCommitTs = Date.now();
             if (typeof window.__touchPlantFieldEdit === 'function') window.__touchPlantFieldEdit(input);
             try { input.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
             try { input.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
             if (typeof window.refreshAlarmVisualForField === 'function') window.refreshAlarmVisualForField(input, true);
             if (typeof window.updateTankLevelArrowForInput === 'function') window.updateTankLevelArrowForInput(input);
-            if (typeof window.saveData === 'function') window.saveData(true);
+            if (typeof window.__schedulePlantCloudSave === 'function') window.__schedulePlantCloudSave(true);
+            else if (typeof window.saveData === 'function') window.saveData(true);
             return true;
         };
 
@@ -2615,6 +2621,20 @@ window.colorPreviewNumber = function(tankName, value) {
                 }
             }
 
+            window.__shSpenPickPredictionText = function (preds) {
+                if (!preds) return '';
+                if (typeof preds === 'string') return preds;
+                if (!preds.length) return '';
+                var first = preds[0];
+                if (typeof first === 'string') return first;
+                if (!first || typeof first !== 'object') return '';
+                if (first.text) return String(first.text);
+                if (first.segmentationResult && first.segmentationResult[0] && first.segmentationResult[0].text) {
+                    return String(first.segmentationResult[0].text);
+                }
+                return '';
+            };
+
             window.__shSpenEnsureRecognizer = function () {
                 if (window.__shSpenRecognizer === false) return Promise.resolve(null);
                 if (window.__shSpenRecognizer) return Promise.resolve(window.__shSpenRecognizer);
@@ -2622,18 +2642,20 @@ window.colorPreviewNumber = function(tankName, value) {
                     window.__shSpenRecognizer = false;
                     return Promise.resolve(null);
                 }
-                return navigator.createHandwritingRecognizer({ languages: ['it', 'en'] }).then(function (rec) {
-                    window.__shSpenRecognizer = rec;
-                    return rec;
-                }).catch(function () {
-                    return navigator.createHandwritingRecognizer({ languages: ['en'] }).then(function (rec) {
+                var tryLangs = [['en'], ['it', 'en'], ['it']];
+                var i = 0;
+                var next = function () {
+                    if (i >= tryLangs.length) {
+                        window.__shSpenRecognizer = false;
+                        return Promise.resolve(null);
+                    }
+                    var langs = tryLangs[i++];
+                    return navigator.createHandwritingRecognizer({ languages: langs }).then(function (rec) {
                         window.__shSpenRecognizer = rec;
                         return rec;
-                    }).catch(function () {
-                        window.__shSpenRecognizer = false;
-                        return null;
-                    });
-                });
+                    }).catch(next);
+                };
+                return next();
             };
 
             window.__shSpenRecognizeStrokes = function () {
@@ -2642,65 +2664,126 @@ window.colorPreviewNumber = function(tankName, value) {
                     if (!rec || typeof rec.startDrawing !== 'function') return '';
                     var StrokeCtor = window.HandwritingStroke;
                     if (typeof StrokeCtor !== 'function') return '';
-                    var drawing = rec.startDrawing({
-                        recognitionType: 'number',
-                        inputType: 'stylus',
-                        alternatives: 3,
-                        graphemeSet: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ',', '.', '-']
-                    });
+                    var drawing = null;
+                    var hintSets = [
+                        { recognitionType: 'number', inputType: 'stylus', alternatives: 3 },
+                        { recognitionType: 'text', inputType: 'stylus', alternatives: 3 },
+                        { inputType: 'stylus', alternatives: 3 }
+                    ];
+                    for (var h = 0; h < hintSets.length; h++) {
+                        try {
+                            drawing = rec.startDrawing(hintSets[h]);
+                            if (drawing) break;
+                        } catch (_) { drawing = null; }
+                    }
+                    if (!drawing || typeof drawing.addStroke !== 'function') return '';
+                    var added = 0;
                     for (var i = 0; i < ink.strokes.length; i++) {
                         var pts = ink.strokes[i];
-                        if (!pts || pts.length < 2) continue;
+                        if (!pts || !pts.length) continue;
                         var stroke = new StrokeCtor();
                         for (var k = 0; k < pts.length; k++) {
-                            stroke.addPoint({ x: pts[k].x, y: pts[k].y, t: pts[k].t || k });
+                            var t = pts[k].t;
+                            if (t == null || !Number.isFinite(t)) t = k;
+                            stroke.addPoint({ x: pts[k].x, y: pts[k].y, t: t });
                         }
                         drawing.addStroke(stroke);
+                        added++;
                     }
+                    if (!added) return '';
                     return drawing.getPrediction().then(function (preds) {
                         try { drawing.clear(); } catch (_) {}
-                        if (!preds || !preds.length) return '';
-                        return (preds[0] && preds[0].text) || '';
+                        return window.__shSpenPickPredictionText(preds);
                     }).catch(function () { return ''; });
                 }).catch(function () { return ''; });
             };
 
-            function finishAndCommit() {
+            window.__shSpenOcrInkCanvas = function () {
+                if (typeof Tesseract === 'undefined' || !Tesseract.recognize) return Promise.resolve('');
+                if (!ink.canvas || !ink.hostRect || ink.hostRect.w < 4 || ink.hostRect.h < 4) return Promise.resolve('');
+                try {
+                    var scale = 3;
+                    var tmp = document.createElement('canvas');
+                    tmp.width = Math.max(16, Math.round(ink.hostRect.w * scale));
+                    tmp.height = Math.max(16, Math.round(ink.hostRect.h * scale));
+                    var c = tmp.getContext('2d');
+                    c.fillStyle = '#ffffff';
+                    c.fillRect(0, 0, tmp.width, tmp.height);
+                    c.drawImage(ink.canvas, 0, 0, tmp.width, tmp.height);
+                    return Tesseract.recognize(tmp, 'eng', { logger: function () {} }).then(function (res) {
+                        return (res && res.data && res.data.text) || '';
+                    }).catch(function () { return ''; });
+                } catch (_) {
+                    return Promise.resolve('');
+                }
+            };
+
+            function liveImeNumber(input) {
+                if (!input) return '';
+                var live = String(input.value == null ? '' : input.value);
+                var ime = window.__shSpenNormalizeNumber(ink.imeText || live);
+                var origin = window.__shSpenNormalizeNumber(ink.originValue);
+                if (ime && ime !== origin) return ime;
+                if (live && live !== ink.originValue) return window.__shSpenNormalizeNumber(live);
+                return '';
+            }
+
+            function finishAndCommit(attempt) {
+                attempt = attempt || 0;
                 var input = boundInput();
                 if (!ink.active || !input) {
                     closeInk(false);
                     return;
                 }
-                var live = String(input.value == null ? '' : input.value);
-                var ime = window.__shSpenNormalizeNumber(ink.imeText || live);
-                var origin = window.__shSpenNormalizeNumber(ink.originValue);
-                if (ime && ime !== origin) {
-                    window.__shSpenCommitNumber(input, ime);
-                    closeInk(true);
-                    return;
-                }
-                if (live && live !== ink.originValue) {
-                    window.__shSpenCommitNumber(input, live);
+                var imeNum = liveImeNumber(input);
+                if (imeNum) {
+                    window.__shSpenCommitNumber(input, imeNum);
                     closeInk(true);
                     return;
                 }
                 if (!ink.strokes.length) {
+                    if (attempt < 1) {
+                        ink.commitTimer = setTimeout(function () { finishAndCommit(attempt + 1); }, 700);
+                        return;
+                    }
                     closeInk(false);
                     return;
                 }
                 window.__shSpenRecognizeStrokes().then(function (text) {
                     var target = boundInput() || input;
                     var num = window.__shSpenNormalizeNumber(text);
-                    var nowLive = target ? String(target.value == null ? '' : target.value) : '';
-                    if (num) window.__shSpenCommitNumber(target, num);
-                    else if (nowLive && nowLive !== ink.originValue) window.__shSpenCommitNumber(target, nowLive);
-                    closeInk(!!(num || (nowLive && nowLive !== ink.originValue)));
+                    if (!num) return window.__shSpenOcrInkCanvas().then(function (ocr) {
+                        return { target: target, num: window.__shSpenNormalizeNumber(ocr) };
+                    });
+                    return { target: target, num: num };
+                }).then(function (got) {
+                    if (!ink.active) return;
+                    var target = (got && got.target) || boundInput() || input;
+                    var num = got && got.num;
+                    var imeNow = liveImeNumber(target);
+                    if (imeNow) {
+                        window.__shSpenCommitNumber(target, imeNow);
+                        closeInk(true);
+                        return;
+                    }
+                    if (num) {
+                        window.__shSpenCommitNumber(target, num);
+                        closeInk(true);
+                        return;
+                    }
+                    if (attempt < 1) {
+                        ink.commitTimer = setTimeout(function () { finishAndCommit(attempt + 1); }, 800);
+                        return;
+                    }
+                    closeInk(false);
+                }).catch(function () {
+                    closeInk(false);
                 });
             }
 
             function scheduleCommit() {
                 clearTimeout(ink.commitTimer);
-                ink.commitTimer = setTimeout(finishAndCommit, 750);
+                ink.commitTimer = setTimeout(function () { finishAndCommit(0); }, 1400);
             }
 
             function closeInk(keepValue) {
@@ -3878,14 +3961,24 @@ window.colorPreviewNumber = function(tankName, value) {
             return !!(pressTimer || globalInteractionLock || isLongPress);
         };
         window.__plantUiBusyUntil = 0;
+        window.__lastUiTouchTs = 0;
+        window.__lastStatusTapTs = 0;
+        window.__noteUserUiTouch = function () {
+            window.__lastUiTouchTs = Date.now();
+        };
         window.__markPlantUiBusy = function (ms) {
             var add = typeof ms === 'number' ? ms : 480;
-            window.__plantUiBusyUntil = Math.max(window.__plantUiBusyUntil || 0, Date.now() + add);
+            var now = Date.now();
+            window.__lastUiTouchTs = now;
+            window.__plantUiBusyUntil = Math.max(window.__plantUiBusyUntil || 0, now + add);
         };
         window.__isPlantUiBusy = function () {
             if (window.__isUserPressingLabel && window.__isUserPressingLabel()) return true;
             if (window.__isPostLongPressShieldActive && window.__isPostLongPressShieldActive()) return true;
-            return Date.now() < (window.__plantUiBusyUntil || 0);
+            var now = Date.now();
+            if (now < (window.__plantUiBusyUntil || 0)) return true;
+            if (now - (window.__lastUiTouchTs || 0) < 600) return true;
+            return false;
         };
         window.__deferHeavyUiWork = function (fn) {
             if (!fn) return false;
@@ -6058,7 +6151,7 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__capturePlantStatusStateFromEl = function (el) {
             if (!el || !el.id) return null;
             return {
-                text: el.innerText || el.textContent || '',
+                text: el.textContent || '',
                 class: el.className || '',
                 style: el.getAttribute('style') || ''
             };
@@ -6454,17 +6547,30 @@ window.colorPreviewNumber = function(tankName, value) {
                 window.__pendingStatusPersistIds = window.__pendingStatusPersistIds || {};
                 window.__pendingStatusPersistIds[statusId] = 1;
             }
-            if (window.__statusPersistTimer) clearTimeout(window.__statusPersistTimer);
-            window.__statusPersistTimer = setTimeout(function tick() {
+            if (window.__statusPersistTimer) {
+                clearTimeout(window.__statusPersistTimer);
+                window.__statusPersistTimer = 0;
+            }
+            if (window.__statusPersistIdle && typeof cancelIdleCallback === 'function') {
+                cancelIdleCallback(window.__statusPersistIdle);
+                window.__statusPersistIdle = 0;
+            }
+            var run = function () {
+                window.__statusPersistTimer = 0;
+                window.__statusPersistIdle = 0;
                 if (window.__isPlantUiBusy && window.__isPlantUiBusy()) {
-                    window.__statusPersistTimer = setTimeout(tick, 280);
+                    window.__statusPersistTimer = setTimeout(run, 320);
                     return;
                 }
-                window.__statusPersistTimer = 0;
                 if (typeof window.__flushPlantStatusLightPatch === 'function') {
                     void window.__flushPlantStatusLightPatch();
                 }
-            }, 420);
+            };
+            if (typeof requestIdleCallback === 'function') {
+                window.__statusPersistIdle = requestIdleCallback(run, { timeout: 1200 });
+            } else {
+                window.__statusPersistTimer = setTimeout(run, 750);
+            }
         };
 
         window.__flushPlantStatusLightPatch = async function () {
@@ -6502,27 +6608,33 @@ window.colorPreviewNumber = function(tankName, value) {
             var now = Date.now();
             patch.lastUpdate = new Date().toISOString();
             patch.syncRevision = now;
-            if (window.__plantStatusEdits && typeof window.__plantStatusEdits === 'object') {
-                var localBk = typeof window.__readPlantBackupLocal === 'function'
-                    ? window.__readPlantBackupLocal() : null;
-                var mergedEdits = {};
-                if (localBk && localBk.plantStatusEdits && typeof window.__mergePlantStatusEditsMaps === 'function') {
-                    mergedEdits = window.__mergePlantStatusEditsMaps(mergedEdits, localBk.plantStatusEdits);
-                }
-                mergedEdits = window.__mergePlantStatusEditsMaps
-                    ? window.__mergePlantStatusEditsMaps(mergedEdits, window.__plantStatusEdits)
-                    : Object.assign({}, mergedEdits, window.__plantStatusEdits);
-                patch.plantStatusEdits = mergedEdits;
+            var cacheEdits = window.__cloudPlantCache && window.__cloudPlantCache.plantStatusEdits;
+            if ((cacheEdits || window.__plantStatusEdits) && typeof window.__mergePlantStatusEditsMaps === 'function') {
+                patch.plantStatusEdits = window.__mergePlantStatusEditsMaps(cacheEdits || {}, window.__plantStatusEdits || {});
+            } else if (window.__plantStatusEdits && typeof window.__plantStatusEdits === 'object') {
+                patch.plantStatusEdits = window.__plantStatusEdits;
             }
             if (window.__plantFieldEditMs && typeof window.__plantFieldEditMs === 'object') {
                 patch.plantFieldEditMs = Object.assign({}, window.__plantFieldEditMs);
             }
+            cacheCloudPlantPayload(patch);
 
-            var existing = typeof window.__readPlantBackupLocal === 'function'
-                ? window.__readPlantBackupLocal() : null;
-            if (existing && typeof existing === 'object') {
-                Object.keys(patch).forEach(function (k) { existing[k] = patch[k]; });
-                if (typeof __writePlantLocalBackup === 'function') __writePlantLocalBackup(existing);
+            var writeLocalLater = function () {
+                if (window.__isPlantUiBusy && window.__isPlantUiBusy()) {
+                    setTimeout(writeLocalLater, 400);
+                    return;
+                }
+                var existing = typeof window.__readPlantBackupLocal === 'function'
+                    ? window.__readPlantBackupLocal() : null;
+                if (existing && typeof existing === 'object') {
+                    Object.keys(patch).forEach(function (k) { existing[k] = patch[k]; });
+                    if (typeof __writePlantLocalBackup === 'function') __writePlantLocalBackup(existing);
+                }
+            };
+            if (typeof requestIdleCallback === 'function') {
+                requestIdleCallback(writeLocalLater, { timeout: 2200 });
+            } else {
+                setTimeout(writeLocalLater, 900);
             }
 
             if (!user || !user.uid || !db || !window.__cloudPlantHydrated) {
@@ -33126,7 +33238,14 @@ window.updateStoricoButton = async function() {
                     if (typeof window.syncRigenerazionePanel === 'function') window.syncRigenerazionePanel();
                 }
                 updateModulesVisibility();
-                window.persistHiddenModulesForActiveRapportino();
+                var persistHiddenLater = function () {
+                    window.persistHiddenModulesForActiveRapportino();
+                };
+                if (typeof requestIdleCallback === 'function') {
+                    requestIdleCallback(persistHiddenLater, { timeout: 800 });
+                } else {
+                    setTimeout(persistHiddenLater, 200);
+                }
                 requestAnimationFrame(function () {
                     document.body.classList.remove('sh-instant-layout');
                 });
@@ -33268,6 +33387,7 @@ window.updateStoricoButton = async function() {
             const touch = e.touches ? e.touches[0] : e;
             startX = touch.clientX;
             startY = touch.clientY;
+            if (typeof window.__noteUserUiTouch === 'function') window.__noteUserUiTouch();
             if (typeof window.__queuePlantStatusPersist === 'function') window.__queuePlantStatusPersist();
             if (!isTabletLayout && !isAndroidTab) forceBlur();
             isLongPress = false;
@@ -33326,7 +33446,7 @@ window.updateStoricoButton = async function() {
             }
             
             if (globalInteractionLock && !force) return;
-            if (typeof window.__markPlantUiBusy === 'function') window.__markPlantUiBusy(400);
+            if (typeof window.__markPlantUiBusy === 'function') window.__markPlantUiBusy(280);
             if (typeof window.__queuePlantStatusPersist === 'function') window.__queuePlantStatusPersist();
             const domId = window.normalizePhoneSectionDomId(id);
             const groups = window.getPhoneSectionGroups();
@@ -33345,50 +33465,61 @@ window.updateStoricoButton = async function() {
                 targetDomId = visible[prevIdx];
             }
             const isFuochistaPhone = window.isFuochistaPhoneLayoutActive && window.isFuochistaPhoneLayoutActive();
-            const applyToggle = function () {
-                if (isFuochistaPhone) {
-                    window.__fuochistaPhoneSectionTapTs = Date.now();
+            const instantAfterStatus = (Date.now() - (window.__lastStatusTapTs || 0)) < 1200;
+            if (instantAfterStatus && document.body) document.body.classList.add('sh-instant-layout');
+            if (isFuochistaPhone) {
+                window.__fuochistaPhoneSectionTapTs = Date.now();
+            }
+            const rowBlocks = {};
+            group.forEach(function (sid) {
+                const target = document.getElementById(sid);
+                if (!target) return;
+                const rb = target.closest('.row-block');
+                if (rb && isFuochistaPhone) rowBlocks[rb.id || 'rb'] = rb;
+                if (sid === targetDomId) {
+                    target.classList.remove('col-collapsed');
+                    target.classList.add('col-expanded');
+                } else {
+                    target.classList.remove('col-expanded');
+                    target.classList.add('col-collapsed');
                 }
-                const rowBlocks = {};
-                group.forEach(function (sid) {
-                    const target = document.getElementById(sid);
-                    if (!target) return;
-                    const rb = target.closest('.row-block');
-                    if (rb && isFuochistaPhone) rowBlocks[rb.id || 'rb'] = rb;
-                    if (sid === targetDomId) {
-                        target.classList.remove('col-collapsed');
-                        target.classList.add('col-expanded');
-                    } else {
-                        target.classList.remove('col-expanded');
-                        target.classList.add('col-collapsed');
-                    }
-                    if (isFuochistaPhone) {
-                        target.style.setProperty('display', 'flex', 'important');
-                    }
+                if (isFuochistaPhone) {
+                    target.style.setProperty('display', 'flex', 'important');
+                }
+            });
+            if (instantAfterStatus) {
+                requestAnimationFrame(function () {
+                    if (document.body) document.body.classList.remove('sh-instant-layout');
                 });
-                if (isFuochistaPhone) {
-                    Object.keys(rowBlocks).forEach(function (k) {
-                        const rb = rowBlocks[k];
-                        rb.classList.add('fuochista-panel-switching');
-                        setTimeout(function () {
-                            rb.classList.remove('fuochista-panel-switching');
-                        }, 280);
-                    });
-                    if (typeof window.warmFuochistaPhoneVerticalSections === 'function' &&
-                        !window.__fuochistaPhoneVerticalWarmed) {
-                        window.warmFuochistaPhoneVerticalSections();
-                    }
+            }
+            if (isFuochistaPhone) {
+                Object.keys(rowBlocks).forEach(function (k) {
+                    const rb = rowBlocks[k];
+                    rb.classList.add('fuochista-panel-switching');
+                    setTimeout(function () {
+                        rb.classList.remove('fuochista-panel-switching');
+                    }, 280);
+                });
+                if (typeof window.warmFuochistaPhoneVerticalSections === 'function' &&
+                    !window.__fuochistaPhoneVerticalWarmed) {
+                    window.warmFuochistaPhoneVerticalSections();
                 }
+            }
+            var persistLater = function () {
                 if (typeof window.persistPhoneSectionsLayout === 'function') {
                     window.persistPhoneSectionsLayout();
                 }
-                setTimeout(function () {
-                    if (typeof window.refreshAllTankLevelArrows === 'function') {
-                        window.refreshAllTankLevelArrows();
-                    }
-                }, 100);
             };
-            requestAnimationFrame(applyToggle);
+            if (typeof requestIdleCallback === 'function') {
+                requestIdleCallback(persistLater, { timeout: 900 });
+            } else {
+                setTimeout(persistLater, 350);
+            }
+            setTimeout(function () {
+                if (typeof window.refreshAllTankLevelArrows === 'function') {
+                    window.refreshAllTankLevelArrows();
+                }
+            }, instantAfterStatus ? 280 : 100);
         };
 
         window.__dimLinkedInputsForStatus = function (statusId) {
@@ -33431,40 +33562,31 @@ window.updateStoricoButton = async function() {
         };
 
         window.toggleStatus = (id) => {
-            
-            // Cerca l'elemento prima nel DOM normale, poi nei moduli nascosti
             let el = document.getElementById(id);
-            
-            // Se non lo trova, cerca nell'elenco dei moduli nascosti
-            if (!el) {
-                const hiddenModules = window.hiddenModules || [];
-                for (const moduleId of hiddenModules) {
-                    const hiddenSection = document.getElementById(moduleId);
-                    if (hiddenSection) {
-                        el = hiddenSection.querySelector(`#${id}`);
-                        if (el) break;
-                    }
-                }
-            }
-            
-            // Se ancora non lo trova, cerca in tutto il documento
-            if (!el) {
-                el = document.querySelector(`#${id}`);
-            }
-            
+            if (!el) el = document.querySelector('#' + id);
             if (!el) return;
-            
+
             const active = String(el.textContent || '').trim() === "FERMO";
             el.textContent = active ? "MARCIA" : "FERMO";
             el.className = `status-cell-btn ${active ? 'bg-marcia' : 'bg-fermo'}`;
-            if (typeof window.__touchPlantStatusEdit === 'function') window.__touchPlantStatusEdit(id);
-            if (typeof window.__dimLinkedInputsForStatus === 'function') {
-                window.__dimLinkedInputsForStatus(id);
-            }
-            if (id === 'stat-f' && typeof window.rigenUpdateFaseLabels === 'function') {
-                window.rigenUpdateFaseLabels();
-            }
+            window.__lastStatusTapTs = Date.now();
+            if (typeof window.__noteUserUiTouch === 'function') window.__noteUserUiTouch();
+            window.__plantFieldEditMs = window.__plantFieldEditMs || {};
+            window.__plantFieldEditMs[id] = window.__lastStatusTapTs;
+            window.__plantStatusEdits = window.__plantStatusEdits || {};
+            window.__plantStatusEdits[id] = {
+                t: window.__lastStatusTapTs,
+                state: { text: el.textContent || '', class: el.className || '', style: el.getAttribute('style') || '' }
+            };
             if (typeof window.__queuePlantStatusPersist === 'function') window.__queuePlantStatusPersist(id);
+            requestAnimationFrame(function () {
+                if (typeof window.__dimLinkedInputsForStatus === 'function') {
+                    window.__dimLinkedInputsForStatus(id);
+                }
+                if (id === 'stat-f' && typeof window.rigenUpdateFaseLabels === 'function') {
+                    window.rigenUpdateFaseLabels();
+                }
+            });
         };
 
         window.toggleComp = (id, sigla) => {
@@ -33530,6 +33652,8 @@ window.updateStoricoButton = async function() {
             }
 
             if (typeof window.__touchPlantStatusEdit === 'function') window.__touchPlantStatusEdit(headerId);
+            window.__lastStatusTapTs = Date.now();
+            if (typeof window.__noteUserUiTouch === 'function') window.__noteUserUiTouch();
             if (typeof window.__queuePlantStatusPersist === 'function') {
                 window.__queuePlantStatusPersist(headerId);
                 if (statusId) window.__queuePlantStatusPersist(statusId);

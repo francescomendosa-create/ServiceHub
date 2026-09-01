@@ -1032,7 +1032,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v524';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v526';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -2143,7 +2143,7 @@ window.colorPreviewNumber = function(tankName, value) {
             return !!(window.__shIsAndroidTablet && window.__shIsAndroidTablet());
         };
         window.__SPEN_SESSION_MS = 1800;
-        window.__SPEN_COMMIT_MS = 320;
+        window.__SPEN_COMMIT_MS = 620;
         window.__shPenLastEventTs = 0;
         window.__shSpenLastFieldTs = 0;
         window.__shPenIsDown = false;
@@ -2366,7 +2366,7 @@ window.colorPreviewNumber = function(tankName, value) {
             if (!force && el === document.activeElement) return;
             el.removeAttribute('writingsuggestions');
             if (el.getAttribute('inputmode') === 'decimal' || el.getAttribute('inputmode') === 'numeric') {
-                el.removeAttribute('inputmode');
+                if (el.id !== 'inp-sec-note') el.removeAttribute('inputmode');
             }
             if (el.type === 'tel' && !el.readOnly) el.type = 'text';
             el.setAttribute('autocomplete', 'off');
@@ -2472,7 +2472,10 @@ window.colorPreviewNumber = function(tankName, value) {
                 || el.closest('#sh-spen-ink-host'));
         };
         window.__shSpenIsWritableInput = function (inp) {
-            if (!inp || inp.readOnly || inp.disabled) return false;
+            if (!inp) return false;
+            if (inp.id === 'inp-sec-note') return false;
+            if (inp.closest && inp.closest('#rapportino-note-tendina')) return false;
+            if (inp.readOnly || inp.disabled) return false;
             if (inp.type === 'hidden' || inp.type === 'file' || inp.type === 'checkbox' || inp.type === 'radio') return false;
             if (!inp.closest || !inp.closest('.main-container')) return false;
             if (window.__shSpenIsBlockedRoot(inp)) return false;
@@ -2666,7 +2669,7 @@ window.colorPreviewNumber = function(tankName, value) {
             else if (mode === 'append' && rec) next = orig + rec;
             else if (rec) next = rec;
             else return false;
-            if (mode !== 'clear' && typeof window.applyIntegerOnlyTankValue === 'function') {
+            if (mode !== 'clear' && next.indexOf(',') < 0 && typeof window.applyIntegerOnlyTankValue === 'function') {
                 var formatted = window.applyIntegerOnlyTankValue(input.id, next);
                 if (formatted != null && String(formatted).trim() !== '') next = formatted;
             }
@@ -2706,6 +2709,9 @@ window.colorPreviewNumber = function(tankName, value) {
                 lastPt: null,
                 imeText: '',
                 originValue: '',
+                pendingPred: null,
+                pendingPredCount: 0,
+                epoch: 0,
                 laidOut: false
             };
             window.__shSpenInk = ink;
@@ -2816,13 +2822,20 @@ window.colorPreviewNumber = function(tankName, value) {
             }
 
             function addPtsFromEvent(ev) {
-                var list = [ev];
+                var list = [];
                 try {
-                    if (typeof ev.getCoalescedEvents === 'function') {
+                    if (ev && typeof ev.getCoalescedEvents === 'function') {
                         var extra = ev.getCoalescedEvents();
-                        if (extra && extra.length) list = extra;
+                        if (extra && extra.length) {
+                            for (var ei = 0; ei < extra.length; ei++) list.push(extra[ei]);
+                        }
                     }
                 } catch (_) {}
+                if (!list.length) list.push(ev);
+                else {
+                    var lastEv = list[list.length - 1];
+                    if (!lastEv || lastEv.clientX !== ev.clientX || lastEv.clientY !== ev.clientY) list.push(ev);
+                }
                 if (!ink.current) ink.current = [];
                 for (var i = 0; i < list.length; i++) {
                     var p = toLocal(list[i]);
@@ -2834,18 +2847,95 @@ window.colorPreviewNumber = function(tankName, value) {
                 }
             }
 
-            window.__shSpenPickPredictionText = function (preds) {
-                if (!preds) return '';
-                if (typeof preds === 'string') return preds;
-                if (!preds.length) return '';
-                var first = preds[0];
-                if (typeof first === 'string') return first;
-                if (!first || typeof first !== 'object') return '';
-                if (first.text) return String(first.text);
-                if (first.segmentationResult && first.segmentationResult[0] && first.segmentationResult[0].text) {
-                    return String(first.segmentationResult[0].text);
+            function cloneStrokes(strokes) {
+                var out = [];
+                if (!strokes) return out;
+                for (var i = 0; i < strokes.length; i++) {
+                    var pts = strokes[i];
+                    if (!pts || !pts.length) continue;
+                    var copy = [];
+                    for (var k = 0; k < pts.length; k++) {
+                        var p = pts[k];
+                        if (!p) continue;
+                        copy.push({ x: p.x, y: p.y, t: p.t });
+                    }
+                    if (copy.length) out.push(copy);
                 }
-                return '';
+                return out;
+            }
+
+            function estimateGlyphCount(strokes) {
+                var boxes = [];
+                if (!strokes) return 0;
+                for (var s = 0; s < strokes.length; s++) {
+                    var b = window.__shSpenStrokeBounds([strokes[s]]);
+                    if (b) boxes.push(b);
+                }
+                if (!boxes.length) return 0;
+                boxes.sort(function (a, b) { return a.minx - b.minx; });
+                var count = 0;
+                var lastRight = -Infinity;
+                for (var i = 0; i < boxes.length; i++) {
+                    var gap = Math.max(8, Math.min(18, boxes[i].w * 0.35));
+                    if (boxes[i].minx > lastRight + gap) count++;
+                    lastRight = Math.max(lastRight, boxes[i].maxx);
+                }
+                return count;
+            }
+
+            window.__shSpenCollectPredTexts = function (preds) {
+                var out = [];
+                if (preds == null) return out;
+                if (typeof preds === 'string') {
+                    if (preds) out.push(preds);
+                    return out;
+                }
+                var arr = preds.length != null ? preds : [preds];
+                for (var i = 0; i < arr.length; i++) {
+                    var p = arr[i];
+                    if (p == null) continue;
+                    if (typeof p === 'string') {
+                        if (p) out.push(p);
+                        continue;
+                    }
+                    if (p.text) out.push(String(p.text));
+                    var segs = p.segmentationResult;
+                    if (segs && segs.length) {
+                        var joined = '';
+                        for (var g = 0; g < segs.length; g++) {
+                            if (segs[g] && segs[g].text) joined += String(segs[g].text);
+                        }
+                        if (joined) out.push(joined);
+                    }
+                }
+                return out;
+            };
+
+            window.__shSpenPickBestNumber = function (preds) {
+                var texts = window.__shSpenCollectPredTexts(preds);
+                var best = '';
+                for (var i = 0; i < texts.length; i++) {
+                    var n = window.__shSpenNormalizeNumber(texts[i]);
+                    if (!n) continue;
+                    if (n.length > best.length) best = n;
+                    else if (n.length === best.length && n.indexOf(',') >= 0 && best.indexOf(',') < 0) best = n;
+                }
+                return best;
+            };
+
+            window.__shSpenPickPredictionText = function (preds) {
+                return window.__shSpenPickBestNumber(preds) || '';
+            };
+
+            window.__shSpenPickLongerNumber = function (a, b) {
+                var na = window.__shSpenNormalizeNumber(a);
+                var nb = window.__shSpenNormalizeNumber(b);
+                if (!na) return nb;
+                if (!nb) return na;
+                if (nb.length > na.length) return nb;
+                if (na.length > nb.length) return na;
+                if (nb.indexOf(',') >= 0 && na.indexOf(',') < 0) return nb;
+                return na;
             };
 
             window.__shSpenEnsureRecognizer = function () {
@@ -2871,74 +2961,78 @@ window.colorPreviewNumber = function(tankName, value) {
                 return next();
             };
 
-            window.__shSpenRecognizeStrokes = function () {
-                if (!ink.strokes.length || !ink.input) return Promise.resolve('');
+            window.__shSpenRecognizeStrokes = function (strokeSnap) {
+                var strokes = strokeSnap || cloneStrokes(ink.strokes);
+                if (!strokes.length) return Promise.resolve('');
                 return window.__shSpenEnsureRecognizer().then(function (rec) {
                     if (!rec || typeof rec.startDrawing !== 'function') return '';
                     var StrokeCtor = window.HandwritingStroke;
                     if (typeof StrokeCtor !== 'function') return '';
-                    var drawing = null;
-                    var hintSets = [
-                        { recognitionType: 'number', inputType: 'stylus', alternatives: 3 },
-                        { recognitionType: 'text', inputType: 'stylus', alternatives: 3 },
-                        { inputType: 'stylus', alternatives: 3 }
-                    ];
-                    for (var h = 0; h < hintSets.length; h++) {
-                        try {
-                            drawing = rec.startDrawing(hintSets[h]);
-                            if (drawing) break;
-                        } catch (_) { drawing = null; }
-                    }
-                    if (!drawing || typeof drawing.addStroke !== 'function') return '';
-                    var added = 0;
-                    for (var i = 0; i < ink.strokes.length; i++) {
-                        var pts = ink.strokes[i];
-                        if (!pts || !pts.length) continue;
-                        var stroke = new StrokeCtor();
-                        for (var k = 0; k < pts.length; k++) {
-                            var t = pts[k].t;
-                            if (t == null || !Number.isFinite(t)) t = k;
-                            stroke.addPoint({ x: pts[k].x, y: pts[k].y, t: t });
+                    var runHints = function (hints) {
+                        var drawing = null;
+                        try { drawing = rec.startDrawing(hints); } catch (_) { drawing = null; }
+                        if (!drawing) {
+                            var loose = { inputType: 'stylus' };
+                            if (hints && hints.recognitionType) loose.recognitionType = hints.recognitionType;
+                            try { drawing = rec.startDrawing(loose); } catch (_) { drawing = null; }
                         }
-                        drawing.addStroke(stroke);
-                        added++;
-                    }
-                    if (!added) return '';
-                    return drawing.getPrediction().then(function (preds) {
-                        try { drawing.clear(); } catch (_) {}
-                        return window.__shSpenPickPredictionText(preds);
-                    }).catch(function () { return ''; });
+                        if (!drawing || typeof drawing.addStroke !== 'function') return Promise.resolve('');
+                        var added = 0;
+                        for (var i = 0; i < strokes.length; i++) {
+                            var pts = strokes[i];
+                            if (!pts || !pts.length) continue;
+                            var stroke = new StrokeCtor();
+                            for (var k = 0; k < pts.length; k++) {
+                                var t = pts[k].t;
+                                if (t == null || !Number.isFinite(t)) t = k;
+                                stroke.addPoint({ x: pts[k].x, y: pts[k].y, t: t });
+                            }
+                            if (pts.length === 1) {
+                                stroke.addPoint({ x: pts[0].x, y: pts[0].y + 1, t: (pts[0].t || 0) + 8 });
+                            }
+                            drawing.addStroke(stroke);
+                            added++;
+                        }
+                        if (!added) {
+                            try { drawing.clear(); } catch (_) {}
+                            return Promise.resolve('');
+                        }
+                        return drawing.getPrediction().then(function (preds) {
+                            try { drawing.clear(); } catch (_) {}
+                            return window.__shSpenPickBestNumber(preds);
+                        }).catch(function () {
+                            try { drawing.clear(); } catch (_) {}
+                            return '';
+                        });
+                    };
+                    var glyphN = estimateGlyphCount(strokes);
+                    return runHints({ recognitionType: 'number', inputType: 'stylus', alternatives: 5 }).then(function (numHit) {
+                        var digits = String(numHit || '').replace(/[^\d]/g, '').length;
+                        var enough = digits >= glyphN ||
+                            (numHit && numHit.indexOf(',') >= 0 && digits >= Math.max(1, glyphN - 1));
+                        if (numHit && (glyphN <= 1 || enough)) return numHit;
+                        return runHints({ recognitionType: 'text', inputType: 'stylus', alternatives: 5 }).then(function (txtHit) {
+                            var best = window.__shSpenPickLongerNumber(numHit, txtHit);
+                            if (best) return best;
+                            return runHints({ inputType: 'stylus', alternatives: 5 });
+                        });
+                    });
                 }).catch(function () { return ''; });
             };
 
             window.__shSpenOcrInkCanvas = function () {
-                if (typeof Tesseract === 'undefined' || !Tesseract.recognize) return Promise.resolve('');
-                if (!ink.canvas || !ink.hostRect || ink.hostRect.w < 4 || ink.hostRect.h < 4) return Promise.resolve('');
-                try {
-                    var scale = 3;
-                    var tmp = document.createElement('canvas');
-                    tmp.width = Math.max(16, Math.round(ink.hostRect.w * scale));
-                    tmp.height = Math.max(16, Math.round(ink.hostRect.h * scale));
-                    var c = tmp.getContext('2d');
-                    c.fillStyle = '#ffffff';
-                    c.fillRect(0, 0, tmp.width, tmp.height);
-                    c.drawImage(ink.canvas, 0, 0, tmp.width, tmp.height);
-                    return Tesseract.recognize(tmp, 'eng', { logger: function () {} }).then(function (res) {
-                        return (res && res.data && res.data.text) || '';
-                    }).catch(function () { return ''; });
-                } catch (_) {
-                    return Promise.resolve('');
-                }
+                return Promise.resolve('');
             };
 
-            function liveImeNumber(input) {
+            function liveImeNumber(input, originOverride) {
                 if (!input) return '';
-                var live = String(input.value == null ? '' : input.value);
-                var ime = window.__shSpenNormalizeNumber(ink.imeText || live);
-                var origin = window.__shSpenNormalizeNumber(ink.originValue);
-                if (ime && ime !== origin) return ime;
-                if (live && live !== ink.originValue) return window.__shSpenNormalizeNumber(live);
-                return '';
+                var origin = window.__shSpenNormalizeNumber(originOverride != null ? originOverride : ink.originValue);
+                var live = window.__shSpenNormalizeNumber(input.value);
+                var ime = window.__shSpenNormalizeNumber(ink.imeText || '');
+                var best = '';
+                if (ime && ime !== origin) best = window.__shSpenPickLongerNumber(best, ime);
+                if (live && live !== origin) best = window.__shSpenPickLongerNumber(best, live);
+                return best;
             }
 
             function inferImeJoin(origin, live) {
@@ -2953,7 +3047,76 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (l.length > o.length && l.slice(0, o.length) === o) {
                     return { mode: 'append', rec: l.slice(o.length) };
                 }
-                return null;
+                return { mode: 'replace', rec: l };
+            }
+
+            function takeSnapshot() {
+                var input = boundInput() || ink.input;
+                return {
+                    input: input,
+                    origin: ink.originValue,
+                    strokes: cloneStrokes(ink.strokes),
+                    hostRect: ink.hostRect ? {
+                        left: ink.hostRect.left, top: ink.hostRect.top,
+                        w: ink.hostRect.w, h: ink.hostRect.h
+                    } : null,
+                    imeText: ink.imeText || '',
+                    liveValue: input ? String(input.value == null ? '' : input.value) : '',
+                    pred: ink.pendingPred,
+                    predCount: ink.pendingPredCount || 0,
+                    epoch: ink.epoch
+                };
+            }
+
+            function commitSnapshot(snap) {
+                if (!snap || !snap.input) return Promise.resolve(false);
+                var input = snap.input;
+                var origin = snap.origin;
+                var origN = window.__shSpenNormalizeNumber(origin);
+                var imeNum = window.__shSpenPickLongerNumber(
+                    window.__shSpenNormalizeNumber(snap.imeText) !== origN ? snap.imeText : '',
+                    window.__shSpenNormalizeNumber(snap.liveValue) !== origN ? snap.liveValue : ''
+                );
+                var strictCut = !!(origN && window.__shSpenIsStrikethrough(
+                    snap.strokes, snap.hostRect, window.__shSpenMeasureFieldText(input, snap.hostRect, origin)
+                ));
+                if (strictCut && origN && !imeNum) {
+                    window.__shSpenApplyFieldEdit(input, '', origin, 'clear');
+                    try { input.blur(); } catch (_) {}
+                    return Promise.resolve(true);
+                }
+                if (!snap.strokes.length && !imeNum) {
+                    return Promise.resolve(false);
+                }
+                var predPromise = (snap.pred && snap.predCount === snap.strokes.length)
+                    ? snap.pred
+                    : (snap.strokes.length ? window.__shSpenRecognizeStrokes(snap.strokes) : Promise.resolve(''));
+                return predPromise.then(function (text) {
+                    var rec = window.__shSpenNormalizeNumber(text);
+                    var got = window.__shSpenPickLongerNumber(imeNum, rec);
+                    if (!got) return false;
+                    var useMode = window.__shSpenEditModeFromStrokes(snap.strokes, input, origin, snap.hostRect);
+                    if (useMode === 'clear') useMode = 'replace';
+                    var join = inferImeJoin(origin, got);
+                    if (join && join.mode !== 'replace') {
+                        window.__shSpenApplyFieldEdit(input, join.rec, origin, join.mode);
+                    } else {
+                        window.__shSpenApplyFieldEdit(input, got, origin, useMode);
+                    }
+                    return true;
+                }).catch(function () {
+                    if (imeNum) {
+                        var join2 = inferImeJoin(origin, imeNum);
+                        window.__shSpenApplyFieldEdit(
+                            input,
+                            join2 ? join2.rec : imeNum,
+                            origin,
+                            join2 ? join2.mode : 'replace'
+                        );
+                        return true;
+                    }
+                    return false;
+                });
             }
 
             function finishAndCommit() {
@@ -2962,81 +3125,26 @@ window.colorPreviewNumber = function(tankName, value) {
                     closeInk(false);
                     return;
                 }
-                var origin = ink.originValue;
-                var origN = window.__shSpenNormalizeNumber(origin);
-                var imeNum = liveImeNumber(input);
-                if (imeNum) {
-                    var join = inferImeJoin(origin, imeNum);
-                    window.__shSpenApplyFieldEdit(
-                        input,
-                        join ? join.rec : imeNum,
-                        origin,
-                        join ? join.mode : 'replace'
-                    );
-                    closeInk(true);
-                    return;
-                }
-                var strictCut = !!(origN && window.__shSpenIsStrikethrough(
-                    ink.strokes, ink.hostRect, window.__shSpenMeasureFieldText(input, ink.hostRect, origin)
-                ));
-                if (strictCut && origN) {
-                    window.__shSpenApplyFieldEdit(input, '', origin, 'clear');
-                    try { input.blur(); } catch (_) {}
-                    closeInk(true);
-                    return;
-                }
-                if (!ink.strokes.length) {
-                    closeInk(false);
-                    return;
-                }
-                var pred = ink.pendingPred || window.__shSpenRecognizeStrokes();
+                if (window.__shPenIsDown || ink.current) return;
+                var epoch = ink.epoch;
+                var snap = takeSnapshot();
                 ink.pendingPred = null;
-                pred.then(function (text) {
-                    if (!ink.active) return;
-                    var target = boundInput() || ink.input || input;
-                    var imeNow = liveImeNumber(target);
-                    if (imeNow) {
-                        var join2 = inferImeJoin(origin, imeNow);
-                        window.__shSpenApplyFieldEdit(
-                            target,
-                            join2 ? join2.rec : imeNow,
-                            origin,
-                            join2 ? join2.mode : 'replace'
-                        );
-                        closeInk(true);
-                        return;
-                    }
-                    var num = window.__shSpenNormalizeNumber(text);
-                    var afterNum = function (got) {
-                        if (!ink.active) return;
-                        var el = boundInput() || ink.input || target;
-                        if (got) {
-                            var useMode = window.__shSpenEditModeFromStrokes(ink.strokes, el, origin, ink.hostRect);
-                            if (useMode === 'clear') useMode = 'replace';
-                            window.__shSpenApplyFieldEdit(el, got, origin, useMode);
-                            closeInk(true);
-                            return;
-                        }
-                        if (origN && window.__shSpenIsStrikethrough(
-                            ink.strokes, ink.hostRect, window.__shSpenMeasureFieldText(el, ink.hostRect, origin)
-                        )) {
-                            window.__shSpenApplyFieldEdit(el, '', origin, 'clear');
-                            try { el.blur(); } catch (_) {}
-                            closeInk(true);
-                            return;
-                        }
-                        if (origN && !String(el.value || '').trim()) {
-                            el.value = origin;
-                        }
-                        closeInk(false);
-                    };
-                    if (num) afterNum(num);
-                    else window.__shSpenOcrInkCanvas().then(function (ocr) {
-                        afterNum(window.__shSpenNormalizeNumber(ocr));
-                    }).catch(function () { afterNum(''); });
-                }).catch(function () {
-                    closeInk(false);
+                ink.pendingPredCount = 0;
+                commitSnapshot(snap).then(function (ok) {
+                    if (ink.epoch !== epoch) return;
+                    if (!ok) origStillEmpty(snap);
+                    closeInk(!!ok);
                 });
+            }
+
+            function origStillEmpty(snap) {
+                var el = snap && snap.input;
+                var origN = window.__shSpenNormalizeNumber(snap && snap.origin);
+                if (origN && el && !String(el.value || '').trim()) {
+                    el.value = snap.origin;
+                    return true;
+                }
+                return false;
             }
 
             function scheduleCommit(immediate) {
@@ -3046,22 +3154,26 @@ window.colorPreviewNumber = function(tankName, value) {
                 var cut = !!(input && ink.strokes.length && window.__shSpenIsStrikethrough(
                     ink.strokes, ink.hostRect, window.__shSpenMeasureFieldText(input, ink.hostRect, ink.originValue)
                 ));
-                if (!penBusy && cut) {
+                if (penBusy) return;
+                if (cut) {
                     finishAndCommit();
                     return;
                 }
-                if (!penBusy && input && liveImeNumber(input)) {
+                if (immediate) {
                     finishAndCommit();
                     return;
                 }
-                if (immediate && !penBusy) {
+                if (ink.strokes.length) {
+                    var snapStrokes = cloneStrokes(ink.strokes);
+                    var count = snapStrokes.length;
+                    var pred = window.__shSpenRecognizeStrokes(snapStrokes);
+                    ink.pendingPred = pred;
+                    ink.pendingPredCount = count;
+                }
+                ink.commitTimer = setTimeout(function () {
+                    if (window.__shPenIsDown || ink.current) return;
                     finishAndCommit();
-                    return;
-                }
-                if (ink.strokes.length && !ink.pendingPred && !penBusy && !cut) {
-                    ink.pendingPred = window.__shSpenRecognizeStrokes();
-                }
-                ink.commitTimer = setTimeout(function () { finishAndCommit(); }, cut ? 0 : (window.__SPEN_COMMIT_MS || 320));
+                }, window.__SPEN_COMMIT_MS || 620);
             }
 
             window.__shSpenCommitNow = function () {
@@ -3078,6 +3190,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 ink.input = null;
                 ink.inputId = '';
                 ink.pendingPred = null;
+                ink.pendingPredCount = 0;
                 ink.lockX = null;
                 ink.lockY = null;
                 hideHost();
@@ -3087,6 +3200,25 @@ window.colorPreviewNumber = function(tankName, value) {
                 }
             }
 
+            function startInkOnInput(input) {
+                ink.active = true;
+                ink.input = input;
+                ink.inputId = input.id || '';
+                ink.strokes = [];
+                ink.current = null;
+                ink.imeText = input.value || '';
+                ink.originValue = input.value || '';
+                ink.capture = false;
+                ink.laidOut = false;
+                ink.pendingPred = null;
+                ink.pendingPredCount = 0;
+                ink.epoch = (ink.epoch || 0) + 1;
+                layoutOver(input, true);
+                if (document.body) document.body.classList.add('sh-spen-ink-open');
+                ink.lockX = window.scrollX || 0;
+                ink.lockY = window.scrollY || document.documentElement.scrollTop || 0;
+            }
+
             window.__shSpenOnPenDown = function (ev) {
                 if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
                 if (!ev || ev.pointerType !== 'pen') return;
@@ -3094,31 +3226,29 @@ window.colorPreviewNumber = function(tankName, value) {
                     || window.__shSpenFindWritableInput(ev.target);
                 if (!input && ink.active) input = boundInput();
                 if (!input) {
-                    if (ink.active) scheduleCommit();
+                    if (ink.active) scheduleCommit(true);
                     return;
                 }
                 var same = ink.active && ink.inputId && input.id && ink.inputId === input.id;
-                if (ink.active && !same) finishAndCommit();
-                if (!ink.active || !same) {
-                    ink.active = true;
-                    ink.input = input;
-                    ink.inputId = input.id || '';
-                    ink.strokes = [];
-                    ink.imeText = input.value || '';
-                    ink.originValue = input.value || '';
-                    ink.capture = false;
-                    ink.laidOut = false;
-                    layoutOver(input, true);
-                    if (document.body) document.body.classList.add('sh-spen-ink-open');
-                    ink.lockX = window.scrollX || 0;
-                    ink.lockY = window.scrollY || document.documentElement.scrollTop || 0;
+                if (ink.active && !same) {
+                    var prev = takeSnapshot();
+                    ink.pendingPred = null;
+                    ink.pendingPredCount = 0;
+                    commitSnapshot(prev);
+                    startInkOnInput(input);
+                } else if (!ink.active) {
+                    startInkOnInput(input);
+                } else {
+                    ink.epoch = (ink.epoch || 0) + 1;
+                    ink.pendingPred = null;
+                    ink.pendingPredCount = 0;
+                    clearTimeout(ink.commitTimer);
                 }
                 if (typeof window.__primeAndroidSpenInput === 'function') window.__primeAndroidSpenInput(input, true);
                 try { input.focus({ preventScroll: true }); } catch (_) { try { input.focus(); } catch (_) {} }
                 ink.pointerId = ev.pointerId;
                 ink.startMs = Date.now();
                 ink.current = [];
-                ink.pendingPred = null;
                 addPtsFromEvent(ev);
                 redraw();
                 clearTimeout(ink.commitTimer);
@@ -3254,7 +3384,7 @@ window.colorPreviewNumber = function(tankName, value) {
             { key: 'notturno-stocc', elId: 'sec-stoccaggio-interno', collapsed: 'notturno-stoccaggio-tendina-collapsed', chevron: 'nott-stocc-tendina-chevron', bar: '.nott-stocc-tendina-bar' },
             { key: 'notturno-chem', elId: 'notturno-chemicals-tendina', collapsed: 'notturno-chemicals-tendina-collapsed', chevron: 'nott-chem-tendina-chevron', bar: '.nott-chem-tendina-bar' },
             { key: 'fuochista-cond', elId: 'rapportino-conducibilita-tendina', collapsed: 'rapportino-conducibilita-tendina-collapsed', chevron: 'cond-tendina-chevron', bar: '.cond-tendina-bar' },
-            { key: 'generale-livelli-lavaggi', elId: 'rapportino-livelli-lavaggi-tendina', collapsed: 'rapportino-livelli-lavaggi-tendina-collapsed', chevron: 'lavaggi-tendina-chevron', bar: '.cond-tendina-bar' },
+            { key: 'generale-note', elId: 'rapportino-note-tendina', collapsed: 'rapportino-note-tendina-collapsed', chevron: 'note-tendina-chevron', bar: '.cond-tendina-bar' },
             { key: 'fuochista-contatori', elId: 'rapportino-contatori-tendina', collapsed: 'rapportino-contatori-tendina-collapsed', chevron: 'cnt-tendina-chevron', bar: '.cond-tendina-bar' },
             { key: 'fuochista-conteggio-filtra', elId: 'rapportino-conteggio-filtra-tendina', collapsed: 'rapportino-conteggio-filtra-tendina-collapsed', chevron: 'cfil-tendina-chevron', bar: '.cond-tendina-bar' },
             { key: 'fuochista-rigen', elId: 'rapportino-rigenerazione-tendina', collapsed: 'rapportino-rigenerazione-tendina-collapsed', chevron: 'rigen-tendina-chevron', bar: '.cond-tendina-bar' }
@@ -10330,6 +10460,10 @@ window.updateStoricoButton = async function() {
                     if (!t || !t.closest || !t.closest('.main-container')) return;
                     if (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA') return;
                     if (t.closest('#settings-modal') || t.closest('#management-modal') || t.closest('#shift-modal')) return;
+                    if (t.id === 'inp-sec-note' || (t.closest && t.closest('#rapportino-note-tendina'))) {
+                        if (typeof window.schedulePersistNoteScheda === 'function') window.schedulePersistNoteScheda();
+                        return;
+                    }
                     if (typeof window.__touchPlantFieldEdit === 'function') window.__touchPlantFieldEdit(t);
                     if (typeof window.__touchConductivityCacheFromInput === 'function') window.__touchConductivityCacheFromInput(t);
                     if (typeof window.__mirrorAcquaSharedToStoccaggio === 'function') window.__mirrorAcquaSharedToStoccaggio(t);
@@ -15929,6 +16063,7 @@ window.updateStoricoButton = async function() {
             if (key.indexOf('cnt-') === 0) return true;
             if (key.indexOf('cfil-') === 0) return true;
             if (key.indexOf('rigen-') === 0) return true;
+            if (key === 'inp-sec-note') return true;
             return false;
         };
 
@@ -16021,12 +16156,15 @@ window.updateStoricoButton = async function() {
             { id: 'sec-contatori', name: 'Contatori H2O' },
             { id: 'sec-conteggio-filtra', name: 'CONTEGGIO FILTRA' },
             { id: 'sec-rigenerazione', name: 'RIGENERAZIONE' },
-            { id: 'sec-contatore-filtra', name: 'CONTATORE FILTRA' }
+            { id: 'sec-contatore-filtra', name: 'CONTATORE FILTRA' },
+            { id: 'sec-note', name: 'NOTE' }
         ];
 
         window.__shouldSkipInputForPlantPayload = function (input) {
             if (!input || !input.id) return true;
             if (input.id === 'ai-chat-input' || input.id === 'conv-chat-input') return true;
+            if (input.id === 'inp-sec-note') return true;
+            if (input.closest && input.closest('#rapportino-note-tendina')) return true;
             if (typeof window.isStoccaggioInternoLevelInput === 'function' && window.isStoccaggioInternoLevelInput(input)) return true;
             if (input.classList && input.classList.contains('nott-stocc-inp')) return true;
             var condShared = window.CONDUCTIVITY_SHARED_FIELD_IDS || [];
@@ -26183,6 +26321,7 @@ window.updateStoricoButton = async function() {
                 return window.collectFieldsForLivelliLavaggiSection
                     ? window.collectFieldsForLivelliLavaggiSection() : [];
             }
+            if (secId === 'sec-note') return [];
             if (secId === 'sec-stoccaggio-interno' && typeof window.renderStoccaggioInternoPanel === 'function') {
                 window.renderStoccaggioInternoPanel();
             }
@@ -26282,7 +26421,7 @@ window.updateStoricoButton = async function() {
             if (typeof window.renderStoccaggioInternoPanel === 'function') window.renderStoccaggioInternoPanel();
             const modules = {};
             window.RAPPORTINI_TAB_META.forEach(function(tab) {
-                if (tab.id === 'sec-stoccaggio-interno' || tab.id === 'sec-chemicals' || tab.id === 'sec-conducibilita' || tab.id === 'sec-livelli-lavaggi') return;
+                if (tab.id === 'sec-stoccaggio-interno' || tab.id === 'sec-chemicals' || tab.id === 'sec-conducibilita' || tab.id === 'sec-livelli-lavaggi' || tab.id === 'sec-note') return;
                 const vLabel = document.getElementById('lbl-' + tab.id);
                 modules[tab.id] = {
                     enabled: true,
@@ -27454,7 +27593,7 @@ window.updateStoricoButton = async function() {
         };
 
         window.defaultSchedaOrientation = function(secId) {
-            if (secId === 'sec-chemicals' || secId === 'sec-conducibilita' || secId === 'sec-livelli-lavaggi' || secId === 'sec-rigenerazione') return 'horizontal';
+            if (secId === 'sec-chemicals' || secId === 'sec-conducibilita' || secId === 'sec-livelli-lavaggi' || secId === 'sec-rigenerazione' || secId === 'sec-note') return 'horizontal';
             return 'vertical';
         };
 
@@ -27466,6 +27605,7 @@ window.updateStoricoButton = async function() {
             if (secId === 'sec-conducibilita' && mod.layout === 'conductivity-fields') return 'horizontal';
             if (secId === 'sec-conducibilita' && mod.layout === 'vertical-fields') return 'vertical';
             if (secId === 'sec-livelli-lavaggi' && mod.layout === 'livelli-lavaggi-fields') return 'horizontal';
+            if (secId === 'sec-note' || mod.layout === 'note-text') return 'horizontal';
             if (secId === 'sec-contatori' && mod.layout === 'meter-fields-horizontal') return 'horizontal';
             if (secId === 'sec-contatori' && mod.layout === 'meter-fields') return 'vertical';
             if (secId === 'sec-conteggio-filtra' && mod.layout === 'filtra-count-horizontal') return 'horizontal';
@@ -27705,6 +27845,7 @@ window.updateStoricoButton = async function() {
         };
 
         window.supportsRapportinoSchedaOrientation = function(secId) {
+            if (secId === 'sec-note' || secId === 'sec-rigenerazione') return false;
             if (secId === 'sec-chemicals' && window._rapportiniModificaId === 'fuochista') return false;
             return secId === 'sec-chemicals' || secId === 'sec-conducibilita' || secId === 'sec-contatori' || secId === 'sec-conteggio-filtra' || window.isCustomRapportinoScheda(secId);
         };
@@ -27749,6 +27890,10 @@ window.updateStoricoButton = async function() {
             }
             if (secId === 'sec-livelli-lavaggi') {
                 mod.layout = 'livelli-lavaggi-fields';
+                mod.orientation = 'horizontal';
+            }
+            if (secId === 'sec-note') {
+                mod.layout = 'note-text';
                 mod.orientation = 'horizontal';
             }
             if (secId === 'sec-contatori') {
@@ -27828,6 +27973,9 @@ window.updateStoricoButton = async function() {
             if (secId === 'sec-contatore-filtra') {
                 return window.isRapportinoModuleEnabled('sec-contatore-filtra', schedeConfig);
             }
+            if (secId === 'sec-note') {
+                return window.isRapportinoModuleEnabled('sec-note', schedeConfig);
+            }
             if (isNott && secId === 'sec-filtra') return false;
             if (rid === 'fuochista' && (secId === 'sec-filtra' || secId === 'sec-aria')) {
                 return true;
@@ -27844,7 +27992,7 @@ window.updateStoricoButton = async function() {
             const cfg = schedeConfig || { modules: {} };
             const hid = hiddenList || hiddenModules || [];
             (window.RAPPORTINI_SECTION_IDS || []).forEach(function(secId) {
-                if (secId === 'sec-stoccaggio-interno' || secId === 'sec-chemicals' || secId === 'sec-conducibilita' || secId === 'sec-contatori' || secId === 'sec-conteggio-filtra' || secId === 'sec-contatore-filtra') return;
+                if (secId === 'sec-stoccaggio-interno' || secId === 'sec-chemicals' || secId === 'sec-conducibilita' || secId === 'sec-contatori' || secId === 'sec-conteggio-filtra' || secId === 'sec-contatore-filtra' || secId === 'sec-note') return;
                 const el = document.getElementById(secId);
                 if (!el) return;
                 const show = window.shouldShowPlantSchedaInDashboard(secId, cfg, rid, hid);
@@ -27852,7 +28000,7 @@ window.updateStoricoButton = async function() {
             });
             if (rid !== 'generale') {
                 window.RAPPORTINI_TAB_META.forEach(function(tab) {
-                    if (tab.id === 'sec-stoccaggio-interno' || tab.id === 'sec-chemicals' || tab.id === 'sec-conducibilita' || tab.id === 'sec-contatori' || tab.id === 'sec-conteggio-filtra' || tab.id === 'sec-contatore-filtra') return;
+                    if (tab.id === 'sec-stoccaggio-interno' || tab.id === 'sec-chemicals' || tab.id === 'sec-conducibilita' || tab.id === 'sec-contatori' || tab.id === 'sec-conteggio-filtra' || tab.id === 'sec-contatore-filtra' || tab.id === 'sec-note') return;
                     const el = document.getElementById(tab.id);
                     if (!el) return;
                     const show = window.shouldShowPlantSchedaInDashboard(tab.id, cfg, rid, hid);
@@ -27902,6 +28050,9 @@ window.updateStoricoButton = async function() {
             }
             if (typeof window.syncLivelliLavaggiPanel === 'function') {
                 window.syncLivelliLavaggiPanel({ schedeConfig: cfg, rapportinoId: rid });
+            }
+            if (typeof window.syncNoteSchedaPanel === 'function') {
+                window.syncNoteSchedaPanel({ schedeConfig: cfg, rapportinoId: rid });
             }
             if (typeof window.syncNotturnoStoccaggioPanel === 'function') {
                 window.syncNotturnoStoccaggioPanel();
@@ -28190,6 +28341,17 @@ window.updateStoricoButton = async function() {
             window.RAPPORTINI_TAB_META.forEach(function(tab) {
                 const mod = cfg.modules[tab.id];
                 const enabled = mod && mod.enabled !== false;
+                if (tab.id === 'sec-note') {
+                    if (typeof window.syncNoteSchedaPanel === 'function') {
+                        window.syncNoteSchedaPanel({ schedeConfig: cfg });
+                    }
+                    if (enabled && mod) {
+                        const title = mod.title || tab.name || 'NOTE';
+                        const tendinaLbl = document.getElementById('lbl-sec-note-tendina');
+                        if (tendinaLbl) tendinaLbl.textContent = title;
+                    }
+                    return;
+                }
                 if (tab.id === 'sec-conducibilita') {
                     if (typeof window.syncConducibilitaPanel === 'function') {
                         window.syncConducibilitaPanel();
@@ -28453,6 +28615,28 @@ window.updateStoricoButton = async function() {
                         if (!lav.fields || !lav.fields.length) {
                             lav.fields = window.collectFieldsForLivelliLavaggiSection
                                 ? window.collectFieldsForLivelliLavaggiSection() : [];
+                            changed = true;
+                        }
+                    }
+                    if (!item.schedeConfig.modules['sec-note']) {
+                        item.schedeConfig.modules['sec-note'] = window.buildNoteSchedaModuleConfig
+                            ? window.buildNoteSchedaModuleConfig()
+                            : {
+                                enabled: true,
+                                title: 'NOTE',
+                                orientation: 'horizontal',
+                                layout: 'note-text'
+                            };
+                        changed = true;
+                    } else {
+                        const noteMod = item.schedeConfig.modules['sec-note'];
+                        if (noteMod.orientation !== 'horizontal' || noteMod.layout !== 'note-text') {
+                            noteMod.orientation = 'horizontal';
+                            noteMod.layout = 'note-text';
+                            changed = true;
+                        }
+                        if (!noteMod.title) {
+                            noteMod.title = 'NOTE';
                             changed = true;
                         }
                     }
@@ -29732,6 +29916,15 @@ window.updateStoricoButton = async function() {
                         orientation: 'horizontal',
                         layout: 'rigenerazione-horizontal'
                     };
+                } else if (secId === 'sec-note') {
+                    draft.modules[secId] = window.buildNoteSchedaModuleConfig
+                        ? window.buildNoteSchedaModuleConfig()
+                        : {
+                            enabled: true,
+                            title: 'NOTE',
+                            orientation: 'horizontal',
+                            layout: 'note-text'
+                        };
                 } else if (secId === 'sec-contatore-filtra') {
                     draft.modules[secId] = {
                         enabled: true,

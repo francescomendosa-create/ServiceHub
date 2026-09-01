@@ -1032,7 +1032,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v528';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v529';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -2672,10 +2672,15 @@ window.colorPreviewNumber = function(tankName, value) {
             else return false;
             if (mode !== 'clear' && next.indexOf(',') < 0 && typeof window.applyIntegerOnlyTankValue === 'function') {
                 var formatted = window.applyIntegerOnlyTankValue(input.id, next);
-                if (formatted != null && String(formatted).trim() !== '') next = formatted;
+                if (formatted != null && String(formatted).trim() !== '') next = String(formatted);
             }
             if (mode !== 'clear' && !next) return false;
             input.value = next;
+            if (mode !== 'clear' && !String(input.value || '').trim()) {
+                try { input.setAttribute('value', next); } catch (_) {}
+                input.value = next;
+            }
+            if (mode !== 'clear' && !String(input.value || '').trim()) return false;
             window.__shSpenLastCommitTs = Date.now();
             if (typeof window.__touchPlantFieldEdit === 'function') window.__touchPlantFieldEdit(input);
             try { input.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
@@ -2840,10 +2845,11 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (!ink.current) ink.current = [];
                 for (var i = 0; i < list.length; i++) {
                     var p = toLocal(list[i]);
-                    p.t = Math.max(0, Date.now() - (ink.startMs || Date.now()));
-                    if (ink.current.length && p.t <= ink.current[ink.current.length - 1].t) {
-                        p.t = ink.current[ink.current.length - 1].t + 1;
-                    }
+                    p.t = Math.max(0, Date.now() - (ink.sessionStartMs || ink.startMs || Date.now()));
+                    var prevPt = ink.current.length ? ink.current[ink.current.length - 1] : null;
+                    if (prevPt && p.t <= (prevPt.t || 0)) p.t = (prevPt.t || 0) + 8;
+                    p.x = Math.round(p.x * 10) / 10;
+                    p.y = Math.round(p.y * 10) / 10;
                     ink.current.push(p);
                 }
             }
@@ -2891,6 +2897,8 @@ window.colorPreviewNumber = function(tankName, value) {
                     if (preds) out.push(preds);
                     return out;
                 }
+                if (preds.predictions) preds = preds.predictions;
+                else if (preds.results) preds = preds.results;
                 var arr = preds.length != null ? preds : [preds];
                 for (var i = 0; i < arr.length; i++) {
                     var p = arr[i];
@@ -2900,7 +2908,9 @@ window.colorPreviewNumber = function(tankName, value) {
                         continue;
                     }
                     if (p.text) out.push(String(p.text));
-                    var segs = p.segmentationResult;
+                    if (p.prediction) out.push(String(p.prediction));
+                    if (p.transcript) out.push(String(p.transcript));
+                    var segs = p.segmentationResult || p.segments;
                     if (segs && segs.length) {
                         var joined = '';
                         for (var g = 0; g < segs.length; g++) {
@@ -2962,9 +2972,38 @@ window.colorPreviewNumber = function(tankName, value) {
                 return next();
             };
 
-            window.__shSpenRecognizeStrokes = function (strokeSnap) {
-                var strokes = strokeSnap || cloneStrokes(ink.strokes);
-                if (!strokes.length) return Promise.resolve('');
+            function scaleStrokesForRecognizer(strokes) {
+                var b = window.__shSpenStrokeBounds(strokes);
+                if (!b) return strokes;
+                var minH = 110;
+                var minW = 56;
+                var scale = 1;
+                if (b.h < minH) scale = minH / Math.max(4, b.h);
+                if (b.w * scale < minW && b.w > 2) scale = Math.max(scale, minW / b.w);
+                scale = Math.min(10, Math.max(1, scale));
+                if (scale < 1.2) return strokes;
+                var out = [];
+                for (var i = 0; i < strokes.length; i++) {
+                    var pts = strokes[i];
+                    if (!pts || !pts.length) continue;
+                    var copy = [];
+                    for (var k = 0; k < pts.length; k++) {
+                        copy.push({
+                            x: (pts[k].x - b.minx) * scale + 10,
+                            y: (pts[k].y - b.miny) * scale + 10,
+                            t: pts[k].t
+                        });
+                    }
+                    out.push(copy);
+                }
+                return out;
+            }
+
+            window.__shSpenRecognizeStrokes = function (strokeSnap, opts) {
+                opts = opts || {};
+                var raw = strokeSnap || cloneStrokes(ink.strokes);
+                if (!raw.length) return Promise.resolve('');
+                var strokes = opts.forceScale ? scaleStrokesForRecognizer(raw) : raw;
                 return window.__shSpenEnsureRecognizer().then(function (rec) {
                     if (!rec || typeof rec.startDrawing !== 'function') return '';
                     var StrokeCtor = window.HandwritingStroke;
@@ -2977,20 +3016,26 @@ window.colorPreviewNumber = function(tankName, value) {
                             if (hints && hints.recognitionType) loose.recognitionType = hints.recognitionType;
                             try { drawing = rec.startDrawing(loose); } catch (_) { drawing = null; }
                         }
+                        if (!drawing && hints) {
+                            try { drawing = rec.startDrawing(); } catch (_) { drawing = null; }
+                        }
                         if (!drawing || typeof drawing.addStroke !== 'function') return Promise.resolve('');
                         var added = 0;
+                        var tBase = 0;
                         for (var i = 0; i < strokes.length; i++) {
                             var pts = strokes[i];
                             if (!pts || !pts.length) continue;
                             var stroke = new StrokeCtor();
                             for (var k = 0; k < pts.length; k++) {
                                 var t = pts[k].t;
-                                if (t == null || !Number.isFinite(t)) t = k;
+                                if (t == null || !Number.isFinite(t)) t = tBase + k * 12;
                                 stroke.addPoint({ x: pts[k].x, y: pts[k].y, t: t });
                             }
                             if (pts.length === 1) {
-                                stroke.addPoint({ x: pts[0].x, y: pts[0].y + 1, t: (pts[0].t || 0) + 8 });
+                                stroke.addPoint({ x: pts[0].x + 1, y: pts[0].y + 1, t: (pts[0].t || tBase) + 16 });
                             }
+                            var lastT = pts[pts.length - 1].t;
+                            tBase = (Number.isFinite(lastT) ? lastT : tBase) + 40;
                             drawing.addStroke(stroke);
                             added++;
                         }
@@ -3006,17 +3051,24 @@ window.colorPreviewNumber = function(tankName, value) {
                             return '';
                         });
                     };
-                    var glyphN = estimateGlyphCount(strokes);
-                    return runHints({ recognitionType: 'number', inputType: 'stylus', alternatives: 5 }).then(function (numHit) {
+                    var glyphN = estimateGlyphCount(raw);
+                    return runHints({ recognitionType: 'number', inputType: 'stylus', alternatives: 8 }).then(function (numHit) {
                         var digits = String(numHit || '').replace(/[^\d]/g, '').length;
                         var enough = digits >= glyphN ||
                             (numHit && numHit.indexOf(',') >= 0 && digits >= Math.max(1, glyphN - 1));
                         if (numHit && (glyphN <= 1 || enough)) return numHit;
-                        return runHints({ recognitionType: 'text', inputType: 'stylus', alternatives: 5 }).then(function (txtHit) {
+                        return runHints({ recognitionType: 'text', inputType: 'stylus', alternatives: 8 }).then(function (txtHit) {
                             var best = window.__shSpenPickLongerNumber(numHit, txtHit);
-                            if (best) return best;
-                            return runHints({ inputType: 'stylus', alternatives: 5 });
+                            if (best && (glyphN <= 1 || String(best).replace(/[^\d]/g, '').length >= Math.max(1, glyphN - 1))) {
+                                return best;
+                            }
+                            return runHints({ inputType: 'stylus', alternatives: 8 }).then(function (anyHit) {
+                                return window.__shSpenPickLongerNumber(best, anyHit);
+                            });
                         });
+                    }).then(function (hit) {
+                        if (hit || opts.forceScale) return hit;
+                        return window.__shSpenRecognizeStrokes(raw, { forceScale: true });
                     });
                 }).catch(function () { return ''; });
             };
@@ -3095,16 +3147,30 @@ window.colorPreviewNumber = function(tankName, value) {
                 return predPromise.then(function (text) {
                     var rec = window.__shSpenNormalizeNumber(text);
                     var got = window.__shSpenPickLongerNumber(imeNum, rec);
-                    if (!got) return false;
-                    var useMode = window.__shSpenEditModeFromStrokes(snap.strokes, input, origin, snap.hostRect);
-                    if (useMode === 'clear') useMode = 'replace';
-                    var join = inferImeJoin(origin, got);
-                    if (join && join.mode !== 'replace') {
-                        window.__shSpenApplyFieldEdit(input, join.rec, origin, join.mode);
-                    } else {
-                        window.__shSpenApplyFieldEdit(input, got, origin, useMode);
-                    }
-                    return true;
+                    var writeGot = function (val) {
+                        if (!val) return false;
+                        var useMode = window.__shSpenEditModeFromStrokes(snap.strokes, input, origin, snap.hostRect);
+                        if (useMode === 'clear') useMode = 'replace';
+                        var join = inferImeJoin(origin, val);
+                        var ok;
+                        if (join && join.mode !== 'replace') {
+                            ok = window.__shSpenApplyFieldEdit(input, join.rec, origin, join.mode);
+                        } else {
+                            ok = window.__shSpenApplyFieldEdit(input, val, origin, useMode);
+                        }
+                        if (!ok && val) {
+                            input.value = val;
+                            ok = !!String(input.value || '').trim();
+                            if (ok && typeof window.__touchPlantFieldEdit === 'function') window.__touchPlantFieldEdit(input);
+                        }
+                        return !!ok;
+                    };
+                    if (got) return writeGot(got);
+                    if (!snap.strokes.length) return false;
+                    return window.__shSpenRecognizeStrokes(snap.strokes, { forceScale: true }).then(function (text2) {
+                        var rec2 = window.__shSpenPickLongerNumber(imeNum, text2);
+                        return writeGot(rec2);
+                    });
                 }).catch(function () {
                     if (imeNum) {
                         var join2 = inferImeJoin(origin, imeNum);
@@ -3209,6 +3275,8 @@ window.colorPreviewNumber = function(tankName, value) {
                 ink.current = null;
                 ink.imeText = input.value || '';
                 ink.originValue = input.value || '';
+                ink.sessionStartMs = Date.now();
+                ink.startMs = ink.sessionStartMs;
                 ink.capture = false;
                 ink.laidOut = false;
                 ink.pendingPred = null;
@@ -3248,7 +3316,8 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (typeof window.__primeAndroidSpenInput === 'function') window.__primeAndroidSpenInput(input, true);
                 try { input.focus({ preventScroll: true }); } catch (_) { try { input.focus(); } catch (_) {} }
                 ink.pointerId = ev.pointerId;
-                ink.startMs = Date.now();
+                if (!ink.sessionStartMs) ink.sessionStartMs = Date.now();
+                ink.startMs = ink.sessionStartMs;
                 ink.current = [];
                 addPtsFromEvent(ev);
                 redraw();

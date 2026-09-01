@@ -135,16 +135,14 @@
         }
         html.sh-android-tablet-boot body.sh-spen-ink-open .main-container input:not([type="hidden"]):not([readonly]):focus,
         html.sh-android-tablet-boot body.sh-spen-ink-open .main-container textarea:not([readonly]):focus {
-            touch-action: none !important;
+            touch-action: auto !important;
         }
         html.sh-android-tablet-boot body.sh-spen-ink-open,
         html.sh-android-tablet-boot:has(body.sh-spen-ink-open) {
             overflow: hidden !important;
-            touch-action: none !important;
             overscroll-behavior: none !important;
         }
         html.sh-android-tablet-boot body.sh-spen-ink-open .main-container {
-            touch-action: none !important;
             overflow: hidden !important;
         }
         html.sh-android-tablet-boot #sh-spen-ink-host {
@@ -1032,7 +1030,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v530';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v531';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -2365,7 +2363,11 @@ window.colorPreviewNumber = function(tankName, value) {
                 return;
             }
             if (!force && el === document.activeElement) return;
-            el.removeAttribute('writingsuggestions');
+            if (el.getAttribute('data-sh-spen-input') === '1' && el.type !== 'tel') {
+                el.setAttribute('writingsuggestions', 'true');
+                return;
+            }
+            el.setAttribute('writingsuggestions', 'true');
             if (el.getAttribute('inputmode') === 'decimal' || el.getAttribute('inputmode') === 'numeric') {
                 if (el.id !== 'inp-sec-note') el.removeAttribute('inputmode');
             }
@@ -2394,13 +2396,13 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__initAndroidSpenSupport = function () {
             if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
             if (typeof window.__initAndroidSpenInk === 'function') window.__initAndroidSpenInk();
-            document.documentElement.removeAttribute('writingsuggestions');
+            document.documentElement.setAttribute('writingsuggestions', 'true');
             if (document.body) {
-                document.body.removeAttribute('writingsuggestions');
+                document.body.setAttribute('writingsuggestions', 'true');
                 document.body.classList.add('sh-device-android-tablet');
             }
             var mc = document.querySelector('.main-container');
-            if (mc) mc.removeAttribute('writingsuggestions');
+            if (mc) mc.setAttribute('writingsuggestions', 'true');
             window.__primeAllAndroidSpenInputs();
             if (window.__androidSpenObserver) return;
             window.__androidSpenObserver = new MutationObserver(function (mutations) {
@@ -2950,26 +2952,29 @@ window.colorPreviewNumber = function(tankName, value) {
             };
 
             window.__shSpenEnsureRecognizer = function () {
-                if (window.__shSpenRecognizer === false) return Promise.resolve(null);
-                if (window.__shSpenRecognizer) return Promise.resolve(window.__shSpenRecognizer);
-                if (!navigator.createHandwritingRecognizer) {
-                    window.__shSpenRecognizer = false;
-                    return Promise.resolve(null);
+                if (window.__shSpenRecognizer && window.__shSpenRecognizer !== false) {
+                    return Promise.resolve(window.__shSpenRecognizer);
                 }
+                if (!navigator.createHandwritingRecognizer) return Promise.resolve(null);
+                if (window.__shSpenRecognizerBusy) return window.__shSpenRecognizerBusy;
                 var tryLangs = [['en'], ['it', 'en'], ['it']];
                 var i = 0;
                 var next = function () {
-                    if (i >= tryLangs.length) {
-                        window.__shSpenRecognizer = false;
-                        return Promise.resolve(null);
-                    }
+                    if (i >= tryLangs.length) return Promise.resolve(null);
                     var langs = tryLangs[i++];
                     return navigator.createHandwritingRecognizer({ languages: langs }).then(function (rec) {
                         window.__shSpenRecognizer = rec;
                         return rec;
                     }).catch(next);
                 };
-                return next();
+                window.__shSpenRecognizerBusy = next().then(function (rec) {
+                    window.__shSpenRecognizerBusy = null;
+                    return rec || null;
+                }).catch(function () {
+                    window.__shSpenRecognizerBusy = null;
+                    return null;
+                });
+                return window.__shSpenRecognizerBusy;
             };
 
             function scaleStrokesForRecognizer(strokes) {
@@ -3197,11 +3202,32 @@ window.colorPreviewNumber = function(tankName, value) {
                 var snap = takeSnapshot();
                 ink.pendingPred = null;
                 ink.pendingPredCount = 0;
-                commitSnapshot(snap).then(function (ok) {
+                var settle = function (ok) {
                     if (ink.epoch !== epoch) return;
-                    if (!ok) origStillEmpty(snap);
-                    closeInk(!!ok);
-                });
+                    if (ok) {
+                        closeInk(true);
+                        return;
+                    }
+                    setTimeout(function () {
+                        if (ink.epoch !== epoch) return;
+                        var el = boundInput() || snap.input;
+                        var live = el ? window.__shSpenNormalizeNumber(el.value) : '';
+                        var origN = window.__shSpenNormalizeNumber(snap.origin);
+                        if (live && live !== origN) {
+                            window.__shSpenApplyFieldEdit(el, live, snap.origin, 'replace');
+                            closeInk(true);
+                            return;
+                        }
+                        snap.liveValue = el ? String(el.value == null ? '' : el.value) : snap.liveValue;
+                        snap.imeText = ink.imeText || snap.imeText;
+                        commitSnapshot(snap).then(function (ok2) {
+                            if (ink.epoch !== epoch) return;
+                            if (!ok2) origStillEmpty(snap);
+                            closeInk(!!ok2);
+                        });
+                    }, 360);
+                };
+                commitSnapshot(snap).then(settle);
             }
 
             function origStillEmpty(snap) {
@@ -3313,7 +3339,14 @@ window.colorPreviewNumber = function(tankName, value) {
                     ink.pendingPredCount = 0;
                     clearTimeout(ink.commitTimer);
                 }
-                if (typeof window.__primeAndroidSpenInput === 'function') window.__primeAndroidSpenInput(input, true);
+                if (input.getAttribute('data-sh-spen-input') !== '1' &&
+                    typeof window.__primeAndroidSpenInput === 'function') {
+                    window.__primeAndroidSpenInput(input, true);
+                }
+                input.setAttribute('writingsuggestions', 'true');
+                if (typeof window.__shSpenEnsureRecognizer === 'function') {
+                    void window.__shSpenEnsureRecognizer();
+                }
                 try { input.focus({ preventScroll: true }); } catch (_) { try { input.focus(); } catch (_) {} }
                 ink.pointerId = ev.pointerId;
                 if (!ink.sessionStartMs) ink.sessionStartMs = Date.now();
@@ -43036,12 +43069,11 @@ window.convertToHtml = async () => {
         }
         body.sh-device-android-tablet.sh-spen-ink-open .main-container input:not([readonly]):focus,
         body.sh-device-android-tablet.sh-spen-ink-open .main-container textarea:not([readonly]):focus {
-            touch-action: none !important;
+            touch-action: auto !important;
         }
         body.sh-device-android-tablet.sh-spen-ink-open,
         body.sh-device-android-tablet.sh-spen-ink-open .main-container {
             overflow: hidden !important;
-            touch-action: none !important;
             overscroll-behavior: none !important;
         }
         body.sh-stylus-pen-active #sh-post-long-press-shield {

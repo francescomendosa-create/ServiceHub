@@ -131,7 +131,7 @@
         }
         html.sh-android-tablet-boot .main-container input:not([type="hidden"]):not([readonly]),
         html.sh-android-tablet-boot .main-container textarea:not([readonly]) {
-            touch-action: pan-y;
+            touch-action: auto;
         }
         html.sh-android-tablet-boot body.sh-spen-ink-open .main-container input:not([type="hidden"]):not([readonly]):focus,
         html.sh-android-tablet-boot body.sh-spen-ink-open .main-container textarea:not([readonly]):focus {
@@ -1030,7 +1030,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v531';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v532';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -1114,8 +1114,8 @@ window.colorPreviewNumber = function(tankName, value) {
         })();
         window.__unlockServiceHubUi = function() {
             try {
-                if (typeof window.__clearPostLongPressShield === 'function') window.__clearPostLongPressShield();
-                if (typeof window.__releaseSpenStuckLocks === 'function') window.__releaseSpenStuckLocks();
+                if (typeof window.__clearPostLongPressShield === 'function') window.__clearPostLongPressShield(true);
+                if (typeof window.__releaseSpenStuckLocks === 'function') window.__releaseSpenStuckLocks(true);
             } catch (e0) {}
             var shield = document.getElementById('sh-post-long-press-shield');
             if (shield) shield.style.display = 'none';
@@ -2193,7 +2193,7 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__shSpenSessionActive = function () {
             if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return false;
             if (window.__shPenIsDown) return true;
-            if (window.__shSpenInk && window.__shSpenInk.active) return true;
+            if (window.__shSpenInk && (window.__shSpenInk.active || window.__shSpenInk.watchOnly)) return true;
             var now = Date.now();
             var win = window.__SPEN_SESSION_MS || 2800;
             if ((now - (window.__shPenLastEventTs || 0)) < win) return true;
@@ -2273,7 +2273,7 @@ window.colorPreviewNumber = function(tankName, value) {
             document.addEventListener('pointermove', function (ev) {
                 if (ev.pointerType !== 'pen') return;
                 var ink = window.__shSpenInk;
-                var inkStroke = !!(ink && ink.active && ink.current &&
+                var inkStroke = !!(ink && ink.current && (ink.active || ink.watchOnly) &&
                     (ink.pointerId == null || ink.pointerId === ev.pointerId));
                 if (!inkStroke && !window.__isPenContactEvent(ev)) return;
                 if (window.__isPenContactEvent(ev) || inkStroke) onPen(ev, null);
@@ -2445,6 +2445,10 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (window.__shSpenInk && (window.__shSpenInk.input === t || (t.id && window.__shSpenInk.inputId === t.id))) {
                     window.__shSpenInk.input = t;
                     window.__shSpenInk.imeText = t.value;
+                    if (window.__shSpenInk.cutGuardUntil && Date.now() < window.__shSpenInk.cutGuardUntil) {
+                        if (t.value) t.value = '';
+                        return;
+                    }
                     if (typeof window.__shSpenNoteImeCommit === 'function') window.__shSpenNoteImeCommit(t);
                 }
                 if (window.__shPenIsDown || window.__shPenRecentlyActive(800)) {
@@ -3293,25 +3297,50 @@ window.colorPreviewNumber = function(tankName, value) {
                 }
             }
 
-            function startInkOnInput(input) {
-                ink.active = true;
+            function bindWatchField(input) {
+                ink.watchOnly = true;
+                ink.active = false;
+                ink.capture = false;
                 ink.input = input;
                 ink.inputId = input.id || '';
                 ink.strokes = [];
-                ink.current = null;
+                ink.current = [];
                 ink.imeText = input.value || '';
                 ink.originValue = input.value || '';
                 ink.sessionStartMs = Date.now();
                 ink.startMs = ink.sessionStartMs;
-                ink.capture = false;
-                ink.laidOut = false;
                 ink.pendingPred = null;
                 ink.pendingPredCount = 0;
-                ink.epoch = (ink.epoch || 0) + 1;
-                layoutOver(input, true);
-                if (document.body) document.body.classList.add('sh-spen-ink-open');
-                ink.lockX = window.scrollX || 0;
-                ink.lockY = window.scrollY || document.documentElement.scrollTop || 0;
+                ink.laidOut = false;
+                hideHost();
+                if (document.body) document.body.classList.remove('sh-spen-ink-open');
+                var box = window.__shSpenFieldBox(input);
+                var r = box && box.getBoundingClientRect ? box.getBoundingClientRect() : null;
+                ink.hostRect = r ? { left: r.left, top: r.top, w: r.width, h: r.height } : null;
+            }
+
+            function applySilentCutIfNeeded() {
+                var input = boundInput() || ink.input;
+                if (!input) return false;
+                var origin = ink.originValue;
+                var origN = window.__shSpenNormalizeNumber(origin);
+                if (!origN || !ink.strokes.length) return false;
+                var cut = window.__shSpenIsStrikethrough(
+                    ink.strokes, ink.hostRect, window.__shSpenMeasureFieldText(input, ink.hostRect, origin)
+                );
+                if (!cut) return false;
+                window.__shSpenApplyFieldEdit(input, '', origin, 'clear');
+                ink.cutGuardUntil = Date.now() + 520;
+                ink.cutGuardInput = input;
+                try { input.blur(); } catch (_) {}
+                return true;
+            }
+
+            function endWatch() {
+                ink.watchOnly = false;
+                ink.current = null;
+                ink.pointerId = null;
+                ink.strokes = [];
             }
 
             window.__shSpenOnPenDown = function (ev) {
@@ -3319,57 +3348,36 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (!ev || ev.pointerType !== 'pen') return;
                 var input = window.__shSpenFindWritableInputAt(ev.clientX, ev.clientY)
                     || window.__shSpenFindWritableInput(ev.target);
-                if (!input && ink.active) input = boundInput();
                 if (!input) {
-                    if (ink.active) scheduleCommit(true);
+                    if (ink.active) closeInk(true);
+                    endWatch();
                     return;
                 }
-                var same = ink.active && ink.inputId && input.id && ink.inputId === input.id;
-                if (ink.active && !same) {
-                    var prev = takeSnapshot();
-                    ink.pendingPred = null;
-                    ink.pendingPredCount = 0;
-                    commitSnapshot(prev);
-                    startInkOnInput(input);
-                } else if (!ink.active) {
-                    startInkOnInput(input);
-                } else {
-                    ink.epoch = (ink.epoch || 0) + 1;
-                    ink.pendingPred = null;
-                    ink.pendingPredCount = 0;
-                    clearTimeout(ink.commitTimer);
-                }
-                if (input.getAttribute('data-sh-spen-input') !== '1' &&
-                    typeof window.__primeAndroidSpenInput === 'function') {
-                    window.__primeAndroidSpenInput(input, true);
-                }
-                input.setAttribute('writingsuggestions', 'true');
-                if (typeof window.__shSpenEnsureRecognizer === 'function') {
-                    void window.__shSpenEnsureRecognizer();
-                }
-                try { input.focus({ preventScroll: true }); } catch (_) { try { input.focus(); } catch (_) {} }
-                ink.pointerId = ev.pointerId;
-                if (!ink.sessionStartMs) ink.sessionStartMs = Date.now();
-                ink.startMs = ink.sessionStartMs;
-                ink.current = [];
-                addPtsFromEvent(ev);
-                redraw();
+                if (ink.active) closeInk(true);
                 clearTimeout(ink.commitTimer);
+                bindWatchField(input);
+                if (input.id !== 'inp-sec-note') {
+                    input.setAttribute('writingsuggestions', 'true');
+                }
+                if (document.activeElement !== input) {
+                    try { input.focus({ preventScroll: true }); } catch (_) { try { input.focus(); } catch (_) {} }
+                }
+                ink.pointerId = ev.pointerId;
+                addPtsFromEvent(ev);
             };
 
             window.__shSpenOnPenMove = function (ev) {
                 if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
-                if (!ink.active) return;
+                if (!ink.watchOnly) return;
                 if (ev.pointerType !== 'pen') return;
                 if (ink.pointerId != null && ev.pointerId !== ink.pointerId) return;
                 if (!ink.current) ink.current = [];
                 addPtsFromEvent(ev);
-                redraw();
             };
 
             window.__shSpenOnPenUp = function (ev, cancelled) {
                 if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
-                if (!ink.active) return;
+                if (!ink.watchOnly && !ink.active) return;
                 if (ev && ink.pointerId != null && ev.pointerId !== ink.pointerId && !cancelled) return;
                 if (ev && !cancelled) {
                     if (!ink.current) ink.current = [];
@@ -3378,17 +3386,20 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (ink.current && ink.current.length) ink.strokes.push(ink.current);
                 ink.current = null;
                 ink.pointerId = null;
-                if (ink.host) {
-                    try { ink.host.releasePointerCapture && ink.host.releasePointerCapture(ev && ev.pointerId); } catch (_) {}
-                }
-                redraw();
-                scheduleCommit();
+                applySilentCutIfNeeded();
+                endWatch();
+                if (ink.active) closeInk(true);
             };
 
             window.__shSpenForceEndStroke = function () {
                 if (ink.current && ink.current.length) ink.strokes.push(ink.current);
                 ink.current = null;
                 ink.pointerId = null;
+                if (ink.watchOnly) {
+                    applySilentCutIfNeeded();
+                    endWatch();
+                    return;
+                }
                 if (ink.active) scheduleCommit();
             };
 
@@ -4478,7 +4489,7 @@ window.colorPreviewNumber = function(tankName, value) {
 
         window.__pendingHeavyUiWork = null;
         window.__isUserPressingLabel = function () {
-            return !!(pressTimer || globalInteractionLock || isLongPress);
+            return !!(pressTimer || globalInteractionLock || isLongPress || window.__postLongPressShieldActive);
         };
         window.__plantUiBusyUntil = 0;
         window.__lastUiTouchTs = 0;
@@ -4526,63 +4537,116 @@ window.colorPreviewNumber = function(tankName, value) {
             return;
         };
 
-        window.__releaseSpenStuckLocks = function () {
+        window.__releaseSpenStuckLocks = function (force) {
+            if (!force && window.__postLongPressHoldUntilUp) return;
             if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
             if (visualFeedbackTimer) { clearTimeout(visualFeedbackTimer); visualFeedbackTimer = null; }
             isLongPress = false;
             globalInteractionLock = false;
             document.body.classList.remove('sh-long-press-lock');
-            window.__postLongPressShieldActive = false;
-            var shield = document.getElementById('sh-post-long-press-shield');
-            if (shield) shield.style.display = 'none';
+            if (typeof window.__clearPostLongPressShield === 'function') {
+                window.__clearPostLongPressShield(!!force);
+            } else {
+                window.__postLongPressShieldActive = false;
+                var shield = document.getElementById('sh-post-long-press-shield');
+                if (shield) shield.style.display = 'none';
+            }
             document.querySelectorAll('.v-label-container.pressing').forEach(function (l) {
                 l.classList.remove('pressing');
             });
         };
 
         window.__postLongPressShieldActive = false;
+        window.__postLongPressHoldUntilUp = false;
+        window.__postLongPressReleaseArmed = false;
         window.__postLongPressShieldMs = function () {
-            return 120;
+            return 80;
         };
         window.__isPostLongPressShieldActive = function () {
             return !!window.__postLongPressShieldActive;
         };
-        window.__clearPostLongPressShield = function () {
+        window.__clearPostLongPressShield = function (force) {
+            if (!force && window.__postLongPressHoldUntilUp) return;
             var el = document.getElementById('sh-post-long-press-shield');
             if (el) el.style.display = 'none';
             window.__postLongPressShieldActive = false;
+            window.__postLongPressHoldUntilUp = false;
+            window.__postLongPressReleaseArmed = false;
             clearTimeout(window.__postLongPressShieldTimer);
+            isLongPress = false;
+            globalInteractionLock = false;
+            window.__setLongPressInputLock(false);
+            if (typeof window.__flushPendingHeavyUiWork === 'function') {
+                window.__flushPendingHeavyUiWork();
+            }
         };
         window.__activatePostLongPressShield = function () {
             if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) return;
-            const ms = window.__postLongPressShieldMs();
-            let el = document.getElementById('sh-post-long-press-shield');
+            var swallow = function (e) {
+                if (!e) return;
+                if (e.cancelable) e.preventDefault();
+                e.stopPropagation();
+                if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+            };
+            var onLastFingerUp = function (e) {
+                var left = (e && e.touches && e.touches.length) || 0;
+                if (left > 0) return;
+                window.__postLongPressHoldUntilUp = false;
+                window.__postLongPressReleaseArmed = true;
+                var cover = document.getElementById('sh-post-long-press-shield');
+                if (cover) {
+                    cover.style.display = 'none';
+                    cover.style.pointerEvents = 'none';
+                }
+                clearTimeout(window.__postLongPressShieldTimer);
+                window.__postLongPressShieldTimer = setTimeout(function () {
+                    window.__clearPostLongPressShield(true);
+                }, 900);
+            };
+            var onShieldEvent = function (e) {
+                if (!window.__postLongPressShieldActive) return;
+                if (window.__postLongPressReleaseArmed && !window.__postLongPressHoldUntilUp) {
+                    if (e.type === 'touchstart' || (e.type === 'pointerdown' && e.pointerType !== 'pen')) {
+                        window.__clearPostLongPressShield(true);
+                        return;
+                    }
+                    swallow(e);
+                    if (e.type === 'click') window.__clearPostLongPressShield(true);
+                    return;
+                }
+                swallow(e);
+                if (e.type === 'touchend' || e.type === 'touchcancel' || e.type === 'pointerup' || e.type === 'pointercancel') {
+                    onLastFingerUp(e);
+                }
+            };
+            var el = document.getElementById('sh-post-long-press-shield');
             if (!el) {
                 el = document.createElement('div');
                 el.id = 'sh-post-long-press-shield';
                 el.setAttribute('aria-hidden', 'true');
-                el.style.cssText = 'position:fixed;inset:0;z-index:40;background:transparent;pointer-events:none !important;touch-action:none;-webkit-touch-callout:none;';
-                ['touchstart', 'touchend', 'touchmove', 'touchcancel', 'click', 'mousedown', 'mouseup'].forEach(function (ev) {
-                    el.addEventListener(ev, function (e) {
-                        e.preventDefault();
-                        e.stopPropagation();
-                    }, { capture: true, passive: false });
+                el.style.cssText = 'position:fixed;inset:0;z-index:2147483000;background:transparent;pointer-events:auto;touch-action:none;-webkit-touch-callout:none;';
+                ['touchstart', 'touchend', 'touchmove', 'touchcancel', 'pointerdown', 'pointerup', 'pointermove', 'pointercancel', 'click', 'mousedown', 'mouseup'].forEach(function (ev) {
+                    el.addEventListener(ev, onShieldEvent, { capture: true, passive: false });
                 });
                 document.body.appendChild(el);
+            } else {
+                el.style.pointerEvents = 'auto';
+                el.style.zIndex = '2147483000';
+            }
+            if (!window.__postLongPressDocBound) {
+                window.__postLongPressDocBound = true;
+                ['touchstart', 'touchend', 'touchmove', 'touchcancel', 'pointerdown', 'pointerup', 'pointercancel', 'click', 'mousedown', 'mouseup'].forEach(function (ev) {
+                    document.addEventListener(ev, onShieldEvent, { capture: true, passive: false });
+                });
             }
             el.style.display = 'block';
             window.__postLongPressShieldActive = true;
+            window.__postLongPressHoldUntilUp = true;
+            window.__postLongPressReleaseArmed = false;
             clearTimeout(window.__postLongPressShieldTimer);
             window.__postLongPressShieldTimer = setTimeout(function () {
-                el.style.display = 'none';
-                window.__postLongPressShieldActive = false;
-                isLongPress = false;
-                globalInteractionLock = false;
-                window.__setLongPressInputLock(false);
-                if (typeof window.__flushPendingHeavyUiWork === 'function') {
-                    window.__flushPendingHeavyUiWork();
-                }
-            }, ms);
+                if (window.__postLongPressHoldUntilUp) window.__clearPostLongPressShield(true);
+            }, 8000);
         };
 
         const GROUPS = [
@@ -34065,7 +34129,15 @@ window.updateStoricoButton = async function() {
         };
 
         window.hideModule = (id, userInitiated) => {
-            if (typeof window.__markPlantUiBusy === 'function') window.__markPlantUiBusy(520);
+            var iosSend = !!(userInitiated && window.isServiceHubIOSPhone && window.isServiceHubIOSPhone());
+            if (userInitiated) {
+                isLongPress = true;
+                globalInteractionLock = true;
+                if (typeof window.__activatePostLongPressShield === 'function') {
+                    window.__activatePostLongPressShield();
+                }
+            }
+            if (typeof window.__markPlantUiBusy === 'function') window.__markPlantUiBusy(iosSend ? 160 : 520);
             if (typeof window.__queuePlantStatusPersist === 'function') window.__queuePlantStatusPersist();
             if (!hiddenModules.includes(id)) {
                 const domId = window.normalizePhoneSectionDomId(id);
@@ -34083,6 +34155,9 @@ window.updateStoricoButton = async function() {
                 document.body.classList.add('sh-instant-layout');
                 hiddenModules.push(id);
                 window.hiddenModules = hiddenModules;
+                if (iosSend && sec) {
+                    sec.style.setProperty('display', 'none', 'important');
+                }
                 if (window.isContatoreFiltraModuleActive() && id === 'sec-contatore-filtra') {
                     const tendina = document.getElementById('notturno-filtra-tendina');
                     if (tendina) tendina.style.display = 'none';
@@ -34143,10 +34218,31 @@ window.updateStoricoButton = async function() {
                     if (typeof window.rigenStopTimers === 'function') window.rigenStopTimers();
                     if (typeof window.syncRigenerazionePanel === 'function') window.syncRigenerazionePanel();
                 }
-                updateModulesVisibility();
                 var persistHiddenLater = function () {
                     window.persistHiddenModulesForActiveRapportino();
                 };
+                if (iosSend) {
+                    if (typeof window.applyRapportinoDashboardVisibility === 'function') {
+                        var storeFast = window.loadRapportiniStore && window.loadRapportiniStore();
+                        var ridFast = (storeFast && storeFast.activeId) || 'generale';
+                        window.applyRapportinoDashboardVisibility(window.getActiveRapportinoSchedeConfig(), {
+                            rapportinoId: ridFast,
+                            hiddenModules: hiddenModules
+                        });
+                    }
+                    requestAnimationFrame(function () {
+                        updateModulesVisibility();
+                        if (typeof window.pulseManagementButton === 'function') window.pulseManagementButton();
+                        document.body.classList.remove('sh-instant-layout');
+                    });
+                    if (typeof requestIdleCallback === 'function') {
+                        requestIdleCallback(persistHiddenLater, { timeout: 800 });
+                    } else {
+                        setTimeout(persistHiddenLater, 200);
+                    }
+                    return;
+                }
+                updateModulesVisibility();
                 if (typeof requestIdleCallback === 'function') {
                     requestIdleCallback(persistHiddenLater, { timeout: 800 });
                 } else {
@@ -34156,8 +34252,6 @@ window.updateStoricoButton = async function() {
                     document.body.classList.remove('sh-instant-layout');
                 });
                 if (userInitiated) {
-                    globalInteractionLock = false;
-                    window.__activatePostLongPressShield();
                     if (typeof window.pulseManagementButton === 'function') window.pulseManagementButton();
                 }
                 if (userInitiated && window.isContatoreFiltraModuleActive() &&
@@ -34170,20 +34264,7 @@ window.updateStoricoButton = async function() {
                 if (typeof window.expandAllSectionsLayout === 'function' && window.shouldKeepAllSectionsExpanded()) {
                     window.expandAllSectionsLayout();
                 } else if (userInitiated && window.isServiceHubPhone && window.isServiceHubPhone()) {
-                    const domId = window.normalizePhoneSectionDomId(id);
-                    const group = (window.getPhoneSectionGroups() || []).find(function (g) {
-                        return g.includes(domId) || g.includes(id);
-                    });
-                    const remaining = group ? group.filter(function (mid) {
-                        const checkId = window.getPhoneSectionCheckId(mid);
-                        return !hiddenModules.includes(checkId);
-                    }) : [];
-                    if (remaining.length > 0 && hiddenWasExpanded) {
-                        const targetId = remaining[remaining.length - 1];
-                        setTimeout(function () {
-                            window.handleLabelClick(targetId, true);
-                        }, window.__postLongPressShieldMs() + 30);
-                    }
+                    return;
                 } else {
                     const domId = window.normalizePhoneSectionDomId(id);
                     const group = (window.getPhoneSectionGroups() || []).find(function (g) {
@@ -43063,7 +43144,7 @@ window.convertToHtml = async () => {
         }
         body.sh-device-android-tablet .main-container input:not([readonly]),
         body.sh-device-android-tablet .main-container textarea:not([readonly]) {
-            touch-action: pan-y;
+            touch-action: auto;
             -webkit-user-select: text;
             user-select: text;
         }

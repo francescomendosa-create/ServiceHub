@@ -125,11 +125,40 @@
         * {
             touch-action: manipulation;
         }
-        /* Tablet Android: S Pen — niente manipulation sui campi (primo numero) */
-        html.sh-android-tablet-boot .main-container,
-        html.sh-android-tablet-boot .main-container input:not([type="hidden"]),
-        html.sh-android-tablet-boot .main-container textarea {
-            touch-action: auto !important;
+        /* Tablet Android: S Pen — nessun pan/zoom sui campi, altrimenti Chrome manda pointercancel e il tratto muore */
+        html.sh-android-tablet-boot .main-container input:not([type="hidden"]):not([readonly]),
+        html.sh-android-tablet-boot .main-container textarea:not([readonly]),
+        html.sh-android-tablet-boot .main-container .amb-input-box,
+        html.sh-android-tablet-boot .main-container .nott-stocc-inp-cell,
+        html.sh-android-tablet-boot .main-container td:has(> input),
+        html.sh-android-tablet-boot .main-container td:has(> textarea) {
+            touch-action: none !important;
+        }
+        #sh-spen-ink-host {
+            position: fixed;
+            z-index: 12050;
+            pointer-events: none;
+            touch-action: none;
+            overflow: visible;
+            border-radius: 8px;
+            box-shadow: none;
+        }
+        #sh-spen-ink-host.sh-spen-ink-on {
+            box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.35);
+            background: rgba(255, 255, 255, 0.04);
+        }
+        #sh-spen-ink-host.sh-spen-ink-capture {
+            pointer-events: auto;
+        }
+        #sh-spen-ink-host canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+            pointer-events: none;
+        }
+        #sh-spen-ink-host.sh-spen-ink-capture canvas {
+            pointer-events: auto;
         }
 
         /* Smartphone: nascondi UI principale finché lo splash è attivo (evita flash GESTIONE MODULI su iOS) */
@@ -816,10 +845,13 @@ window.buildNumpadAlarmDraftFromThresholds = function (th) {
 };
 
 window.syncNumpadAlarmMinRowsVisibility = function () {
-    const targetId = currentNumpadTarget && currentNumpadTarget.id;
+    const npt = (typeof window.__getNumpadTarget === 'function' && window.__getNumpadTarget())
+        || window.__currentNumpadTarget
+        || null;
+    const targetId = npt && npt.id;
     const show = !!(targetId && window.alarmEditorSupportsMinThresholds(targetId));
-    const isCond = currentNumpadTarget && typeof window.isConductivityAlarmInput === 'function'
-        && window.isConductivityAlarmInput(currentNumpadTarget);
+    const isCond = npt && typeof window.isConductivityAlarmInput === 'function'
+        && window.isConductivityAlarmInput(npt);
     const isTankLevel = typeof window.alarmEditorIsTankLevelField === 'function'
         && window.alarmEditorIsTankLevelField(targetId);
     const isLevelStyle = isCond || isTankLevel;
@@ -958,7 +990,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v504';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v506';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -2065,10 +2097,19 @@ window.colorPreviewNumber = function(tankName, value) {
            Dopo alcuni campi l'IME si spegne se: writingsuggestions=false, inputmode=decimal,
            cambio type a caldo, o applyData/color/frecce sul blur tra un campo e l'altro.
            Teniamo una sessione lunga che copre il passaggio da un input al successivo. */
-        window.__SPEN_SESSION_MS = 12000;
+        window.__SPEN_SESSION_MS = 2800;
         window.__shPenLastEventTs = 0;
         window.__shSpenLastFieldTs = 0;
         window.__shPenIsDown = false;
+        window.__shPenPointerId = null;
+        window.__isPenContactEvent = function (e) {
+            if (!e || e.pointerType !== 'pen') return false;
+            var t = e.type || '';
+            if (t === 'pointerdown' || t === 'pointerup' || t === 'pointercancel') return true;
+            if ((e.buttons & 1) === 1) return true;
+            if (typeof e.pressure === 'number' && e.pressure > 0.01) return true;
+            return false;
+        };
         window.__shMarkSpenActivity = function (fromPen) {
             var now = Date.now();
             if (fromPen) window.__shPenLastEventTs = now;
@@ -2077,23 +2118,18 @@ window.colorPreviewNumber = function(tankName, value) {
             clearTimeout(window.__spenSessionEndTimer);
             window.__spenSessionEndTimer = setTimeout(function () {
                 window.__shPenIsDown = false;
+                window.__shPenPointerId = null;
                 if (document.body) document.body.classList.remove('sh-stylus-pen-active');
                 if (typeof window.__flushSpenDeferredWork === 'function') window.__flushSpenDeferredWork();
-            }, window.__SPEN_SESSION_MS || 12000);
+            }, window.__SPEN_SESSION_MS || 2800);
         };
         window.__shSpenSessionActive = function () {
             if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return false;
             if (window.__shPenIsDown) return true;
+            if (window.__shSpenInk && window.__shSpenInk.active) return true;
             var now = Date.now();
-            var win = window.__SPEN_SESSION_MS || 12000;
+            var win = window.__SPEN_SESSION_MS || 2800;
             if ((now - (window.__shPenLastEventTs || 0)) < win) return true;
-            if ((now - (window.__shSpenLastFieldTs || 0)) < win) return true;
-            var ae = document.activeElement;
-            if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA') &&
-                ae.closest && ae.closest('.main-container') &&
-                !ae.closest('#settings-modal') && !ae.closest('#management-modal') && !ae.closest('#shift-modal')) {
-                return true;
-            }
             return false;
         };
         window.__shPenRecentlyActive = function (ms) {
@@ -2142,19 +2178,57 @@ window.colorPreviewNumber = function(tankName, value) {
         (function () {
             if (window.__shPenTrackerReady) return;
             window.__shPenTrackerReady = true;
-            var markPen = function (down) {
-                return function (ev) {
-                    if (!ev || ev.pointerType !== 'pen') return;
-                    if (down === true) window.__shPenIsDown = true;
-                    else if (down === false) window.__shPenIsDown = false;
-                    window.__shMarkSpenActivity(true);
-                    if (typeof window.__releaseSpenStuckLocks === 'function') window.__releaseSpenStuckLocks();
-                };
+            var onPen = function (ev, down) {
+                if (!ev || ev.pointerType !== 'pen') return;
+                if (!window.__isPenContactEvent(ev) && down !== true && down !== false) return;
+                if (down === true) {
+                    window.__shPenIsDown = true;
+                    window.__shPenPointerId = ev.pointerId;
+                } else if (down === false) {
+                    window.__shPenIsDown = false;
+                    window.__shPenPointerId = null;
+                }
+                window.__shMarkSpenActivity(true);
+                if (typeof window.__releaseSpenStuckLocks === 'function') window.__releaseSpenStuckLocks();
             };
-            document.addEventListener('pointerdown', markPen(true), { capture: true, passive: true });
-            document.addEventListener('pointermove', markPen(null), { capture: true, passive: true });
-            document.addEventListener('pointerup', markPen(false), { capture: true, passive: true });
-            document.addEventListener('pointercancel', markPen(false), { capture: true, passive: true });
+            document.addEventListener('pointerdown', function (ev) {
+                onPen(ev, true);
+                if (typeof window.__shSpenOnPenDown === 'function') window.__shSpenOnPenDown(ev);
+            }, { capture: true, passive: true });
+            document.addEventListener('pointermove', function (ev) {
+                if (ev.pointerType !== 'pen') return;
+                if (!window.__isPenContactEvent(ev)) return;
+                onPen(ev, null);
+                if (typeof window.__shSpenOnPenMove === 'function') window.__shSpenOnPenMove(ev);
+            }, { capture: true, passive: true });
+            document.addEventListener('pointerup', function (ev) {
+                onPen(ev, false);
+                if (typeof window.__shSpenOnPenUp === 'function') window.__shSpenOnPenUp(ev);
+            }, { capture: true, passive: true });
+            document.addEventListener('pointercancel', function (ev) {
+                onPen(ev, false);
+                if (typeof window.__shSpenOnPenUp === 'function') window.__shSpenOnPenUp(ev, true);
+            }, { capture: true, passive: true });
+            document.addEventListener('lostpointercapture', function (ev) {
+                if (!ev || ev.pointerType !== 'pen') return;
+                onPen(ev, false);
+                if (typeof window.__shSpenOnPenUp === 'function') window.__shSpenOnPenUp(ev, true);
+            }, { capture: true, passive: true });
+            document.addEventListener('visibilitychange', function () {
+                if (document.hidden) {
+                    window.__shPenIsDown = false;
+                    window.__shPenPointerId = null;
+                    if (typeof window.__shSpenForceEndStroke === 'function') window.__shSpenForceEndStroke();
+                }
+            });
+            setInterval(function () {
+                if (!window.__shPenIsDown) return;
+                if ((Date.now() - (window.__shPenLastEventTs || 0)) > 1800) {
+                    window.__shPenIsDown = false;
+                    window.__shPenPointerId = null;
+                    if (typeof window.__shSpenForceEndStroke === 'function') window.__shSpenForceEndStroke();
+                }
+            }, 400);
         })();
 
         window.__primeAndroidSpenInput = function (el) {
@@ -2194,6 +2268,7 @@ window.colorPreviewNumber = function(tankName, value) {
 
         window.__initAndroidSpenSupport = function () {
             if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
+            if (typeof window.__initAndroidSpenInk === 'function') window.__initAndroidSpenInk();
             document.documentElement.removeAttribute('writingsuggestions');
             if (document.body) {
                 document.body.removeAttribute('writingsuggestions');
@@ -2230,7 +2305,9 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) return;
                 if (!t.closest || !t.closest('.main-container')) return;
                 if (t.closest('#settings-modal') || t.closest('#management-modal') || t.closest('#shift-modal')) return;
-                window.__shMarkSpenActivity(!!(window.__shPenIsDown || window.__shPenRecentlyActive(800)));
+                if (window.__shPenIsDown || window.__shPenRecentlyActive(800)) {
+                    window.__shMarkSpenActivity(true);
+                }
                 if (typeof window.__releaseSpenStuckLocks === 'function') window.__releaseSpenStuckLocks();
             }, true);
             document.addEventListener('input', function (e) {
@@ -2238,9 +2315,20 @@ window.colorPreviewNumber = function(tankName, value) {
                 var t = e.target;
                 if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) return;
                 if (!t.closest || !t.closest('.main-container')) return;
-                window.__shMarkSpenActivity(!!(window.__shPenIsDown || window.__shPenRecentlyActive(800)));
+                if (window.__shSpenInk && window.__shSpenInk.input === t) {
+                    window.__shSpenInk.imeText = t.value;
+                    if (typeof window.__shSpenNoteImeCommit === 'function') window.__shSpenNoteImeCommit(t);
+                }
+                if (window.__shPenIsDown || window.__shPenRecentlyActive(800)) {
+                    window.__shMarkSpenActivity(true);
+                }
             }, true);
             setInterval(function () {
+                if (window.__shPenIsDown && (Date.now() - (window.__shPenLastEventTs || 0)) > 1800) {
+                    window.__shPenIsDown = false;
+                    window.__shPenPointerId = null;
+                    if (typeof window.__shSpenForceEndStroke === 'function') window.__shSpenForceEndStroke();
+                }
                 if (window.__shSpenSessionActive && window.__shSpenSessionActive()) return;
                 if (window.__isUserPressingLabel && window.__isUserPressingLabel()) return;
                 var shieldStuck = window.__postLongPressShieldActive === true;
@@ -2248,7 +2336,353 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (shieldStuck || lockStuck) {
                     if (typeof window.__releaseSpenStuckLocks === 'function') window.__releaseSpenStuckLocks();
                 }
-            }, 4000);
+            }, 400);
+            if (typeof window.__initAndroidSpenInk === 'function') window.__initAndroidSpenInk();
+        };
+
+        window.__shSpenFindWritableInput = function (el) {
+            if (!el || !el.closest) return null;
+            if (el.closest('#settings-modal') || el.closest('#settingsModal') || el.closest('#management-modal')
+                || el.closest('#shift-modal') || el.closest('#numpad-modal') || el.closest('#splash-screen')) {
+                return null;
+            }
+            var inp = null;
+            if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') inp = el;
+            else {
+                var box = el.closest('.amb-input-box, .nott-stocc-inp-cell, .bd-input-row, td, .cond-tendina-cell, .analisi-inline-cell');
+                if (box) inp = box.querySelector('input:not([type="hidden"]):not([readonly]), textarea:not([readonly])');
+            }
+            if (!inp || inp.readOnly || inp.disabled) return null;
+            if (inp.type === 'hidden' || inp.type === 'file' || inp.type === 'checkbox' || inp.type === 'radio') return null;
+            if (!inp.closest || !inp.closest('.main-container')) return null;
+            return inp;
+        };
+
+        window.__shSpenNormalizeNumber = function (text) {
+            if (text == null) return '';
+            var s = String(text).trim()
+                .replace(/[oO]/g, '0')
+                .replace(/[lI|]/g, '1')
+                .replace(/[sS]/g, '5')
+                .replace(/[bB]/g, '8')
+                .replace(/\s+/g, '')
+                .replace(/[^\d.,\-]/g, '')
+                .replace(/\./g, ',');
+            var i = s.indexOf(',');
+            if (i >= 0) s = s.slice(0, i + 1) + s.slice(i + 1).replace(/,/g, '');
+            return s;
+        };
+
+        window.__shSpenCommitNumber = function (input, raw) {
+            if (!input) return false;
+            var cleaned = window.__shSpenNormalizeNumber(raw);
+            if (!cleaned) return false;
+            if (typeof window.applyIntegerOnlyTankValue === 'function') {
+                cleaned = window.applyIntegerOnlyTankValue(input.id, cleaned);
+            }
+            if (input.value === cleaned) return true;
+            input.value = cleaned;
+            if (typeof window.__touchPlantFieldEdit === 'function') window.__touchPlantFieldEdit(input);
+            try { input.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
+            try { input.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
+            if (typeof window.refreshAlarmVisualForField === 'function') window.refreshAlarmVisualForField(input, true);
+            if (typeof window.updateTankLevelArrowForInput === 'function') window.updateTankLevelArrowForInput(input);
+            if (typeof window.saveData === 'function') window.saveData(true);
+            return true;
+        };
+
+        window.__initAndroidSpenInk = function () {
+            if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
+            if (window.__shSpenInkReady) return;
+            window.__shSpenInkReady = true;
+            var ink = {
+                active: false,
+                capture: false,
+                input: null,
+                host: null,
+                canvas: null,
+                ctx: null,
+                strokes: [],
+                current: null,
+                pointerId: null,
+                startMs: 0,
+                lastPt: null,
+                imeText: '',
+                originValue: '',
+                pad: 28
+            };
+            window.__shSpenInk = ink;
+
+            function ensureHost() {
+                var host = document.getElementById('sh-spen-ink-host');
+                if (host) return host;
+                host = document.createElement('div');
+                host.id = 'sh-spen-ink-host';
+                host.setAttribute('aria-hidden', 'true');
+                var cvs = document.createElement('canvas');
+                host.appendChild(cvs);
+                document.body.appendChild(host);
+                ink.host = host;
+                ink.canvas = cvs;
+                ink.ctx = cvs.getContext('2d');
+                return host;
+            }
+
+            function hideHost() {
+                if (!ink.host) return;
+                ink.host.classList.remove('sh-spen-ink-on', 'sh-spen-ink-capture');
+                ink.host.style.display = 'none';
+            }
+
+            function layoutOver(input) {
+                var host = ensureHost();
+                var r = input.getBoundingClientRect();
+                var pad = ink.pad;
+                var left = Math.max(4, r.left - pad);
+                var top = Math.max(4, r.top - pad);
+                var w = Math.min(window.innerWidth - left - 4, r.width + pad * 2);
+                var h = Math.min(window.innerHeight - top - 4, Math.max(r.height + pad * 2, 88));
+                host.style.display = 'block';
+                host.style.left = left + 'px';
+                host.style.top = top + 'px';
+                host.style.width = w + 'px';
+                host.style.height = h + 'px';
+                host.classList.add('sh-spen-ink-on');
+                if (ink.capture) host.classList.add('sh-spen-ink-capture');
+                else host.classList.remove('sh-spen-ink-capture');
+                var dpr = Math.max(1, window.devicePixelRatio || 1);
+                var cvs = ink.canvas;
+                cvs.width = Math.max(1, Math.round(w * dpr));
+                cvs.height = Math.max(1, Math.round(h * dpr));
+                ink.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                ink.ctx.lineCap = 'round';
+                ink.ctx.lineJoin = 'round';
+                ink.ctx.strokeStyle = '#1d4ed8';
+                ink.ctx.lineWidth = 2.6;
+                ink.hostRect = { left: left, top: top, w: w, h: h };
+            }
+
+            function toLocal(ev) {
+                var hr = ink.hostRect || { left: 0, top: 0 };
+                return { x: ev.clientX - hr.left, y: ev.clientY - hr.top };
+            }
+
+            function redraw() {
+                if (!ink.ctx || !ink.hostRect) return;
+                ink.ctx.clearRect(0, 0, ink.hostRect.w, ink.hostRect.h);
+                ink.ctx.beginPath();
+                for (var s = 0; s < ink.strokes.length; s++) {
+                    var pts = ink.strokes[s];
+                    if (!pts || !pts.length) continue;
+                    ink.ctx.moveTo(pts[0].x, pts[0].y);
+                    for (var i = 1; i < pts.length; i++) ink.ctx.lineTo(pts[i].x, pts[i].y);
+                }
+                if (ink.current && ink.current.length) {
+                    ink.ctx.moveTo(ink.current[0].x, ink.current[0].y);
+                    for (var j = 1; j < ink.current.length; j++) ink.ctx.lineTo(ink.current[j].x, ink.current[j].y);
+                }
+                ink.ctx.stroke();
+            }
+
+            function addPtsFromEvent(ev) {
+                var list = [ev];
+                try {
+                    if (typeof ev.getCoalescedEvents === 'function') {
+                        var extra = ev.getCoalescedEvents();
+                        if (extra && extra.length) list = extra;
+                    }
+                } catch (_) {}
+                if (!ink.current) ink.current = [];
+                for (var i = 0; i < list.length; i++) {
+                    var p = toLocal(list[i]);
+                    p.t = Date.now() - (ink.startMs || Date.now());
+                    ink.current.push(p);
+                }
+            }
+
+            window.__shSpenEnsureRecognizer = function () {
+                if (window.__shSpenRecognizer === false) return Promise.resolve(null);
+                if (window.__shSpenRecognizer) return Promise.resolve(window.__shSpenRecognizer);
+                if (!navigator.createHandwritingRecognizer) {
+                    window.__shSpenRecognizer = false;
+                    return Promise.resolve(null);
+                }
+                return navigator.createHandwritingRecognizer({ languages: ['it', 'en'] }).then(function (rec) {
+                    window.__shSpenRecognizer = rec;
+                    return rec;
+                }).catch(function () {
+                    return navigator.createHandwritingRecognizer({ languages: ['en'] }).then(function (rec) {
+                        window.__shSpenRecognizer = rec;
+                        return rec;
+                    }).catch(function () {
+                        window.__shSpenRecognizer = false;
+                        return null;
+                    });
+                });
+            };
+
+            window.__shSpenRecognizeStrokes = function () {
+                if (!ink.strokes.length || !ink.input) return Promise.resolve('');
+                return window.__shSpenEnsureRecognizer().then(function (rec) {
+                    if (!rec || typeof rec.startDrawing !== 'function') return '';
+                    var StrokeCtor = window.HandwritingStroke;
+                    if (typeof StrokeCtor !== 'function') return '';
+                    var drawing = rec.startDrawing({
+                        recognitionType: 'number',
+                        inputType: 'stylus',
+                        alternatives: 3,
+                        graphemeSet: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ',', '.', '-']
+                    });
+                    for (var i = 0; i < ink.strokes.length; i++) {
+                        var pts = ink.strokes[i];
+                        if (!pts || pts.length < 2) continue;
+                        var stroke = new StrokeCtor();
+                        for (var k = 0; k < pts.length; k++) {
+                            stroke.addPoint({ x: pts[k].x, y: pts[k].y, t: pts[k].t || k });
+                        }
+                        drawing.addStroke(stroke);
+                    }
+                    return drawing.getPrediction().then(function (preds) {
+                        try { drawing.clear(); } catch (_) {}
+                        if (!preds || !preds.length) return '';
+                        return (preds[0] && preds[0].text) || '';
+                    }).catch(function () { return ''; });
+                }).catch(function () { return ''; });
+            };
+
+            function finishAndCommit() {
+                if (!ink.active || !ink.input) return;
+                var input = ink.input;
+                var ime = window.__shSpenNormalizeNumber(ink.imeText || input.value);
+                var origin = window.__shSpenNormalizeNumber(ink.originValue);
+                if (ime && ime !== origin) {
+                    window.__shSpenCommitNumber(input, ime);
+                    closeInk(true);
+                    return;
+                }
+                if (!ink.strokes.length) {
+                    closeInk(false);
+                    return;
+                }
+                window.__shSpenRecognizeStrokes().then(function (text) {
+                    var num = window.__shSpenNormalizeNumber(text);
+                    if (num) window.__shSpenCommitNumber(input, num);
+                    else if (ime && ime !== origin) window.__shSpenCommitNumber(input, ime);
+                    closeInk(!!num);
+                });
+            }
+
+            function scheduleCommit() {
+                clearTimeout(ink.commitTimer);
+                ink.commitTimer = setTimeout(finishAndCommit, 520);
+            }
+
+            function closeInk(keepValue) {
+                clearTimeout(ink.commitTimer);
+                ink.active = false;
+                ink.capture = false;
+                ink.current = null;
+                ink.strokes = [];
+                ink.pointerId = null;
+                ink.input = null;
+                hideHost();
+                if (document.body) document.body.classList.remove('sh-spen-ink-open');
+                if (!keepValue && typeof window.__flushSpenDeferredWork === 'function') {
+                    setTimeout(window.__flushSpenDeferredWork, 60);
+                }
+            }
+
+            window.__shSpenOnPenDown = function (ev) {
+                if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
+                if (!ev || ev.pointerType !== 'pen') return;
+                var input = window.__shSpenFindWritableInput(ev.target);
+                if (!input) {
+                    if (ink.active && ev.target && ev.target.closest && ev.target.closest('#sh-spen-ink-host')) {
+                        input = ink.input;
+                    }
+                }
+                if (!input) {
+                    if (ink.active) scheduleCommit();
+                    return;
+                }
+                if (ink.active && ink.input && ink.input !== input) {
+                    finishAndCommit();
+                }
+                if (!ink.active || ink.input !== input) {
+                    ink.active = true;
+                    ink.input = input;
+                    ink.strokes = [];
+                    ink.imeText = input.value || '';
+                    ink.originValue = input.value || '';
+                    ink.capture = (window.__shSpenRecognizer !== false);
+                    try { input.focus({ preventScroll: true }); } catch (_) { try { input.focus(); } catch (e2) {} }
+                    layoutOver(input);
+                    if (document.body) document.body.classList.add('sh-spen-ink-open');
+                    window.__shSpenEnsureRecognizer().then(function (rec) {
+                        ink.capture = !!rec;
+                        if (ink.host) {
+                            if (ink.capture) ink.host.classList.add('sh-spen-ink-capture');
+                            else ink.host.classList.remove('sh-spen-ink-capture');
+                        }
+                    });
+                } else {
+                    layoutOver(input);
+                }
+                ink.pointerId = ev.pointerId;
+                ink.startMs = Date.now();
+                ink.current = [];
+                addPtsFromEvent(ev);
+                if (ink.capture && ink.host) {
+                    try { ink.host.setPointerCapture(ev.pointerId); } catch (_) {}
+                }
+                redraw();
+                clearTimeout(ink.commitTimer);
+            };
+
+            window.__shSpenOnPenMove = function (ev) {
+                if (!ink.active || !ink.current) return;
+                if (ev.pointerType !== 'pen') return;
+                if (ink.pointerId != null && ev.pointerId !== ink.pointerId) return;
+                addPtsFromEvent(ev);
+                redraw();
+            };
+
+            window.__shSpenOnPenUp = function (ev, cancelled) {
+                if (!ink.active) return;
+                if (ev && ink.pointerId != null && ev.pointerId !== ink.pointerId && !cancelled) return;
+                if (ink.current && ink.current.length > 1) ink.strokes.push(ink.current);
+                ink.current = null;
+                ink.pointerId = null;
+                if (ink.host) {
+                    try { ink.host.releasePointerCapture && ink.host.releasePointerCapture(ev && ev.pointerId); } catch (_) {}
+                }
+                redraw();
+                scheduleCommit();
+            };
+
+            window.__shSpenForceEndStroke = function () {
+                if (ink.current && ink.current.length > 1) ink.strokes.push(ink.current);
+                ink.current = null;
+                ink.pointerId = null;
+                if (ink.active) scheduleCommit();
+            };
+
+            window.__shSpenNoteImeCommit = function (el) {
+                if (!ink.active || ink.input !== el) return;
+                scheduleCommit();
+            };
+
+            window.addEventListener('resize', function () {
+                if (ink.active && ink.input) layoutOver(ink.input);
+            }, { passive: true });
+            document.addEventListener('pointerdown', function (ev) {
+                if (!ink.active) return;
+                if (ev.pointerType === 'pen') return;
+                if (ev.target && ev.target.closest && ev.target.closest('#sh-spen-ink-host')) return;
+                if (ink.input && (ev.target === ink.input || (ink.input.contains && ink.input.contains(ev.target)))) return;
+                scheduleCommit();
+            }, true);
+            void window.__shSpenEnsureRecognizer();
         };
 
         /** PC + tablet: colonne verticali sempre aperte. Tendine orizzontali: solo stato scelto dall'utente. */
@@ -2684,12 +3118,15 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (recentLocal && (!snapTs || (localTs && localTs >= snapTs))) return;
                 __lastAlarmConfigJson = json;
                 window.__lastAlarmConfigJson = json;
-                window.alarmConfig = data;
+                const incoming = typeof window.canonicalizeAlarmConfigMap === 'function'
+                    ? window.canonicalizeAlarmConfigMap(data || {})
+                    : (data || {});
+                window.alarmConfig = incoming;
                 if (!window.APP_DB) window.APP_DB = { alarms: {}, updatedAt: null };
-                window.APP_DB.alarms = data;
+                window.APP_DB.alarms = incoming;
                 window.saveDB();
                 try {
-                    localStorage.setItem('alarmConfig', json);
+                    localStorage.setItem('alarmConfig', JSON.stringify(incoming));
                 } catch (_) {}
                 if (typeof window.colorAllTankInputs === 'function') window.colorAllTankInputs();
                 if (typeof window.colorConductivityAlarmInputs === 'function') window.colorConductivityAlarmInputs();
@@ -2719,7 +3156,10 @@ window.colorPreviewNumber = function(tankName, value) {
         window.getAlarmConfig = function () {
             const localData = (window.APP_DB && window.APP_DB.alarms) || {};
             const cloudData = window.alarmConfig || {};
-            return Object.assign({}, cloudData, localData);
+            const merged = Object.assign({}, cloudData, localData);
+            return typeof window.canonicalizeAlarmConfigMap === 'function'
+                ? window.canonicalizeAlarmConfigMap(merged)
+                : merged;
         };
         
         // Sync da locale a cloud
@@ -4945,8 +5385,8 @@ window.colorPreviewNumber = function(tankName, value) {
                 yellow = 10000;
                 red = 10500;
             } else {
-                yellow = 1000;
-                red = 1200;
+                yellow = null;
+                red = null;
             }
 
             if (red != null && currentValue >= red) return 'critical';
@@ -10037,6 +10477,9 @@ window.updateStoricoButton = async function() {
         window.closeNumpadAlarmPanel = function () {
             if (window.__numpadView !== 'alarm') return;
             window.commitNumpadAlarmBufferToDraft();
+            if (typeof window.flushNumpadAlarmPersist === 'function') {
+                void window.flushNumpadAlarmPersist({ silent: true });
+            }
             window.__numpadView = 'value';
             const alarmPanel = document.getElementById('numpad-alarm-panel');
             if (alarmPanel) alarmPanel.hidden = true;
@@ -10056,7 +10499,8 @@ window.updateStoricoButton = async function() {
             if (typeof window.refreshNumpadAlarmVisual === 'function') window.refreshNumpadAlarmVisual();
         };
 
-        window.saveNumpadAlarms = async function () {
+        window.saveNumpadAlarms = async function (opts) {
+            opts = opts || {};
             if (!currentNumpadTarget || window.__numpadView !== 'alarm') return false;
             window.commitNumpadAlarmBufferToDraft();
             const draft = window.__numpadAlarmDraft || { yellow: '', red: '', yellowMin: '', redMin: '' };
@@ -10082,13 +10526,36 @@ window.updateStoricoButton = async function() {
             if (typeof window.refreshNumpadAlarmVisual === 'function') {
                 window.refreshNumpadAlarmVisual();
             }
-            const startBtnText = document.getElementById('numpad-start-text');
-            if (startBtnText) {
-                const orig = startBtnText.innerText;
-                startBtnText.innerText = 'SALVATO';
-                setTimeout(() => { startBtnText.innerText = 'SALVA'; }, 1200);
+            if (!opts.silent) {
+                const startBtnText = document.getElementById('numpad-start-text');
+                if (startBtnText) {
+                    startBtnText.innerText = 'SALVATO';
+                    setTimeout(() => { startBtnText.innerText = 'SALVA'; }, 1200);
+                }
             }
             return true;
+        };
+
+        window.flushNumpadAlarmPersist = function (opts) {
+            if (window.__numpadAlarmPersistTimer) {
+                clearTimeout(window.__numpadAlarmPersistTimer);
+                window.__numpadAlarmPersistTimer = null;
+            }
+            if (typeof window.saveNumpadAlarms === 'function') {
+                return window.saveNumpadAlarms(opts || { silent: true });
+            }
+            return Promise.resolve(false);
+        };
+
+        window.scheduleNumpadAlarmPersist = function () {
+            if (window.__numpadView !== 'alarm' || !currentNumpadTarget) return;
+            if (window.__numpadAlarmPersistTimer) clearTimeout(window.__numpadAlarmPersistTimer);
+            window.__numpadAlarmPersistTimer = setTimeout(function () {
+                window.__numpadAlarmPersistTimer = null;
+                if (typeof window.saveNumpadAlarms === 'function') {
+                    void window.saveNumpadAlarms({ silent: true });
+                }
+            }, 80);
         };
 
         window.commitNumpadFieldValue = function () {
@@ -10388,6 +10855,10 @@ window.updateStoricoButton = async function() {
                 labelEl.style.cursor = 'pointer';
                 labelEl.addEventListener('click', function (ev) {
                     if (window.__isAmbSpecialPopupTarget && window.__isAmbSpecialPopupTarget(ev.target)) return;
+                    if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()
+                        && ((ev && ev.pointerType === 'pen') || (window.__shPenRecentlyActive && window.__shPenRecentlyActive(500)))) {
+                        return;
+                    }
                     ev.preventDefault();
                     ev.stopPropagation();
                     window.openNumpad(labelEl);
@@ -10528,6 +10999,11 @@ window.updateStoricoButton = async function() {
         };
 
         window.openNumpad = (labelEl, explicitInput) => {
+            if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()
+                && ((window.__shPenIsDown) || (window.__shSpenInk && window.__shSpenInk.active)
+                    || (window.__shPenRecentlyActive && window.__shPenRecentlyActive(400)))) {
+                return;
+            }
             if (typeof window.__clearNumpadClickBlockers === 'function') window.__clearNumpadClickBlockers();
             const numpadModal = document.getElementById('numpad-modal');
             if (numpadModal && numpadModal.classList.contains('active')) {
@@ -10554,6 +11030,9 @@ window.updateStoricoButton = async function() {
 
         window.closeNumpad = (opts) => {
             opts = opts || {};
+            if (window.__numpadView === 'alarm' && typeof window.flushNumpadAlarmPersist === 'function') {
+                void window.flushNumpadAlarmPersist({ silent: true });
+            }
             if (!window.__numpadCommitted && currentNumpadTarget && window.__numpadView === 'value'
                 && !window.currentAnalisiPopupInput) {
                 const display = document.getElementById('numpad-display');
@@ -10759,6 +11238,7 @@ window.updateStoricoButton = async function() {
                 else if (val === 'CLR') display.value = '';
                 else { if (val === '.' && display.value.includes('.')) return; if (val !== '%') display.value += val; }
                 window.commitNumpadAlarmBufferToDraft();
+                if (typeof window.scheduleNumpadAlarmPersist === 'function') window.scheduleNumpadAlarmPersist();
                 return;
             }
             if (val === 'DEL') display.value = display.value.slice(0, -1);
@@ -41202,8 +41682,12 @@ window.convertToHtml = async () => {
             pointer-events: auto !important;
         }
         body.sh-device-android-tablet .main-container input:not([readonly]),
-        body.sh-device-android-tablet .main-container textarea:not([readonly]) {
-            touch-action: auto !important;
+        body.sh-device-android-tablet .main-container textarea:not([readonly]),
+        body.sh-device-android-tablet .main-container .amb-input-box,
+        body.sh-device-android-tablet .main-container .nott-stocc-inp-cell,
+        body.sh-device-android-tablet .main-container td:has(> input),
+        body.sh-device-android-tablet .main-container td:has(> textarea) {
+            touch-action: none !important;
             -webkit-user-select: text !important;
             user-select: text !important;
         }
@@ -42907,33 +43391,45 @@ window.convertToHtml = async () => {
         }
         .alarm-editor-card-head {
             display: flex;
-            align-items: center;
+            align-items: flex-start;
             gap: 12px;
             margin-bottom: 16px;
             width: 100%;
         }
         .alarm-editor-card-title-row {
             display: flex;
+            flex-direction: column;
             flex-wrap: nowrap;
-            align-items: baseline;
-            justify-content: space-between;
-            gap: 8px;
+            align-items: flex-start;
+            justify-content: flex-start;
+            gap: 6px;
             flex: 1;
             min-width: 0;
         }
         .alarm-editor-card-title-row h3 {
             margin: 0;
             line-height: 1.15;
-            flex: 0 1 auto;
+            flex: 0 0 auto;
             min-width: 0;
             white-space: nowrap;
         }
         .alarm-editor-card-sub {
+            display: block;
             font-size: 11px;
             font-weight: 600;
-            white-space: nowrap;
+            white-space: normal;
             flex-shrink: 0;
-            text-align: right;
+            text-align: left;
+            line-height: 1.25;
+            margin-top: 2px;
+            max-width: 100%;
+        }
+        body.sh-device-phone .alarm-editor-card-title-row {
+            gap: 8px;
+        }
+        body.sh-device-phone .alarm-editor-card-sub {
+            font-size: 11px;
+            padding-top: 2px;
         }
         .alarm-editor-card-sub--red { color: #b91c1c; }
         .alarm-editor-card-sub--yellow { color: #a16207; }
@@ -48819,11 +49315,15 @@ window.persistTankAlarmThresholds = async function (inputId, opts) {
     const el = document.getElementById(inputId);
     const isConductivity = !!(opts.alarmStorageKey && String(opts.alarmStorageKey).indexOf('cond:') === 0);
     const configKey = opts.alarmStorageKey
-        ? opts.alarmStorageKey
+        ? (String(opts.alarmStorageKey).indexOf('cond:') === 0
+            ? opts.alarmStorageKey
+            : (window.normalizeTankId(opts.alarmStorageKey) || opts.alarmStorageKey))
         : (typeof window.resolveAlarmConfigStorageKey === 'function'
             ? window.resolveAlarmConfigStorageKey(inputId, el)
             : window.normalizeTankId(inputId));
-    const config = { ...(window.APP_DB.alarms || {}) };
+    const config = {
+        ...((typeof window.getAlarmConfig === 'function' && window.getAlarmConfig()) || window.APP_DB.alarms || {})
+    };
     const existing = (typeof window.thresholdsForAlarmFieldId === 'function'
         && window.thresholdsForAlarmFieldId(configKey)) || {};
     const alarmData = {};
@@ -48872,11 +49372,21 @@ window.persistTankAlarmThresholds = async function (inputId, opts) {
         if (condFid && condFid !== configKey) delete config[condFid];
     }
 
-    await saveAlarmConfig(config);
+    if (typeof window.purgeAlarmConfigAliasKeys === 'function') {
+        window.purgeAlarmConfigAliasKeys(config, inputId, configKey, el);
+    }
+    const cleanConfig = typeof window.canonicalizeAlarmConfigMap === 'function'
+        ? window.canonicalizeAlarmConfigMap(config)
+        : config;
 
-    if (currentNumpadTarget && currentNumpadTarget.id === inputId) {
+    await saveAlarmConfig(cleanConfig);
+
+    const npt = (typeof window.__getNumpadTarget === 'function' && window.__getNumpadTarget())
+        || window.__currentNumpadTarget
+        || null;
+    if (npt && npt.id === inputId) {
         if (typeof window.refreshAlarmVisualForField === 'function') {
-            window.refreshAlarmVisualForField(currentNumpadTarget, true);
+            window.refreshAlarmVisualForField(npt, true);
         }
     } else if (el && typeof window.refreshAlarmVisualForField === 'function') {
         window.refreshAlarmVisualForField(el, true);
@@ -49280,6 +49790,71 @@ window.normalizeTankId = function(id) {
         .trim();
 };
 
+/** Unifica chiavi alias (inp-tk8092 / TK8092 / tk8092) sulla forma canonica. */
+window.canonicalizeAlarmConfigMap = function (config) {
+    if (!config || typeof config !== 'object') return {};
+    const out = {};
+    Object.keys(config).forEach(function (key) {
+        const val = config[key];
+        if (!val || typeof val !== 'object') return;
+        if (String(key).indexOf('cond:') === 0) {
+            out[key] = Object.assign({}, val);
+        }
+    });
+    Object.keys(config).forEach(function (key) {
+        if (String(key).indexOf('cond:') === 0) return;
+        const canon = window.normalizeTankId(key);
+        if (!canon || key !== canon) return;
+        out[canon] = Object.assign({}, config[key]);
+    });
+    Object.keys(config).forEach(function (key) {
+        if (String(key).indexOf('cond:') === 0) return;
+        const canon = window.normalizeTankId(key);
+        if (!canon || key === canon) return;
+        const src = config[key];
+        if (!src || typeof src !== 'object') return;
+        if (!out[canon]) out[canon] = {};
+        ['yellow', 'red', 'yellowMin', 'redMin'].forEach(function (f) {
+            if (!window.isAlarmThresholdConfigured(out[canon][f]) && window.isAlarmThresholdConfigured(src[f])) {
+                out[canon][f] = src[f];
+            }
+        });
+    });
+    return out;
+};
+
+if (typeof window.getAlarmConfig !== 'function') {
+    window.getAlarmConfig = function () {
+        const localData = (window.APP_DB && window.APP_DB.alarms) || {};
+        const cloudData = window.alarmConfig || {};
+        const merged = Object.assign({}, cloudData, localData);
+        return window.canonicalizeAlarmConfigMap(merged);
+    };
+}
+
+window.purgeAlarmConfigAliasKeys = function (config, inputId, configKey, el) {
+    if (!config || typeof config !== 'object') return;
+    const keep = configKey || '';
+    const aliases = {};
+    function add(k) {
+        if (!k || k === keep) return;
+        aliases[k] = 1;
+    }
+    add(inputId);
+    if (inputId && typeof window.normalizeTankId === 'function') add(window.normalizeTankId(inputId));
+    if (keep && typeof window.normalizeTankId === 'function' && String(keep).indexOf('cond:') !== 0) {
+        add(window.normalizeTankId(keep));
+    }
+    const map = typeof window.__getTankAlarmFieldMap === 'function' ? window.__getTankAlarmFieldMap() : null;
+    if (map && inputId && map[inputId]) {
+        add(map[inputId]);
+        if (typeof window.normalizeTankId === 'function') add(window.normalizeTankId(map[inputId]));
+    }
+    Object.keys(aliases).forEach(function (k) {
+        if (k !== keep) delete config[k];
+    });
+};
+
 /** Soglie allarme per id campo o chiave cond:… / normalizzata. */
 window.thresholdsForAlarmFieldId = function (rawId) {
     const cfg = window.getAlarmConfig ? window.getAlarmConfig() : {};
@@ -49298,8 +49873,6 @@ window.thresholdsForAlarmFieldId = function (rawId) {
         return legacyConductivityLookup(rawId.slice(5));
     }
 
-    if (cfg[rawId]) return cfg[rawId];
-
     if (typeof window.isConductivityOnlyFieldId === 'function'
         && window.isConductivityOnlyFieldId(rawId)
         && typeof window.getConductivityAlarmStorageKey === 'function') {
@@ -49310,6 +49883,7 @@ window.thresholdsForAlarmFieldId = function (rawId) {
 
     const nid = window.normalizeTankId(rawId);
     if (nid && cfg[nid]) return cfg[nid];
+    if (cfg[rawId]) return cfg[rawId];
     if (/^val[\-_]/i.test(rawId)) {
         const legacy = rawId
             .replace(/^analisi\-/gi, '')

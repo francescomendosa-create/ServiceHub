@@ -1018,7 +1018,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v515';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v516';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -3877,6 +3877,16 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__isUserPressingLabel = function () {
             return !!(pressTimer || globalInteractionLock || isLongPress);
         };
+        window.__plantUiBusyUntil = 0;
+        window.__markPlantUiBusy = function (ms) {
+            var add = typeof ms === 'number' ? ms : 480;
+            window.__plantUiBusyUntil = Math.max(window.__plantUiBusyUntil || 0, Date.now() + add);
+        };
+        window.__isPlantUiBusy = function () {
+            if (window.__isUserPressingLabel && window.__isUserPressingLabel()) return true;
+            if (window.__isPostLongPressShieldActive && window.__isPostLongPressShieldActive()) return true;
+            return Date.now() < (window.__plantUiBusyUntil || 0);
+        };
         window.__deferHeavyUiWork = function (fn) {
             if (!fn) return false;
             if (!window.__isUserPressingLabel()) {
@@ -6429,9 +6439,132 @@ window.colorPreviewNumber = function(tankName, value) {
                     window.__plantCloudSaveTimer = setTimeout(__tryPlantCloudSave, 400);
                     return;
                 }
+                if (window.__isPlantUiBusy && window.__isPlantUiBusy()) {
+                    window.__plantCloudSaveTimer = setTimeout(__tryPlantCloudSave, 280);
+                    return;
+                }
                 window.__plantCloudSaveTimer = null;
                 window.__saveDataImpl(skipHistory === true).catch(function () {});
             }, window.__PLANT_CLOUD_SAVE_DEBOUNCE_MS);
+        };
+
+        window.__pendingStatusPersistIds = {};
+        window.__queuePlantStatusPersist = function (statusId) {
+            if (statusId) {
+                window.__pendingStatusPersistIds = window.__pendingStatusPersistIds || {};
+                window.__pendingStatusPersistIds[statusId] = 1;
+            }
+            if (window.__statusPersistTimer) clearTimeout(window.__statusPersistTimer);
+            window.__statusPersistTimer = setTimeout(function tick() {
+                if (window.__isPlantUiBusy && window.__isPlantUiBusy()) {
+                    window.__statusPersistTimer = setTimeout(tick, 280);
+                    return;
+                }
+                window.__statusPersistTimer = 0;
+                if (typeof window.__flushPlantStatusLightPatch === 'function') {
+                    void window.__flushPlantStatusLightPatch();
+                }
+            }, 420);
+        };
+
+        window.__flushPlantStatusLightPatch = async function () {
+            var pending = window.__pendingStatusPersistIds || {};
+            var ids = Object.keys(pending);
+            if (!ids.length) return;
+            if (window.__isPlantUiBusy && window.__isPlantUiBusy()) {
+                window.__queuePlantStatusPersist();
+                return;
+            }
+            if (__plantSaveInFlight) {
+                try { await __plantSaveInFlight; } catch (_) {}
+                if (window.__isPlantUiBusy && window.__isPlantUiBusy()) {
+                    window.__queuePlantStatusPersist();
+                    return;
+                }
+            }
+            ids = Object.keys(window.__pendingStatusPersistIds || {});
+            window.__pendingStatusPersistIds = {};
+            if (!ids.length) return;
+            if (window.isEditingArchive && window.editingArchiveId) return;
+            if (window.__firestoreQuotaBlocked) return;
+
+            var patch = {};
+            ids.forEach(function (sid) {
+                var el = document.getElementById(sid);
+                if (!el) el = document.querySelector('#' + sid);
+                var state = el && typeof window.__capturePlantStatusStateFromEl === 'function'
+                    ? window.__capturePlantStatusStateFromEl(el)
+                    : null;
+                if (state) patch[sid] = state;
+            });
+            if (!Object.keys(patch).length) return;
+
+            var now = Date.now();
+            patch.lastUpdate = new Date().toISOString();
+            patch.syncRevision = now;
+            if (window.__plantStatusEdits && typeof window.__plantStatusEdits === 'object') {
+                var localBk = typeof window.__readPlantBackupLocal === 'function'
+                    ? window.__readPlantBackupLocal() : null;
+                var mergedEdits = {};
+                if (localBk && localBk.plantStatusEdits && typeof window.__mergePlantStatusEditsMaps === 'function') {
+                    mergedEdits = window.__mergePlantStatusEditsMaps(mergedEdits, localBk.plantStatusEdits);
+                }
+                mergedEdits = window.__mergePlantStatusEditsMaps
+                    ? window.__mergePlantStatusEditsMaps(mergedEdits, window.__plantStatusEdits)
+                    : Object.assign({}, mergedEdits, window.__plantStatusEdits);
+                patch.plantStatusEdits = mergedEdits;
+            }
+            if (window.__plantFieldEditMs && typeof window.__plantFieldEditMs === 'object') {
+                patch.plantFieldEditMs = Object.assign({}, window.__plantFieldEditMs);
+            }
+
+            var existing = typeof window.__readPlantBackupLocal === 'function'
+                ? window.__readPlantBackupLocal() : null;
+            if (existing && typeof existing === 'object') {
+                Object.keys(patch).forEach(function (k) { existing[k] = patch[k]; });
+                if (typeof __writePlantLocalBackup === 'function') __writePlantLocalBackup(existing);
+            }
+
+            if (!user || !user.uid || !db || !window.__cloudPlantHydrated) {
+                if (typeof window.__schedulePlantCloudSave === 'function') {
+                    window.__schedulePlantCloudSave(true);
+                }
+                return;
+            }
+
+            var doLight = async function () {
+                const plantRef = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
+                await setDoc(plantRef, patch, { merge: true });
+                var rev = __plantPayloadRevision(patch);
+                if (rev > 0) window.__appliedPlantSyncRevision = rev;
+                window.__lastLocalPlantSaveMs = Date.now();
+                cacheCloudPlantPayload(patch);
+                if (window.__plantSyncBaseline && typeof window.__plantSyncBaseline === 'object') {
+                    Object.keys(patch).forEach(function (k) {
+                        window.__plantSyncBaseline[k] = patch[k];
+                    });
+                }
+            };
+
+            const p = doLight().catch(function (e) {
+                console.warn('[ServiceHub] status light patch:', e && e.message);
+            }).finally(function () {
+                if (window.__statusDigitalTimer) clearTimeout(window.__statusDigitalTimer);
+                window.__statusDigitalTimer = setTimeout(function digiTick() {
+                    if (window.__isPlantUiBusy && window.__isPlantUiBusy()) {
+                        window.__statusDigitalTimer = setTimeout(digiTick, 400);
+                        return;
+                    }
+                    window.__statusDigitalTimer = 0;
+                    if (typeof window.__schedulePublicDigitalRemotePush === 'function') {
+                        window.__schedulePublicDigitalRemotePush();
+                    }
+                }, 1800);
+            });
+            __plantSaveInFlight = p;
+            return p.finally(function () {
+                if (__plantSaveInFlight === p) __plantSaveInFlight = null;
+            });
         };
 
         window.__flushPlantCloudSaveNow = function (skipHistory) {
@@ -6582,6 +6715,10 @@ window.colorPreviewNumber = function(tankName, value) {
 
         window.saveData = async function (skipHistory) {
             if (window.__isUserTypingInPlantField() && skipHistory === true) {
+                window.__schedulePlantCloudSave(true);
+                return Promise.resolve();
+            }
+            if (skipHistory === true && window.__isPlantUiBusy && window.__isPlantUiBusy()) {
                 window.__schedulePlantCloudSave(true);
                 return Promise.resolve();
             }
@@ -32915,6 +33052,8 @@ window.updateStoricoButton = async function() {
         };
 
         window.hideModule = (id, userInitiated) => {
+            if (typeof window.__markPlantUiBusy === 'function') window.__markPlantUiBusy(520);
+            if (typeof window.__queuePlantStatusPersist === 'function') window.__queuePlantStatusPersist();
             if (!hiddenModules.includes(id)) {
                 const domId = window.normalizePhoneSectionDomId(id);
                 const sec = document.getElementById(domId) || document.getElementById(id);
@@ -33129,6 +33268,7 @@ window.updateStoricoButton = async function() {
             const touch = e.touches ? e.touches[0] : e;
             startX = touch.clientX;
             startY = touch.clientY;
+            if (typeof window.__queuePlantStatusPersist === 'function') window.__queuePlantStatusPersist();
             if (!isTabletLayout && !isAndroidTab) forceBlur();
             isLongPress = false;
             const label = e.currentTarget;
@@ -33186,6 +33326,8 @@ window.updateStoricoButton = async function() {
             }
             
             if (globalInteractionLock && !force) return;
+            if (typeof window.__markPlantUiBusy === 'function') window.__markPlantUiBusy(400);
+            if (typeof window.__queuePlantStatusPersist === 'function') window.__queuePlantStatusPersist();
             const domId = window.normalizePhoneSectionDomId(id);
             const groups = window.getPhoneSectionGroups();
             const group = groups.find(function (g) { return g.indexOf(domId) >= 0 || g.indexOf(id) >= 0; });
@@ -33249,13 +33391,43 @@ window.updateStoricoButton = async function() {
             requestAnimationFrame(applyToggle);
         };
 
-        window.__queuePlantStatusPersist = function () {
-            if (window.__statusPersistTimer) clearTimeout(window.__statusPersistTimer);
-            window.__statusPersistTimer = setTimeout(function () {
-                window.__statusPersistTimer = 0;
-                if (typeof window.updateBoilerInputs === 'function') window.updateBoilerInputs();
-                if (typeof window.saveData === 'function') void window.saveData(true);
-            }, 160);
+        window.__dimLinkedInputsForStatus = function (statusId) {
+            if (!statusId) return;
+            var isRunning = false;
+            var statusEl = document.getElementById(statusId);
+            if (statusEl) isRunning = String(statusEl.textContent || '').trim() === 'MARCIA';
+            var dim = function (inputEl) {
+                if (!inputEl) return;
+                inputEl.style.opacity = isRunning ? '1' : '0.3';
+                inputEl.style.pointerEvents = isRunning ? 'auto' : 'none';
+                inputEl.readOnly = !isRunning;
+                var row = inputEl.closest('tr');
+                var labelEl = row && row.querySelector('.cell-label-main');
+                if (labelEl) labelEl.style.opacity = isRunning ? '1' : '0.3';
+            };
+            if (statusId === 'stat-mk-A') {
+                dim(document.getElementById('inp-a-prod'));
+                dim(document.getElementById('inp-a-cond'));
+                return;
+            }
+            if (statusId === 'stat-mk-D') {
+                dim(document.getElementById('inp-d-prod'));
+                dim(document.getElementById('inp-d-cond'));
+                return;
+            }
+            if (String(statusId).indexOf('sa-') === 0) {
+                var row = statusEl && statusEl.closest('tr');
+                var machineLabel = row && row.querySelector('.cell-label-main');
+                if (machineLabel) machineLabel.style.opacity = isRunning ? '1' : '0.3';
+                (window.ARIA_COMPRESSOR_MEASURES || []).forEach(function (m) {
+                    var inputEl = document.getElementById(statusId + '-' + m.key);
+                    if (!inputEl) return;
+                    inputEl.style.opacity = isRunning ? '1' : '0.3';
+                    inputEl.style.pointerEvents = isRunning ? 'auto' : 'none';
+                    inputEl.readOnly = !isRunning;
+                    if (!isRunning) inputEl.value = '';
+                });
+            }
         };
 
         window.toggleStatus = (id) => {
@@ -33282,15 +33454,17 @@ window.updateStoricoButton = async function() {
             
             if (!el) return;
             
-            const active = el.innerText.trim() === "FERMO";
-            el.innerText = active ? "MARCIA" : "FERMO";
+            const active = String(el.textContent || '').trim() === "FERMO";
+            el.textContent = active ? "MARCIA" : "FERMO";
             el.className = `status-cell-btn ${active ? 'bg-marcia' : 'bg-fermo'}`;
             if (typeof window.__touchPlantStatusEdit === 'function') window.__touchPlantStatusEdit(id);
+            if (typeof window.__dimLinkedInputsForStatus === 'function') {
+                window.__dimLinkedInputsForStatus(id);
+            }
             if (id === 'stat-f' && typeof window.rigenUpdateFaseLabels === 'function') {
                 window.rigenUpdateFaseLabels();
             }
-            if (typeof window.__queuePlantStatusPersist === 'function') window.__queuePlantStatusPersist();
-            else window.saveData();
+            if (typeof window.__queuePlantStatusPersist === 'function') window.__queuePlantStatusPersist(id);
         };
 
         window.toggleComp = (id, sigla) => {
@@ -33356,8 +33530,10 @@ window.updateStoricoButton = async function() {
             }
 
             if (typeof window.__touchPlantStatusEdit === 'function') window.__touchPlantStatusEdit(headerId);
-            if (typeof window.__queuePlantStatusPersist === 'function') window.__queuePlantStatusPersist();
-            else window.saveData();
+            if (typeof window.__queuePlantStatusPersist === 'function') {
+                window.__queuePlantStatusPersist(headerId);
+                if (statusId) window.__queuePlantStatusPersist(statusId);
+            }
         };
         window.openShiftPopup = () => {
             const modal = document.getElementById('shift-modal');
@@ -57046,7 +57222,12 @@ window.applyGeminiMarciaStatus = function(idRaw, statoRaw) {
 
     if (target.kind === 'blowdown') {
         var bdRes = window.applyGeminiBlowdownStatus(target.comp, stato);
-        if (bdRes && typeof window.saveData === 'function') window.saveData(true);
+        if (bdRes && target.comp) {
+            if (typeof window.__queuePlantStatusPersist === 'function') {
+                window.__queuePlantStatusPersist(target.comp.headerId);
+                if (target.comp.statusId) window.__queuePlantStatusPersist(target.comp.statusId);
+            }
+        }
         return bdRes;
     }
 
@@ -57062,13 +57243,16 @@ window.applyGeminiMarciaStatus = function(idRaw, statoRaw) {
         }
     }
     if (typeof window.__touchPlantStatusEdit === 'function') window.__touchPlantStatusEdit(id);
-    if (typeof window.updateBoilerInputs === 'function' && (id === 'stat-mk-A' || id === 'stat-mk-D')) {
+    if (typeof window.__dimLinkedInputsForStatus === 'function') {
+        window.__dimLinkedInputsForStatus(id);
+    } else if (typeof window.updateBoilerInputs === 'function' && (id === 'stat-mk-A' || id === 'stat-mk-D')) {
         window.updateBoilerInputs();
     }
     if (id === 'stat-f' && typeof window.rigenUpdateFaseLabels === 'function') {
         window.rigenUpdateFaseLabels();
     }
-    if (typeof window.saveData === 'function') window.saveData(true);
+    if (typeof window.__queuePlantStatusPersist === 'function') window.__queuePlantStatusPersist(id);
+    else if (typeof window.saveData === 'function') window.saveData(true);
     return { kind: 'marcia', label: target.label || id, value: stato };
 };
 

@@ -1032,7 +1032,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v521';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v523';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -2593,12 +2593,13 @@ window.colorPreviewNumber = function(tankName, value) {
 
         window.__shSpenIsStrikethrough = function (strokes, hostRect, textBox) {
             if (!strokes || !strokes.length || !hostRect) return false;
+            if (!textBox || textBox.empty || textBox.width < 8) return false;
             var fieldW = hostRect.w || 0;
             var fieldH = hostRect.h || 0;
             if (fieldW < 8) return false;
-            var needW = Math.max(28, Math.min(fieldW * 0.42, (textBox && textBox.width > 12) ? textBox.width * 0.82 : fieldW * 0.5));
-            var midY = textBox ? (textBox.top + textBox.bottom) / 2 : fieldH / 2;
-            var hit = false;
+            var needW = Math.max(textBox.width * 0.72, Math.min(fieldW * 0.5, textBox.width + 10));
+            var midY = (textBox.top + textBox.bottom) / 2;
+            var maxVert = Math.max(12, fieldH * 0.28);
             for (var s = 0; s < strokes.length; s++) {
                 var pts = strokes[s];
                 if (!pts || pts.length < 2) continue;
@@ -2611,7 +2612,7 @@ window.colorPreviewNumber = function(tankName, value) {
                     if (y < miny) miny = y;
                     if (y > maxy) maxy = y;
                     var dx = x - pts[i - 1].x;
-                    if (Math.abs(dx) > 3) {
+                    if (Math.abs(dx) > 4) {
                         var nd = dx > 0 ? 1 : -1;
                         if (dir && nd !== dir) reversals++;
                         dir = nd;
@@ -2620,17 +2621,16 @@ window.colorPreviewNumber = function(tankName, value) {
                 var horiz = maxx - minx;
                 var vert = maxy - miny;
                 var aspect = horiz / Math.max(vert, 1);
-                var crossesText = miny <= midY + Math.max(10, fieldH * 0.22) && maxy >= midY - Math.max(10, fieldH * 0.22);
-                var flat = aspect >= 2.1 && vert <= Math.max(18, fieldH * 0.55);
-                var scribble = reversals >= 2 && aspect >= 1.45 && horiz >= Math.max(24, fieldW * 0.32);
-                if (crossesText && horiz >= needW && (flat || scribble)) hit = true;
+                var crossesText = miny <= midY + 8 && maxy >= midY - 8;
+                var flatCut = aspect >= 3.4 && vert <= maxVert && horiz >= needW;
+                var scribble = reversals >= 3 && aspect >= 2.6 && vert <= maxVert && horiz >= needW;
+                if (crossesText && (flatCut || scribble)) return true;
             }
-            if (hit) return true;
             var all = window.__shSpenStrokeBounds(strokes);
             if (!all) return false;
             var allAspect = all.w / Math.max(all.h, 1);
-            return all.w >= needW && allAspect >= 2.4 && all.h <= Math.max(20, fieldH * 0.5)
-                && all.miny <= midY + 12 && all.maxy >= midY - 12;
+            return all.w >= needW && allAspect >= 3.6 && all.h <= maxVert
+                && all.miny <= midY + 8 && all.maxy >= midY - 8;
         };
 
         window.__shSpenEditModeFromStrokes = function (strokes, input, origin, hostRect) {
@@ -2667,7 +2667,8 @@ window.colorPreviewNumber = function(tankName, value) {
             else if (rec) next = rec;
             else return false;
             if (mode !== 'clear' && typeof window.applyIntegerOnlyTankValue === 'function') {
-                next = window.applyIntegerOnlyTankValue(input.id, next);
+                var formatted = window.applyIntegerOnlyTankValue(input.id, next);
+                if (formatted != null && String(formatted).trim() !== '') next = formatted;
             }
             if (mode !== 'clear' && !next) return false;
             input.value = next;
@@ -2956,32 +2957,33 @@ window.colorPreviewNumber = function(tankName, value) {
             }
 
             function finishAndCommit() {
-                var input = boundInput();
+                var input = boundInput() || ink.input;
                 if (!ink.active || !input) {
                     closeInk(false);
                     return;
                 }
                 var origin = ink.originValue;
-                var mode = window.__shSpenEditModeFromStrokes(ink.strokes, input, origin, ink.hostRect);
-                if (mode === 'clear') {
+                var origN = window.__shSpenNormalizeNumber(origin);
+                var imeNum = liveImeNumber(input);
+                if (imeNum) {
+                    var join = inferImeJoin(origin, imeNum);
+                    window.__shSpenApplyFieldEdit(
+                        input,
+                        join ? join.rec : imeNum,
+                        origin,
+                        join ? join.mode : 'replace'
+                    );
+                    closeInk(true);
+                    return;
+                }
+                var strictCut = !!(origN && window.__shSpenIsStrikethrough(
+                    ink.strokes, ink.hostRect, window.__shSpenMeasureFieldText(input, ink.hostRect, origin)
+                ));
+                if (strictCut && origN) {
                     window.__shSpenApplyFieldEdit(input, '', origin, 'clear');
                     try { input.blur(); } catch (_) {}
                     closeInk(true);
                     return;
-                }
-                var imeNum = liveImeNumber(input);
-                if (imeNum) {
-                    var join = inferImeJoin(origin, imeNum);
-                    if (join) {
-                        window.__shSpenApplyFieldEdit(input, join.rec, origin, join.mode);
-                        closeInk(true);
-                        return;
-                    }
-                    if (!window.__shSpenNormalizeNumber(origin)) {
-                        window.__shSpenApplyFieldEdit(input, imeNum, '', 'replace');
-                        closeInk(true);
-                        return;
-                    }
                 }
                 if (!ink.strokes.length) {
                     closeInk(false);
@@ -2991,30 +2993,47 @@ window.colorPreviewNumber = function(tankName, value) {
                 ink.pendingPred = null;
                 pred.then(function (text) {
                     if (!ink.active) return;
-                    var target = boundInput() || input;
-                    var useMode = window.__shSpenEditModeFromStrokes(ink.strokes, target, origin, ink.hostRect);
-                    if (useMode === 'clear') {
-                        window.__shSpenApplyFieldEdit(target, '', origin, 'clear');
-                        try { target.blur(); } catch (_) {}
-                        closeInk(true);
-                        return;
-                    }
+                    var target = boundInput() || ink.input || input;
                     var imeNow = liveImeNumber(target);
                     if (imeNow) {
                         var join2 = inferImeJoin(origin, imeNow);
-                        if (join2) {
-                            window.__shSpenApplyFieldEdit(target, join2.rec, origin, join2.mode);
-                            closeInk(true);
-                            return;
-                        }
-                    }
-                    var num = window.__shSpenNormalizeNumber(text);
-                    if (num) {
-                        window.__shSpenApplyFieldEdit(target, num, origin, useMode);
+                        window.__shSpenApplyFieldEdit(
+                            target,
+                            join2 ? join2.rec : imeNow,
+                            origin,
+                            join2 ? join2.mode : 'replace'
+                        );
                         closeInk(true);
                         return;
                     }
-                    closeInk(false);
+                    var num = window.__shSpenNormalizeNumber(text);
+                    var afterNum = function (got) {
+                        if (!ink.active) return;
+                        var el = boundInput() || ink.input || target;
+                        if (got) {
+                            var useMode = window.__shSpenEditModeFromStrokes(ink.strokes, el, origin, ink.hostRect);
+                            if (useMode === 'clear') useMode = 'replace';
+                            window.__shSpenApplyFieldEdit(el, got, origin, useMode);
+                            closeInk(true);
+                            return;
+                        }
+                        if (origN && window.__shSpenIsStrikethrough(
+                            ink.strokes, ink.hostRect, window.__shSpenMeasureFieldText(el, ink.hostRect, origin)
+                        )) {
+                            window.__shSpenApplyFieldEdit(el, '', origin, 'clear');
+                            try { el.blur(); } catch (_) {}
+                            closeInk(true);
+                            return;
+                        }
+                        if (origN && !String(el.value || '').trim()) {
+                            el.value = origin;
+                        }
+                        closeInk(false);
+                    };
+                    if (num) afterNum(num);
+                    else window.__shSpenOcrInkCanvas().then(function (ocr) {
+                        afterNum(window.__shSpenNormalizeNumber(ocr));
+                    }).catch(function () { afterNum(''); });
                 }).catch(function () {
                     closeInk(false);
                 });
@@ -3031,7 +3050,7 @@ window.colorPreviewNumber = function(tankName, value) {
                     finishAndCommit();
                     return;
                 }
-                if (!penBusy && input && liveImeNumber(input) && !window.__shSpenNormalizeNumber(ink.originValue)) {
+                if (!penBusy && input && liveImeNumber(input)) {
                     finishAndCommit();
                     return;
                 }

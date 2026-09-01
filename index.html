@@ -137,28 +137,31 @@
         #sh-spen-ink-host {
             position: fixed;
             z-index: 12050;
-            pointer-events: none;
+            pointer-events: none !important;
             touch-action: none;
-            overflow: visible;
-            border-radius: 8px;
+            overflow: hidden;
+            border-radius: 0;
             box-shadow: none;
+            margin: 0;
+            padding: 0;
+            background: transparent;
         }
         #sh-spen-ink-host.sh-spen-ink-on {
-            box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.35);
-            background: rgba(255, 255, 255, 0.04);
-        }
-        #sh-spen-ink-host.sh-spen-ink-capture {
-            pointer-events: auto;
+            outline: 2px solid #2563eb;
+            outline-offset: -2px;
+            background: transparent;
         }
         #sh-spen-ink-host canvas {
             display: block;
             width: 100%;
             height: 100%;
             touch-action: none;
-            pointer-events: none;
+            pointer-events: none !important;
         }
-        #sh-spen-ink-host.sh-spen-ink-capture canvas {
-            pointer-events: auto;
+        html.sh-android-tablet-boot,
+        html.sh-android-tablet-boot body {
+            touch-action: manipulation;
+            -ms-touch-action: manipulation;
         }
 
         /* Smartphone: nascondi UI principale finché lo splash è attivo (evita flash GESTIONE MODULI su iOS) */
@@ -990,7 +993,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v506';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v508';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -2177,6 +2180,7 @@ window.colorPreviewNumber = function(tankName, value) {
         };
         (function () {
             if (window.__shPenTrackerReady) return;
+            if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
             window.__shPenTrackerReady = true;
             var onPen = function (ev, down) {
                 if (!ev || ev.pointerType !== 'pen') return;
@@ -2315,7 +2319,8 @@ window.colorPreviewNumber = function(tankName, value) {
                 var t = e.target;
                 if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA')) return;
                 if (!t.closest || !t.closest('.main-container')) return;
-                if (window.__shSpenInk && window.__shSpenInk.input === t) {
+                if (window.__shSpenInk && (window.__shSpenInk.input === t || (t.id && window.__shSpenInk.inputId === t.id))) {
+                    window.__shSpenInk.input = t;
                     window.__shSpenInk.imeText = t.value;
                     if (typeof window.__shSpenNoteImeCommit === 'function') window.__shSpenNoteImeCommit(t);
                 }
@@ -2340,22 +2345,60 @@ window.colorPreviewNumber = function(tankName, value) {
             if (typeof window.__initAndroidSpenInk === 'function') window.__initAndroidSpenInk();
         };
 
+        window.__shSpenIsBlockedRoot = function (el) {
+            if (!el || !el.closest) return true;
+            return !!(el.closest('#settings-modal') || el.closest('#settingsModal') || el.closest('#management-modal')
+                || el.closest('#shift-modal') || el.closest('#numpad-modal') || el.closest('#splash-screen')
+                || el.closest('#sh-spen-ink-host'));
+        };
+        window.__shSpenIsWritableInput = function (inp) {
+            if (!inp || inp.readOnly || inp.disabled) return false;
+            if (inp.type === 'hidden' || inp.type === 'file' || inp.type === 'checkbox' || inp.type === 'radio') return false;
+            if (!inp.closest || !inp.closest('.main-container')) return false;
+            if (window.__shSpenIsBlockedRoot(inp)) return false;
+            return true;
+        };
+        window.__shSpenFieldBox = function (input) {
+            if (!input || !input.closest) return input;
+            return input.closest('.amb-input-box, .nott-stocc-inp-cell, .cond-tendina-cell, .analisi-inline-cell') || input;
+        };
         window.__shSpenFindWritableInput = function (el) {
-            if (!el || !el.closest) return null;
-            if (el.closest('#settings-modal') || el.closest('#settingsModal') || el.closest('#management-modal')
-                || el.closest('#shift-modal') || el.closest('#numpad-modal') || el.closest('#splash-screen')) {
-                return null;
-            }
+            if (!el || !el.closest || window.__shSpenIsBlockedRoot(el)) return null;
             var inp = null;
             if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') inp = el;
             else {
-                var box = el.closest('.amb-input-box, .nott-stocc-inp-cell, .bd-input-row, td, .cond-tendina-cell, .analisi-inline-cell');
+                var box = el.closest('.amb-input-box, .nott-stocc-inp-cell, .cond-tendina-cell, .analisi-inline-cell');
                 if (box) inp = box.querySelector('input:not([type="hidden"]):not([readonly]), textarea:not([readonly])');
+                if (!inp && (el.tagName === 'TD' || el.classList.contains('bd-input-row'))) {
+                    var only = el.querySelectorAll('input:not([type="hidden"]):not([readonly]), textarea:not([readonly])');
+                    if (only.length === 1) inp = only[0];
+                }
             }
-            if (!inp || inp.readOnly || inp.disabled) return null;
-            if (inp.type === 'hidden' || inp.type === 'file' || inp.type === 'checkbox' || inp.type === 'radio') return null;
-            if (!inp.closest || !inp.closest('.main-container')) return null;
-            return inp;
+            return window.__shSpenIsWritableInput(inp) ? inp : null;
+        };
+        window.__shSpenFindWritableInputAt = function (x, y) {
+            var host = document.getElementById('sh-spen-ink-host');
+            if (host) host.style.pointerEvents = 'none';
+            var el = null;
+            try { el = document.elementFromPoint(x, y); } catch (_) {}
+            var inp = window.__shSpenFindWritableInput(el);
+            if (inp) return inp;
+            var nodes = document.querySelectorAll('.main-container input:not([type="hidden"]), .main-container textarea');
+            var best = null;
+            var bestArea = Infinity;
+            for (var i = 0; i < nodes.length; i++) {
+                var n = nodes[i];
+                if (!window.__shSpenIsWritableInput(n)) continue;
+                var box = window.__shSpenFieldBox(n);
+                var r = box.getBoundingClientRect();
+                if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue;
+                var area = Math.max(1, r.width * r.height);
+                if (area < bestArea) {
+                    bestArea = area;
+                    best = n;
+                }
+            }
+            return best;
         };
 
         window.__shSpenNormalizeNumber = function (text) {
@@ -2399,6 +2442,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 active: false,
                 capture: false,
                 input: null,
+                inputId: '',
                 host: null,
                 canvas: null,
                 ctx: null,
@@ -2409,7 +2453,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 lastPt: null,
                 imeText: '',
                 originValue: '',
-                pad: 28
+                laidOut: false
             };
             window.__shSpenInk = ink;
 
@@ -2432,24 +2476,40 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (!ink.host) return;
                 ink.host.classList.remove('sh-spen-ink-on', 'sh-spen-ink-capture');
                 ink.host.style.display = 'none';
+                ink.laidOut = false;
             }
 
-            function layoutOver(input) {
+            function boundInput() {
+                if (ink.input && ink.input.isConnected && window.__shSpenIsWritableInput(ink.input)) return ink.input;
+                if (ink.inputId) {
+                    var el = document.getElementById(ink.inputId);
+                    if (window.__shSpenIsWritableInput(el)) {
+                        ink.input = el;
+                        return el;
+                    }
+                }
+                return ink.input && ink.input.isConnected ? ink.input : null;
+            }
+
+            function layoutOver(input, force) {
+                if (!input) return;
+                if (ink.laidOut && !force) return;
                 var host = ensureHost();
-                var r = input.getBoundingClientRect();
-                var pad = ink.pad;
-                var left = Math.max(4, r.left - pad);
-                var top = Math.max(4, r.top - pad);
-                var w = Math.min(window.innerWidth - left - 4, r.width + pad * 2);
-                var h = Math.min(window.innerHeight - top - 4, Math.max(r.height + pad * 2, 88));
+                var box = window.__shSpenFieldBox(input);
+                var r = box.getBoundingClientRect();
+                var left = r.left;
+                var top = r.top;
+                var w = r.width;
+                var h = r.height;
+                if (w < 2 || h < 2) return;
                 host.style.display = 'block';
                 host.style.left = left + 'px';
                 host.style.top = top + 'px';
                 host.style.width = w + 'px';
                 host.style.height = h + 'px';
                 host.classList.add('sh-spen-ink-on');
-                if (ink.capture) host.classList.add('sh-spen-ink-capture');
-                else host.classList.remove('sh-spen-ink-capture');
+                host.classList.remove('sh-spen-ink-capture');
+                host.style.pointerEvents = 'none';
                 var dpr = Math.max(1, window.devicePixelRatio || 1);
                 var cvs = ink.canvas;
                 cvs.width = Math.max(1, Math.round(w * dpr));
@@ -2458,8 +2518,9 @@ window.colorPreviewNumber = function(tankName, value) {
                 ink.ctx.lineCap = 'round';
                 ink.ctx.lineJoin = 'round';
                 ink.ctx.strokeStyle = '#1d4ed8';
-                ink.ctx.lineWidth = 2.6;
+                ink.ctx.lineWidth = 2.2;
                 ink.hostRect = { left: left, top: top, w: w, h: h };
+                ink.laidOut = true;
             }
 
             function toLocal(ev) {
@@ -2551,12 +2612,21 @@ window.colorPreviewNumber = function(tankName, value) {
             };
 
             function finishAndCommit() {
-                if (!ink.active || !ink.input) return;
-                var input = ink.input;
-                var ime = window.__shSpenNormalizeNumber(ink.imeText || input.value);
+                var input = boundInput();
+                if (!ink.active || !input) {
+                    closeInk(false);
+                    return;
+                }
+                var live = String(input.value == null ? '' : input.value);
+                var ime = window.__shSpenNormalizeNumber(ink.imeText || live);
                 var origin = window.__shSpenNormalizeNumber(ink.originValue);
                 if (ime && ime !== origin) {
                     window.__shSpenCommitNumber(input, ime);
+                    closeInk(true);
+                    return;
+                }
+                if (live && live !== ink.originValue) {
+                    window.__shSpenCommitNumber(input, live);
                     closeInk(true);
                     return;
                 }
@@ -2565,16 +2635,18 @@ window.colorPreviewNumber = function(tankName, value) {
                     return;
                 }
                 window.__shSpenRecognizeStrokes().then(function (text) {
+                    var target = boundInput() || input;
                     var num = window.__shSpenNormalizeNumber(text);
-                    if (num) window.__shSpenCommitNumber(input, num);
-                    else if (ime && ime !== origin) window.__shSpenCommitNumber(input, ime);
-                    closeInk(!!num);
+                    var nowLive = target ? String(target.value == null ? '' : target.value) : '';
+                    if (num) window.__shSpenCommitNumber(target, num);
+                    else if (nowLive && nowLive !== ink.originValue) window.__shSpenCommitNumber(target, nowLive);
+                    closeInk(!!(num || (nowLive && nowLive !== ink.originValue)));
                 });
             }
 
             function scheduleCommit() {
                 clearTimeout(ink.commitTimer);
-                ink.commitTimer = setTimeout(finishAndCommit, 520);
+                ink.commitTimer = setTimeout(finishAndCommit, 750);
             }
 
             function closeInk(keepValue) {
@@ -2585,6 +2657,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 ink.strokes = [];
                 ink.pointerId = null;
                 ink.input = null;
+                ink.inputId = '';
                 hideHost();
                 if (document.body) document.body.classList.remove('sh-spen-ink-open');
                 if (!keepValue && typeof window.__flushSpenDeferredWork === 'function') {
@@ -2595,46 +2668,31 @@ window.colorPreviewNumber = function(tankName, value) {
             window.__shSpenOnPenDown = function (ev) {
                 if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
                 if (!ev || ev.pointerType !== 'pen') return;
-                var input = window.__shSpenFindWritableInput(ev.target);
-                if (!input) {
-                    if (ink.active && ev.target && ev.target.closest && ev.target.closest('#sh-spen-ink-host')) {
-                        input = ink.input;
-                    }
-                }
+                var input = window.__shSpenFindWritableInputAt(ev.clientX, ev.clientY)
+                    || window.__shSpenFindWritableInput(ev.target);
+                if (!input && ink.active) input = boundInput();
                 if (!input) {
                     if (ink.active) scheduleCommit();
                     return;
                 }
-                if (ink.active && ink.input && ink.input !== input) {
-                    finishAndCommit();
-                }
-                if (!ink.active || ink.input !== input) {
+                var same = ink.active && ink.inputId && input.id && ink.inputId === input.id;
+                if (ink.active && !same) finishAndCommit();
+                if (!ink.active || !same) {
                     ink.active = true;
                     ink.input = input;
+                    ink.inputId = input.id || '';
                     ink.strokes = [];
                     ink.imeText = input.value || '';
                     ink.originValue = input.value || '';
-                    ink.capture = (window.__shSpenRecognizer !== false);
-                    try { input.focus({ preventScroll: true }); } catch (_) { try { input.focus(); } catch (e2) {} }
-                    layoutOver(input);
+                    ink.capture = false;
+                    ink.laidOut = false;
+                    layoutOver(input, true);
                     if (document.body) document.body.classList.add('sh-spen-ink-open');
-                    window.__shSpenEnsureRecognizer().then(function (rec) {
-                        ink.capture = !!rec;
-                        if (ink.host) {
-                            if (ink.capture) ink.host.classList.add('sh-spen-ink-capture');
-                            else ink.host.classList.remove('sh-spen-ink-capture');
-                        }
-                    });
-                } else {
-                    layoutOver(input);
                 }
                 ink.pointerId = ev.pointerId;
                 ink.startMs = Date.now();
                 ink.current = [];
                 addPtsFromEvent(ev);
-                if (ink.capture && ink.host) {
-                    try { ink.host.setPointerCapture(ev.pointerId); } catch (_) {}
-                }
                 redraw();
                 clearTimeout(ink.commitTimer);
             };
@@ -2672,9 +2730,6 @@ window.colorPreviewNumber = function(tankName, value) {
                 scheduleCommit();
             };
 
-            window.addEventListener('resize', function () {
-                if (ink.active && ink.input) layoutOver(ink.input);
-            }, { passive: true });
             document.addEventListener('pointerdown', function (ev) {
                 if (!ink.active) return;
                 if (ev.pointerType === 'pen') return;
@@ -33133,6 +33188,21 @@ window.updateStoricoButton = async function() {
             requestAnimationFrame(applyToggle);
         };
 
+        window.__persistPlantStatusChange = function () {
+            if (window.__statusPersistRaf) return;
+            window.__statusPersistRaf = requestAnimationFrame(function () {
+                window.__statusPersistRaf = 0;
+                if (typeof window.updateBoilerInputs === 'function') window.updateBoilerInputs();
+                if (typeof window.saveData === 'function') window.saveData();
+                if (typeof window.__flushPlantCloudSaveNow === 'function') {
+                    void window.__flushPlantCloudSaveNow(true);
+                }
+                if (typeof window.flushPublicDigitalSnapshotNow === 'function') {
+                    window.flushPublicDigitalSnapshotNow();
+                }
+            });
+        };
+
         window.toggleStatus = (id) => {
             if (globalInteractionLock) return;
             
@@ -33162,17 +33232,10 @@ window.updateStoricoButton = async function() {
             el.innerText = active ? "MARCIA" : "FERMO";
             el.className = `status-cell-btn ${active ? 'bg-marcia' : 'bg-fermo'}`;
             if (typeof window.__touchPlantStatusEdit === 'function') window.__touchPlantStatusEdit(id);
-            if (typeof window.updateBoilerInputs === 'function') window.updateBoilerInputs();
             if (id === 'stat-f' && typeof window.rigenUpdateFaseLabels === 'function') {
                 window.rigenUpdateFaseLabels();
             }
-            window.saveData();
-            if (typeof window.__flushPlantCloudSaveNow === 'function') {
-                void window.__flushPlantCloudSaveNow(true);
-            }
-            if (typeof window.flushPublicDigitalSnapshotNow === 'function') {
-                window.flushPublicDigitalSnapshotNow();
-            }
+            if (typeof window.__persistPlantStatusChange === 'function') window.__persistPlantStatusChange();
         };
 
         window.toggleComp = (id, sigla) => {
@@ -33239,13 +33302,7 @@ window.updateStoricoButton = async function() {
             }
 
             if (typeof window.__touchPlantStatusEdit === 'function') window.__touchPlantStatusEdit(headerId);
-            window.saveData();
-            if (typeof window.__flushPlantCloudSaveNow === 'function') {
-                void window.__flushPlantCloudSaveNow(true);
-            }
-            if (typeof window.flushPublicDigitalSnapshotNow === 'function') {
-                window.flushPublicDigitalSnapshotNow();
-            }
+            if (typeof window.__persistPlantStatusChange === 'function') window.__persistPlantStatusChange();
         };
         window.openShiftPopup = () => {
             const modal = document.getElementById('shift-modal');
@@ -42925,12 +42982,12 @@ window.convertToHtml = async () => {
         }
         /* ARIA: indicatore numpad solo nel popup (#numpad-context), non sull'etichetta verticale. */
         #sec-aria .aria-compressor-table .cell-label-main { cursor: pointer; }
-        .status-cell-btn { cursor: pointer; text-align: center; font-weight: 800; color: white; font-size: 10px; height: 100%; display: flex; align-items: center; justify-content: center; border: 2px solid rgba(0,0,0,0.3); border-radius: 6px; box-shadow: 0 4px 6px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.3), inset 0 -1px 0 rgba(0,0,0,0.3); text-shadow: 0 1px 2px rgba(0,0,0,0.5); transition: all 0.2s ease; position: relative; }
+        .status-cell-btn { cursor: pointer; text-align: center; font-weight: 800; color: white; font-size: 10px; height: 100%; display: flex; align-items: center; justify-content: center; border: 2px solid rgba(0,0,0,0.3); border-radius: 6px; box-shadow: 0 4px 6px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.3), inset 0 -1px 0 rgba(0,0,0,0.3); text-shadow: 0 1px 2px rgba(0,0,0,0.5); transition: transform 0.12s ease, box-shadow 0.12s ease; position: relative; }
         .status-cell-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.4), inset 0 -1px 0 rgba(0,0,0,0.4); }
         .status-cell-btn:active { transform: translateY(2px); box-shadow: 0 2px 3px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.2), inset 0 -1px 0 rgba(0,0,0,0.2); }
         .bg-marcia { background: linear-gradient(135deg, #22c55e 0%, #16a34a 50%, #15803d 100%) !important; border-color: #14532d !important; }
         .bg-fermo { background: linear-gradient(135deg, #ef4444 0%, #dc2626 50%, #b91c1c 100%) !important; border-color: #7f1d1d !important; }
-        .status-header { font-weight: 800; text-align: center; color: white; height: 50px; text-transform: uppercase; display: flex; flex-direction: column; align-items: center; justify-content: center; border-bottom: 1px solid var(--border-main); cursor: pointer; border: 2px solid rgba(0,0,0,0.3); border-radius: 6px; box-shadow: 0 4px 6px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.3), inset 0 -1px 0 rgba(0,0,0,0.3); text-shadow: 0 1px 2px rgba(0,0,0,0.5); transition: all 0.2s ease; position: relative; }
+        .status-header { font-weight: 800; text-align: center; color: white; height: 50px; text-transform: uppercase; display: flex; flex-direction: column; align-items: center; justify-content: center; border-bottom: 1px solid var(--border-main); cursor: pointer; border: 2px solid rgba(0,0,0,0.3); border-radius: 6px; box-shadow: 0 4px 6px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.3), inset 0 -1px 0 rgba(0,0,0,0.3); text-shadow: 0 1px 2px rgba(0,0,0,0.5); transition: transform 0.12s ease, box-shadow 0.12s ease; position: relative; }
         .status-header:hover { transform: translateY(-1px); box-shadow: 0 6px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.4), inset 0 -1px 0 rgba(0,0,0,0.4); }
         .status-header:active { transform: translateY(2px); box-shadow: 0 2px 3px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.2), inset 0 -1px 0 rgba(0,0,0,0.2); }
         .status-header.bg-marcia { background: linear-gradient(135deg, #22c55e 0%, #16a34a 50%, #15803d 100%) !important; border-color: #14532d !important; }

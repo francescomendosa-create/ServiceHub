@@ -137,6 +137,16 @@
         html.sh-android-tablet-boot body.sh-spen-ink-open .main-container textarea:not([readonly]):focus {
             touch-action: none !important;
         }
+        html.sh-android-tablet-boot body.sh-spen-ink-open,
+        html.sh-android-tablet-boot:has(body.sh-spen-ink-open) {
+            overflow: hidden !important;
+            touch-action: none !important;
+            overscroll-behavior: none !important;
+        }
+        html.sh-android-tablet-boot body.sh-spen-ink-open .main-container {
+            touch-action: none !important;
+            overflow: hidden !important;
+        }
         html.sh-android-tablet-boot #sh-spen-ink-host {
             position: fixed;
             z-index: 12050;
@@ -1022,7 +1032,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v519';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v521';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -2253,13 +2263,10 @@ window.colorPreviewNumber = function(tankName, value) {
             };
             document.addEventListener('pointerdown', function (ev) {
                 if (ev.pointerType === 'touch' || ev.pointerType === 'mouse') {
+                    if (window.__shSpenInk && window.__shSpenInk.active) return;
                     window.__shPenIsDown = false;
                     window.__shPenPointerId = null;
                     if (document.body) document.body.classList.remove('sh-stylus-pen-active');
-                    if (window.__shSpenInk && window.__shSpenInk.active &&
-                        typeof window.__shSpenCommitNow === 'function') {
-                        window.__shSpenCommitNow();
-                    }
                     return;
                 }
                 onPen(ev, true);
@@ -2485,15 +2492,141 @@ window.colorPreviewNumber = function(tankName, value) {
             return s;
         };
 
-        window.__shSpenCommitNumber = function (input, raw) {
-            if (!input) return false;
-            var cleaned = window.__shSpenNormalizeNumber(raw);
-            if (!cleaned) return false;
-            if (typeof window.applyIntegerOnlyTankValue === 'function') {
-                cleaned = window.applyIntegerOnlyTankValue(input.id, cleaned);
+        window.__shSpenStrokeBounds = function (strokes) {
+            var minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity, n = 0;
+            if (!strokes) return null;
+            for (var s = 0; s < strokes.length; s++) {
+                var pts = strokes[s];
+                if (!pts) continue;
+                for (var i = 0; i < pts.length; i++) {
+                    var p = pts[i];
+                    if (!p) continue;
+                    if (p.x < minx) minx = p.x;
+                    if (p.x > maxx) maxx = p.x;
+                    if (p.y < miny) miny = p.y;
+                    if (p.y > maxy) maxy = p.y;
+                    n++;
+                }
             }
-            if (!cleaned) return false;
-            input.value = cleaned;
+            if (!n || minx === Infinity) return null;
+            return { minx: minx, maxx: maxx, miny: miny, maxy: maxy, cx: (minx + maxx) / 2, cy: (miny + maxy) / 2, w: maxx - minx, h: maxy - miny };
+        };
+
+        window.__shSpenMeasureFieldText = function (input, hostRect, textOverride) {
+            if (!input || !hostRect) return null;
+            var text = textOverride != null ? String(textOverride) : String(input.value == null ? '' : input.value);
+            var ir = input.getBoundingClientRect();
+            var cs = window.getComputedStyle(input);
+            var padL = parseFloat(cs.paddingLeft) || 0;
+            var padR = parseFloat(cs.paddingRight) || 0;
+            var font = cs.font || ((cs.fontSize || '16px') + ' ' + (cs.fontFamily || 'sans-serif'));
+            var tw = 0;
+            try {
+                var ctx = document.createElement('canvas').getContext('2d');
+                ctx.font = font;
+                tw = ctx.measureText(text).width;
+            } catch (_) {
+                tw = Math.max(8, text.length * 10);
+            }
+            var innerW = Math.max(1, ir.width - padL - padR);
+            var align = (cs.textAlign || 'center').toLowerCase();
+            var localLeft = ir.left - hostRect.left + padL;
+            var textLeft;
+            if (align === 'right' || align === 'end') textLeft = localLeft + innerW - tw;
+            else if (align === 'left' || align === 'start') textLeft = localLeft;
+            else textLeft = localLeft + (innerW - tw) / 2;
+            var textRight = textLeft + tw;
+            return {
+                left: textLeft,
+                right: textRight,
+                mid: (textLeft + textRight) / 2,
+                width: tw,
+                top: ir.top - hostRect.top,
+                bottom: ir.bottom - hostRect.top,
+                empty: !String(text).trim()
+            };
+        };
+
+        window.__shSpenIsStrikethrough = function (strokes, hostRect, textBox) {
+            if (!strokes || !strokes.length || !hostRect) return false;
+            var fieldW = hostRect.w || 0;
+            var fieldH = hostRect.h || 0;
+            if (fieldW < 8) return false;
+            var needW = Math.max(28, Math.min(fieldW * 0.42, (textBox && textBox.width > 12) ? textBox.width * 0.82 : fieldW * 0.5));
+            var midY = textBox ? (textBox.top + textBox.bottom) / 2 : fieldH / 2;
+            var hit = false;
+            for (var s = 0; s < strokes.length; s++) {
+                var pts = strokes[s];
+                if (!pts || pts.length < 2) continue;
+                var minx = pts[0].x, maxx = pts[0].x, miny = pts[0].y, maxy = pts[0].y;
+                var reversals = 0, dir = 0;
+                for (var i = 1; i < pts.length; i++) {
+                    var x = pts[i].x, y = pts[i].y;
+                    if (x < minx) minx = x;
+                    if (x > maxx) maxx = x;
+                    if (y < miny) miny = y;
+                    if (y > maxy) maxy = y;
+                    var dx = x - pts[i - 1].x;
+                    if (Math.abs(dx) > 3) {
+                        var nd = dx > 0 ? 1 : -1;
+                        if (dir && nd !== dir) reversals++;
+                        dir = nd;
+                    }
+                }
+                var horiz = maxx - minx;
+                var vert = maxy - miny;
+                var aspect = horiz / Math.max(vert, 1);
+                var crossesText = miny <= midY + Math.max(10, fieldH * 0.22) && maxy >= midY - Math.max(10, fieldH * 0.22);
+                var flat = aspect >= 2.1 && vert <= Math.max(18, fieldH * 0.55);
+                var scribble = reversals >= 2 && aspect >= 1.45 && horiz >= Math.max(24, fieldW * 0.32);
+                if (crossesText && horiz >= needW && (flat || scribble)) hit = true;
+            }
+            if (hit) return true;
+            var all = window.__shSpenStrokeBounds(strokes);
+            if (!all) return false;
+            var allAspect = all.w / Math.max(all.h, 1);
+            return all.w >= needW && allAspect >= 2.4 && all.h <= Math.max(20, fieldH * 0.5)
+                && all.miny <= midY + 12 && all.maxy >= midY - 12;
+        };
+
+        window.__shSpenEditModeFromStrokes = function (strokes, input, origin, hostRect) {
+            var orig = window.__shSpenNormalizeNumber(origin);
+            if (!orig) return 'replace';
+            if (window.__shSpenIsStrikethrough(strokes, hostRect, window.__shSpenMeasureFieldText(input, hostRect, origin))) {
+                return 'clear';
+            }
+            var box = window.__shSpenStrokeBounds(strokes);
+            var text = window.__shSpenMeasureFieldText(input, hostRect, origin);
+            if (!box || !text || text.empty) return 'replace';
+            var margin = Math.max(6, Math.min(14, text.width * 0.12));
+            if (box.maxx <= text.left + margin) return 'prepend';
+            if (box.minx >= text.right - margin) return 'append';
+            if (box.cx < text.left) return 'prepend';
+            if (box.cx > text.right) return 'append';
+            var fieldW = hostRect && hostRect.w ? hostRect.w : 0;
+            if (fieldW > 0) {
+                if (box.cx < fieldW * 0.32 && box.maxx < text.mid) return 'prepend';
+                if (box.cx > fieldW * 0.68 && box.minx > text.mid) return 'append';
+            }
+            return 'replace';
+        };
+
+        window.__shSpenApplyFieldEdit = function (input, recognized, origin, mode) {
+            if (!input) return false;
+            mode = mode || 'replace';
+            var orig = window.__shSpenNormalizeNumber(origin);
+            var rec = window.__shSpenNormalizeNumber(recognized);
+            var next = '';
+            if (mode === 'clear') next = '';
+            else if (mode === 'prepend' && rec) next = rec + orig;
+            else if (mode === 'append' && rec) next = orig + rec;
+            else if (rec) next = rec;
+            else return false;
+            if (mode !== 'clear' && typeof window.applyIntegerOnlyTankValue === 'function') {
+                next = window.applyIntegerOnlyTankValue(input.id, next);
+            }
+            if (mode !== 'clear' && !next) return false;
+            input.value = next;
             window.__shSpenLastCommitTs = Date.now();
             if (typeof window.__touchPlantFieldEdit === 'function') window.__touchPlantFieldEdit(input);
             try { input.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
@@ -2503,6 +2636,10 @@ window.colorPreviewNumber = function(tankName, value) {
             if (typeof window.__schedulePlantCloudSave === 'function') window.__schedulePlantCloudSave(true);
             else if (typeof window.saveData === 'function') window.saveData(true);
             return true;
+        };
+
+        window.__shSpenCommitNumber = function (input, raw) {
+            return window.__shSpenApplyFieldEdit(input, raw, '', 'replace');
         };
 
         window.__initAndroidSpenInk = function () {
@@ -2748,17 +2885,48 @@ window.colorPreviewNumber = function(tankName, value) {
                 return '';
             }
 
+            function inferImeJoin(origin, live) {
+                var o = window.__shSpenNormalizeNumber(origin);
+                var l = window.__shSpenNormalizeNumber(live);
+                if (!l) return null;
+                if (!o) return { mode: 'replace', rec: l };
+                if (l === o) return null;
+                if (l.length > o.length && l.slice(l.length - o.length) === o) {
+                    return { mode: 'prepend', rec: l.slice(0, l.length - o.length) };
+                }
+                if (l.length > o.length && l.slice(0, o.length) === o) {
+                    return { mode: 'append', rec: l.slice(o.length) };
+                }
+                return null;
+            }
+
             function finishAndCommit() {
                 var input = boundInput();
                 if (!ink.active || !input) {
                     closeInk(false);
                     return;
                 }
-                var imeNum = liveImeNumber(input);
-                if (imeNum) {
-                    window.__shSpenCommitNumber(input, imeNum);
+                var origin = ink.originValue;
+                var mode = window.__shSpenEditModeFromStrokes(ink.strokes, input, origin, ink.hostRect);
+                if (mode === 'clear') {
+                    window.__shSpenApplyFieldEdit(input, '', origin, 'clear');
+                    try { input.blur(); } catch (_) {}
                     closeInk(true);
                     return;
+                }
+                var imeNum = liveImeNumber(input);
+                if (imeNum) {
+                    var join = inferImeJoin(origin, imeNum);
+                    if (join) {
+                        window.__shSpenApplyFieldEdit(input, join.rec, origin, join.mode);
+                        closeInk(true);
+                        return;
+                    }
+                    if (!window.__shSpenNormalizeNumber(origin)) {
+                        window.__shSpenApplyFieldEdit(input, imeNum, '', 'replace');
+                        closeInk(true);
+                        return;
+                    }
                 }
                 if (!ink.strokes.length) {
                     closeInk(false);
@@ -2769,15 +2937,25 @@ window.colorPreviewNumber = function(tankName, value) {
                 pred.then(function (text) {
                     if (!ink.active) return;
                     var target = boundInput() || input;
-                    var imeNow = liveImeNumber(target);
-                    if (imeNow) {
-                        window.__shSpenCommitNumber(target, imeNow);
+                    var useMode = window.__shSpenEditModeFromStrokes(ink.strokes, target, origin, ink.hostRect);
+                    if (useMode === 'clear') {
+                        window.__shSpenApplyFieldEdit(target, '', origin, 'clear');
+                        try { target.blur(); } catch (_) {}
                         closeInk(true);
                         return;
                     }
+                    var imeNow = liveImeNumber(target);
+                    if (imeNow) {
+                        var join2 = inferImeJoin(origin, imeNow);
+                        if (join2) {
+                            window.__shSpenApplyFieldEdit(target, join2.rec, origin, join2.mode);
+                            closeInk(true);
+                            return;
+                        }
+                    }
                     var num = window.__shSpenNormalizeNumber(text);
                     if (num) {
-                        window.__shSpenCommitNumber(target, num);
+                        window.__shSpenApplyFieldEdit(target, num, origin, useMode);
                         closeInk(true);
                         return;
                     }
@@ -2791,7 +2969,14 @@ window.colorPreviewNumber = function(tankName, value) {
                 clearTimeout(ink.commitTimer);
                 var input = boundInput();
                 var penBusy = !!(window.__shPenIsDown || ink.current);
-                if (!penBusy && input && liveImeNumber(input)) {
+                var cut = !!(input && ink.strokes.length && window.__shSpenIsStrikethrough(
+                    ink.strokes, ink.hostRect, window.__shSpenMeasureFieldText(input, ink.hostRect, ink.originValue)
+                ));
+                if (!penBusy && cut) {
+                    finishAndCommit();
+                    return;
+                }
+                if (!penBusy && input && liveImeNumber(input) && !window.__shSpenNormalizeNumber(ink.originValue)) {
                     finishAndCommit();
                     return;
                 }
@@ -2799,10 +2984,10 @@ window.colorPreviewNumber = function(tankName, value) {
                     finishAndCommit();
                     return;
                 }
-                if (ink.strokes.length && !ink.pendingPred && !penBusy) {
+                if (ink.strokes.length && !ink.pendingPred && !penBusy && !cut) {
                     ink.pendingPred = window.__shSpenRecognizeStrokes();
                 }
-                ink.commitTimer = setTimeout(function () { finishAndCommit(); }, window.__SPEN_COMMIT_MS || 320);
+                ink.commitTimer = setTimeout(function () { finishAndCommit(); }, cut ? 0 : (window.__SPEN_COMMIT_MS || 320));
             }
 
             window.__shSpenCommitNow = function () {
@@ -42141,6 +42326,12 @@ window.convertToHtml = async () => {
         body.sh-device-android-tablet.sh-spen-ink-open .main-container input:not([readonly]):focus,
         body.sh-device-android-tablet.sh-spen-ink-open .main-container textarea:not([readonly]):focus {
             touch-action: none !important;
+        }
+        body.sh-device-android-tablet.sh-spen-ink-open,
+        body.sh-device-android-tablet.sh-spen-ink-open .main-container {
+            overflow: hidden !important;
+            touch-action: none !important;
+            overscroll-behavior: none !important;
         }
         body.sh-stylus-pen-active #sh-post-long-press-shield {
             display: none !important;

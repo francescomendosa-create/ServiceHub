@@ -1035,7 +1035,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v537';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v538';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -2146,7 +2146,7 @@ window.colorPreviewNumber = function(tankName, value) {
             return !!(window.__shIsAndroidTablet && window.__shIsAndroidTablet());
         };
         window.__SPEN_SESSION_MS = 1800;
-        window.__SPEN_COMMIT_MS = 900;
+        window.__SPEN_COMMIT_MS = 480;
         window.__shPenLastEventTs = 0;
         window.__shSpenLastFieldTs = 0;
         window.__shPenIsDown = false;
@@ -3378,89 +3378,44 @@ window.colorPreviewNumber = function(tankName, value) {
                 });
             }
 
+            function penStillWriting() {
+                if (ink.current && ink.current.length) return true;
+                if (!window.__shPenIsDown) return false;
+                return (Date.now() - (window.__shPenLastEventTs || 0)) < 280;
+            }
+
             function finishAndCommit() {
                 var input = boundInput() || ink.input;
-                if (!ink.active || !input) {
+                if (!ink.active) {
+                    hideHost();
+                    if (document.body) document.body.classList.remove('sh-spen-ink-open');
+                    return;
+                }
+                if (!input) {
                     closeInk(false);
                     return;
                 }
-                if (window.__shPenIsDown || ink.current) return;
+                if (penStillWriting()) {
+                    clearTimeout(ink.commitTimer);
+                    ink.commitTimer = setTimeout(finishAndCommit, 180);
+                    return;
+                }
                 var epoch = ink.epoch;
                 var snap = takeSnapshot();
                 ink.pendingPred = null;
                 ink.pendingPredCount = 0;
-                var digitCount = function (s) {
-                    return String(s || '').replace(/[^\d]/g, '').length;
-                };
-                var looksIncomplete = function (shot) {
-                    var el = boundInput() || (shot && shot.input);
-                    var live = window.__shSpenNormalizeNumber(el ? el.value : '');
-                    var ime = window.__shSpenNormalizeNumber((shot && shot.imeText) || ink.imeText);
-                    var best = window.__shSpenPickLongerNumber(live, ime);
-                    var glyphs = estimateGlyphCount((shot && shot.strokes) || []);
-                    var n = digitCount(best);
-                    if (glyphs >= 3 && n > 0 && n < glyphs) return true;
-                    if (glyphs >= 2 && n === 1) return true;
-                    return false;
-                };
-                var settle = function (ok) {
+                clearTimeout(ink.forceCloseTimer);
+                ink.forceCloseTimer = setTimeout(function () {
+                    if (ink.active) closeInk(true);
+                }, 700);
+                Promise.resolve(commitSnapshot(snap)).then(function (ok) {
                     if (ink.epoch !== epoch) return;
-                    if (window.__shPenIsDown || ink.current) return;
-                    if (looksIncomplete(snap)) {
-                        setTimeout(function () {
-                            if (ink.epoch !== epoch) return;
-                            if (window.__shPenIsDown || ink.current) return;
-                            var el = boundInput() || snap.input;
-                            snap.strokes = cloneStrokes(ink.strokes);
-                            snap.liveValue = el ? String(el.value == null ? '' : el.value) : snap.liveValue;
-                            snap.imeText = ink.imeText || snap.imeText;
-                            commitSnapshot(snap).then(function (ok2) {
-                                if (ink.epoch !== epoch) return;
-                                if (looksIncomplete(snap)) {
-                                    setTimeout(function () {
-                                        if (ink.epoch !== epoch) return;
-                                        var el2 = boundInput() || snap.input;
-                                        snap.strokes = cloneStrokes(ink.strokes);
-                                        snap.liveValue = el2 ? String(el2.value == null ? '' : el2.value) : snap.liveValue;
-                                        snap.imeText = ink.imeText || snap.imeText;
-                                        commitSnapshot(snap).then(function (ok3) {
-                                            if (ink.epoch !== epoch) return;
-                                            if (!ok3) origStillEmpty(snap);
-                                            closeInk(!!ok3);
-                                        });
-                                    }, 550);
-                                    return;
-                                }
-                                if (!ok2) origStillEmpty(snap);
-                                closeInk(!!ok2);
-                            });
-                        }, 550);
-                        return;
-                    }
-                    if (ok) {
-                        closeInk(true);
-                        return;
-                    }
-                    setTimeout(function () {
-                        if (ink.epoch !== epoch) return;
-                        var el = boundInput() || snap.input;
-                        var live = el ? window.__shSpenNormalizeNumber(el.value) : '';
-                        var origN = window.__shSpenNormalizeNumber(snap.origin);
-                        if (live && live !== origN) {
-                            window.__shSpenApplyFieldEdit(el, live, snap.origin, 'replace');
-                            closeInk(true);
-                            return;
-                        }
-                        snap.liveValue = el ? String(el.value == null ? '' : el.value) : snap.liveValue;
-                        snap.imeText = ink.imeText || snap.imeText;
-                        commitSnapshot(snap).then(function (ok2) {
-                            if (ink.epoch !== epoch) return;
-                            if (!ok2) origStillEmpty(snap);
-                            closeInk(!!ok2);
-                        });
-                    }, 400);
-                };
-                commitSnapshot(snap).then(settle);
+                    if (!ok) origStillEmpty(snap);
+                    closeInk(!!ok);
+                }).catch(function () {
+                    if (ink.epoch !== epoch) return;
+                    closeInk(false);
+                });
             }
 
             function origStillEmpty(snap) {
@@ -3476,30 +3431,34 @@ window.colorPreviewNumber = function(tankName, value) {
             function scheduleCommit(immediate) {
                 clearTimeout(ink.commitTimer);
                 var input = boundInput();
-                var penBusy = !!(window.__shPenIsDown || ink.current);
                 var cut = !!(input && ink.strokes.length && window.__shSpenIsStrikethrough(
                     ink.strokes, ink.hostRect, window.__shSpenMeasureFieldText(input, ink.hostRect, ink.originValue)
                 ));
-                if (penBusy) return;
-                if (cut) {
-                    finishAndCommit();
+                if (penStillWriting() && !cut && !immediate) {
+                    ink.commitTimer = setTimeout(function () { scheduleCommit(); }, 180);
                     return;
                 }
-                if (immediate) {
+                if (cut || immediate) {
                     finishAndCommit();
                     return;
                 }
                 if (ink.strokes.length) {
                     var snapStrokes = cloneStrokes(ink.strokes);
                     var count = snapStrokes.length;
-                    var pred = window.__shSpenRecognizeStrokes(snapStrokes);
-                    ink.pendingPred = pred;
+                    ink.pendingPred = window.__shSpenRecognizeStrokes(snapStrokes);
                     ink.pendingPredCount = count;
                 }
                 ink.commitTimer = setTimeout(function () {
-                    if (window.__shPenIsDown || ink.current) return;
+                    if (penStillWriting()) {
+                        scheduleCommit();
+                        return;
+                    }
                     finishAndCommit();
-                }, window.__SPEN_COMMIT_MS || 620);
+                }, window.__SPEN_COMMIT_MS || 480);
+                clearTimeout(ink.forceCloseTimer);
+                ink.forceCloseTimer = setTimeout(function () {
+                    if (ink.active && !penStillWriting()) finishAndCommit();
+                }, 1100);
             }
 
             window.__shSpenCommitNow = function () {
@@ -3508,6 +3467,7 @@ window.colorPreviewNumber = function(tankName, value) {
 
             function closeInk(keepValue) {
                 clearTimeout(ink.commitTimer);
+                clearTimeout(ink.forceCloseTimer);
                 ink.active = false;
                 ink.capture = false;
                 ink.current = null;

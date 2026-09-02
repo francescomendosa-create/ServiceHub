@@ -129,12 +129,15 @@
         html.sh-android-tablet-boot .main-container {
             touch-action: pan-y;
         }
-        html.sh-android-tablet-boot .main-container input:not([type="hidden"]):not([readonly]),
-        html.sh-android-tablet-boot .main-container textarea:not([readonly]) {
-            touch-action: auto;
+        html.sh-android-tablet-boot .main-container input:not([type="hidden"]):not([readonly]):not(#inp-sec-note),
+        html.sh-android-tablet-boot .main-container textarea:not([readonly]):not(#inp-sec-note) {
+            touch-action: pan-y;
+            -webkit-user-select: none !important;
+            user-select: none !important;
+            caret-color: transparent;
         }
-        html.sh-android-tablet-boot body.sh-spen-ink-open .main-container input:not([type="hidden"]):not([readonly]):focus,
-        html.sh-android-tablet-boot body.sh-spen-ink-open .main-container textarea:not([readonly]):focus {
+        html.sh-android-tablet-boot body.sh-spen-ink-open .main-container input:not([type="hidden"]):not([readonly]),
+        html.sh-android-tablet-boot body.sh-spen-ink-open .main-container textarea:not([readonly]) {
             touch-action: auto !important;
         }
         html.sh-android-tablet-boot body.sh-spen-ink-open,
@@ -148,7 +151,7 @@
         html.sh-android-tablet-boot #sh-spen-ink-host {
             position: fixed;
             z-index: 12050;
-            pointer-events: none !important;
+            pointer-events: none;
             touch-action: none;
             overflow: hidden;
             border-radius: 0;
@@ -157,7 +160,9 @@
             padding: 0;
             background: transparent;
         }
-        html.sh-android-tablet-boot #sh-spen-ink-host.sh-spen-ink-on {
+        html.sh-android-tablet-boot #sh-spen-ink-host.sh-spen-ink-on,
+        html.sh-android-tablet-boot #sh-spen-ink-host.sh-spen-ink-capture {
+            pointer-events: none !important;
             outline: 2px solid #2563eb;
             outline-offset: -2px;
             background: transparent;
@@ -1030,7 +1035,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v533';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v536';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -2141,7 +2146,7 @@ window.colorPreviewNumber = function(tankName, value) {
             return !!(window.__shIsAndroidTablet && window.__shIsAndroidTablet());
         };
         window.__SPEN_SESSION_MS = 1800;
-        window.__SPEN_COMMIT_MS = 620;
+        window.__SPEN_COMMIT_MS = 160;
         window.__shPenLastEventTs = 0;
         window.__shSpenLastFieldTs = 0;
         window.__shPenIsDown = false;
@@ -2270,6 +2275,12 @@ window.colorPreviewNumber = function(tankName, value) {
                 onPen(ev, true);
                 if (typeof window.__shSpenOnPenDown === 'function') window.__shSpenOnPenDown(ev);
             }, { capture: true, passive: true });
+            document.addEventListener('selectstart', function (ev) {
+                var t = ev.target;
+                if (!t || !t.closest || !t.closest('.main-container')) return;
+                if (t.id === 'inp-sec-note') return;
+                if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA') ev.preventDefault();
+            }, true);
             document.addEventListener('pointermove', function (ev) {
                 if (ev.pointerType !== 'pen') return;
                 var ink = window.__shSpenInk;
@@ -2508,9 +2519,14 @@ window.colorPreviewNumber = function(tankName, value) {
         };
         window.__shSpenFindWritableInputAt = function (x, y) {
             var host = document.getElementById('sh-spen-ink-host');
+            var prevPe = host ? host.style.pointerEvents : '';
             if (host) host.style.pointerEvents = 'none';
             var el = null;
             try { el = document.elementFromPoint(x, y); } catch (_) {}
+            if (host) {
+                host.style.pointerEvents = prevPe ||
+                    (host.classList.contains('sh-spen-ink-on') ? 'auto' : 'none');
+            }
             var inp = window.__shSpenFindWritableInput(el);
             if (inp) return inp;
             var nodes = document.querySelectorAll('.main-container input:not([type="hidden"]), .main-container textarea');
@@ -2700,6 +2716,165 @@ window.colorPreviewNumber = function(tankName, value) {
 
         window.__shSpenCommitNumber = function (input, raw) {
             return window.__shSpenApplyFieldEdit(input, raw, '', 'replace');
+        };
+
+        window.__shSpenRecognizeDigitsLocal = function (strokes) {
+            if (!strokes || !strokes.length) return '';
+            var dist = function (a, b) {
+                var dx = a.x - b.x, dy = a.y - b.y;
+                return Math.sqrt(dx * dx + dy * dy);
+            };
+            var pathLen = function (pts) {
+                var n = 0;
+                for (var i = 1; i < pts.length; i++) n += dist(pts[i - 1], pts[i]);
+                return n;
+            };
+            var resample = function (pts, n) {
+                if (!pts || pts.length < 2) return pts ? pts.slice() : [];
+                var copy = [];
+                for (var i = 0; i < pts.length; i++) copy.push({ x: pts[i].x, y: pts[i].y });
+                var I = pathLen(copy) / (n - 1);
+                if (I <= 0) return copy.slice(0, n);
+                var out = [copy[0]];
+                var D = 0;
+                for (var i = 1; i < copy.length && out.length < n; i++) {
+                    var d = dist(copy[i - 1], copy[i]);
+                    if (D + d >= I) {
+                        var t = (I - D) / Math.max(d, 0.0001);
+                        var q = {
+                            x: copy[i - 1].x + t * (copy[i].x - copy[i - 1].x),
+                            y: copy[i - 1].y + t * (copy[i].y - copy[i - 1].y)
+                        };
+                        out.push(q);
+                        copy.splice(i, 0, q);
+                        D = 0;
+                    } else {
+                        D += d;
+                    }
+                }
+                while (out.length < n) out.push(copy[copy.length - 1]);
+                return out;
+            };
+            var flatten = function (group) {
+                var pts = [];
+                for (var s = 0; s < group.length; s++) {
+                    var st = group[s];
+                    if (!st) continue;
+                    for (var k = 0; k < st.length; k++) {
+                        if (st[k]) pts.push({ x: st[k].x, y: st[k].y });
+                    }
+                }
+                return pts;
+            };
+            var normalize = function (pts, size) {
+                var b = window.__shSpenStrokeBounds([pts]);
+                if (!b) return pts;
+                var sc = size / Math.max(b.w, b.h, 1);
+                var cx = (b.minx + b.maxx) / 2;
+                var cy = (b.miny + b.maxy) / 2;
+                var out = [];
+                for (var i = 0; i < pts.length; i++) {
+                    out.push({
+                        x: (pts[i].x - cx) * sc + size / 2,
+                        y: (pts[i].y - cy) * sc + size / 2
+                    });
+                }
+                return out;
+            };
+            var pathDist = function (a, b) {
+                var n = Math.min(a.length, b.length);
+                if (!n) return 999;
+                var s = 0;
+                for (var i = 0; i < n; i++) s += dist(a[i], b[i]);
+                return s / n;
+            };
+            var poly = function (arr) {
+                var pts = [];
+                for (var i = 0; i < arr.length; i += 2) pts.push({ x: arr[i], y: arr[i + 1] });
+                return normalize(resample(pts, 32), 100);
+            };
+            var templates = [
+                ['0', poly([50,8, 78,22, 90,50, 78,78, 50,92, 22,78, 10,50, 22,22, 50,8])],
+                ['0', poly([50,10, 22,24, 10,50, 22,76, 50,90, 78,76, 90,50, 78,24, 50,10])],
+                ['1', poly([40,18, 52,8, 52,92])],
+                ['1', poly([48,8, 48,92])],
+                ['2', poly([18,28, 32,10, 68,10, 84,28, 70,52, 18,92, 86,92])],
+                ['3', poly([20,14, 78,14, 48,48, 80,58, 80,78, 48,94, 18,80])],
+                ['3', poly([22,16, 74,12, 74,44, 40,48, 76,56, 74,84, 22,88])],
+                ['4', poly([70,8, 18,62, 88,62, 70,8, 70,92])],
+                ['4', poly([22,8, 22,58, 86,58]), poly([68,8, 68,92])],
+                ['5', poly([80,10, 22,10, 20,46, 70,42, 86,64, 70,92, 22,86])],
+                ['6', poly([72,14, 28,20, 14,52, 28,86, 60,92, 84,70, 60,50, 28,56])],
+                ['7', poly([16,12, 86,12, 40,92])],
+                ['7', poly([14,14, 88,14, 88,28, 36,92])],
+                ['8', poly([50,8, 82,24, 82,42, 50,50, 18,64, 18,82, 50,92, 82,78, 82,64, 50,50, 18,38, 18,22, 50,8])],
+                ['8', poly([50,10, 20,28, 50,48, 80,28, 50,10, 50,48, 20,72, 50,90, 80,72, 50,48])],
+                ['9', poly([78,40, 78,18, 50,8, 22,22, 22,40, 50,52, 80,40, 80,92])],
+                ['9', poly([24,28, 40,10, 70,10, 86,30, 70,50, 28,50, 70,50, 50,92])]
+            ];
+            var groupGlyphs = function (raw) {
+                var items = [];
+                for (var i = 0; i < raw.length; i++) {
+                    var b = window.__shSpenStrokeBounds([raw[i]]);
+                    if (!b) continue;
+                    items.push({ stroke: raw[i], b: b });
+                }
+                items.sort(function (a, b) { return a.b.minx - b.b.minx; });
+                var groups = [];
+                for (var i = 0; i < items.length; i++) {
+                    var it = items[i];
+                    var last = groups[groups.length - 1];
+                    var gap = last ? it.b.minx - last.maxx : 999;
+                    var merge = last && (gap < Math.max(8, Math.min(it.b.w, last.w) * 0.45) || it.b.minx < last.maxx - 2);
+                    if (merge) {
+                        last.strokes.push(it.stroke);
+                        last.maxx = Math.max(last.maxx, it.b.maxx);
+                        last.minx = Math.min(last.minx, it.b.minx);
+                        last.w = last.maxx - last.minx;
+                    } else {
+                        groups.push({
+                            strokes: [it.stroke],
+                            minx: it.b.minx,
+                            maxx: it.b.maxx,
+                            w: it.b.w
+                        });
+                    }
+                }
+                return groups.map(function (g) { return g.strokes; });
+            };
+            var classify = function (group) {
+                var b = window.__shSpenStrokeBounds(group);
+                if (!b) return '';
+                if (b.w < 3 && b.h < 3) return '';
+                var aspect = b.w / Math.max(b.h, 1);
+                if (b.w < 14 && b.h < 16 && b.w * b.h < 160) return ',';
+                if (aspect >= 2.8 && b.h <= Math.max(10, b.w * 0.28)) return '-';
+                var pts = flatten(group);
+                if (pts.length < 2) return '';
+                if (aspect <= 0.38) return '1';
+                var cand = normalize(resample(pts, 32), 100);
+                var best = '';
+                var bestD = 999;
+                var second = 999;
+                for (var i = 0; i < templates.length; i++) {
+                    var ch = templates[i][0];
+                    var tmpl = templates[i][1];
+                    var d = Math.min(pathDist(cand, tmpl), pathDist(cand, tmpl.slice().reverse()));
+                    if (d < bestD) {
+                        second = bestD;
+                        bestD = d;
+                        best = ch;
+                    } else if (d < second) {
+                        second = d;
+                    }
+                }
+                if (bestD > 42) return '';
+                return best;
+            };
+            var groups = groupGlyphs(strokes);
+            var out = '';
+            for (var g = 0; g < groups.length; g++) out += classify(groups[g]);
+            return window.__shSpenNormalizeNumber(out);
         };
 
         window.__initAndroidSpenInk = function () {
@@ -3014,9 +3189,13 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (!raw.length) return Promise.resolve('');
                 var strokes = opts.forceScale ? scaleStrokesForRecognizer(raw) : raw;
                 return window.__shSpenEnsureRecognizer().then(function (rec) {
-                    if (!rec || typeof rec.startDrawing !== 'function') return '';
+                    if (!rec || typeof rec.startDrawing !== 'function') {
+                        return window.__shSpenRecognizeDigitsLocal(raw);
+                    }
                     var StrokeCtor = window.HandwritingStroke;
-                    if (typeof StrokeCtor !== 'function') return '';
+                    if (typeof StrokeCtor !== 'function') {
+                        return window.__shSpenRecognizeDigitsLocal(raw);
+                    }
                     var runHints = function (hints) {
                         var drawing = null;
                         try { drawing = rec.startDrawing(hints); } catch (_) { drawing = null; }
@@ -3078,8 +3257,12 @@ window.colorPreviewNumber = function(tankName, value) {
                     }).then(function (hit) {
                         if (hit || opts.forceScale) return hit;
                         return window.__shSpenRecognizeStrokes(raw, { forceScale: true });
+                    }).then(function (hit) {
+                        return hit || window.__shSpenRecognizeDigitsLocal(raw);
                     });
-                }).catch(function () { return ''; });
+                }).catch(function () {
+                    return window.__shSpenRecognizeDigitsLocal(raw);
+                });
             };
 
             window.__shSpenOcrInkCanvas = function () {
@@ -3297,50 +3480,27 @@ window.colorPreviewNumber = function(tankName, value) {
                 }
             }
 
-            function bindWatchField(input) {
-                ink.watchOnly = true;
-                ink.active = false;
-                ink.capture = false;
+            function startInkOnInput(input) {
+                ink.watchOnly = false;
+                ink.active = true;
+                ink.capture = true;
                 ink.input = input;
                 ink.inputId = input.id || '';
                 ink.strokes = [];
-                ink.current = [];
+                ink.current = null;
                 ink.imeText = input.value || '';
                 ink.originValue = input.value || '';
                 ink.sessionStartMs = Date.now();
                 ink.startMs = ink.sessionStartMs;
                 ink.pendingPred = null;
                 ink.pendingPredCount = 0;
+                ink.epoch = (ink.epoch || 0) + 1;
                 ink.laidOut = false;
-                hideHost();
-                if (document.body) document.body.classList.remove('sh-spen-ink-open');
-                var box = window.__shSpenFieldBox(input);
-                var r = box && box.getBoundingClientRect ? box.getBoundingClientRect() : null;
-                ink.hostRect = r ? { left: r.left, top: r.top, w: r.width, h: r.height } : null;
-            }
-
-            function applySilentCutIfNeeded() {
-                var input = boundInput() || ink.input;
-                if (!input) return false;
-                var origin = ink.originValue;
-                var origN = window.__shSpenNormalizeNumber(origin);
-                if (!origN || !ink.strokes.length) return false;
-                var cut = window.__shSpenIsStrikethrough(
-                    ink.strokes, ink.hostRect, window.__shSpenMeasureFieldText(input, ink.hostRect, origin)
-                );
-                if (!cut) return false;
-                window.__shSpenApplyFieldEdit(input, '', origin, 'clear');
-                ink.cutGuardUntil = Date.now() + 520;
-                ink.cutGuardInput = input;
+                layoutOver(input, true);
+                if (document.body) document.body.classList.add('sh-spen-ink-open');
+                ink.lockX = window.scrollX || 0;
+                ink.lockY = window.scrollY || document.documentElement.scrollTop || 0;
                 try { input.blur(); } catch (_) {}
-                return true;
-            }
-
-            function endWatch() {
-                ink.watchOnly = false;
-                ink.current = null;
-                ink.pointerId = null;
-                ink.strokes = [];
             }
 
             window.__shSpenOnPenDown = function (ev) {
@@ -3348,36 +3508,51 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (!ev || ev.pointerType !== 'pen') return;
                 var input = window.__shSpenFindWritableInputAt(ev.clientX, ev.clientY)
                     || window.__shSpenFindWritableInput(ev.target);
+                if (!input && ink.active) input = boundInput();
                 if (!input) {
-                    if (ink.active) closeInk(true);
-                    endWatch();
+                    if (ink.active) scheduleCommit(true);
                     return;
                 }
-                if (ink.active) closeInk(true);
-                clearTimeout(ink.commitTimer);
-                bindWatchField(input);
-                if (input.id !== 'inp-sec-note') {
-                    input.setAttribute('writingsuggestions', 'true');
-                }
-                if (document.activeElement !== input) {
-                    try { input.focus({ preventScroll: true }); } catch (_) { try { input.focus(); } catch (_) {} }
+                var same = ink.active && ink.inputId && input.id && ink.inputId === input.id;
+                if (ink.active && !same) {
+                    var prev = takeSnapshot();
+                    ink.pendingPred = null;
+                    ink.pendingPredCount = 0;
+                    commitSnapshot(prev);
+                    startInkOnInput(input);
+                } else if (!ink.active) {
+                    startInkOnInput(input);
+                } else {
+                    ink.epoch = (ink.epoch || 0) + 1;
+                    ink.pendingPred = null;
+                    ink.pendingPredCount = 0;
+                    clearTimeout(ink.commitTimer);
                 }
                 ink.pointerId = ev.pointerId;
+                if (!ink.sessionStartMs) ink.sessionStartMs = Date.now();
+                ink.startMs = ink.sessionStartMs;
+                ink.current = [];
+                if (ink.host && ev.pointerId != null) {
+                    try { ink.host.setPointerCapture(ev.pointerId); } catch (_) {}
+                }
                 addPtsFromEvent(ev);
+                redraw();
+                clearTimeout(ink.commitTimer);
             };
 
             window.__shSpenOnPenMove = function (ev) {
                 if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
-                if (!ink.watchOnly) return;
+                if (!ink.active) return;
                 if (ev.pointerType !== 'pen') return;
                 if (ink.pointerId != null && ev.pointerId !== ink.pointerId) return;
                 if (!ink.current) ink.current = [];
                 addPtsFromEvent(ev);
+                redraw();
             };
 
             window.__shSpenOnPenUp = function (ev, cancelled) {
                 if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
-                if (!ink.watchOnly && !ink.active) return;
+                if (!ink.active) return;
                 if (ev && ink.pointerId != null && ev.pointerId !== ink.pointerId && !cancelled) return;
                 if (ev && !cancelled) {
                     if (!ink.current) ink.current = [];
@@ -3386,20 +3561,17 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (ink.current && ink.current.length) ink.strokes.push(ink.current);
                 ink.current = null;
                 ink.pointerId = null;
-                applySilentCutIfNeeded();
-                endWatch();
-                if (ink.active) closeInk(true);
+                if (ink.host) {
+                    try { ink.host.releasePointerCapture && ink.host.releasePointerCapture(ev && ev.pointerId); } catch (_) {}
+                }
+                redraw();
+                scheduleCommit();
             };
 
             window.__shSpenForceEndStroke = function () {
                 if (ink.current && ink.current.length) ink.strokes.push(ink.current);
                 ink.current = null;
                 ink.pointerId = null;
-                if (ink.watchOnly) {
-                    applySilentCutIfNeeded();
-                    endWatch();
-                    return;
-                }
                 if (ink.active) scheduleCommit();
             };
 
@@ -4565,6 +4737,30 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__isPostLongPressShieldActive = function () {
             return !!window.__postLongPressShieldActive;
         };
+        window.__pendingPhoneOpenAfterSend = null;
+        window.__queuePhoneOpenAfterSend = function (sentId, wasExpanded) {
+            if (!wasExpanded) return;
+            var hid = window.hiddenModules || hiddenModules || [];
+            var domId = window.normalizePhoneSectionDomId(sentId);
+            var group = (window.getPhoneSectionGroups() || []).find(function (g) {
+                return g.indexOf(domId) >= 0 || g.indexOf(sentId) >= 0;
+            });
+            var remaining = group ? group.filter(function (mid) {
+                var checkId = window.getPhoneSectionCheckId(mid);
+                return hid.indexOf(checkId) < 0;
+            }) : [];
+            window.__pendingPhoneOpenAfterSend = remaining.length ? remaining[remaining.length - 1] : null;
+        };
+        window.__flushPhoneOpenAfterSend = function () {
+            var target = window.__pendingPhoneOpenAfterSend;
+            if (!target) return;
+            window.__pendingPhoneOpenAfterSend = null;
+            requestAnimationFrame(function () {
+                if (typeof window.handleLabelClick === 'function') {
+                    window.handleLabelClick(target, true);
+                }
+            });
+        };
         window.__clearPostLongPressShield = function (force) {
             if (!force && window.__postLongPressHoldUntilUp) return;
             var el = document.getElementById('sh-post-long-press-shield');
@@ -4578,6 +4774,9 @@ window.colorPreviewNumber = function(tankName, value) {
             window.__setLongPressInputLock(false);
             if (typeof window.__flushPendingHeavyUiWork === 'function') {
                 window.__flushPendingHeavyUiWork();
+            }
+            if (typeof window.__flushPhoneOpenAfterSend === 'function') {
+                window.__flushPhoneOpenAfterSend();
             }
         };
         window.__activatePostLongPressShield = function () {
@@ -4597,6 +4796,9 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (cover) {
                     cover.style.display = 'none';
                     cover.style.pointerEvents = 'none';
+                }
+                if (typeof window.__flushPhoneOpenAfterSend === 'function') {
+                    window.__flushPhoneOpenAfterSend();
                 }
                 clearTimeout(window.__postLongPressShieldTimer);
                 window.__postLongPressShieldTimer = setTimeout(function () {
@@ -34240,6 +34442,9 @@ window.updateStoricoButton = async function() {
                     } else {
                         setTimeout(persistHiddenLater, 200);
                     }
+                    if (typeof window.__queuePhoneOpenAfterSend === 'function') {
+                        window.__queuePhoneOpenAfterSend(id, hiddenWasExpanded);
+                    }
                     return;
                 }
                 updateModulesVisibility();
@@ -34264,6 +34469,9 @@ window.updateStoricoButton = async function() {
                 if (typeof window.expandAllSectionsLayout === 'function' && window.shouldKeepAllSectionsExpanded()) {
                     window.expandAllSectionsLayout();
                 } else if (userInitiated && window.isServiceHubPhone && window.isServiceHubPhone()) {
+                    if (typeof window.__queuePhoneOpenAfterSend === 'function') {
+                        window.__queuePhoneOpenAfterSend(id, hiddenWasExpanded);
+                    }
                     return;
                 } else {
                     const domId = window.normalizePhoneSectionDomId(id);
@@ -43142,15 +43350,18 @@ window.convertToHtml = async () => {
         body.sh-device-tablet.sh-long-press-lock .main-container textarea {
             pointer-events: auto !important;
         }
-        body.sh-device-android-tablet .main-container input:not([readonly]),
-        body.sh-device-android-tablet .main-container textarea:not([readonly]) {
-            touch-action: auto;
-            -webkit-user-select: text;
-            user-select: text;
+        body.sh-device-android-tablet .main-container input:not([readonly]):not(#inp-sec-note),
+        body.sh-device-android-tablet .main-container textarea:not([readonly]):not(#inp-sec-note) {
+            touch-action: pan-y;
+            -webkit-user-select: none !important;
+            user-select: none !important;
+            caret-color: transparent;
         }
-        body.sh-device-android-tablet.sh-spen-ink-open .main-container input:not([readonly]):focus,
-        body.sh-device-android-tablet.sh-spen-ink-open .main-container textarea:not([readonly]):focus {
+        body.sh-device-android-tablet.sh-spen-ink-open .main-container input:not([readonly]),
+        body.sh-device-android-tablet.sh-spen-ink-open .main-container textarea:not([readonly]) {
             touch-action: auto !important;
+            -webkit-user-select: none !important;
+            user-select: none !important;
         }
         body.sh-device-android-tablet.sh-spen-ink-open,
         body.sh-device-android-tablet.sh-spen-ink-open .main-container {

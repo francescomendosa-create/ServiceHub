@@ -1031,7 +1031,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v559';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v560';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -3323,11 +3323,42 @@ window.colorPreviewNumber = function(tankName, value) {
                 return out;
             }
 
+            function spreadStrokesForNumberRecognizer(raw) {
+                var groups = window.__shSpenClusterStrokes(raw);
+                if (!groups || groups.length <= 1) return scaleStrokesForRecognizer(raw);
+                var out = [];
+                var xOff = 28;
+                var targetH = 150;
+                for (var g = 0; g < groups.length; g++) {
+                    var b = window.__shSpenStrokeBounds(groups[g]);
+                    if (!b) continue;
+                    var sc = Math.min(14, Math.max(1.2, targetH / Math.max(8, b.h)));
+                    var tBase = g * 500;
+                    for (var s = 0; s < groups[g].length; s++) {
+                        var pts = groups[g][s];
+                        if (!pts || !pts.length) continue;
+                        var copy = [];
+                        for (var k = 0; k < pts.length; k++) {
+                            var t = pts[k].t;
+                            if (t == null || !Number.isFinite(t)) t = tBase + k * 12;
+                            copy.push({
+                                x: (pts[k].x - b.minx) * sc + xOff,
+                                y: (pts[k].y - b.miny) * sc + 24,
+                                t: t
+                            });
+                        }
+                        if (copy.length) out.push(copy);
+                    }
+                    xOff += b.w * sc + 52;
+                }
+                return out.length ? out : scaleStrokesForRecognizer(raw);
+            }
+
             window.__shSpenRecognizeStrokes = function (strokeSnap, opts) {
                 opts = opts || {};
                 var raw = strokeSnap || cloneStrokes(ink.strokes);
                 if (!raw.length) return Promise.resolve('');
-                var strokes = scaleStrokesForRecognizer(raw);
+                var strokes = spreadStrokesForNumberRecognizer(raw);
                 return window.__shSpenEnsureRecognizer().then(function (rec) {
                     if (!rec || typeof rec.startDrawing !== 'function') {
                         return window.__shSpenRecognizeDigitsLocal(raw);
@@ -3379,13 +3410,10 @@ window.colorPreviewNumber = function(tankName, value) {
                             return '';
                         });
                     };
-                    var glyphN = estimateGlyphCount(raw);
-                    var local = window.__shSpenRecognizeDigitsLocal(raw);
                     return runHints({ recognitionType: 'number', inputType: 'stylus', alternatives: 3 }).then(function (numHit) {
-                        var fused = window.__shSpenPickRichestNumber([numHit, '', local], glyphN);
-                        if (fused) return fused;
+                        if (numHit) return numHit;
                         return runHints({ recognitionType: 'per-character', inputType: 'stylus', alternatives: 3 }).then(function (pcHit) {
-                            return window.__shSpenPickRichestNumber([pcHit || numHit, '', local], glyphN) || local;
+                            return pcHit || window.__shSpenRecognizeDigitsLocal(raw);
                         });
                     });
                 }).catch(function () {
@@ -3466,9 +3494,7 @@ window.colorPreviewNumber = function(tankName, value) {
                     : (snap.strokes.length ? window.__shSpenRecognizeStrokes(snap.strokes) : Promise.resolve(''));
                 return predPromise.then(function (text) {
                     var rec = window.__shSpenNormalizeNumber(text);
-                    var local = window.__shSpenRecognizeDigitsLocal(snap.strokes);
-                    var glyphN = estimateGlyphCount(snap.strokes);
-                    var got = window.__shSpenPickRichestNumber([rec, imeNum, local], glyphN);
+                    var got = rec || imeNum;
                     var writeGot = function (val) {
                         if (!val) return false;
                         var useMode = window.__shSpenEditModeFromStrokes(snap.strokes, input, origin, snap.hostRect);

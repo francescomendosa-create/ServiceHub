@@ -1031,7 +1031,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v555';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v556';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -2926,6 +2926,28 @@ window.colorPreviewNumber = function(tankName, value) {
             var groupGlyphs = function (raw) {
                 return window.__shSpenClusterStrokes(raw);
             };
+            var bandSpan = function (pts, b, y0, y1) {
+                var minx = Infinity, maxx = -Infinity, n = 0;
+                var ya = b.miny + b.h * y0;
+                var yb = b.miny + b.h * y1;
+                for (var i = 0; i < pts.length; i++) {
+                    var y = pts[i].y;
+                    if (y < ya || y > yb) continue;
+                    n++;
+                    if (pts[i].x < minx) minx = pts[i].x;
+                    if (pts[i].x > maxx) maxx = pts[i].x;
+                }
+                if (n < 3 || b.w < 1) return 0;
+                return (maxx - minx) / b.w;
+            };
+            var hCross = function (pts, y) {
+                var n = 0;
+                for (var i = 1; i < pts.length; i++) {
+                    var y0 = pts[i - 1].y, y1 = pts[i].y;
+                    if ((y0 <= y && y1 > y) || (y1 <= y && y0 > y)) n++;
+                }
+                return n;
+            };
             var classify = function (group) {
                 var b = window.__shSpenStrokeBounds(group);
                 if (!b) return '';
@@ -2946,18 +2968,32 @@ window.colorPreviewNumber = function(tankName, value) {
                         dir = nd;
                     }
                 }
-                var yCut = b.miny + b.h * 0.32;
-                var crosses = 0;
-                for (var ci = 1; ci < pts.length; ci++) {
-                    var y0 = pts[ci - 1].y, y1 = pts[ci].y;
-                    if ((y0 <= yCut && y1 > yCut) || (y1 <= yCut && y0 > yCut)) crosses++;
-                }
                 var first = pts[0], lastp = pts[pts.length - 1];
-                var endLow = lastp.y > b.miny + b.h * 0.55;
                 var startEnd = dist(first, lastp);
-                var closedish = startEnd < Math.max(10, Math.min(b.w, b.h) * 0.38);
-                var skinnyLine = aspect <= 0.34 && reversals < 2 && crosses < 2 && plen < b.h * 2.1;
-                if (skinnyLine) return '1';
+                var closedAmt = startEnd / Math.max(8, Math.min(b.w, b.h));
+                var topBar = bandSpan(pts, b, 0, 0.22);
+                var botBar = bandSpan(pts, b, 0.78, 1);
+                var hc0 = hCross(pts, b.miny + b.h * 0.22);
+                var hc1 = hCross(pts, b.miny + b.h * 0.5);
+                var hc2 = hCross(pts, b.miny + b.h * 0.78);
+                var sx = (first.x - b.minx) / Math.max(b.w, 1);
+                var sy = (first.y - b.miny) / Math.max(b.h, 1);
+                var ex = (lastp.x - b.minx) / Math.max(b.w, 1);
+                var ey = (lastp.y - b.miny) / Math.max(b.h, 1);
+                var grid = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+                for (var gi = 0; gi < pts.length; gi++) {
+                    var cx = Math.min(2, Math.max(0, Math.floor(((pts[gi].x - b.minx) / Math.max(b.w, 1)) * 3)));
+                    var cy = Math.min(2, Math.max(0, Math.floor(((pts[gi].y - b.miny) / Math.max(b.h, 1)) * 3)));
+                    grid[cy * 3 + cx]++;
+                }
+                var tot = Math.max(1, pts.length);
+                var cell = function (i) { return grid[i] / tot; };
+                var topP = cell(0) + cell(1) + cell(2);
+                var botP = cell(6) + cell(7) + cell(8);
+                var leftP = cell(0) + cell(3) + cell(6);
+                var rightP = cell(2) + cell(5) + cell(8);
+                var midP = cell(3) + cell(4) + cell(5);
+                var twoStroke4 = false;
                 if (group.length === 2) {
                     var ba = window.__shSpenStrokeBounds([group[0]]);
                     var bb = window.__shSpenStrokeBounds([group[1]]);
@@ -2966,28 +3002,81 @@ window.colorPreviewNumber = function(tankName, value) {
                         var hb = bb.w / Math.max(bb.h, 1);
                         var horiz = ha >= hb ? ba : bb;
                         var vert = ha >= hb ? bb : ba;
-                        if (horiz.w > horiz.h * 1.3 && vert.h > vert.w * 1.2) return '4';
+                        twoStroke4 = horiz.w > horiz.h * 1.25 && vert.h > vert.w * 1.15;
                     }
                 }
-                if (crosses >= 2 && endLow && aspect > 0.28) {
-                    if (closedish && aspect > 0.45) return reversals >= 4 ? '8' : '9';
-                    if (reversals >= 2) return '9';
-                }
+                if (twoStroke4) return '4';
+                if (aspect <= 0.32 && topBar < 0.42 && reversals < 3 && plen < b.h * 2.3) return '1';
+                if (topBar >= 0.55 && botBar < 0.38 && ey > 0.62 && aspect >= 0.3) return '7';
+                if (botBar >= 0.5 && ey > 0.68 && ex > 0.5 && closedAmt > 0.28) return '2';
+
+                var scores = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+                if (aspect <= 0.4 && hc1 <= 2 && topBar < 0.45) scores[1] += 7;
+                if (aspect <= 0.26) scores[1] += 5;
+                if (sy < 0.35 && ey > 0.6 && aspect < 0.45 && topBar < 0.5) scores[1] += 2;
+
+                if (topBar >= 0.5 && ey > 0.6 && botBar < 0.42) scores[7] += 8;
+                if (sy < 0.3 && sx < 0.5 && ey > 0.68 && botBar < 0.4) scores[7] += 4;
+                if (topBar >= 0.5) scores[1] -= 5;
+
+                if (closedAmt < 0.42 && aspect > 0.4 && aspect < 1.2 && hc0 >= 2 && hc1 >= 2 && hc2 >= 2) scores[0] += 8;
+                if (closedAmt < 0.36 && Math.abs(topP - botP) < 0.16) scores[0] += 3;
+
+                if (closedAmt < 0.45 && hc0 >= 2 && hc2 >= 2 && reversals >= 3) scores[8] += 7;
+                if (closedAmt < 0.4 && cell(4) > 0.07) scores[8] += 2;
+
+                if (ey > 0.45 && botP > topP + 0.05 && hc2 >= 2) scores[6] += 6;
+                if (sy < 0.4 && sx > 0.35 && hc2 >= 2 && hc0 <= 2) scores[6] += 3;
+
+                if (ey > 0.55 && topP > botP + 0.03 && hc0 >= 2) scores[9] += 6;
+                if (ex > 0.4 && ey > 0.62 && hc0 >= 2 && hc2 <= 2) scores[9] += 3;
+
+                if (ey > 0.7 && ex > 0.52 && botBar >= 0.42 && closedAmt > 0.3) scores[2] += 8;
+                if (sy < 0.4 && ey > 0.7 && ex > 0.5 && topBar >= 0.32) scores[2] += 3;
+
+                if (leftP < 0.3 && rightP > 0.26 && hc1 >= 2 && closedAmt > 0.28) scores[3] += 6;
+                if (ex < 0.58 && ey > 0.58 && rightP > 0.28) scores[3] += 3;
+
+                if (topBar >= 0.4 && sy < 0.28 && sx > 0.35 && (cell(0) + cell(3)) > 0.1) scores[5] += 6;
+                if (sy < 0.22 && sx > 0.4 && ey > 0.5) scores[5] += 3;
+
+                if (midP > 0.16 && rightP > 0.15 && cell(0) < 0.13 && closedAmt > 0.22) scores[4] += 7;
+                if (ey > 0.55 && ex > 0.45 && midP > 0.14 && topBar < 0.55) scores[4] += 2;
+
                 var cand = normalize(resample(pts, 32), 100);
-                var best = '';
-                var bestD = 999;
+                var tmplBest = '';
+                var tmplD = 999;
                 for (var i = 0; i < templates.length; i++) {
                     var ch = templates[i][0];
                     var tmpl = templates[i][1];
                     var d = Math.min(pathDist(cand, tmpl), pathDist(cand, tmpl.slice().reverse()));
-                    if (d < bestD) {
-                        bestD = d;
-                        best = ch;
+                    if (d < tmplD) {
+                        tmplD = d;
+                        tmplBest = ch;
                     }
                 }
-                if (best === '1' && crosses >= 2 && reversals >= 2) best = '9';
-                if (bestD > 52) return '';
-                return best;
+                if (tmplBest && tmplD <= 48) {
+                    var ti = tmplBest.charCodeAt(0) - 48;
+                    if (ti >= 0 && ti <= 9) scores[ti] += Math.max(1, 6 - tmplD / 10);
+                }
+
+                var bestCh = '';
+                var bestS = -99;
+                var secondS = -99;
+                for (var dgt = 0; dgt <= 9; dgt++) {
+                    if (scores[dgt] > bestS) {
+                        secondS = bestS;
+                        bestS = scores[dgt];
+                        bestCh = String(dgt);
+                    } else if (scores[dgt] > secondS) {
+                        secondS = scores[dgt];
+                    }
+                }
+                if (bestS < 4) return '';
+                if (bestS - secondS < 1.2 && tmplBest && scores[tmplBest.charCodeAt(0) - 48] >= secondS) {
+                    return tmplBest;
+                }
+                return bestCh;
             };
             var groups = groupGlyphs(strokes);
             var out = '';
@@ -3249,32 +3338,24 @@ window.colorPreviewNumber = function(tankName, value) {
         };
 
         window.__shSpenPickRichestNumber = function (cands, glyphN) {
-            var nums = [];
-            var seen = {};
-            for (var i = 0; i < (cands || []).length; i++) {
-                var n = window.__shSpenNormalizeNumber(cands[i]);
-                if (!n || seen[n]) continue;
-                seen[n] = true;
-                nums.push(n);
+            var chrome = window.__shSpenNormalizeNumber(cands && cands[0]);
+            var ime = window.__shSpenNormalizeNumber(cands && cands[1]);
+            var local = window.__shSpenNormalizeNumber(cands && cands[2]);
+            glyphN = glyphN || 0;
+            if (chrome && local && chrome === local) return chrome;
+            if (ime && chrome && ime === chrome) return ime;
+            if (ime && local && ime === local) return ime;
+            var cd = window.__shSpenDigitCount(chrome);
+            var ld = window.__shSpenDigitCount(local);
+            var id = window.__shSpenDigitCount(ime);
+            if (ld >= 2 && cd <= 1) return local;
+            if (glyphN >= 2) {
+                if (ld === glyphN) return local;
+                if (cd === glyphN) return chrome;
+                if (id === glyphN) return ime;
             }
-            if (!nums.length) return '';
-            var votes = {};
-            for (i = 0; i < (cands || []).length; i++) {
-                n = window.__shSpenNormalizeNumber(cands[i]);
-                if (!n) continue;
-                votes[n] = (votes[n] || 0) + 1;
-            }
-            var agreed = '';
-            var agreedVotes = 1;
-            for (i = 0; i < nums.length; i++) {
-                var v = votes[nums[i]] || 0;
-                if (v > agreedVotes) {
-                    agreedVotes = v;
-                    agreed = nums[i];
-                }
-            }
-            if (agreedVotes >= 2 && agreed) return agreed;
-            return nums[0];
+            if (local && (glyphN <= 1 || ld === glyphN || !chrome)) return local;
+            return local || chrome || ime || '';
         };
 
             window.__shSpenEnsureRecognizer = function () {
@@ -3386,11 +3467,13 @@ window.colorPreviewNumber = function(tankName, value) {
                             return '';
                         });
                     };
+                    var glyphN = estimateGlyphCount(raw);
+                    var local = window.__shSpenRecognizeDigitsLocal(raw);
                     return runHints({ recognitionType: 'number', inputType: 'stylus', alternatives: 3 }).then(function (numHit) {
-                        if (numHit) return numHit;
+                        var fused = window.__shSpenPickRichestNumber([numHit, '', local], glyphN);
+                        if (fused) return fused;
                         return runHints({ recognitionType: 'per-character', inputType: 'stylus', alternatives: 3 }).then(function (pcHit) {
-                            if (pcHit) return pcHit;
-                            return window.__shSpenRecognizeDigitsLocal(raw);
+                            return window.__shSpenPickRichestNumber([pcHit || numHit, '', local], glyphN) || local;
                         });
                     });
                 }).catch(function () {

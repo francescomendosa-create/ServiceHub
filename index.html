@@ -1031,7 +1031,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v551';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v552';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -2141,8 +2141,8 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__shSpenEnabled = function () {
             return !!(window.__shIsAndroidTablet && window.__shIsAndroidTablet());
         };
-        window.__SPEN_SESSION_MS = 1800;
-        window.__SPEN_COMMIT_MS = 640;
+        window.__SPEN_SESSION_MS = 2400;
+        window.__SPEN_COMMIT_MS = 1450;
         window.__shPenLastEventTs = 0;
         window.__shSpenLastFieldTs = 0;
         window.__shPenIsDown = false;
@@ -2578,6 +2578,118 @@ window.colorPreviewNumber = function(tankName, value) {
             return { minx: minx, maxx: maxx, miny: miny, maxy: maxy, cx: (minx + maxx) / 2, cy: (miny + maxy) / 2, w: maxx - minx, h: maxy - miny };
         };
 
+        /** Spezza un glifo troppo largo (es. 128 scritto stretto) in colonne X. */
+        window.__shSpenMaybeSplitWideGlyph = function (strokes) {
+            var b = window.__shSpenStrokeBounds(strokes);
+            if (!b || b.h < 14 || b.w < Math.max(26, b.h * 1.52)) return [strokes];
+            var pts = [];
+            for (var s = 0; s < strokes.length; s++) {
+                var st = strokes[s];
+                if (!st) continue;
+                for (var i = 0; i < st.length; i++) {
+                    if (st[i]) pts.push(st[i]);
+                }
+            }
+            if (pts.length < 8) return [strokes];
+            var bins = Math.min(36, Math.max(14, Math.round(b.w / 4)));
+            var hist = [];
+            var bi;
+            for (bi = 0; bi < bins; bi++) hist[bi] = 0;
+            var bw = b.w / bins;
+            if (bw < 1) return [strokes];
+            for (var p = 0; p < pts.length; p++) {
+                var ix = Math.min(bins - 1, Math.max(0, Math.floor((pts[p].x - b.minx) / bw)));
+                hist[ix]++;
+            }
+            var sm = hist.slice();
+            for (bi = 1; bi < bins - 1; bi++) sm[bi] = hist[bi - 1] + hist[bi] * 2 + hist[bi + 1];
+            var peak = 0;
+            for (bi = 0; bi < bins; bi++) if (sm[bi] > peak) peak = sm[bi];
+            if (peak < 8) return [strokes];
+            var thresh = peak * 0.16;
+            var cuts = [];
+            var minGap = Math.max(8, b.h * 0.36);
+            for (bi = 3; bi < bins - 3; bi++) {
+                if (sm[bi] > thresh) continue;
+                if (sm[bi] > sm[bi - 1] || sm[bi] > sm[bi + 1]) continue;
+                var xCut = b.minx + (bi + 0.5) * bw;
+                if (!cuts.length || (xCut - cuts[cuts.length - 1]) >= minGap) cuts.push(xCut);
+            }
+            if (!cuts.length) return [strokes];
+            var bands = cuts.length + 1;
+            var buckets = [];
+            for (bi = 0; bi < bands; bi++) buckets[bi] = [];
+            for (s = 0; s < strokes.length; s++) {
+                var stroke = strokes[s];
+                if (!stroke || !stroke.length) continue;
+                var colPts = [];
+                for (bi = 0; bi < bands; bi++) colPts[bi] = [];
+                for (i = 0; i < stroke.length; i++) {
+                    var pt = stroke[i];
+                    var col = 0;
+                    while (col < cuts.length && pt.x > cuts[col]) col++;
+                    colPts[col].push(pt);
+                }
+                for (bi = 0; bi < bands; bi++) {
+                    if (colPts[bi].length >= 2) buckets[bi].push(colPts[bi]);
+                }
+            }
+            var out = [];
+            for (bi = 0; bi < bands; bi++) {
+                if (buckets[bi].length) out.push(buckets[bi]);
+            }
+            return out.length ? out : [strokes];
+        };
+
+        /** Raggruppa i tratti in cifre: vicini in colonna restano insieme (4, 5, 7), quelli a destra sono cifre nuove. */
+        window.__shSpenClusterStrokes = function (raw) {
+            var items = [];
+            if (!raw) return [];
+            for (var i = 0; i < raw.length; i++) {
+                var b = window.__shSpenStrokeBounds([raw[i]]);
+                if (!b) continue;
+                items.push({ stroke: raw[i], b: b, cx: b.cx });
+            }
+            items.sort(function (a, c) { return a.b.minx - c.b.minx || a.cx - c.cx; });
+            if (!items.length) return [];
+            var hs = [];
+            for (i = 0; i < items.length; i++) hs.push(items[i].b.h);
+            hs.sort(function (a, c) { return a - c; });
+            var medH = hs[Math.floor(hs.length / 2)] || 16;
+            var pitch = Math.max(9, medH * 0.46);
+            var groups = [];
+            for (i = 0; i < items.length; i++) {
+                var it = items[i];
+                var last = groups[groups.length - 1];
+                var overlap = last ? (Math.min(last.maxx, it.b.maxx) - Math.max(last.minx, it.b.minx)) : 0;
+                var sameCol = last && Math.abs(it.cx - last.cx) < pitch * 0.72;
+                var strongOverlap = last && overlap > Math.max(3, Math.min(last.w, it.b.w) * 0.28);
+                var tinyMark = last && (it.b.w * it.b.h < 90) && overlap > 0;
+                var merge = !!(last && (sameCol || strongOverlap || tinyMark));
+                if (merge && it.b.minx > last.minx + Math.max(pitch, last.h * 0.42) && !strongOverlap) {
+                    merge = false;
+                }
+                if (merge) {
+                    last.strokes.push(it.stroke);
+                    last.maxx = Math.max(last.maxx, it.b.maxx);
+                    last.minx = Math.min(last.minx, it.b.minx);
+                    last.w = last.maxx - last.minx;
+                    last.cx = (last.minx + last.maxx) / 2;
+                    last.h = Math.max(last.h, it.b.h);
+                } else {
+                    groups.push({
+                        strokes: [it.stroke],
+                        minx: it.b.minx,
+                        maxx: it.b.maxx,
+                        w: it.b.w,
+                        h: it.b.h,
+                        cx: it.cx
+                    });
+                }
+            }
+            return groups.map(function (g) { return g.strokes; });
+        };
+
         window.__shSpenMeasureFieldText = function (input, hostRect, textOverride) {
             if (!input || !hostRect) return null;
             var text = textOverride != null ? String(textOverride) : String(input.value == null ? '' : input.value);
@@ -2811,36 +2923,13 @@ window.colorPreviewNumber = function(tankName, value) {
                 ['9', poly([50,8, 82,22, 82,48, 50,58, 22,42, 50,8, 62,58, 50,92])]
             ];
             var groupGlyphs = function (raw) {
-                var items = [];
-                for (var i = 0; i < raw.length; i++) {
-                    var b = window.__shSpenStrokeBounds([raw[i]]);
-                    if (!b) continue;
-                    items.push({ stroke: raw[i], b: b });
+                var clustered = window.__shSpenClusterStrokes(raw);
+                var out = [];
+                for (var gi = 0; gi < clustered.length; gi++) {
+                    var parts = window.__shSpenMaybeSplitWideGlyph(clustered[gi]);
+                    for (var pi = 0; pi < parts.length; pi++) out.push(parts[pi]);
                 }
-                items.sort(function (a, b) { return a.b.minx - b.b.minx; });
-                var groups = [];
-                for (var i = 0; i < items.length; i++) {
-                    var it = items[i];
-                    var last = groups[groups.length - 1];
-                    var gap = last ? it.b.minx - last.maxx : 999;
-                    var overlap = last && it.b.minx < last.maxx - Math.max(3, last.w * 0.28);
-                    var newDigit = last && gap > 6 && it.b.minx > last.minx + last.w * 0.55;
-                    var merge = last && !newDigit && (overlap || gap < 5);
-                    if (merge) {
-                        last.strokes.push(it.stroke);
-                        last.maxx = Math.max(last.maxx, it.b.maxx);
-                        last.minx = Math.min(last.minx, it.b.minx);
-                        last.w = last.maxx - last.minx;
-                    } else {
-                        groups.push({
-                            strokes: [it.stroke],
-                            minx: it.b.minx,
-                            maxx: it.b.maxx,
-                            w: it.b.w
-                        });
-                    }
-                }
-                return groups.map(function (g) { return g.strokes; });
+                return out;
             };
             var classify = function (group) {
                 var b = window.__shSpenStrokeBounds(group);
@@ -3076,20 +3165,12 @@ window.colorPreviewNumber = function(tankName, value) {
             }
 
             function estimateGlyphCount(strokes) {
-                var boxes = [];
-                if (!strokes) return 0;
-                for (var s = 0; s < strokes.length; s++) {
-                    var b = window.__shSpenStrokeBounds([strokes[s]]);
-                    if (b) boxes.push(b);
-                }
-                if (!boxes.length) return 0;
-                boxes.sort(function (a, b) { return a.minx - b.minx; });
+                if (!strokes || !strokes.length) return 0;
+                var groups = window.__shSpenClusterStrokes(strokes);
                 var count = 0;
-                var lastRight = -Infinity;
-                for (var i = 0; i < boxes.length; i++) {
-                    var gap = Math.max(8, Math.min(18, boxes[i].w * 0.35));
-                    if (boxes[i].minx > lastRight + gap) count++;
-                    lastRight = Math.max(lastRight, boxes[i].maxx);
+                for (var i = 0; i < groups.length; i++) {
+                    var parts = window.__shSpenMaybeSplitWideGlyph(groups[i]);
+                    count += Math.max(1, parts.length);
                 }
                 return count;
             }
@@ -3165,11 +3246,13 @@ window.colorPreviewNumber = function(tankName, value) {
                 var n = window.__shSpenNormalizeNumber(cands[i]);
                 if (!n) continue;
                 var d = window.__shSpenDigitCount(n);
-                var score = d * 12;
+                var score = d * 18;
+                if (n.indexOf(',') >= 0) score += 2;
                 if (glyphN > 0) {
-                    score -= Math.abs(d - glyphN) * 8;
-                    if (d === glyphN) score += 14;
-                    if (d >= Math.max(1, glyphN - 1)) score += 5;
+                    if (d === glyphN) score += 10;
+                    if (d >= glyphN) score += 6;
+                    if (d < glyphN) score -= (glyphN - d) * 14;
+                    if (d > glyphN + 2) score -= (d - glyphN - 2) * 3;
                 }
                 if (score > bestScore) {
                     bestScore = score;
@@ -3293,10 +3376,12 @@ window.colorPreviewNumber = function(tankName, value) {
                         var digits = String(numHit || '').replace(/[^\d]/g, '').length;
                         var enough = digits >= glyphN ||
                             (numHit && numHit.indexOf(',') >= 0 && digits >= Math.max(1, glyphN - 1));
-                        if (numHit && (glyphN <= 1 || enough)) return numHit;
+                        var tooShort = digits <= 1 && (glyphN >= 2 || raw.length >= 2);
+                        if (numHit && enough && !tooShort) return numHit;
                         return runHints({ recognitionType: 'text', inputType: 'stylus', alternatives: 8 }).then(function (txtHit) {
                             var best = window.__shSpenPickLongerNumber(numHit, txtHit);
-                            if (best && (glyphN <= 1 || String(best).replace(/[^\d]/g, '').length >= Math.max(1, glyphN - 1))) {
+                            var bestDigits = window.__shSpenDigitCount(best);
+                            if (best && bestDigits >= Math.max(2, glyphN - 1) && (glyphN <= 1 || bestDigits >= glyphN - 1)) {
                                 return best;
                             }
                             return runHints({ inputType: 'stylus', alternatives: 8 }).then(function (anyHit) {
@@ -3372,6 +3457,10 @@ window.colorPreviewNumber = function(tankName, value) {
                     window.__shSpenNormalizeNumber(snap.imeText) !== origN ? snap.imeText : '',
                     window.__shSpenNormalizeNumber(snap.liveValue) !== origN ? snap.liveValue : ''
                 );
+                var glyphGuess = estimateGlyphCount(snap.strokes);
+                if (imeNum && window.__shSpenDigitCount(imeNum) <= 1 && (glyphGuess >= 2 || (snap.strokes && snap.strokes.length >= 2))) {
+                    imeNum = '';
+                }
                 var strictCut = !!(origN && window.__shSpenIsStrikethrough(
                     snap.strokes, snap.hostRect, window.__shSpenMeasureFieldText(input, snap.hostRect, origin)
                 ));
@@ -3439,6 +3528,20 @@ window.colorPreviewNumber = function(tankName, value) {
                 return (Date.now() - (window.__shPenLastEventTs || 0)) < 280;
             }
 
+            function likelyWritingMoreDigits() {
+                if (penStillWriting()) return true;
+                var since = Date.now() - (window.__shPenLastEventTs || 0);
+                return since < 420;
+            }
+
+            function commitWaitMs() {
+                var n = estimateGlyphCount(ink.strokes);
+                var base = window.__SPEN_COMMIT_MS || 1450;
+                if (n <= 1) return Math.max(base, 1750);
+                if (n <= 2) return Math.max(base, 1550);
+                return base;
+            }
+
             function finishAndCommit() {
                 var input = boundInput() || ink.input;
                 if (!ink.active) {
@@ -3450,9 +3553,9 @@ window.colorPreviewNumber = function(tankName, value) {
                     closeInk(false);
                     return;
                 }
-                if (penStillWriting()) {
+                if (likelyWritingMoreDigits()) {
                     clearTimeout(ink.commitTimer);
-                    ink.commitTimer = setTimeout(finishAndCommit, 180);
+                    ink.commitTimer = setTimeout(finishAndCommit, 220);
                     return;
                 }
                 var epoch = ink.epoch;
@@ -3485,12 +3588,13 @@ window.colorPreviewNumber = function(tankName, value) {
 
             function scheduleCommit(immediate) {
                 clearTimeout(ink.commitTimer);
+                clearTimeout(ink.forceCloseTimer);
                 var input = boundInput();
                 var cut = !!(input && ink.strokes.length && window.__shSpenIsStrikethrough(
                     ink.strokes, ink.hostRect, window.__shSpenMeasureFieldText(input, ink.hostRect, ink.originValue)
                 ));
-                if (penStillWriting() && !cut && !immediate) {
-                    ink.commitTimer = setTimeout(function () { scheduleCommit(); }, 180);
+                if (likelyWritingMoreDigits() && !cut && !immediate) {
+                    ink.commitTimer = setTimeout(function () { scheduleCommit(); }, 220);
                     return;
                 }
                 if (cut || immediate) {
@@ -3503,17 +3607,17 @@ window.colorPreviewNumber = function(tankName, value) {
                     ink.pendingPred = window.__shSpenRecognizeStrokes(snapStrokes);
                     ink.pendingPredCount = count;
                 }
+                var wait = commitWaitMs();
                 ink.commitTimer = setTimeout(function () {
-                    if (penStillWriting()) {
+                    if (likelyWritingMoreDigits()) {
                         scheduleCommit();
                         return;
                     }
                     finishAndCommit();
-                }, window.__SPEN_COMMIT_MS || 480);
-                clearTimeout(ink.forceCloseTimer);
+                }, wait);
                 ink.forceCloseTimer = setTimeout(function () {
-                    if (ink.active && !penStillWriting()) finishAndCommit();
-                }, 1100);
+                    if (ink.active && !likelyWritingMoreDigits()) finishAndCommit();
+                }, wait + 1100);
             }
 
             window.__shSpenCommitNow = function () {
@@ -3593,6 +3697,7 @@ window.colorPreviewNumber = function(tankName, value) {
                     ink.pendingPred = null;
                     ink.pendingPredCount = 0;
                     clearTimeout(ink.commitTimer);
+                    clearTimeout(ink.forceCloseTimer);
                 }
                 ink.pointerId = ev.pointerId;
                 if (!ink.sessionStartMs) ink.sessionStartMs = Date.now();
@@ -3641,6 +3746,7 @@ window.colorPreviewNumber = function(tankName, value) {
             window.__shSpenNoteImeCommit = function (el) {
                 if (!ink.active || ink.input !== el) return;
                 if (window.__shPenIsDown || ink.current) return;
+                if (ink.strokes.length && likelyWritingMoreDigits()) return;
                 scheduleCommit();
             };
             void window.__shSpenEnsureRecognizer();

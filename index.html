@@ -163,6 +163,40 @@
             outline-offset: -2px;
             background: transparent;
         }
+        html.sh-android-tablet-boot #sh-spen-ink-host.sh-spen-ink-on.sh-spen-samsung-on {
+            pointer-events: auto !important;
+            touch-action: none;
+            overflow: hidden;
+            border-radius: 8px;
+            outline: 2px solid #2563eb;
+            outline-offset: 0;
+            background: rgba(255, 255, 255, 0.96);
+            box-shadow: 0 6px 20px rgba(15, 23, 42, 0.22);
+        }
+        html.sh-android-tablet-boot #sh-spen-samsung-pad {
+            position: absolute;
+            inset: 0;
+            z-index: 2;
+            display: block;
+            padding: 0 12px;
+            font-size: 28px;
+            font-weight: 700;
+            line-height: 76px;
+            letter-spacing: 0.06em;
+            text-align: center;
+            color: #0f172a;
+            caret-color: #2563eb;
+            outline: none;
+            white-space: nowrap;
+            overflow: hidden;
+            -webkit-user-select: text !important;
+            user-select: text !important;
+            touch-action: none;
+        }
+        html.sh-android-tablet-boot #sh-spen-ink-host.sh-spen-samsung-on canvas {
+            opacity: 0;
+            pointer-events: none !important;
+        }
         html.sh-android-tablet-boot #sh-spen-ink-host canvas {
             display: block;
             width: 100%;
@@ -1031,7 +1065,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v553';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v554';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -2333,11 +2367,22 @@ window.colorPreviewNumber = function(tankName, value) {
             }, { capture: true, passive: false });
             document.addEventListener('focusout', function (e) {
                 var ink = window.__shSpenInk;
-                if (!ink || !ink.active || !ink.input) return;
-                if (e.target !== ink.input) return;
+                if (!ink || !ink.active) return;
+                var pad = ink.pad;
+                if (pad && (e.target === pad || e.target === ink.input)) {
+                    setTimeout(function () {
+                        if (!ink.active || !ink.pad) return;
+                        if (document.activeElement === ink.pad) return;
+                        try { ink.pad.focus({ preventScroll: true }); } catch (_) {
+                            try { ink.pad.focus(); } catch (_) {}
+                        }
+                    }, 0);
+                    return;
+                }
+                if (!ink.input || e.target !== ink.input) return;
                 setTimeout(function () {
                     if (!ink.active || !ink.input || !ink.input.isConnected) return;
-                    if (document.activeElement === ink.input) return;
+                    if (document.activeElement === ink.input || (ink.pad && document.activeElement === ink.pad)) return;
                     try { ink.input.focus({ preventScroll: true }); } catch (_) {
                         try { ink.input.focus(); } catch (_) {}
                     }
@@ -3023,24 +3068,64 @@ window.colorPreviewNumber = function(tankName, value) {
 
             function ensureHost() {
                 var host = document.getElementById('sh-spen-ink-host');
-                if (host) return host;
+                if (host) {
+                    if (!ink.pad) ink.pad = document.getElementById('sh-spen-samsung-pad');
+                    return host;
+                }
                 host = document.createElement('div');
                 host.id = 'sh-spen-ink-host';
-                host.setAttribute('aria-hidden', 'true');
+                var pad = document.createElement('div');
+                pad.id = 'sh-spen-samsung-pad';
+                pad.setAttribute('contenteditable', 'true');
+                pad.setAttribute('writingsuggestions', 'true');
+                pad.setAttribute('inputmode', 'text');
+                pad.setAttribute('autocomplete', 'off');
+                pad.setAttribute('autocorrect', 'off');
+                pad.setAttribute('spellcheck', 'false');
+                pad.setAttribute('autocapitalize', 'off');
+                pad.setAttribute('role', 'textbox');
+                pad.setAttribute('enterkeyhint', 'done');
                 var cvs = document.createElement('canvas');
+                host.appendChild(pad);
                 host.appendChild(cvs);
                 document.body.appendChild(host);
                 ink.host = host;
+                ink.pad = pad;
                 ink.canvas = cvs;
                 ink.ctx = cvs.getContext('2d');
+                pad.addEventListener('compositionstart', function () {
+                    ink.padComposing = true;
+                });
+                pad.addEventListener('compositionend', function () {
+                    ink.padComposing = false;
+                    ink.imeText = String(pad.textContent || '').replace(/\s+/g, '');
+                    if (typeof window.__shSpenNoteImeCommit === 'function') window.__shSpenNoteImeCommit(boundInput());
+                });
+                pad.addEventListener('input', function () {
+                    ink.imeText = String(pad.textContent || '').replace(/\s+/g, '');
+                    if (!ink.padComposing && typeof window.__shSpenNoteImeCommit === 'function') {
+                        window.__shSpenNoteImeCommit(boundInput());
+                    }
+                });
                 return host;
             }
 
             function hideHost() {
                 if (!ink.host) return;
-                ink.host.classList.remove('sh-spen-ink-on', 'sh-spen-ink-capture');
+                ink.host.classList.remove('sh-spen-ink-on', 'sh-spen-ink-capture', 'sh-spen-samsung-on');
                 ink.host.style.display = 'none';
                 ink.laidOut = false;
+            }
+
+            function padPlainText() {
+                if (!ink.pad) return '';
+                return String(ink.pad.textContent || '').replace(/\s+/g, '');
+            }
+
+            function clearPad() {
+                if (!ink.pad) return;
+                ink.pad.textContent = '';
+                ink.padComposing = false;
             }
 
             function boundInput() {
@@ -3061,28 +3146,35 @@ window.colorPreviewNumber = function(tankName, value) {
                 var host = ensureHost();
                 var box = window.__shSpenFieldBox(input);
                 var r = box.getBoundingClientRect();
-                var left = r.left;
-                var top = r.top;
-                var w = r.width;
-                var h = r.height;
-                if (w < 2 || h < 2) return;
+                if (r.width < 2 || r.height < 2) return;
+                var vw = window.innerWidth || 0;
+                var vh = window.innerHeight || 0;
+                var w = Math.max(r.width + 16, Math.min(260, Math.max(160, vw - 24)));
+                var h = Math.max(72, Math.min(96, Math.max(r.height + 24, 76)));
+                var left = r.left + (r.width / 2) - (w / 2);
+                left = Math.max(8, Math.min(left, Math.max(8, vw - w - 8)));
+                var top = r.top - 10;
+                if (top < 8) top = r.bottom + 6;
+                if (top + h > vh - 8) top = Math.max(8, vh - h - 8);
                 host.style.display = 'block';
                 host.style.left = left + 'px';
                 host.style.top = top + 'px';
                 host.style.width = w + 'px';
                 host.style.height = h + 'px';
-                host.classList.add('sh-spen-ink-on');
+                host.classList.add('sh-spen-ink-on', 'sh-spen-samsung-on');
                 host.classList.remove('sh-spen-ink-capture');
-                host.style.pointerEvents = 'none';
+                host.style.pointerEvents = 'auto';
                 var dpr = Math.max(1, window.devicePixelRatio || 1);
                 var cvs = ink.canvas;
                 cvs.width = Math.max(1, Math.round(w * dpr));
                 cvs.height = Math.max(1, Math.round(h * dpr));
-                ink.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-                ink.ctx.lineCap = 'round';
-                ink.ctx.lineJoin = 'round';
-                ink.ctx.strokeStyle = '#1d4ed8';
-                ink.ctx.lineWidth = 2.2;
+                if (ink.ctx) {
+                    ink.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                    ink.ctx.lineCap = 'round';
+                    ink.ctx.lineJoin = 'round';
+                    ink.ctx.strokeStyle = '#2563eb';
+                    ink.ctx.lineWidth = 2.2;
+                }
                 ink.hostRect = { left: left, top: top, w: w, h: h };
                 ink.laidOut = true;
                 if (ink.lockX == null) ink.lockX = window.scrollX || 0;
@@ -3426,6 +3518,7 @@ window.colorPreviewNumber = function(tankName, value) {
                         w: ink.hostRect.w, h: ink.hostRect.h
                     } : null,
                     imeText: ink.imeText || '',
+                    padText: padPlainText(),
                     liveValue: input ? String(input.value == null ? '' : input.value) : '',
                     pred: ink.pendingPred,
                     predCount: ink.pendingPredCount || 0,
@@ -3438,9 +3531,13 @@ window.colorPreviewNumber = function(tankName, value) {
                 var input = snap.input;
                 var origin = snap.origin;
                 var origN = window.__shSpenNormalizeNumber(origin);
+                var padNum = window.__shSpenNormalizeNumber(snap.padText);
                 var imeNum = window.__shSpenPickLongerNumber(
-                    window.__shSpenNormalizeNumber(snap.imeText) !== origN ? snap.imeText : '',
-                    window.__shSpenNormalizeNumber(snap.liveValue) !== origN ? snap.liveValue : ''
+                    padNum,
+                    window.__shSpenPickLongerNumber(
+                        window.__shSpenNormalizeNumber(snap.imeText) !== origN ? snap.imeText : '',
+                        window.__shSpenNormalizeNumber(snap.liveValue) !== origN ? snap.liveValue : ''
+                    )
                 );
                 var strictCut = !!(origN && window.__shSpenIsStrikethrough(
                     snap.strokes, snap.hostRect, window.__shSpenMeasureFieldText(input, snap.hostRect, origin)
@@ -3450,56 +3547,20 @@ window.colorPreviewNumber = function(tankName, value) {
                     try { input.blur(); } catch (_) {}
                     return Promise.resolve(true);
                 }
-                if (!snap.strokes.length && !imeNum) {
+                if (!imeNum) {
                     return Promise.resolve(false);
                 }
-                var predPromise = (snap.pred && snap.predCount === snap.strokes.length)
-                    ? snap.pred
-                    : (snap.strokes.length ? window.__shSpenRecognizeStrokes(snap.strokes) : Promise.resolve(''));
-                return predPromise.then(function (text) {
-                    var rec = window.__shSpenNormalizeNumber(text);
-                    var local = rec ? '' : window.__shSpenRecognizeDigitsLocal(snap.strokes);
-                    var glyphN = estimateGlyphCount(snap.strokes);
-                    var got = window.__shSpenPickRichestNumber([rec, imeNum, local], glyphN);
-                    var writeGot = function (val) {
-                        if (!val) return false;
-                        var useMode = window.__shSpenEditModeFromStrokes(snap.strokes, input, origin, snap.hostRect);
-                        if (useMode === 'clear') useMode = 'replace';
-                        var join = inferImeJoin(origin, val);
-                        var ok;
-                        if (join && join.mode !== 'replace') {
-                            ok = window.__shSpenApplyFieldEdit(input, join.rec, origin, join.mode);
-                        } else {
-                            ok = window.__shSpenApplyFieldEdit(input, val, origin, useMode);
-                        }
-                        if (!ok && val) {
-                            input.value = val;
-                            ok = !!String(input.value || '').trim();
-                            if (ok && typeof window.__touchPlantFieldEdit === 'function') window.__touchPlantFieldEdit(input);
-                        }
-                        return !!ok;
-                    };
-                    if (got) return writeGot(got);
-                    if (!snap.strokes.length) return false;
-                    return window.__shSpenRecognizeStrokes(snap.strokes).then(function (text2) {
-                        var rec2 = window.__shSpenNormalizeNumber(text2)
-                            || window.__shSpenRecognizeDigitsLocal(snap.strokes)
-                            || imeNum;
-                        return writeGot(rec2);
-                    });
-                }).catch(function () {
-                    if (imeNum) {
-                        var join2 = inferImeJoin(origin, imeNum);
-                        window.__shSpenApplyFieldEdit(
-                            input,
-                            join2 ? join2.rec : imeNum,
-                            origin,
-                            join2 ? join2.mode : 'replace'
-                        );
-                        return true;
+                var writeGot = function (val) {
+                    if (!val) return false;
+                    var ok = window.__shSpenApplyFieldEdit(input, val, origin, 'replace');
+                    if (!ok && val) {
+                        input.value = val;
+                        ok = !!String(input.value || '').trim();
+                        if (ok && typeof window.__touchPlantFieldEdit === 'function') window.__touchPlantFieldEdit(input);
                     }
-                    return false;
-                });
+                    return !!ok;
+                };
+                return Promise.resolve(writeGot(imeNum));
             }
 
             function penStillWriting() {
@@ -3527,7 +3588,7 @@ window.colorPreviewNumber = function(tankName, value) {
                     closeInk(false);
                     return;
                 }
-                if (likelyWritingMoreDigits()) {
+                if (likelyWritingMoreDigits() || ink.padComposing) {
                     clearTimeout(ink.commitTimer);
                     ink.commitTimer = setTimeout(finishAndCommit, 220);
                     return;
@@ -3575,12 +3636,8 @@ window.colorPreviewNumber = function(tankName, value) {
                     finishAndCommit();
                     return;
                 }
-                if (ink.strokes.length) {
-                    var snapStrokes = cloneStrokes(ink.strokes);
-                    var count = snapStrokes.length;
-                    ink.pendingPred = window.__shSpenRecognizeStrokes(snapStrokes);
-                    ink.pendingPredCount = count;
-                }
+                ink.pendingPred = null;
+                ink.pendingPredCount = 0;
                 var wait = commitWaitMs();
                 ink.commitTimer = setTimeout(function () {
                     if (likelyWritingMoreDigits()) {
@@ -3590,7 +3647,7 @@ window.colorPreviewNumber = function(tankName, value) {
                     finishAndCommit();
                 }, wait);
                 ink.forceCloseTimer = setTimeout(function () {
-                    if (ink.active && !likelyWritingMoreDigits()) finishAndCommit();
+                    if (ink.active && !likelyWritingMoreDigits() && !ink.padComposing) finishAndCommit();
                 }, wait + 500);
             }
 
@@ -3612,6 +3669,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 ink.pendingPredCount = 0;
                 ink.lockX = null;
                 ink.lockY = null;
+                clearPad();
                 hideHost();
                 if (document.body) document.body.classList.remove('sh-spen-ink-open');
                 if (!keepValue && typeof window.__flushSpenDeferredWork === 'function') {
@@ -3627,7 +3685,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 ink.inputId = input.id || '';
                 ink.strokes = [];
                 ink.current = null;
-                ink.imeText = input.value || '';
+                ink.imeText = '';
                 ink.originValue = input.value || '';
                 ink.sessionStartMs = Date.now();
                 ink.startMs = ink.sessionStartMs;
@@ -3635,6 +3693,7 @@ window.colorPreviewNumber = function(tankName, value) {
                 ink.pendingPredCount = 0;
                 ink.epoch = (ink.epoch || 0) + 1;
                 ink.laidOut = false;
+                clearPad();
                 layoutOver(input, true);
                 if (document.body) document.body.classList.add('sh-spen-ink-open');
                 ink.lockX = window.scrollX || 0;
@@ -3642,16 +3701,28 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (input.id !== 'inp-sec-note') {
                     input.setAttribute('writingsuggestions', 'true');
                 }
-                try { input.focus({ preventScroll: true }); } catch (_) {
-                    try { input.focus(); } catch (_) {}
+                if (ink.pad) {
+                    try { ink.pad.focus({ preventScroll: true }); } catch (_) {
+                        try { ink.pad.focus(); } catch (_) {}
+                    }
+                } else {
+                    try { input.focus({ preventScroll: true }); } catch (_) {
+                        try { input.focus(); } catch (_) {}
+                    }
                 }
             }
 
             window.__shSpenOnPenDown = function (ev) {
                 if (!window.__shIsAndroidTablet || !window.__shIsAndroidTablet()) return;
                 if (!ev || ev.pointerType !== 'pen') return;
-                var input = window.__shSpenFindWritableInputAt(ev.clientX, ev.clientY)
-                    || window.__shSpenFindWritableInput(ev.target);
+                var input = null;
+                if (ink.active && ink.host && ev.target && ink.host.contains(ev.target)) {
+                    input = boundInput();
+                }
+                if (!input) {
+                    input = window.__shSpenFindWritableInputAt(ev.clientX, ev.clientY)
+                        || window.__shSpenFindWritableInput(ev.target);
+                }
                 if (!input && ink.active) input = boundInput();
                 if (!input) {
                     if (ink.active) scheduleCommit(true);
@@ -3718,9 +3789,9 @@ window.colorPreviewNumber = function(tankName, value) {
             };
 
             window.__shSpenNoteImeCommit = function (el) {
-                if (!ink.active || ink.input !== el) return;
-                if (window.__shPenIsDown || ink.current) return;
-                if (ink.strokes.length && likelyWritingMoreDigits()) return;
+                if (!ink.active) return;
+                if (el && ink.input && el !== ink.input && el !== ink.pad) return;
+                if (window.__shPenIsDown || ink.current || ink.padComposing) return;
                 scheduleCommit();
             };
             void window.__shSpenEnsureRecognizer();

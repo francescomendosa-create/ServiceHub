@@ -151,9 +151,29 @@
         return raw;
     }
 
+    function maskField(input) {
+        if (!input) return;
+        input.style.setProperty('color', 'transparent', 'important');
+        input.style.setProperty('-webkit-text-fill-color', 'transparent', 'important');
+        input.style.setProperty('caret-color', 'transparent', 'important');
+    }
+
+    function unmaskField(input) {
+        if (!input) return;
+        input.style.removeProperty('color');
+        input.style.removeProperty('-webkit-text-fill-color');
+        input.style.removeProperty('caret-color');
+    }
+
+    function isLiveWrite(ink) {
+        if (window.__shPenIsDown) return true;
+        return !!(ink && ink.active && !ink.showResult && !ink.released);
+    }
+
     function hideLive(input, ink) {
-        if (!input || !ink || ink.showResult || ink.imeCleared) return;
+        if (!input || !ink || ink.showResult) return;
         if (ink.cutGuardUntil && Date.now() < ink.cutGuardUntil) return;
+        if (isLiveWrite(ink)) maskField(input);
         var hold = ink.originValue != null ? String(ink.originValue) : '';
         if (String(input.value || '') !== hold) input.value = hold;
     }
@@ -185,6 +205,7 @@
             if (typeof window.saveData === 'function') window.saveData(true);
         }
         input.value = '';
+        unmaskField(input);
         layoutBoxOn(input);
     }
 
@@ -213,10 +234,15 @@
         ink.sawImeClear = false;
         ink.cutGuardUntil = 0;
         ink.showResult = false;
+        ink.released = false;
         ink.imePending = '';
         ink.pendingPred = null;
         window.__shSpenSkipIme = false;
-        if (input) ink.originValue = input.value || '';
+        if (input) {
+            ink.originValue = input.value || '';
+            maskField(input);
+            if (String(input.value || '') !== String(ink.originValue)) input.value = ink.originValue;
+        }
     }
 
     function retarget(input) {
@@ -326,10 +352,13 @@
             }
             var rec = onlyNumber(recognized);
             if (!rec) return false;
+            if (window.__shPenIsDown) return false;
             if (ink) {
                 ink.showResult = true;
+                ink.released = true;
                 ink.imeCleared = false;
                 ink.cutGuardUntil = 0;
+                unmaskField(input);
             }
             return applyOrig(input, rec, origin, mode || 'replace');
         };
@@ -388,8 +417,10 @@
         window.__shSpenOnPenUp = function (ev, cancelled) {
             var ink = window.__shSpenInk;
             if (ink && ink.input) layoutBoxOn(ink.input);
+            if (ink) ink.released = true;
             if (ink && shouldClear(ink)) {
                 forceClear(ink);
+                if (ink.input) unmaskField(ink.input);
                 return;
             }
             if (ink && ink.imePending) ink.imeText = ink.imePending;
@@ -399,13 +430,21 @@
         window.__shSpenOnPenUp.__shV15 = true;
     }
 
-    if (!window.__shNativeHookV14) {
-        window.__shNativeHookV14 = true;
+    if (!window.__shNativeHookV16) {
+        window.__shNativeHookV16 = true;
         document.addEventListener('beforeinput', function (e) {
             if (!isPlantField(e.target)) return;
             var typ = e.inputType || '';
             if (typ.indexOf('delete') === 0) return;
+            var ink = window.__shSpenInk;
             var data = e.data == null ? '' : String(e.data);
+            if (isLiveWrite(ink)) {
+                var n = onlyNumber(data);
+                if (n && ink) ink.imePending = n;
+                if (e.cancelable) e.preventDefault();
+                hideLive(e.target, ink);
+                return;
+            }
             if (data && !/^[0-9,]+$/.test(data) && e.cancelable) e.preventDefault();
         }, true);
         document.addEventListener('input', function (e) {

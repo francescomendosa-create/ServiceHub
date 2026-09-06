@@ -25,7 +25,7 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
         nativeHookJs = readAssetUtf8("native_spen_hook.js");
         webView = findViewById(R.id.hub_webview);
-        ink = new InkRecognizer(this);
+        ink = new InkRecognizer();
         ink.ensureReady();
         setupWebView();
         webView.loadUrl(getString(R.string.hub_url));
@@ -52,12 +52,16 @@ public class MainActivity extends AppCompatActivity {
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
-                if (nativeHookJs != null && !nativeHookJs.isEmpty()) {
-                    view.evaluateJavascript(nativeHookJs, null);
-                }
+                injectHook(view);
+                view.postDelayed(() -> injectHook(view), 800);
             }
         });
         webView.addJavascriptInterface(new SpenBridge(webView, ink), "ServiceHubAndroidSpen");
+    }
+
+    private void injectHook(WebView view) {
+        if (view == null || nativeHookJs == null || nativeHookJs.isEmpty()) return;
+        view.evaluateJavascript(nativeHookJs, null);
     }
 
     private String readAssetUtf8(String name) {

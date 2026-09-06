@@ -2,6 +2,7 @@ package it.servicehub.tablet;
 
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 
@@ -29,7 +30,10 @@ public final class SpenBridge {
         String json = strokesJson == null ? "[]" : strokesJson;
         ink.recognizeJson(json)
                 .addOnSuccessListener(text -> deliver(requestId, text == null ? "" : text))
-                .addOnFailureListener(err -> deliver(requestId, ""));
+                .addOnFailureListener(err -> {
+                    Log.e("ShSpenInk", "bridge recognize", err);
+                    deliver(requestId, "");
+                });
     }
 
     private void deliver(String requestId, String text) {

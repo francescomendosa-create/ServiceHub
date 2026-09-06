@@ -1,6 +1,6 @@
 package it.servicehub.tablet;
 
-import android.content.Context;
+import android.util.Log;
 
 import com.google.android.gms.tasks.Task;
 import com.google.android.gms.tasks.Tasks;
@@ -23,44 +23,68 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
 /**
- * Motore nativo on-device (ML Kit Digital Ink). Non tocca il sito web.
+ * Motore nativo on-device (ML Kit Digital Ink). Solo APK tablet.
  */
 final class InkRecognizer {
+    private static final String TAG = "ShSpenInk";
     private final Executor io = Executors.newSingleThreadExecutor();
     private DigitalInkRecognizer recognizer;
     private DigitalInkRecognitionModel model;
     private volatile boolean ready;
-
-    InkRecognizer(Context ignored) {
-    }
 
     Task<Void> ensureReady() {
         if (ready && recognizer != null) {
             return Tasks.forResult(null);
         }
         return Tasks.call(io, () -> {
-            DigitalInkRecognitionModelIdentifier id =
-                    DigitalInkRecognitionModelIdentifier.fromLanguageTag("en");
-            if (id == null) {
-                throw new IllegalStateException("modello ink non disponibile");
-            }
-            model = DigitalInkRecognitionModel.builder(id).build();
-            RemoteModelManager mgr = RemoteModelManager.getInstance();
-            Boolean downloaded = Tasks.await(mgr.isModelDownloaded(model));
-            if (downloaded == null || !downloaded) {
-                Tasks.await(mgr.download(model, new DownloadConditions.Builder().build()));
-            }
-            recognizer = DigitalInkRecognition.getClient(
-                    DigitalInkRecognizerOptions.builder(model).build()
-            );
-            ready = true;
+            prepareLocked();
             return null;
         });
+    }
+
+    private void prepareLocked() throws Exception {
+        DigitalInkRecognitionModelIdentifier id = pickModelId();
+        model = DigitalInkRecognitionModel.builder(id).build();
+        RemoteModelManager mgr = RemoteModelManager.getInstance();
+        Boolean downloaded = Tasks.await(mgr.isModelDownloaded(model));
+        if (downloaded == null || !downloaded) {
+            Log.i(TAG, "download modello ink");
+            Tasks.await(mgr.download(model, new DownloadConditions.Builder().build()));
+        }
+        if (recognizer != null) {
+            try {
+                recognizer.close();
+            } catch (Exception ignored) {
+            }
+        }
+        recognizer = DigitalInkRecognition.getClient(
+                DigitalInkRecognizerOptions.builder(model).build()
+        );
+        ready = true;
+        Log.i(TAG, "ink pronto");
+    }
+
+    private static DigitalInkRecognitionModelIdentifier pickModelId() throws Exception {
+        Exception last = null;
+        String[] tags = {"en-US", "en", "it-IT"};
+        for (String tag : tags) {
+            try {
+                DigitalInkRecognitionModelIdentifier id =
+                        DigitalInkRecognitionModelIdentifier.fromLanguageTag(tag);
+                if (id != null) return id;
+            } catch (Exception e) {
+                last = e;
+            }
+        }
+        if (last != null) throw last;
+        throw new IllegalStateException("modello ink non disponibile");
     }
 
     Task<String> recognizeJson(String strokesJson) {
         return ensureReady().continueWithTask(task -> {
             if (!task.isSuccessful()) {
+                Log.e(TAG, "ink non pronto", task.getException());
+                ready = false;
                 return Tasks.forException(task.getException() != null
                         ? task.getException()
                         : new IllegalStateException("ink non pronto"));
@@ -73,6 +97,7 @@ final class InkRecognizer {
         Ink.Builder ink = Ink.builder();
         JSONArray strokes = new JSONArray(strokesJson);
         float minx = Float.MAX_VALUE, miny = Float.MAX_VALUE, maxx = -Float.MAX_VALUE, maxy = -Float.MAX_VALUE;
+        int added = 0;
         for (int s = 0; s < strokes.length(); s++) {
             JSONArray pts = strokes.getJSONArray(s);
             if (pts.length() < 1) continue;
@@ -89,18 +114,35 @@ final class InkRecognizer {
                 if (y > maxy) maxy = y;
             }
             ink.addStroke(stroke.build());
+            added++;
         }
+        if (added == 0) return "";
         float w = Math.max(32f, maxx - minx);
         float h = Math.max(32f, maxy - miny);
         RecognitionContext ctx = RecognitionContext.builder()
                 .setPreContext("")
                 .setWritingArea(new WritingArea(w, h))
                 .build();
-        RecognitionResult result = Tasks.await(recognizer.recognize(ink.build(), ctx));
+        RecognitionResult result;
+        try {
+            result = Tasks.await(recognizer.recognize(ink.build(), ctx));
+        } catch (Exception first) {
+            Log.w(TAG, "recognize fallito, ritento download", first);
+            ready = false;
+            try {
+                Tasks.await(RemoteModelManager.getInstance().deleteDownloadedModel(model));
+            } catch (Exception ignored) {
+            }
+            prepareLocked();
+            result = Tasks.await(recognizer.recognize(ink.build(), ctx));
+        }
         if (result.getCandidates() == null || result.getCandidates().isEmpty()) {
+            Log.i(TAG, "nessun candidato");
             return "";
         }
-        return pickBestNumber(result);
+        String picked = pickBestNumber(result);
+        Log.i(TAG, "riconosciuto=" + picked);
+        return picked;
     }
 
     private static String pickBestNumber(RecognitionResult result) {

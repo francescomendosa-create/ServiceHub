@@ -263,18 +263,69 @@
         window.__shSpenEditModeFromStrokes = modeSafe;
     }
 
+    function findFieldAt(x, y) {
+        var inp = null;
+        if (typeof window.__shSpenFindWritableInputAt === 'function') {
+            inp = window.__shSpenFindWritableInputAt(x, y);
+        }
+        if (!inp) {
+            try {
+                var el = document.elementFromPoint(x, y);
+                if (typeof window.__shSpenFindWritableInput === 'function') {
+                    inp = window.__shSpenFindWritableInput(el);
+                }
+            } catch (e) {}
+        }
+        return inp;
+    }
+
+    function layoutBoxOn(input) {
+        if (!input) return false;
+        if (!window.__shSpenInk && window.__initAndroidSpenInk) window.__initAndroidSpenInk();
+        var ink = window.__shSpenInk;
+        var host = document.getElementById('sh-spen-ink-host');
+        if (!host) {
+            if (ink && ink.input) {
+                ink.input = ink.input;
+            }
+            keepBox();
+            host = document.getElementById('sh-spen-ink-host');
+        }
+        if (!host) return false;
+        var box = window.__shSpenFieldBox ? window.__shSpenFieldBox(input) : input;
+        var r = box.getBoundingClientRect();
+        var pad = 6;
+        var left = Math.max(0, r.left - pad);
+        var top = Math.max(0, r.top - pad);
+        var w = r.width + pad * 2;
+        var h = r.height + pad * 2;
+        if (w < 2 || h < 2) return false;
+        host.style.display = 'block';
+        host.style.left = left + 'px';
+        host.style.top = top + 'px';
+        host.style.width = w + 'px';
+        host.style.height = h + 'px';
+        host.style.pointerEvents = 'none';
+        host.classList.add('sh-spen-ink-on');
+        if (ink) {
+            ink.hoverInput = input;
+            if (ink.input === input) ink.hostRect = { left: left, top: top, w: w, h: h };
+        }
+        return true;
+    }
+
     function retarget(input, commitOld) {
         if (!input || (window.__shSpenIsWritableInput && !window.__shSpenIsWritableInput(input))) return false;
         if (!window.__shSpenInk && window.__initAndroidSpenInk) window.__initAndroidSpenInk();
         var ink = window.__shSpenInk;
         if (!ink) return false;
         if (ink.input === input && ink.active) {
-            keepBox();
+            layoutBoxOn(input);
             try { input.focus({ preventScroll: true }); } catch (e) { try { input.focus(); } catch (e2) {} }
             return true;
         }
         if (commitOld !== false && ink.active && ink.input && ink.input !== input) {
-            var had = (ink.strokes && ink.strokes.length) || ink.imePending || ink.current;
+            var had = ((ink.strokes && ink.strokes.length) || ink.imePending || (ink.current && ink.current.length));
             if (had && typeof window.__shSpenCommitNow === 'function') window.__shSpenCommitNow();
         }
         ink.strokes = [];
@@ -292,56 +343,51 @@
         ink.inputId = input.id || '';
         ink.originValue = input.value || '';
         ink.imeText = input.value || '';
+        ink.hoverInput = input;
         ink.sessionStartMs = Date.now();
         ink.startMs = ink.sessionStartMs;
         ink.laidOut = false;
         ink.epoch = (ink.epoch || 0) + 1;
         window.__shSpenSkipIme = false;
-        keepBox();
+        layoutBoxOn(input);
         try { input.focus({ preventScroll: true }); } catch (e) { try { input.focus(); } catch (e2) {} }
         if (document.body) document.body.classList.add('sh-spen-ink-open');
         return true;
     }
 
+    window.__shSpenHoverAt = function (x, y) {
+        if (window.__shPenIsDown) return false;
+        var ink = window.__shSpenInk;
+        if (ink && ink.current && ink.current.length) return false;
+        var inp = findFieldAt(x, y);
+        if (!inp) return false;
+        if (ink) ink.hoverInput = inp;
+        return layoutBoxOn(inp);
+    };
+
     window.__shSpenPointAt = function (x, y) {
-        var inp = null;
-        if (typeof window.__shSpenFindWritableInputAt === 'function') {
-            inp = window.__shSpenFindWritableInputAt(x, y);
-        }
-        if (!inp) {
-            try {
-                var el = document.elementFromPoint(x, y);
-                if (typeof window.__shSpenFindWritableInput === 'function') {
-                    inp = window.__shSpenFindWritableInput(el);
-                }
-            } catch (e) {}
-        }
+        var ink = window.__shSpenInk;
+        var inp = findFieldAt(x, y) || (ink && ink.hoverInput);
         if (!inp) return false;
         return retarget(inp, true);
     };
 
-    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV12) {
+    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV13) {
         var downOrig = window.__shSpenOnPenDown;
         var downReset = function (ev) {
-            var inp = null;
-            if (ev && typeof window.__shSpenFindWritableInputAt === 'function') {
-                inp = window.__shSpenFindWritableInputAt(ev.clientX, ev.clientY);
-            }
+            var inp = ev ? findFieldAt(ev.clientX, ev.clientY) : null;
             if (!inp && ev && typeof window.__shSpenFindWritableInput === 'function') {
                 inp = window.__shSpenFindWritableInput(ev.target);
             }
-            if (inp) {
-                retarget(inp, true);
-            } else if (window.__shSpenInk && window.__shSpenInk.active && !window.__shPenIsDown) {
-                if (typeof window.__shSpenCommitNow === 'function') window.__shSpenCommitNow();
-                return;
-            }
-            var ret = downOrig.apply(this, arguments);
             var ink = window.__shSpenInk;
+            if (!inp && ink) inp = ink.hoverInput;
+            if (inp) retarget(inp, true);
+            var ret = downOrig.apply(this, arguments);
+            ink = window.__shSpenInk;
             if (ink && ink.input) hideLive(ink.input, ink);
             return ret;
         };
-        downReset.__shV12 = true;
+        downReset.__shV13 = true;
         window.__shSpenOnPenDown = downReset;
     }
 
@@ -461,21 +507,17 @@
         }, 400);
     }
 
-    if (!window.__shNativeHoverV12) {
-        window.__shNativeHoverV12 = true;
+    if (!window.__shNativeHoverV13) {
+        window.__shNativeHoverV13 = true;
         var lastHoverAt = 0;
         document.addEventListener('pointermove', function (ev) {
             if (!ev || ev.pointerType !== 'pen') return;
             if ((ev.buttons & 1) === 1 || window.__shPenIsDown) return;
+            if (typeof ev.pressure === 'number' && ev.pressure > 0.08) return;
             var now = Date.now();
             if (now - lastHoverAt < 32) return;
             lastHoverAt = now;
-            window.__shSpenPointAt(ev.clientX, ev.clientY);
-        }, { capture: true, passive: true });
-        document.addEventListener('pointerover', function (ev) {
-            if (!ev || ev.pointerType !== 'pen') return;
-            if ((ev.buttons & 1) === 1 || window.__shPenIsDown) return;
-            window.__shSpenPointAt(ev.clientX, ev.clientY);
+            window.__shSpenHoverAt(ev.clientX, ev.clientY);
         }, { capture: true, passive: true });
     }
 })();

@@ -65,10 +65,11 @@ final class SpenSamsungIme {
         String key = Math.round(viewX / 8f) + ":" + Math.round(viewY / 8f);
         if (!startIme && key.equals(lastHoverKey)) return;
         lastHoverKey = key;
+        String fn = startIme ? "__shSpenPointAt" : "__shSpenHoverAt";
         String js = "(function(ax,ay,vw,vh){try{"
                 + "var x=ax*(window.innerWidth||1)/vw;"
                 + "var y=ay*(window.innerHeight||1)/vh;"
-                + "if(window.__shSpenPointAt)return!!window.__shSpenPointAt(x,y);"
+                + "if(window." + fn + ")return!!window." + fn + "(x,y);"
                 + "return false;}catch(e){return false;}})("
                 + viewX + "," + viewY + "," + vw + "," + vh + ")";
         webView.evaluateJavascript(js, result -> {

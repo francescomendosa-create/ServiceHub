@@ -164,7 +164,7 @@
         ink.imePending = '';
         ink.imeText = ink.originValue || '';
         ink.pendingPred = Promise.resolve('');
-        ink.cutGuardUntil = Date.now() + 5000;
+        ink.cutGuardUntil = Date.now() + 1200;
         ink.showResult = true;
         ink.strokes = [];
         ink.current = null;
@@ -207,10 +207,23 @@
         return inp;
     }
 
+    function beginWrite(ink, input) {
+        if (!ink) return;
+        ink.imeCleared = false;
+        ink.sawImeClear = false;
+        ink.cutGuardUntil = 0;
+        ink.showResult = false;
+        ink.imePending = '';
+        ink.pendingPred = null;
+        window.__shSpenSkipIme = false;
+        if (input) ink.originValue = input.value || '';
+    }
+
     function retarget(input) {
         if (!input || (window.__shSpenIsWritableInput && !window.__shSpenIsWritableInput(input))) return false;
         var ink = ensureInk();
         if (ink.input === input && ink.active) {
+            beginWrite(ink, input);
             layoutBoxOn(input);
             try { input.focus({ preventScroll: true }); } catch (e) { try { input.focus(); } catch (e2) {} }
             return true;
@@ -237,7 +250,7 @@
         ink.hoverInput = input;
         ink.sessionStartMs = Date.now();
         ink.startMs = ink.sessionStartMs;
-        window.__shSpenSkipIme = false;
+        beginWrite(ink, input);
         layoutBoxOn(input);
         try { input.focus({ preventScroll: true }); } catch (e) { try { input.focus(); } catch (e2) {} }
         return true;
@@ -299,24 +312,28 @@
         });
     };
 
-    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV14) {
+    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV15) {
         var applyOrig = window.__shSpenApplyFieldEdit;
         var applySafe = function (input, recognized, origin, mode) {
             var ink = window.__shSpenInk;
-            if (ink && (ink.imeCleared || (ink.cutGuardUntil && Date.now() < ink.cutGuardUntil))) {
-                input.value = '';
-                return applyOrig(input, '', origin, 'clear');
-            }
             if (mode === 'clear') {
                 if (ink) markCleared(ink);
                 return applyOrig(input, '', origin, 'clear');
             }
+            if (ink && ink.imeCleared && ink.cutGuardUntil && Date.now() < ink.cutGuardUntil && !recognized) {
+                input.value = '';
+                return applyOrig(input, '', origin, 'clear');
+            }
             var rec = onlyNumber(recognized);
             if (!rec) return false;
-            if (ink) ink.showResult = true;
+            if (ink) {
+                ink.showResult = true;
+                ink.imeCleared = false;
+                ink.cutGuardUntil = 0;
+            }
             return applyOrig(input, rec, origin, mode || 'replace');
         };
-        applySafe.__shV14 = true;
+        applySafe.__shV15 = true;
         window.__shSpenApplyFieldEdit = applySafe;
     }
 
@@ -329,15 +346,16 @@
         window.__shSpenIsStrikethrough.__shV14 = true;
     }
 
-    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV14) {
+    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV15) {
         var downOrig = window.__shSpenOnPenDown;
         window.__shSpenOnPenDown = function (ev) {
             var inp = ev ? findFieldAt(ev.clientX, ev.clientY) : null;
             if (!inp && ev && window.__shSpenFindWritableInput) inp = window.__shSpenFindWritableInput(ev.target);
-            var ink = window.__shSpenInk;
+            var ink = ensureInk();
             if (!inp && ink) inp = ink.hoverInput;
             if (inp) {
                 retarget(inp);
+                beginWrite(ink, inp);
                 layoutBoxOn(inp);
             }
             var ret = downOrig.apply(this, arguments);
@@ -348,7 +366,7 @@
             }
             return ret;
         };
-        window.__shSpenOnPenDown.__shV14 = true;
+        window.__shSpenOnPenDown.__shV15 = true;
     }
 
     if (typeof window.__shSpenOnPenMove === 'function' && !window.__shSpenOnPenMove.__shV14) {
@@ -365,7 +383,7 @@
         window.__shSpenOnPenMove.__shV14 = true;
     }
 
-    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV14) {
+    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV15) {
         var upOrig = window.__shSpenOnPenUp;
         window.__shSpenOnPenUp = function (ev, cancelled) {
             var ink = window.__shSpenInk;
@@ -374,19 +392,11 @@
                 forceClear(ink);
                 return;
             }
-            if (cancelled) {
-                if (ink) {
-                    ink.current = null;
-                    ink.pointerId = null;
-                }
-                if (ink && ink.input) layoutBoxOn(ink.input);
-                return;
-            }
             if (ink && ink.imePending) ink.imeText = ink.imePending;
             if (ink && ink.input) hideLive(ink.input, ink);
             return upOrig.apply(this, arguments);
         };
-        window.__shSpenOnPenUp.__shV14 = true;
+        window.__shSpenOnPenUp.__shV15 = true;
     }
 
     if (!window.__shNativeHookV14) {
@@ -425,8 +435,9 @@
         }, { capture: true, passive: true });
         setInterval(function () {
             var ink = window.__shSpenInk;
-            if (ink && ink.cutGuardUntil && Date.now() < ink.cutGuardUntil && ink.input && ink.input.value) {
-                ink.input.value = '';
+            if (ink && ink.cutGuardUntil && Date.now() >= ink.cutGuardUntil) {
+                ink.imeCleared = false;
+                ink.cutGuardUntil = 0;
             }
             if (ink && ink.active && ink.input) layoutBoxOn(ink.hoverInput || ink.input);
             if (ink && ink.active && !ink.showResult && !ink.imeCleared && ink.input) hideLive(ink.input, ink);

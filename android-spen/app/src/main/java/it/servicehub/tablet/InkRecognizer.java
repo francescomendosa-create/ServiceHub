@@ -166,14 +166,25 @@ final class InkRecognizer {
     private static String pickBestNumber(RecognitionResult result) {
         String best = "";
         int bestDigits = 0;
+        boolean bestClean = false;
         for (int i = 0; i < result.getCandidates().size(); i++) {
             String raw = result.getCandidates().get(i).getText();
+            if (isSymbolGarbage(raw)) continue;
             String n = normalizeNumber(raw);
             if (n.isEmpty()) continue;
+            boolean clean = raw.matches("[0-9OolI|sSbB.,\\s]+");
             int d = 0;
             for (int c = 0; c < n.length(); c++) {
                 if (n.charAt(c) >= '0' && n.charAt(c) <= '9') d++;
             }
+            if (d == 0) continue;
+            if (!bestClean && clean) {
+                best = n;
+                bestDigits = d;
+                bestClean = true;
+                continue;
+            }
+            if (bestClean && !clean) continue;
             if (d > bestDigits || (d == bestDigits && n.length() > best.length())) {
                 best = n;
                 bestDigits = d;
@@ -181,6 +192,24 @@ final class InkRecognizer {
             if (bestDigits >= 1 && i >= 8) break;
         }
         return best;
+    }
+
+    private static boolean isSymbolGarbage(String raw) {
+        if (raw == null || raw.isEmpty()) return true;
+        for (int i = 0; i < raw.length(); ) {
+            int cp = raw.codePointAt(i);
+            i += Character.charCount(cp);
+            if ((cp >= 0x2190 && cp <= 0x21FF)
+                    || (cp >= 0x27F0 && cp <= 0x27FF)
+                    || (cp >= 0x2900 && cp <= 0x297F)
+                    || (cp >= 0x2B00 && cp <= 0x2BFF)
+                    || cp == 0x2192 || cp == 0x21D2 || cp == 0x2794
+                    || cp == 0x2713 || cp == 0x2714 || cp == 0x00D7
+                    || cp == 0x2212 || cp == 0x2191 || cp == 0x2193) {
+                return true;
+            }
+        }
+        return normalizeNumber(raw).isEmpty();
     }
 
     static String normalizeNumber(String text) {

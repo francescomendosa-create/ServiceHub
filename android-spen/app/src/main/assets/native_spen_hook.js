@@ -1,5 +1,7 @@
 (function () {
     window.__SH_NATIVE_ANDROID = true;
+    window.__shSpenSkipIme = true;
+    window.__SPEN_COMMIT_MS = 280;
     window.__shSpenHasNativeEngine = function () {
         try {
             return !!(window.ServiceHubAndroidSpen && typeof window.ServiceHubAndroidSpen.recognize === 'function');
@@ -83,10 +85,18 @@
         return true;
     }
 
-    function isCut(strokes, hostRect) {
+    function allStrokes(ink) {
+        if (!ink) return [];
+        var raw = (ink.strokes || []).slice();
+        if (ink.current && ink.current.length) raw.push(ink.current);
+        return raw;
+    }
+
+    function isFlatCut(strokes, hostRect) {
         if (!strokes || !strokes.length) return false;
         var fieldW = (hostRect && hostRect.w) || 36;
         var fieldH = (hostRect && hostRect.h) || 28;
+        var needW = Math.max(22, fieldW * 0.5);
         for (var s = 0; s < strokes.length; s++) {
             var pts = strokes[s];
             if (!pts || pts.length < 2) continue;
@@ -99,18 +109,35 @@
             }
             var horiz = maxx - minx;
             var vert = maxy - miny;
-            if (horiz >= Math.max(16, fieldW * 0.4) && horiz > vert * 2.2 && vert <= Math.max(14, fieldH * 0.45)) {
+            if (horiz >= needW && horiz > vert * 2.8 && vert <= Math.max(12, fieldH * 0.42)) {
                 return true;
             }
         }
         return false;
     }
 
-    function allStrokes(ink) {
-        if (!ink) return [];
-        var raw = (ink.strokes || []).slice();
-        if (ink.current && ink.current.length) raw.push(ink.current);
-        return raw;
+    function boundInput(ink) {
+        if (!ink) return null;
+        if (ink.input && ink.input.isConnected) return ink.input;
+        if (ink.inputId) return document.getElementById(ink.inputId);
+        return null;
+    }
+
+    function looksLikeCut(ink) {
+        if (!ink || ink.imeCleared) return false;
+        var input = boundInput(ink);
+        var origin = ink.originValue || (input && input.value) || '';
+        if (!String(origin).trim()) return false;
+        var strokes = allStrokes(ink);
+        if (typeof window.__shSpenIsStrikethrough === 'function' && ink.hostRect && input) {
+            try {
+                var box = window.__shSpenMeasureFieldText
+                    ? window.__shSpenMeasureFieldText(input, ink.hostRect, origin)
+                    : null;
+                if (window.__shSpenIsStrikethrough(strokes, ink.hostRect, box)) return true;
+            } catch (e) {}
+        }
+        return isFlatCut(strokes, ink.hostRect);
     }
 
     function findFieldAt(x, y) {
@@ -132,8 +159,14 @@
         ink.showResult = false;
         ink.released = false;
         ink.imePending = '';
-        window.__shSpenSkipIme = false;
-        if (input) ink.originValue = String(input.value || '');
+        window.__shSpenSkipIme = true;
+        if (input) {
+            ink.originValue = String(input.value || '');
+            if (input.id !== 'inp-sec-note') {
+                input.setAttribute('inputmode', 'decimal');
+                input.setAttribute('pattern', '[0-9,]*');
+            }
+        }
     }
 
     function applyFinal(input, rec, origin, mode) {
@@ -148,7 +181,7 @@
     }
 
     function forceClear(ink) {
-        var input = ink && (ink.input || (ink.inputId && document.getElementById(ink.inputId)));
+        var input = boundInput(ink);
         var origin = ink ? (ink.originValue || '') : '';
         if (ink) {
             ink.imeCleared = true;
@@ -177,8 +210,8 @@
             return true;
         }
         if (ink.active && ink.input && ink.input !== input) {
-            if (isCut(allStrokes(ink), ink.hostRect) && onlyNumber(ink.originValue)) forceClear(ink);
-            else if ((ink.strokes && ink.strokes.length || ink.imePending) && typeof window.__shSpenCommitNow === 'function') {
+            if (looksLikeCut(ink)) forceClear(ink);
+            else if ((ink.strokes && ink.strokes.length) && typeof window.__shSpenCommitNow === 'function') {
                 window.__shSpenCommitNow();
             }
         }
@@ -193,6 +226,30 @@
         layoutBoxOn(input);
         try { input.focus({ preventScroll: true }); } catch (e) { try { input.focus(); } catch (e2) {} }
         return true;
+    }
+
+    function nativeRecognize(strokes) {
+        return new Promise(function (resolve) {
+            try {
+                if (!window.ServiceHubAndroidSpen || typeof window.ServiceHubAndroidSpen.recognize !== 'function') {
+                    resolve('');
+                    return;
+                }
+                var id = 'r' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+                var done = false;
+                var finish = function (t) {
+                    if (done) return;
+                    done = true;
+                    try { delete window.__shSpenNativeCbs[id]; } catch (e) {}
+                    resolve(onlyNumber(t));
+                };
+                window.__shSpenNativeCbs[id] = finish;
+                setTimeout(function () { finish(''); }, 2500);
+                window.ServiceHubAndroidSpen.recognize(id, JSON.stringify(strokes || []));
+            } catch (e) {
+                resolve('');
+            }
+        });
     }
 
     window.__shSpenHoverAt = function (x, y) {
@@ -214,32 +271,14 @@
         var raw = strokeSnap || [];
         var ink = window.__shSpenInk;
         if (ink && ink.imeCleared) return Promise.resolve('');
-        if (ink && isCut(raw, ink.hostRect) && onlyNumber(ink.originValue)) {
+        if (ink && looksLikeCut(ink)) {
             forceClear(ink);
             return Promise.resolve('');
         }
-        return new Promise(function (resolve) {
-            var t0 = Date.now();
-            var last = '';
-            var tick = function () {
-                if (ink && ink.imeCleared) {
-                    resolve('');
-                    return;
-                }
-                var n = onlyNumber(ink && ink.imePending);
-                var origin = onlyNumber(ink && ink.originValue);
-                if (n && n !== origin) last = n;
-                if (Date.now() - t0 >= 700) {
-                    resolve(last);
-                    return;
-                }
-                setTimeout(tick, 40);
-            };
-            tick();
-        });
+        return nativeRecognize(raw);
     };
 
-    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV19) {
+    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV20) {
         var applyOrig = window.__shSpenApplyFieldEdit;
         window.__shSpenApplyFieldEdit = function (input, recognized, origin, mode) {
             if (mode === 'clear') return applyOrig(input, '', origin, 'clear');
@@ -254,10 +293,10 @@
             }
             return applyOrig(input, rec, origin, mode || 'replace');
         };
-        window.__shSpenApplyFieldEdit.__shV19 = true;
+        window.__shSpenApplyFieldEdit.__shV20 = true;
     }
 
-    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV19) {
+    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV20) {
         var downOrig = window.__shSpenOnPenDown;
         window.__shSpenOnPenDown = function (ev) {
             var inp = ev ? findFieldAt(ev.clientX, ev.clientY) : null;
@@ -270,48 +309,65 @@
             }
             return downOrig.apply(this, arguments);
         };
-        window.__shSpenOnPenDown.__shV19 = true;
+        window.__shSpenOnPenDown.__shV20 = true;
     }
 
-    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV19) {
+    if (typeof window.__shSpenOnPenMove === 'function' && !window.__shSpenOnPenMove.__shV20) {
+        var moveOrig = window.__shSpenOnPenMove;
+        window.__shSpenOnPenMove = function (ev) {
+            var ink = window.__shSpenInk;
+            if (ink && ink.imeCleared) return;
+            var r = moveOrig.apply(this, arguments);
+            ink = window.__shSpenInk;
+            if (ink && !ink.imeCleared && looksLikeCut(ink)) forceClear(ink);
+            return r;
+        };
+        window.__shSpenOnPenMove.__shV20 = true;
+    }
+
+    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV20) {
         var upOrig = window.__shSpenOnPenUp;
         window.__shSpenOnPenUp = function (ev, cancelled) {
             var ink = window.__shSpenInk;
-            if (ink && isCut(allStrokes(ink), ink.hostRect) && onlyNumber(ink.originValue)) {
-                forceClear(ink);
-                return;
+            if (ink && (ink.imeCleared || looksLikeCut(ink))) {
+                if (!ink.imeCleared) forceClear(ink);
+                ink.strokes = [];
+                ink.current = null;
             }
-            if (ink && ink.imePending) ink.imeText = ink.imePending;
             return upOrig.apply(this, arguments);
         };
-        window.__shSpenOnPenUp.__shV19 = true;
+        window.__shSpenOnPenUp.__shV20 = true;
     }
 
-    if (!window.__shNativeHookV19) {
-        window.__shNativeHookV19 = true;
+    if (!window.__shNativeHookV20) {
+        window.__shNativeHookV20 = true;
         document.addEventListener('beforeinput', function (e) {
             if (!isPlantField(e.target)) return;
             var typ = e.inputType || '';
             if (typ.indexOf('delete') === 0) return;
             var data = e.data == null ? '' : String(e.data);
-            var ink = window.__shSpenInk;
             if (window.__shPenIsDown) {
-                var n = onlyNumber(data);
-                if (n && ink) ink.imePending = n;
                 if (e.cancelable) e.preventDefault();
                 return;
             }
             if (data && !/^[0-9,]+$/.test(data) && e.cancelable) e.preventDefault();
         }, true);
+        document.addEventListener('compositionupdate', function (e) {
+            if (!isPlantField(e.target)) return;
+            if (window.__shPenIsDown && e.cancelable) e.preventDefault();
+        }, true);
         document.addEventListener('input', function (e) {
-            if (!isPlantField(e.target) || !window.__shPenIsDown) return;
+            if (!isPlantField(e.target)) return;
             var ink = window.__shSpenInk;
-            if (!ink || (ink.input !== e.target && ink.inputId !== e.target.id)) return;
-            var next = onlyNumber(e.target.value);
-            if (next && next !== onlyNumber(ink.originValue)) ink.imePending = next;
-            if (String(e.target.value || '') !== String(ink.originValue || '')) {
-                e.target.value = ink.originValue || '';
+            if (window.__shPenIsDown && ink && (ink.input === e.target || ink.inputId === e.target.id)) {
+                if (String(e.target.value || '') !== String(ink.originValue || '')) {
+                    e.target.value = ink.originValue || '';
+                }
+                return;
             }
+            var v = String(e.target.value || '');
+            var n = onlyNumber(v);
+            if (v && v !== n) e.target.value = n;
         }, true);
         document.addEventListener('pointermove', function (ev) {
             if (!ev || ev.pointerType !== 'pen') return;

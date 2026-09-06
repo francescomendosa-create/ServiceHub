@@ -8,8 +8,10 @@ import android.webkit.WebView;
 
 /**
  * Ponte JS ↔ Android. Visibile solo dentro l'APK tablet.
+ * Riconosce solo a penna alzata; se non è un numero restituisce vuoto.
  */
 public final class SpenBridge {
+    private static final String TAG = "ShSpenInk";
     private final WebView webView;
     private final InkRecognizer ink;
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -28,7 +30,14 @@ public final class SpenBridge {
     public void recognize(String requestId, String strokesJson) {
         if (requestId == null) return;
         String json = strokesJson == null ? "[]" : strokesJson;
-        deliver(requestId, "");
+        ink.recognizeJson(json).addOnSuccessListener(text -> {
+            String n = InkRecognizer.normalizeNumber(text);
+            Log.i(TAG, "commit numero=" + n);
+            deliver(requestId, n);
+        }).addOnFailureListener(e -> {
+            Log.w(TAG, "recognize", e);
+            deliver(requestId, "");
+        });
     }
 
     private void deliver(String requestId, String text) {

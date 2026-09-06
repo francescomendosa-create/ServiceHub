@@ -94,18 +94,78 @@
         return false;
     }
 
+    function imeNumberNow() {
+        var ink = window.__shSpenInk;
+        if (!ink) return '';
+        if (ink.imeCleared) return '';
+        var origin = onlyNumber(ink.originValue);
+        var live = ink.input ? onlyNumber(ink.input.value) : '';
+        var ime = onlyNumber(ink.imeText || '');
+        var best = '';
+        if (ime && ime !== origin) best = ime;
+        if (live && live !== origin) best = live.length >= best.length ? live : best;
+        return best;
+    }
+
+    function waitIme(ms) {
+        return new Promise(function (resolve) {
+            var t0 = Date.now();
+            var tick = function () {
+                var ink = window.__shSpenInk;
+                if (ink && ink.imeCleared) {
+                    resolve('');
+                    return;
+                }
+                var n = imeNumberNow();
+                if (n || Date.now() - t0 >= ms) {
+                    resolve(n);
+                    return;
+                }
+                setTimeout(tick, 40);
+            };
+            tick();
+        });
+    }
+
+    function keepBox() {
+        var ink = window.__shSpenInk;
+        if (!ink || !ink.input || !ink.input.isConnected) return;
+        var host = document.getElementById('sh-spen-ink-host');
+        if (!host) return;
+        var box = window.__shSpenFieldBox ? window.__shSpenFieldBox(ink.input) : ink.input;
+        var r = box.getBoundingClientRect();
+        var pad = 6;
+        var left = Math.max(0, r.left - pad);
+        var top = Math.max(0, r.top - pad);
+        var w = r.width + pad * 2;
+        var h = r.height + pad * 2;
+        if (w < 2 || h < 2) return;
+        host.style.display = 'block';
+        host.style.left = left + 'px';
+        host.style.top = top + 'px';
+        host.style.width = w + 'px';
+        host.style.height = h + 'px';
+        host.style.pointerEvents = 'none';
+        host.classList.add('sh-spen-ink-on');
+        if (document.body) document.body.classList.add('sh-spen-ink-open');
+        ink.active = true;
+        ink.hostRect = { left: left, top: top, w: w, h: h };
+    }
+
     window.__shSpenRecognizeDigitsLocal = function () { return ''; };
 
     window.__shSpenRecognizeStrokes = function (strokeSnap) {
         var raw = strokeSnap || [];
         var ink = window.__shSpenInk;
         var hostRect = ink && ink.hostRect;
-        if (isCut(raw, hostRect) && ink && ink.originValue) {
-            return Promise.resolve('');
-        }
-        if (!raw.length) return Promise.resolve('');
-        return window.__shSpenNativeRecognize(raw).then(function (text) {
-            return onlyNumber(text);
+        if (ink && ink.imeCleared) return Promise.resolve('');
+        if (isCut(raw, hostRect) && ink && ink.originValue) return Promise.resolve('');
+        return waitIme(620).then(function (ime) {
+            if (ink && ink.imeCleared) return '';
+            var n = onlyNumber(ime);
+            if (n) return n;
+            if (!raw.length) return '';
+            return window.__shSpenNativeRecognize(raw).then(onlyNumber);
         });
     };
 
@@ -124,6 +184,8 @@
     if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shNumOnly) {
         var applyOrig = window.__shSpenApplyFieldEdit;
         var applySafe = function (input, recognized, origin, mode) {
+            var ink = window.__shSpenInk;
+            if (ink && ink.imeCleared) return applyOrig(input, '', origin, 'clear');
             if (mode === 'clear') return applyOrig(input, '', origin, 'clear');
             var rec = onlyNumber(recognized);
             if (!rec) return false;
@@ -143,6 +205,35 @@
         window.__shSpenEditModeFromStrokes = modeSafe;
     }
 
+    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shReset) {
+        var downOrig = window.__shSpenOnPenDown;
+        var downReset = function (ev) {
+            var ink = window.__shSpenInk;
+            if (ink) ink.imeCleared = false;
+            return downOrig.apply(this, arguments);
+        };
+        downReset.__shReset = true;
+        window.__shSpenOnPenDown = downReset;
+    }
+
+    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shKeep) {
+        var upOrig = window.__shSpenOnPenUp;
+        var upKeep = function (ev, cancelled) {
+            if (cancelled) {
+                var ink = window.__shSpenInk;
+                if (ink) {
+                    ink.current = null;
+                    ink.pointerId = null;
+                }
+                keepBox();
+                return;
+            }
+            return upOrig.apply(this, arguments);
+        };
+        upKeep.__shKeep = true;
+        window.__shSpenOnPenUp = upKeep;
+    }
+
     function unlockInk() {
         var ink = window.__shSpenInk;
         window.__shPenIsDown = false;
@@ -157,6 +248,7 @@
         ink.current = null;
         ink.strokes = [];
         ink.pointerId = null;
+        ink.imeCleared = false;
         var host = document.getElementById('sh-spen-ink-host');
         if (host) {
             host.classList.remove('sh-spen-ink-on', 'sh-spen-ink-capture', 'sh-spen-samsung-on');
@@ -177,13 +269,15 @@
         document.addEventListener('input', function (e) {
             if (!isPlantField(e.target)) return;
             var ink = window.__shSpenInk;
+            var live = String(e.target.value || '');
+            var next = onlyNumber(live);
             if (ink && (ink.input === e.target || ink.inputId === e.target.id)) {
-                ink.imeText = onlyNumber(e.target.value);
+                ink.imeText = next;
+                if (onlyNumber(ink.originValue) && !next && !window.__shPenIsDown) {
+                    ink.imeCleared = true;
+                }
             }
-            var next = onlyNumber(e.target.value);
-            if (String(e.target.value || '') !== next && next !== '') {
-                e.target.value = next;
-            }
+            if (live !== next && next !== '') e.target.value = next;
         }, true);
         setInterval(function () {
             var ink = window.__shSpenInk;
@@ -197,10 +291,10 @@
             if (window.__shPenIsDown && (Date.now() - (window.__shPenLastEventTs || 0)) > 1600) {
                 window.__shPenIsDown = false;
             }
-            if (age > 3500 && !window.__shPenIsDown) {
+            if (age > 4500 && !window.__shPenIsDown) {
                 if (typeof window.__shSpenCommitNow === 'function') window.__shSpenCommitNow();
             }
-            if (age > 7000) unlockInk();
+            if (age > 8000) unlockInk();
         }, 400);
     }
 })();

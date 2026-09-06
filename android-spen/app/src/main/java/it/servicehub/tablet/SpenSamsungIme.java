@@ -2,19 +2,27 @@ package it.servicehub.tablet;
 
 import android.annotation.SuppressLint;
 import android.os.Build;
+import android.os.SystemClock;
+import android.util.Log;
 import android.view.MotionEvent;
+import android.view.inputmethod.InputMethodManager;
 import android.webkit.WebView;
 
 /**
- * Solo focus sul campo. Non avvia la tastiera Samsung: inserisce lettere e blocca il taglio.
+ * Motore S Pen Samsung (S Pen to Text). Timeout così non resta bloccato.
  */
 final class SpenSamsungIme {
+    private static final String TAG = "ShSpenInk";
     private final WebView webView;
-    private boolean focusing;
+    private final InputMethodManager imm;
+    private boolean busy;
     private long lastHoverMs;
+    private long lastStartMs;
 
     SpenSamsungIme(WebView webView) {
         this.webView = webView;
+        this.imm = (InputMethodManager) webView.getContext()
+                .getSystemService(android.content.Context.INPUT_METHOD_SERVICE);
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -25,7 +33,7 @@ final class SpenSamsungIme {
         webView.setOnTouchListener((v, ev) -> {
             if (!isPen(ev)) return false;
             if (ev.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                focusField(ev.getX(), ev.getY());
+                focusAndStart(ev.getX(), ev.getY(), true);
             }
             return false;
         });
@@ -33,10 +41,10 @@ final class SpenSamsungIme {
             if (!isPen(ev)) return false;
             int action = ev.getActionMasked();
             if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE) {
-                long now = android.os.SystemClock.uptimeMillis();
+                long now = SystemClock.uptimeMillis();
                 if (now - lastHoverMs < 220) return false;
                 lastHoverMs = now;
-                focusField(ev.getX(), ev.getY());
+                focusAndStart(ev.getX(), ev.getY(), false);
             }
             return false;
         });
@@ -50,10 +58,10 @@ final class SpenSamsungIme {
                 || tool == MotionEvent.TOOL_TYPE_MOUSE;
     }
 
-    private void focusField(float viewX, float viewY) {
-        if (focusing || webView.getWidth() < 8 || webView.getHeight() < 8) return;
-        focusing = true;
-        webView.postDelayed(() -> focusing = false, 600);
+    private void focusAndStart(float viewX, float viewY, boolean startIme) {
+        if (busy || webView.getWidth() < 8 || webView.getHeight() < 8) return;
+        busy = true;
+        webView.postDelayed(() -> busy = false, 900);
         int vw = webView.getWidth();
         int vh = webView.getHeight();
         String js = "(function(ax,ay,vw,vh){try{"
@@ -67,6 +75,32 @@ final class SpenSamsungIme {
                 + "try{inp.focus({preventScroll:true});}catch(e){try{inp.focus();}catch(e2){}}"
                 + "return true;}catch(e){return false;}})("
                 + viewX + "," + viewY + "," + vw + "," + vh + ")";
-        webView.evaluateJavascript(js, r -> focusing = false);
+        webView.evaluateJavascript(js, result -> {
+            boolean hit = result != null && result.contains("true");
+            if (hit && startIme) {
+                webView.post(this::startSamsung);
+            } else {
+                busy = false;
+            }
+        });
+    }
+
+    private void startSamsung() {
+        try {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return;
+            if (imm == null || !imm.isStylusHandwritingAvailable()) {
+                Log.w(TAG, "samsung ime non disponibile");
+                return;
+            }
+            long now = SystemClock.uptimeMillis();
+            if (now - lastStartMs < 350) return;
+            lastStartMs = now;
+            imm.startStylusHandwriting(webView);
+            Log.i(TAG, "samsung ime avviato");
+        } catch (Exception e) {
+            Log.w(TAG, "samsung ime", e);
+        } finally {
+            busy = false;
+        }
     }
 }

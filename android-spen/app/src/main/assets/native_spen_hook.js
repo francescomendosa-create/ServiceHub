@@ -1,7 +1,7 @@
 (function () {
     window.__SH_NATIVE_ANDROID = true;
     window.__shSpenSkipIme = true;
-    window.__SPEN_COMMIT_MS = 280;
+    window.__SPEN_COMMIT_MS = 700;
     window.__shSpenHasNativeEngine = function () {
         try {
             return !!(window.ServiceHubAndroidSpen && typeof window.ServiceHubAndroidSpen.recognize === 'function');
@@ -91,12 +91,14 @@
         ink.ctx.lineWidth = 2.2;
     }
 
-    function clearInkPixels(ink) {
+    function clearInkPixels(ink, keepStrokes) {
         if (!ink) return;
-        ink.strokes = [];
-        ink.current = null;
-        ink.pendingPred = null;
-        ink.pendingPredCount = 0;
+        if (!keepStrokes) {
+            ink.strokes = [];
+            ink.current = null;
+            ink.pendingPred = null;
+            ink.pendingPredCount = 0;
+        }
         if (ink.ctx && ink.hostRect) {
             try { ink.ctx.clearRect(0, 0, ink.hostRect.w, ink.hostRect.h); } catch (e) {}
         } else if (ink.ctx && ink.canvas) {
@@ -121,7 +123,7 @@
         var fieldChanged = !!(ink.hoverInput && ink.hoverInput !== input);
         ink.hoverInput = input;
         ink.hostRect = { left: left, top: top, w: w, h: h };
-        if (fieldChanged && !window.__shPenIsDown) clearInkPixels(ink);
+        if (fieldChanged && !window.__shPenIsDown) clearInkPixels(ink, true);
         if (ink.layoutKey === key && ink.canvas && ink.ctx && host.style.display === 'block') {
             syncWriteLock(window.__shPenIsDown);
             return true;
@@ -154,22 +156,22 @@
     function hideBox() {
         window.__shSpenWantBox = false;
         var ink = window.__shSpenInk;
-        if (ink) {
-            ink.hoverInput = null;
-            ink.layoutKey = '';
-        }
+        if (ink) ink.layoutKey = '';
         var host = document.getElementById('sh-spen-ink-host');
         if (host) {
             host.style.display = 'none';
             host.classList.remove('sh-spen-ink-on', 'sh-spen-ink-capture');
         }
         syncWriteLock(false);
-        if (ink && !window.__shPenIsDown) {
-            ink.active = false;
-            ink.watchOnly = false;
+        if (ink && ink.ctx && ink.hostRect) {
+            try { ink.ctx.clearRect(0, 0, ink.hostRect.w, ink.hostRect.h); } catch (e) {}
         }
     }
-    window.__shSpenHideBox = hideBox;
+    window.__shSpenHideBox = function () {
+        var ink = window.__shSpenInk;
+        if (ink && ink.active && ((ink.strokes && ink.strokes.length) || ink.current)) return;
+        hideBox();
+    };
 
     function allStrokes(ink) {
         if (!ink) return [];
@@ -228,8 +230,12 @@
         return inp;
     }
 
-    function beginWrite(ink, input) {
+    function beginWrite(ink, input, continueWrite) {
         if (!ink) return;
+        if (ink.idleTimer) {
+            clearTimeout(ink.idleTimer);
+            ink.idleTimer = null;
+        }
         ink.imeCleared = false;
         ink.holdClear = false;
         ink.cutGuardUntil = 0;
@@ -237,12 +243,14 @@
         ink.released = false;
         ink.imePending = '';
         ink.imeText = '';
-        ink.pendingPred = null;
-        ink.pendingPredCount = 0;
-        ink.writeGen = (ink.writeGen || 0) + 1;
+        if (!continueWrite) {
+            ink.pendingPred = null;
+            ink.pendingPredCount = 0;
+            ink.writeGen = (ink.writeGen || 0) + 1;
+        }
         window.__shSpenSkipIme = true;
         if (input) {
-            ink.originValue = String(input.value || '');
+            if (!continueWrite) ink.originValue = String(input.value || '');
             ink.clearInputId = '';
             if (input.id !== 'inp-sec-note') {
                 input.setAttribute('inputmode', 'decimal');
@@ -296,7 +304,7 @@
         if (!input || (window.__shSpenIsWritableInput && !window.__shSpenIsWritableInput(input))) return false;
         var ink = ensureInk();
         if (ink.input === input && ink.active) {
-            beginWrite(ink, input);
+            beginWrite(ink, input, true);
             layoutBoxOn(input);
             if (document.activeElement !== input) {
                 try { input.focus({ preventScroll: true }); } catch (e) { try { input.focus(); } catch (e2) {} }
@@ -360,12 +368,18 @@
 
     window.__shSpenHoverAt = function (x, y) {
         if (window.__shPenIsDown) return false;
+        var ink = ensureInk();
+        var writing = !!(ink.active && ((ink.strokes && ink.strokes.length) || (ink.current && ink.current.length)));
+        if (writing) {
+            var stay = boundInput(ink);
+            if (stay) return layoutBoxOn(stay);
+        }
         var inp = findFieldAt(x, y);
         if (!inp) {
-            hideBox();
+            if (!writing) hideBox();
             return false;
         }
-        ensureInk().hoverInput = inp;
+        ink.hoverInput = inp;
         return layoutBoxOn(inp);
     };
 
@@ -434,6 +448,7 @@
             var ok = (input && String(input.value || '') === rec) ? true : applyOrig(input, rec, origin, mode || 'replace');
             consumePendingCommit(input);
             clearInkPixels(ink);
+            hideBox();
             return ok;
         };
         window.__shSpenApplyFieldEdit.__shV24 = true;
@@ -468,7 +483,7 @@
         window.__shSpenOnPenMove.__shV23 = true;
     }
 
-    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV25) {
+    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV27) {
         var upOrig = window.__shSpenOnPenUp;
         window.__shSpenOnPenUp = function (ev, cancelled) {
             var ink = window.__shSpenInk;
@@ -481,20 +496,10 @@
                 return;
             }
             var target = boundInput(ink);
-            var snap = cloneStrokes(allStrokes(ink));
-            var origin = ink ? (ink.originValue || '') : '';
-            if (target && snap.length) markPendingCommit(target);
-            upOrig.apply(this, arguments);
-            clearInkPixels(ink);
-            hideBox();
-            if (target && snap.length && !cancelled) {
-                window.__shSpenRecognizeStrokes(snap).then(function (rec) {
-                    if (!rec || !canCommitTo(target)) return;
-                    applyFinal(target, rec, origin, 'replace');
-                });
-            }
+            if (target && allStrokes(ink).length) markPendingCommit(target);
+            return upOrig.apply(this, arguments);
         };
-        window.__shSpenOnPenUp.__shV25 = true;
+        window.__shSpenOnPenUp.__shV27 = true;
     }
 
     if (!window.__shNativeHookV25) {
@@ -556,6 +561,8 @@
         }, { capture: true, passive: true });
         document.addEventListener('pointerleave', function (ev) {
             if (!ev || ev.pointerType !== 'pen' || window.__shPenIsDown) return;
+            var ink = window.__shSpenInk;
+            if (ink && ink.active && ((ink.strokes && ink.strokes.length) || ink.current)) return;
             hideBox();
         }, true);
         setInterval(function () {

@@ -53,21 +53,72 @@
         if (s === ',' || s === '') return '';
         return s;
     }
-
     window.__shSpenNormalizeNumber = onlyNumber;
 
     function isPlantField(el) {
         if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA')) return false;
         if (el.id === 'inp-sec-note') return false;
-        if (!el.closest || !el.closest('.main-container')) return false;
+        return !!(el.closest && el.closest('.main-container'));
+    }
+
+    function ensureInk() {
+        if (!window.__shSpenInk && typeof window.__initAndroidSpenInk === 'function') {
+            window.__initAndroidSpenInk();
+        }
+        if (!window.__shSpenInk) {
+            window.__shSpenInk = {
+                active: false, strokes: [], current: null, input: null, inputId: '',
+                originValue: '', imeText: '', hoverInput: null
+            };
+        }
+        return window.__shSpenInk;
+    }
+
+    function ensureHost() {
+        var host = document.getElementById('sh-spen-ink-host');
+        if (host) return host;
+        if (!document.body) return null;
+        host = document.createElement('div');
+        host.id = 'sh-spen-ink-host';
+        host.setAttribute('aria-hidden', 'true');
+        host.style.cssText = 'position:fixed;z-index:2147483646;pointer-events:none;touch-action:none;'
+            + 'outline:2px solid #2563eb;outline-offset:-2px;background:transparent;display:none;margin:0;padding:0;';
+        document.body.appendChild(host);
+        return host;
+    }
+
+    function layoutBoxOn(input) {
+        if (!input || !input.isConnected) return false;
+        var ink = ensureInk();
+        var host = ensureHost();
+        if (!host) return false;
+        var box = window.__shSpenFieldBox ? window.__shSpenFieldBox(input) : input;
+        var r = box.getBoundingClientRect();
+        var pad = 6;
+        var left = Math.max(0, r.left - pad);
+        var top = Math.max(0, r.top - pad);
+        var w = r.width + pad * 2;
+        var h = r.height + pad * 2;
+        if (w < 2 || h < 2) return false;
+        host.style.display = 'block';
+        host.style.left = left + 'px';
+        host.style.top = top + 'px';
+        host.style.width = w + 'px';
+        host.style.height = h + 'px';
+        host.style.pointerEvents = 'none';
+        host.style.outline = '2px solid #2563eb';
+        host.style.outlineOffset = '-2px';
+        host.classList.add('sh-spen-ink-on');
+        ink.hoverInput = input;
+        ink.hostRect = { left: left, top: top, w: w, h: h };
+        if (document.body) document.body.classList.add('sh-spen-ink-open');
         return true;
     }
 
     function isCut(strokes, hostRect) {
-        if (!strokes || !strokes.length || !hostRect) return false;
-        var fieldW = hostRect.w || 0;
-        var fieldH = hostRect.h || 0;
-        if (fieldW < 10) return false;
+        if (!strokes || !strokes.length) return false;
+        var fieldW = (hostRect && hostRect.w) || 36;
+        var fieldH = (hostRect && hostRect.h) || 28;
         for (var s = 0; s < strokes.length; s++) {
             var pts = strokes[s];
             if (!pts || pts.length < 2) continue;
@@ -87,9 +138,8 @@
             }
             var horiz = maxx - minx;
             var vert = maxy - miny;
-            var flat = horiz >= Math.max(12, fieldW * 0.28) && vert <= Math.max(22, fieldH * 0.75) && horiz > vert * 1.1;
-            var scribble = reversals >= 1 && horiz >= Math.max(12, fieldW * 0.24) && vert <= Math.max(24, fieldH * 0.85);
-            if (flat || scribble) return true;
+            if (horiz >= Math.max(10, fieldW * 0.22) && horiz > vert * 1.05 && vert <= Math.max(26, fieldH * 0.9)) return true;
+            if (reversals >= 1 && horiz >= Math.max(10, fieldW * 0.2) && vert <= Math.max(28, fieldH)) return true;
         }
         return false;
     }
@@ -101,14 +151,10 @@
         return raw;
     }
 
-    function holdValue(ink) {
-        return ink && ink.originValue != null ? String(ink.originValue) : '';
-    }
-
     function hideLive(input, ink) {
         if (!input || !ink || ink.showResult || ink.imeCleared) return;
         if (ink.cutGuardUntil && Date.now() < ink.cutGuardUntil) return;
-        var hold = holdValue(ink);
+        var hold = ink.originValue != null ? String(ink.originValue) : '';
         if (String(input.value || '') !== hold) input.value = hold;
     }
 
@@ -118,8 +164,11 @@
         ink.imePending = '';
         ink.imeText = ink.originValue || '';
         ink.pendingPred = Promise.resolve('');
-        ink.cutGuardUntil = Date.now() + 4000;
+        ink.cutGuardUntil = Date.now() + 5000;
         ink.showResult = true;
+        ink.strokes = [];
+        ink.current = null;
+        window.__shSpenSkipIme = true;
     }
 
     function forceClear(ink) {
@@ -136,197 +185,41 @@
             if (typeof window.saveData === 'function') window.saveData(true);
         }
         input.value = '';
+        layoutBoxOn(input);
     }
 
     function shouldClear(ink) {
         if (!ink) return false;
-        if (ink.sawImeClear) return true;
-        if (ink.imeCleared) return true;
+        if (ink.sawImeClear || ink.imeCleared) return true;
         if (!onlyNumber(ink.originValue)) return false;
         return isCut(allStrokes(ink), ink.hostRect);
     }
 
-    function imeNumberNow() {
-        var ink = window.__shSpenInk;
-        if (!ink || ink.imeCleared) return '';
-        return onlyNumber(ink.imePending || ink.imeText || '');
-    }
-
-    function waitIme(ms) {
-        return new Promise(function (resolve) {
-            var t0 = Date.now();
-            var tick = function () {
-                var ink = window.__shSpenInk;
-                if (ink && ink.imeCleared) {
-                    resolve('');
-                    return;
-                }
-                var n = imeNumberNow();
-                if (n || Date.now() - t0 >= ms) {
-                    resolve(n);
-                    return;
-                }
-                setTimeout(tick, 40);
-            };
-            tick();
-        });
-    }
-
-    function keepBox() {
-        var ink = window.__shSpenInk;
-        if (!ink || !ink.input || !ink.input.isConnected) return;
-        var host = document.getElementById('sh-spen-ink-host');
-        if (!host) return;
-        var box = window.__shSpenFieldBox ? window.__shSpenFieldBox(ink.input) : ink.input;
-        var r = box.getBoundingClientRect();
-        var pad = 6;
-        var left = Math.max(0, r.left - pad);
-        var top = Math.max(0, r.top - pad);
-        var w = r.width + pad * 2;
-        var h = r.height + pad * 2;
-        if (w < 2 || h < 2) return;
-        host.style.display = 'block';
-        host.style.left = left + 'px';
-        host.style.top = top + 'px';
-        host.style.width = w + 'px';
-        host.style.height = h + 'px';
-        host.style.pointerEvents = 'none';
-        host.classList.add('sh-spen-ink-on');
-        if (document.body) document.body.classList.add('sh-spen-ink-open');
-        ink.active = true;
-        ink.hostRect = { left: left, top: top, w: w, h: h };
-        if (!ink.imeCleared) hideLive(ink.input, ink);
-    }
-
-    window.__shSpenRecognizeDigitsLocal = function () { return ''; };
-
-    window.__shSpenRecognizeStrokes = function (strokeSnap) {
-        var raw = strokeSnap || [];
-        var ink = window.__shSpenInk;
-        if (ink && ink.imeCleared) return Promise.resolve('');
-        if (ink && isCut(raw, ink.hostRect) && ink.originValue) {
-            forceClear(ink);
-            return Promise.resolve('');
-        }
-        return waitIme(620).then(function (ime) {
-            if (ink && ink.imeCleared) return '';
-            var n = onlyNumber(ime);
-            if (n) return n;
-            if (!raw.length) return '';
-            return window.__shSpenNativeRecognize(raw).then(onlyNumber);
-        });
-    };
-
-    if (typeof window.__shSpenIsStrikethrough === 'function' && !window.__shSpenIsStrikethrough.__shV10) {
-        var cutOrig = window.__shSpenIsStrikethrough;
-        var cutLoose = function (strokes, hostRect, textBox) {
-            try {
-                if (cutOrig(strokes, hostRect, textBox)) return true;
-            } catch (e) {}
-            return isCut(strokes, hostRect);
-        };
-        cutLoose.__shV10 = true;
-        window.__shSpenIsStrikethrough = cutLoose;
-    }
-
-    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV10) {
-        var applyOrig = window.__shSpenApplyFieldEdit;
-        var applySafe = function (input, recognized, origin, mode) {
-            var ink = window.__shSpenInk;
-            if (ink && (ink.imeCleared || (ink.cutGuardUntil && Date.now() < ink.cutGuardUntil))) {
-                ink.showResult = true;
-                return applyOrig(input, '', origin, 'clear');
-            }
-            if (mode === 'clear') {
-                if (ink) {
-                    markCleared(ink);
-                    ink.showResult = true;
-                }
-                return applyOrig(input, '', origin, 'clear');
-            }
-            var rec = onlyNumber(recognized);
-            if (!rec) return false;
-            if (ink) ink.showResult = true;
-            return applyOrig(input, rec, origin, mode || 'replace');
-        };
-        applySafe.__shV10 = true;
-        window.__shSpenApplyFieldEdit = applySafe;
-    }
-
-    if (typeof window.__shSpenEditModeFromStrokes === 'function' && !window.__shSpenEditModeFromStrokes.__shV10) {
-        var modeOrig = window.__shSpenEditModeFromStrokes;
-        var modeSafe = function (strokes, input, origin, hostRect) {
-            if (isCut(strokes, hostRect) && origin) return 'clear';
-            return modeOrig(strokes, input, origin, hostRect);
-        };
-        modeSafe.__shV10 = true;
-        window.__shSpenEditModeFromStrokes = modeSafe;
-    }
-
     function findFieldAt(x, y) {
         var inp = null;
-        if (typeof window.__shSpenFindWritableInputAt === 'function') {
-            inp = window.__shSpenFindWritableInputAt(x, y);
-        }
+        if (typeof window.__shSpenFindWritableInputAt === 'function') inp = window.__shSpenFindWritableInputAt(x, y);
         if (!inp) {
             try {
                 var el = document.elementFromPoint(x, y);
-                if (typeof window.__shSpenFindWritableInput === 'function') {
-                    inp = window.__shSpenFindWritableInput(el);
-                }
+                if (typeof window.__shSpenFindWritableInput === 'function') inp = window.__shSpenFindWritableInput(el);
             } catch (e) {}
         }
         return inp;
     }
 
-    function layoutBoxOn(input) {
-        if (!input) return false;
-        if (!window.__shSpenInk && window.__initAndroidSpenInk) window.__initAndroidSpenInk();
-        var ink = window.__shSpenInk;
-        var host = document.getElementById('sh-spen-ink-host');
-        if (!host) {
-            if (ink && ink.input) {
-                ink.input = ink.input;
-            }
-            keepBox();
-            host = document.getElementById('sh-spen-ink-host');
-        }
-        if (!host) return false;
-        var box = window.__shSpenFieldBox ? window.__shSpenFieldBox(input) : input;
-        var r = box.getBoundingClientRect();
-        var pad = 6;
-        var left = Math.max(0, r.left - pad);
-        var top = Math.max(0, r.top - pad);
-        var w = r.width + pad * 2;
-        var h = r.height + pad * 2;
-        if (w < 2 || h < 2) return false;
-        host.style.display = 'block';
-        host.style.left = left + 'px';
-        host.style.top = top + 'px';
-        host.style.width = w + 'px';
-        host.style.height = h + 'px';
-        host.style.pointerEvents = 'none';
-        host.classList.add('sh-spen-ink-on');
-        if (ink) {
-            ink.hoverInput = input;
-            if (ink.input === input) ink.hostRect = { left: left, top: top, w: w, h: h };
-        }
-        return true;
-    }
-
-    function retarget(input, commitOld) {
+    function retarget(input) {
         if (!input || (window.__shSpenIsWritableInput && !window.__shSpenIsWritableInput(input))) return false;
-        if (!window.__shSpenInk && window.__initAndroidSpenInk) window.__initAndroidSpenInk();
-        var ink = window.__shSpenInk;
-        if (!ink) return false;
+        var ink = ensureInk();
         if (ink.input === input && ink.active) {
             layoutBoxOn(input);
             try { input.focus({ preventScroll: true }); } catch (e) { try { input.focus(); } catch (e2) {} }
             return true;
         }
-        if (commitOld !== false && ink.active && ink.input && ink.input !== input) {
-            var had = ((ink.strokes && ink.strokes.length) || ink.imePending || (ink.current && ink.current.length));
-            if (had && typeof window.__shSpenCommitNow === 'function') window.__shSpenCommitNow();
+        if (ink.active && ink.input && ink.input !== input) {
+            if (shouldClear(ink)) forceClear(ink);
+            else if (((ink.strokes && ink.strokes.length) || ink.imePending) && typeof window.__shSpenCommitNow === 'function') {
+                window.__shSpenCommitNow();
+            }
         }
         ink.strokes = [];
         ink.current = null;
@@ -336,9 +229,7 @@
         ink.showResult = false;
         ink.cutGuardUntil = 0;
         ink.pendingPred = null;
-        ink.pendingPredCount = 0;
         ink.active = true;
-        ink.watchOnly = false;
         ink.input = input;
         ink.inputId = input.id || '';
         ink.originValue = input.value || '';
@@ -346,12 +237,9 @@
         ink.hoverInput = input;
         ink.sessionStartMs = Date.now();
         ink.startMs = ink.sessionStartMs;
-        ink.laidOut = false;
-        ink.epoch = (ink.epoch || 0) + 1;
         window.__shSpenSkipIme = false;
         layoutBoxOn(input);
         try { input.focus({ preventScroll: true }); } catch (e) { try { input.focus(); } catch (e2) {} }
-        if (document.body) document.body.classList.add('sh-spen-ink-open');
         return true;
     }
 
@@ -361,7 +249,7 @@
         if (ink && ink.current && ink.current.length) return false;
         var inp = findFieldAt(x, y);
         if (!inp) return false;
-        if (ink) ink.hoverInput = inp;
+        ensureInk().hoverInput = inp;
         return layoutBoxOn(inp);
     };
 
@@ -369,101 +257,146 @@
         var ink = window.__shSpenInk;
         var inp = findFieldAt(x, y) || (ink && ink.hoverInput);
         if (!inp) return false;
-        return retarget(inp, true);
+        return retarget(inp);
     };
 
-    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV13) {
-        var downOrig = window.__shSpenOnPenDown;
-        var downReset = function (ev) {
-            var inp = ev ? findFieldAt(ev.clientX, ev.clientY) : null;
-            if (!inp && ev && typeof window.__shSpenFindWritableInput === 'function') {
-                inp = window.__shSpenFindWritableInput(ev.target);
-            }
+    window.__shSpenRecognizeDigitsLocal = function () { return ''; };
+
+    window.__shSpenRecognizeStrokes = function (strokeSnap) {
+        var raw = strokeSnap || [];
+        var ink = window.__shSpenInk;
+        if (ink && (ink.imeCleared || (ink.cutGuardUntil && Date.now() < ink.cutGuardUntil))) {
+            return Promise.resolve('');
+        }
+        if (ink && isCut(raw, ink.hostRect) && onlyNumber(ink.originValue)) {
+            forceClear(ink);
+            return Promise.resolve('');
+        }
+        return new Promise(function (resolve) {
+            var t0 = Date.now();
+            var tick = function () {
+                if (ink && ink.imeCleared) {
+                    resolve('');
+                    return;
+                }
+                var n = onlyNumber(ink && (ink.imePending || ink.imeText));
+                var origin = onlyNumber(ink && ink.originValue);
+                if (n && n !== origin) {
+                    resolve(n);
+                    return;
+                }
+                if (Date.now() - t0 >= 580) {
+                    if (!raw.length) {
+                        resolve('');
+                        return;
+                    }
+                    window.__shSpenNativeRecognize(raw).then(function (t) { resolve(onlyNumber(t)); });
+                    return;
+                }
+                setTimeout(tick, 40);
+            };
+            tick();
+        });
+    };
+
+    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV14) {
+        var applyOrig = window.__shSpenApplyFieldEdit;
+        var applySafe = function (input, recognized, origin, mode) {
             var ink = window.__shSpenInk;
-            if (!inp && ink) inp = ink.hoverInput;
-            if (inp) retarget(inp, true);
-            var ret = downOrig.apply(this, arguments);
-            ink = window.__shSpenInk;
-            if (ink && ink.input) hideLive(ink.input, ink);
-            return ret;
+            if (ink && (ink.imeCleared || (ink.cutGuardUntil && Date.now() < ink.cutGuardUntil))) {
+                input.value = '';
+                return applyOrig(input, '', origin, 'clear');
+            }
+            if (mode === 'clear') {
+                if (ink) markCleared(ink);
+                return applyOrig(input, '', origin, 'clear');
+            }
+            var rec = onlyNumber(recognized);
+            if (!rec) return false;
+            if (ink) ink.showResult = true;
+            return applyOrig(input, rec, origin, mode || 'replace');
         };
-        downReset.__shV13 = true;
-        window.__shSpenOnPenDown = downReset;
+        applySafe.__shV14 = true;
+        window.__shSpenApplyFieldEdit = applySafe;
     }
 
-    if (typeof window.__shSpenOnPenMove === 'function' && !window.__shSpenOnPenMove.__shV11) {
+    if (typeof window.__shSpenIsStrikethrough === 'function' && !window.__shSpenIsStrikethrough.__shV14) {
+        var cutOrig = window.__shSpenIsStrikethrough;
+        window.__shSpenIsStrikethrough = function (strokes, hostRect, textBox) {
+            try { if (cutOrig(strokes, hostRect, textBox)) return true; } catch (e) {}
+            return isCut(strokes, hostRect);
+        };
+        window.__shSpenIsStrikethrough.__shV14 = true;
+    }
+
+    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV14) {
+        var downOrig = window.__shSpenOnPenDown;
+        window.__shSpenOnPenDown = function (ev) {
+            var inp = ev ? findFieldAt(ev.clientX, ev.clientY) : null;
+            if (!inp && ev && window.__shSpenFindWritableInput) inp = window.__shSpenFindWritableInput(ev.target);
+            var ink = window.__shSpenInk;
+            if (!inp && ink) inp = ink.hoverInput;
+            if (inp) {
+                retarget(inp);
+                layoutBoxOn(inp);
+            }
+            var ret = downOrig.apply(this, arguments);
+            ink = window.__shSpenInk;
+            if (ink && ink.input) {
+                layoutBoxOn(ink.input);
+                hideLive(ink.input, ink);
+            }
+            return ret;
+        };
+        window.__shSpenOnPenDown.__shV14 = true;
+    }
+
+    if (typeof window.__shSpenOnPenMove === 'function' && !window.__shSpenOnPenMove.__shV14) {
         var moveOrig = window.__shSpenOnPenMove;
-        var moveCut = function (ev) {
+        window.__shSpenOnPenMove = function (ev) {
             var ret = moveOrig.apply(this, arguments);
             var ink = window.__shSpenInk;
+            if (ink && ink.input) layoutBoxOn(ink.input);
             if (ink && onlyNumber(ink.originValue) && isCut(allStrokes(ink), ink.hostRect)) {
                 window.__shSpenSkipIme = true;
             }
             return ret;
         };
-        moveCut.__shV11 = true;
-        window.__shSpenOnPenMove = moveCut;
+        window.__shSpenOnPenMove.__shV14 = true;
     }
 
-    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV11) {
+    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV14) {
         var upOrig = window.__shSpenOnPenUp;
-        var upKeep = function (ev, cancelled) {
+        window.__shSpenOnPenUp = function (ev, cancelled) {
             var ink = window.__shSpenInk;
+            if (ink && ink.input) layoutBoxOn(ink.input);
             if (ink && shouldClear(ink)) {
                 forceClear(ink);
-                if (cancelled) {
-                    ink.current = null;
-                    ink.pointerId = null;
-                }
                 return;
             }
-            if (ink && ink.imePending) ink.imeText = ink.imePending;
             if (cancelled) {
                 if (ink) {
                     ink.current = null;
                     ink.pointerId = null;
                 }
-                keepBox();
+                if (ink && ink.input) layoutBoxOn(ink.input);
                 return;
             }
+            if (ink && ink.imePending) ink.imeText = ink.imePending;
             if (ink && ink.input) hideLive(ink.input, ink);
             return upOrig.apply(this, arguments);
         };
-        upKeep.__shV11 = true;
-        window.__shSpenOnPenUp = upKeep;
+        window.__shSpenOnPenUp.__shV14 = true;
     }
 
-    function unlockInk() {
-        var ink = window.__shSpenInk;
-        window.__shPenIsDown = false;
-        window.__shPenPointerId = null;
-        if (document.body) {
-            document.body.classList.remove('sh-spen-ink-open', 'sh-stylus-pen-active', 'sh-long-press-lock');
-        }
-        if (!ink) return;
-        ink.active = false;
-        ink.watchOnly = false;
-        ink.capture = false;
-        ink.current = null;
-        ink.strokes = [];
-        ink.pointerId = null;
-        ink.showResult = false;
-        var host = document.getElementById('sh-spen-ink-host');
-        if (host) {
-            host.classList.remove('sh-spen-ink-on', 'sh-spen-ink-capture', 'sh-spen-samsung-on');
-            host.style.display = 'none';
-        }
-    }
-
-    if (!window.__shNativeNumHookV10) {
-        window.__shNativeNumHookV10 = true;
+    if (!window.__shNativeHookV14) {
+        window.__shNativeHookV14 = true;
         document.addEventListener('beforeinput', function (e) {
             if (!isPlantField(e.target)) return;
             var typ = e.inputType || '';
-            if (typ.indexOf('delete') === 0 || typ === 'historyUndo' || typ === 'historyRedo') return;
+            if (typ.indexOf('delete') === 0) return;
             var data = e.data == null ? '' : String(e.data);
-            if (!data) return;
-            if (!/^[0-9,]+$/.test(data) && e.cancelable) e.preventDefault();
+            if (data && !/^[0-9,]+$/.test(data) && e.cancelable) e.preventDefault();
         }, true);
         document.addEventListener('input', function (e) {
             if (!isPlantField(e.target)) return;
@@ -472,7 +405,6 @@
             if (ink.cutGuardUntil && Date.now() < ink.cutGuardUntil) {
                 if (e.target.value) e.target.value = '';
                 ink.imeCleared = true;
-                ink.imePending = '';
                 return;
             }
             var next = onlyNumber(e.target.value);
@@ -483,41 +415,27 @@
                     return;
                 }
                 hideLive(e.target, ink);
-                return;
             }
-            if (next && String(e.target.value || '') !== next) e.target.value = next;
         }, true);
-        setInterval(function () {
-            var ink = window.__shSpenInk;
-            if (ink && ink.active && !ink.showResult && !ink.imeCleared && ink.input) hideLive(ink.input, ink);
-            if (!ink || !ink.active) {
-                if (document.body && document.body.classList.contains('sh-spen-ink-open') && !window.__shPenIsDown) {
-                    document.body.classList.remove('sh-spen-ink-open');
-                }
-                return;
-            }
-            var age = Date.now() - (ink.sessionStartMs || ink.startMs || 0);
-            if (window.__shPenIsDown && (Date.now() - (window.__shPenLastEventTs || 0)) > 1600) {
-                window.__shPenIsDown = false;
-            }
-            if (age > 4500 && !window.__shPenIsDown) {
-                if (typeof window.__shSpenCommitNow === 'function') window.__shSpenCommitNow();
-            }
-            if (age > 8000) unlockInk();
-        }, 400);
-    }
-
-    if (!window.__shNativeHoverV13) {
-        window.__shNativeHoverV13 = true;
-        var lastHoverAt = 0;
         document.addEventListener('pointermove', function (ev) {
             if (!ev || ev.pointerType !== 'pen') return;
             if ((ev.buttons & 1) === 1 || window.__shPenIsDown) return;
             if (typeof ev.pressure === 'number' && ev.pressure > 0.08) return;
-            var now = Date.now();
-            if (now - lastHoverAt < 32) return;
-            lastHoverAt = now;
             window.__shSpenHoverAt(ev.clientX, ev.clientY);
         }, { capture: true, passive: true });
+        setInterval(function () {
+            var ink = window.__shSpenInk;
+            if (ink && ink.cutGuardUntil && Date.now() < ink.cutGuardUntil && ink.input && ink.input.value) {
+                ink.input.value = '';
+            }
+            if (ink && ink.active && ink.input) layoutBoxOn(ink.hoverInput || ink.input);
+            if (ink && ink.active && !ink.showResult && !ink.imeCleared && ink.input) hideLive(ink.input, ink);
+            if (!ink || !ink.active) return;
+            var age = Date.now() - (ink.sessionStartMs || ink.startMs || 0);
+            if (window.__shPenIsDown && (Date.now() - (window.__shPenLastEventTs || 0)) > 1600) window.__shPenIsDown = false;
+            if (age > 5000 && !window.__shPenIsDown && typeof window.__shSpenCommitNow === 'function') {
+                if (!ink.imeCleared) window.__shSpenCommitNow();
+            }
+        }, 350);
     }
 })();

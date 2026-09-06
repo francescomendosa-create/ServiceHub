@@ -55,6 +55,7 @@ public class MainActivity extends AppCompatActivity {
             public void onPageFinished(WebView view, String url) {
                 injectHook(view);
                 view.postDelayed(() -> injectHook(view), 800);
+                view.postDelayed(() -> injectHook(view), 2200);
             }
         });
         webView.addJavascriptInterface(new SpenBridge(webView, ink), "ServiceHubAndroidSpen");

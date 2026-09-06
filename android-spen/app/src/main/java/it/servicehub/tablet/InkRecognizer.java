@@ -180,9 +180,7 @@ final class InkRecognizer {
             }
             if (bestDigits >= 1 && i >= 8) break;
         }
-        if (!best.isEmpty()) return best;
-        String first = result.getCandidates().get(0).getText();
-        return first == null ? "" : first.trim();
+        return best;
     }
 
     static String normalizeNumber(String text) {
@@ -194,11 +192,12 @@ final class InkRecognizer {
                 .replace('b', '8').replace('B', '8')
                 .replaceAll("\\s+", "")
                 .replace('.', ',')
-                .replaceAll("[^0-9,\\-]", "");
+                .replaceAll("[^0-9,]", "");
         int i = s.indexOf(',');
         if (i >= 0) {
             s = s.substring(0, i + 1) + s.substring(i + 1).replace(",", "");
         }
+        if (s.equals(",") || s.isEmpty()) return "";
         return s;
     }
 }

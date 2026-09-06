@@ -263,24 +263,85 @@
         window.__shSpenEditModeFromStrokes = modeSafe;
     }
 
-    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV11) {
+    function retarget(input, commitOld) {
+        if (!input || (window.__shSpenIsWritableInput && !window.__shSpenIsWritableInput(input))) return false;
+        if (!window.__shSpenInk && window.__initAndroidSpenInk) window.__initAndroidSpenInk();
+        var ink = window.__shSpenInk;
+        if (!ink) return false;
+        if (ink.input === input && ink.active) {
+            keepBox();
+            try { input.focus({ preventScroll: true }); } catch (e) { try { input.focus(); } catch (e2) {} }
+            return true;
+        }
+        if (commitOld !== false && ink.active && ink.input && ink.input !== input) {
+            var had = (ink.strokes && ink.strokes.length) || ink.imePending || ink.current;
+            if (had && typeof window.__shSpenCommitNow === 'function') window.__shSpenCommitNow();
+        }
+        ink.strokes = [];
+        ink.current = null;
+        ink.imePending = '';
+        ink.imeCleared = false;
+        ink.sawImeClear = false;
+        ink.showResult = false;
+        ink.cutGuardUntil = 0;
+        ink.pendingPred = null;
+        ink.pendingPredCount = 0;
+        ink.active = true;
+        ink.watchOnly = false;
+        ink.input = input;
+        ink.inputId = input.id || '';
+        ink.originValue = input.value || '';
+        ink.imeText = input.value || '';
+        ink.sessionStartMs = Date.now();
+        ink.startMs = ink.sessionStartMs;
+        ink.laidOut = false;
+        ink.epoch = (ink.epoch || 0) + 1;
+        window.__shSpenSkipIme = false;
+        keepBox();
+        try { input.focus({ preventScroll: true }); } catch (e) { try { input.focus(); } catch (e2) {} }
+        if (document.body) document.body.classList.add('sh-spen-ink-open');
+        return true;
+    }
+
+    window.__shSpenPointAt = function (x, y) {
+        var inp = null;
+        if (typeof window.__shSpenFindWritableInputAt === 'function') {
+            inp = window.__shSpenFindWritableInputAt(x, y);
+        }
+        if (!inp) {
+            try {
+                var el = document.elementFromPoint(x, y);
+                if (typeof window.__shSpenFindWritableInput === 'function') {
+                    inp = window.__shSpenFindWritableInput(el);
+                }
+            } catch (e) {}
+        }
+        if (!inp) return false;
+        return retarget(inp, true);
+    };
+
+    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV12) {
         var downOrig = window.__shSpenOnPenDown;
         var downReset = function (ev) {
-            var ink = window.__shSpenInk;
-            if (ink) {
-                ink.imeCleared = false;
-                ink.imePending = '';
-                ink.sawImeClear = false;
-                ink.showResult = false;
-                ink.cutGuardUntil = 0;
-                window.__shSpenSkipIme = false;
+            var inp = null;
+            if (ev && typeof window.__shSpenFindWritableInputAt === 'function') {
+                inp = window.__shSpenFindWritableInputAt(ev.clientX, ev.clientY);
+            }
+            if (!inp && ev && typeof window.__shSpenFindWritableInput === 'function') {
+                inp = window.__shSpenFindWritableInput(ev.target);
+            }
+            if (inp) {
+                retarget(inp, true);
+            } else if (window.__shSpenInk && window.__shSpenInk.active && !window.__shPenIsDown) {
+                if (typeof window.__shSpenCommitNow === 'function') window.__shSpenCommitNow();
+                return;
             }
             var ret = downOrig.apply(this, arguments);
-            ink = window.__shSpenInk;
+            var ink = window.__shSpenInk;
             if (ink && ink.input) hideLive(ink.input, ink);
             return ret;
         };
-        downReset.__shV11 = true;
+        downReset.__shV12 = true;
         window.__shSpenOnPenDown = downReset;
     }
 
@@ -398,5 +459,23 @@
             }
             if (age > 8000) unlockInk();
         }, 400);
+    }
+
+    if (!window.__shNativeHoverV12) {
+        window.__shNativeHoverV12 = true;
+        var lastHoverAt = 0;
+        document.addEventListener('pointermove', function (ev) {
+            if (!ev || ev.pointerType !== 'pen') return;
+            if ((ev.buttons & 1) === 1 || window.__shPenIsDown) return;
+            var now = Date.now();
+            if (now - lastHoverAt < 32) return;
+            lastHoverAt = now;
+            window.__shSpenPointAt(ev.clientX, ev.clientY);
+        }, { capture: true, passive: true });
+        document.addEventListener('pointerover', function (ev) {
+            if (!ev || ev.pointerType !== 'pen') return;
+            if ((ev.buttons & 1) === 1 || window.__shPenIsDown) return;
+            window.__shSpenPointAt(ev.clientX, ev.clientY);
+        }, { capture: true, passive: true });
     }
 })();

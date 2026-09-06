@@ -79,8 +79,11 @@
         var cvs = ink && ink.canvas;
         if (!cvs || !ink.ctx || w < 2 || h < 2) return;
         var dpr = Math.max(1, window.devicePixelRatio || 1);
-        cvs.width = Math.max(1, Math.round(w * dpr));
-        cvs.height = Math.max(1, Math.round(h * dpr));
+        var nw = Math.max(1, Math.round(w * dpr));
+        var nh = Math.max(1, Math.round(h * dpr));
+        if (cvs.width === nw && cvs.height === nh) return;
+        cvs.width = nw;
+        cvs.height = nh;
         ink.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ink.ctx.lineCap = 'round';
         ink.ctx.lineJoin = 'round';
@@ -101,6 +104,14 @@
         var w = r.width + pad * 2;
         var h = r.height + pad * 2;
         if (w < 2 || h < 2) return false;
+        var key = (input.id || '') + ':' + Math.round(left) + ':' + Math.round(top) + ':' + Math.round(w) + ':' + Math.round(h);
+        ink.hoverInput = input;
+        ink.hostRect = { left: left, top: top, w: w, h: h };
+        if (ink.layoutKey === key && ink.canvas && ink.ctx && host.style.display === 'block') {
+            if (document.body) document.body.classList.add('sh-spen-ink-open');
+            return true;
+        }
+        ink.layoutKey = key;
         host.style.display = 'block';
         host.style.left = left + 'px';
         host.style.top = top + 'px';
@@ -109,10 +120,8 @@
         host.style.pointerEvents = 'none';
         host.style.outline = '2px solid #2563eb';
         host.classList.add('sh-spen-ink-on');
-        ink.hoverInput = input;
-        ink.hostRect = { left: left, top: top, w: w, h: h };
-        if (!window.__shPenIsDown) sizeCanvas(ink, w, h);
-        else if (!ink.canvas || !ink.ctx) sizeCanvas(ink, w, h);
+        if (!ink.canvas || !ink.ctx) sizeCanvas(ink, w, h);
+        else if (!window.__shPenIsDown) sizeCanvas(ink, w, h);
         if (document.body) document.body.classList.add('sh-spen-ink-open');
         return true;
     }
@@ -240,7 +249,9 @@
         if (ink.input === input && ink.active) {
             beginWrite(ink, input);
             layoutBoxOn(input);
-            try { input.focus({ preventScroll: true }); } catch (e) { try { input.focus(); } catch (e2) {} }
+            if (document.activeElement !== input) {
+                try { input.focus({ preventScroll: true }); } catch (e) { try { input.focus(); } catch (e2) {} }
+            }
             return true;
         }
         if (ink.active && ink.input && ink.input !== input) {
@@ -258,7 +269,9 @@
         ink.sessionStartMs = Date.now();
         beginWrite(ink, input);
         layoutBoxOn(input);
-        try { input.focus({ preventScroll: true }); } catch (e) { try { input.focus(); } catch (e2) {} }
+        if (document.activeElement !== input) {
+            try { input.focus({ preventScroll: true }); } catch (e) { try { input.focus(); } catch (e2) {} }
+        }
         return true;
     }
 
@@ -311,7 +324,7 @@
         return nativeRecognize(strokeSnap || []);
     };
 
-    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV21) {
+    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV22) {
         var applyOrig = window.__shSpenApplyFieldEdit;
         window.__shSpenApplyFieldEdit = function (input, recognized, origin, mode) {
             var ink = window.__shSpenInk;
@@ -325,12 +338,13 @@
                 ink.originValue = rec;
                 ink.imePending = '';
             }
+            if (input && String(input.value || '') === rec) return true;
             return applyOrig(input, rec, origin, mode || 'replace');
         };
-        window.__shSpenApplyFieldEdit.__shV21 = true;
+        window.__shSpenApplyFieldEdit.__shV22 = true;
     }
 
-    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV21) {
+    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV22) {
         var downOrig = window.__shSpenOnPenDown;
         window.__shSpenOnPenDown = function (ev) {
             var inp = ev ? findFieldAt(ev.clientX, ev.clientY) : null;
@@ -343,10 +357,10 @@
             }
             return downOrig.apply(this, arguments);
         };
-        window.__shSpenOnPenDown.__shV21 = true;
+        window.__shSpenOnPenDown.__shV22 = true;
     }
 
-    if (typeof window.__shSpenOnPenMove === 'function' && !window.__shSpenOnPenMove.__shV21) {
+    if (typeof window.__shSpenOnPenMove === 'function' && !window.__shSpenOnPenMove.__shV22) {
         var moveOrig = window.__shSpenOnPenMove;
         window.__shSpenOnPenMove = function (ev) {
             var ink = window.__shSpenInk;
@@ -356,10 +370,10 @@
             if (ink && !ink.holdClear && looksLikeCut(ink)) forceClear(ink);
             return r;
         };
-        window.__shSpenOnPenMove.__shV21 = true;
+        window.__shSpenOnPenMove.__shV22 = true;
     }
 
-    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV21) {
+    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV22) {
         var upOrig = window.__shSpenOnPenUp;
         window.__shSpenOnPenUp = function (ev, cancelled) {
             var ink = window.__shSpenInk;
@@ -372,11 +386,30 @@
             }
             return upOrig.apply(this, arguments);
         };
-        window.__shSpenOnPenUp.__shV21 = true;
+        window.__shSpenOnPenUp.__shV22 = true;
     }
 
-    if (!window.__shNativeHookV21) {
-        window.__shNativeHookV21 = true;
+    if (!window.__shNativeHookV22) {
+        window.__shNativeHookV22 = true;
+        if (!document.getElementById('sh-spen-noflicker-css')) {
+            var css = document.createElement('style');
+            css.id = 'sh-spen-noflicker-css';
+            css.textContent = 'html.sh-android-tablet-boot .main-container input,html.sh-android-tablet-boot .main-container textarea{-webkit-tap-highlight-color:transparent;caret-color:transparent;}';
+            (document.head || document.documentElement).appendChild(css);
+        }
+        var hostWatch = function () {
+            var host = document.getElementById('sh-spen-ink-host');
+            if (!host || host.__shKeepBox) return;
+            host.__shKeepBox = true;
+            new MutationObserver(function () {
+                var ink = window.__shSpenInk;
+                if (!ink || window.__shPenIsDown || ink.holdClear) return;
+                var keep = ink.hoverInput || boundInput(ink);
+                if (keep && host.style.display === 'none') layoutBoxOn(keep);
+            }).observe(host, { attributes: true, attributeFilter: ['style', 'class'] });
+        };
+        hostWatch();
+        setTimeout(hostWatch, 900);
         document.addEventListener('beforeinput', function (e) {
             if (!isPlantField(e.target)) return;
             var typ = e.inputType || '';
@@ -419,9 +452,16 @@
         }, { capture: true, passive: true });
         setInterval(function () {
             var ink = window.__shSpenInk;
-            if (!ink || !ink.holdClear) return;
-            keepEmpty(boundInput(ink));
-            if (ink.clearInputId) keepEmpty(document.getElementById(ink.clearInputId));
+            if (!ink) return;
+            if (ink.holdClear) {
+                keepEmpty(boundInput(ink));
+                if (ink.clearInputId) keepEmpty(document.getElementById(ink.clearInputId));
+            }
+            var host = document.getElementById('sh-spen-ink-host');
+            var keep = ink.hoverInput || boundInput(ink);
+            if (host && keep && host.style.display === 'none' && !window.__shPenIsDown) {
+                layoutBoxOn(keep);
+            }
         }, 80);
     }
 })();

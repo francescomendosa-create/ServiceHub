@@ -230,8 +230,16 @@
         return inp;
     }
 
+    function pinScrollHere() {
+        var ink = window.__shSpenInk;
+        if (!ink) return;
+        ink.lockX = window.scrollX || 0;
+        ink.lockY = window.scrollY || document.documentElement.scrollTop || 0;
+    }
+
     function beginWrite(ink, input, continueWrite) {
         if (!ink) return;
+        pinScrollHere();
         if (ink.idleTimer) {
             clearTimeout(ink.idleTimer);
             ink.idleTimer = null;
@@ -457,6 +465,7 @@
     if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV23) {
         var downOrig = window.__shSpenOnPenDown;
         window.__shSpenOnPenDown = function (ev) {
+            pinScrollHere();
             var inp = ev ? findFieldAt(ev.clientX, ev.clientY) : null;
             if (!inp && ev && window.__shSpenFindWritableInput) inp = window.__shSpenFindWritableInput(ev.target);
             var ink = ensureInk();
@@ -511,13 +520,11 @@
                 + 'html.sh-android-tablet-boot body.sh-spen-ink-open:not(.sh-spen-writing) .main-container{overflow:auto!important;overscroll-behavior:auto!important;}';
             (document.head || document.documentElement).appendChild(css);
         }
-        if (typeof window.__shSpenKeepWriteViewport === 'function' && !window.__shSpenKeepWriteViewport.__shV25) {
-            var keepView = window.__shSpenKeepWriteViewport;
+        if (typeof window.__shSpenKeepWriteViewport === 'function' && !window.__shSpenKeepWriteViewport.__shV28) {
             window.__shSpenKeepWriteViewport = function () {
-                if (!window.__shPenIsDown) return;
-                return keepView.apply(this, arguments);
+                pinScrollHere();
             };
-            window.__shSpenKeepWriteViewport.__shV25 = true;
+            window.__shSpenKeepWriteViewport.__shV28 = true;
         }
         document.addEventListener('beforeinput', function (e) {
             if (!isPlantField(e.target)) return;
@@ -572,12 +579,10 @@
             if (ink.clearInputId) keepEmpty(document.getElementById(ink.clearInputId));
         }, 80);
     }
-    if (typeof window.__shSpenKeepWriteViewport === 'function' && !window.__shSpenKeepWriteViewport.__shV25) {
-        var keepViewLate = window.__shSpenKeepWriteViewport;
+    if (typeof window.__shSpenKeepWriteViewport === 'function' && !window.__shSpenKeepWriteViewport.__shV28) {
         window.__shSpenKeepWriteViewport = function () {
-            if (!window.__shPenIsDown) return;
-            return keepViewLate.apply(this, arguments);
+            pinScrollHere();
         };
-        window.__shSpenKeepWriteViewport.__shV25 = true;
+        window.__shSpenKeepWriteViewport.__shV28 = true;
     }
 })();

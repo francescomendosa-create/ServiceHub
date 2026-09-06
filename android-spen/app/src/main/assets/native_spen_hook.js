@@ -41,14 +41,11 @@
         var raw = strokeSnap || [];
         if (!raw || !raw.length) return Promise.resolve('');
         return window.__shSpenNativeRecognize(raw).then(function (text) {
-            var n = window.__shSpenNormalizeNumber ? window.__shSpenNormalizeNumber(text) : String(text || '');
-            if (n) return n;
-            if (typeof window.__shSpenRecognizeDigitsLocal === 'function') {
-                return window.__shSpenRecognizeDigitsLocal(raw) || '';
-            }
-            return '';
+            return (window.__shSpenNormalizeNumber ? window.__shSpenNormalizeNumber(text) : String(text || '')) || '';
         });
     };
+
+    window.__shSpenRecognizeDigitsLocal = function () { return ''; };
 
     function killImeAttr(el) {
         if (!el || el.nodeType !== 1) return;

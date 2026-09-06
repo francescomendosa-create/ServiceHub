@@ -57,9 +57,12 @@ final class InkRecognizer {
             } catch (Exception ignored) {
             }
         }
-        recognizer = DigitalInkRecognition.getClient(
-                DigitalInkRecognizerOptions.builder(model).build()
-        );
+        DigitalInkRecognizerOptions.Builder opt = DigitalInkRecognizerOptions.builder(model);
+        try {
+            opt.setMaxResultCount(16);
+        } catch (Throwable ignored) {
+        }
+        recognizer = DigitalInkRecognition.getClient(opt.build());
         ready = true;
         Log.i(TAG, "ink pronto");
     }
@@ -94,33 +97,48 @@ final class InkRecognizer {
     }
 
     private String recognizeBlocking(String strokesJson) throws Exception {
-        Ink.Builder ink = Ink.builder();
         JSONArray strokes = new JSONArray(strokesJson);
         float minx = Float.MAX_VALUE, miny = Float.MAX_VALUE, maxx = -Float.MAX_VALUE, maxy = -Float.MAX_VALUE;
         int added = 0;
+        for (int s = 0; s < strokes.length(); s++) {
+            JSONArray pts = strokes.getJSONArray(s);
+            for (int i = 0; i < pts.length(); i++) {
+                JSONObject p = pts.getJSONObject(i);
+                float x = (float) p.optDouble("x", 0);
+                float y = (float) p.optDouble("y", 0);
+                if (x < minx) minx = x;
+                if (y < miny) miny = y;
+                if (x > maxx) maxx = x;
+                if (y > maxy) maxy = y;
+                added++;
+            }
+        }
+        if (added == 0) return "";
+        float rawH = Math.max(8f, maxy - miny);
+        float rawW = Math.max(8f, maxx - minx);
+        float scale = Math.min(8f, Math.max(1f, 280f / rawH));
+        if (rawW * scale < 80f) scale = Math.max(scale, 80f / rawW);
+        Ink.Builder ink = Ink.builder();
+        long lastT = -1;
         for (int s = 0; s < strokes.length(); s++) {
             JSONArray pts = strokes.getJSONArray(s);
             if (pts.length() < 1) continue;
             Ink.Stroke.Builder stroke = Ink.Stroke.builder();
             for (int i = 0; i < pts.length(); i++) {
                 JSONObject p = pts.getJSONObject(i);
-                float x = (float) p.optDouble("x", 0);
-                float y = (float) p.optDouble("y", 0);
-                long t = p.has("t") ? (long) p.optDouble("t", i * 12L) : i * 12L;
+                float x = ((float) p.optDouble("x", 0) - minx) * scale + 24f;
+                float y = ((float) p.optDouble("y", 0) - miny) * scale + 24f;
+                long t = p.has("t") ? (long) p.optDouble("t", i * 16L) : i * 16L;
+                if (t <= lastT) t = lastT + 8;
+                lastT = t;
                 stroke.addPoint(Ink.Point.create(x, y, t));
-                if (x < minx) minx = x;
-                if (y < miny) miny = y;
-                if (x > maxx) maxx = x;
-                if (y > maxy) maxy = y;
             }
             ink.addStroke(stroke.build());
-            added++;
         }
-        if (added == 0) return "";
-        float w = Math.max(32f, maxx - minx);
-        float h = Math.max(32f, maxy - miny);
+        float w = rawW * scale + 48f;
+        float h = rawH * scale + 48f;
         RecognitionContext ctx = RecognitionContext.builder()
-                .setPreContext("")
+                .setPreContext("0123456789,")
                 .setWritingArea(new WritingArea(w, h))
                 .build();
         RecognitionResult result;
@@ -141,15 +159,28 @@ final class InkRecognizer {
             return "";
         }
         String picked = pickBestNumber(result);
-        Log.i(TAG, "riconosciuto=" + picked);
+        Log.i(TAG, "riconosciuto=" + picked + " raw0=" + result.getCandidates().get(0).getText());
         return picked;
     }
 
     private static String pickBestNumber(RecognitionResult result) {
+        String best = "";
+        int bestDigits = 0;
         for (int i = 0; i < result.getCandidates().size(); i++) {
-            String n = normalizeNumber(result.getCandidates().get(i).getText());
-            if (!n.isEmpty()) return n;
+            String raw = result.getCandidates().get(i).getText();
+            String n = normalizeNumber(raw);
+            if (n.isEmpty()) continue;
+            int d = 0;
+            for (int c = 0; c < n.length(); c++) {
+                if (n.charAt(c) >= '0' && n.charAt(c) <= '9') d++;
+            }
+            if (d > bestDigits || (d == bestDigits && n.length() > best.length())) {
+                best = n;
+                bestDigits = d;
+            }
+            if (bestDigits >= 1 && i >= 8) break;
         }
+        if (!best.isEmpty()) return best;
         String first = result.getCandidates().get(0).getText();
         return first == null ? "" : first.trim();
     }

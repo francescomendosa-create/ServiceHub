@@ -432,7 +432,18 @@
         delete ink.pendingCommitIds[input.id];
     }
 
-    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV24) {
+    function pickFinalNumber(origin, rec) {
+        var orig = onlyNumber(origin);
+        rec = onlyNumber(rec);
+        if (!rec) return '';
+        if (!orig) return rec;
+        if (rec === orig) return rec;
+        if (rec.indexOf(orig) === 0) return rec;
+        if (orig.indexOf(rec) === 0) return orig;
+        return rec;
+    }
+
+    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV29) {
         var applyOrig = window.__shSpenApplyFieldEdit;
         window.__shSpenApplyFieldEdit = function (input, recognized, origin, mode) {
             var ink = window.__shSpenInk;
@@ -447,19 +458,23 @@
             if (!rec) return false;
             if (!canCommitTo(input)) return true;
             if (window.__shPenIsDown) return true;
+            var live = input ? onlyNumber(input.value) : '';
+            var from = live || onlyNumber(origin) || (ink && onlyNumber(ink.originValue)) || '';
+            rec = pickFinalNumber(from, rec);
+            if (!rec) return false;
             if (ink) {
                 ink.showResult = true;
                 ink.originValue = rec;
                 ink.imePending = '';
                 ink.imeText = '';
             }
-            var ok = (input && String(input.value || '') === rec) ? true : applyOrig(input, rec, origin, mode || 'replace');
+            var ok = (input && onlyNumber(input.value) === rec) ? true : applyOrig(input, rec, from, 'replace');
             consumePendingCommit(input);
             clearInkPixels(ink);
             hideBox();
             return ok;
         };
-        window.__shSpenApplyFieldEdit.__shV24 = true;
+        window.__shSpenApplyFieldEdit.__shV29 = true;
     }
 
     if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV23) {

@@ -37,34 +37,63 @@
             setTimeout(function () { finish(''); }, 8000);
         });
     };
+
+    function imeNumberNow() {
+        var ink = window.__shSpenInk;
+        if (!ink) return '';
+        var origin = window.__shSpenNormalizeNumber
+            ? window.__shSpenNormalizeNumber(ink.originValue)
+            : String(ink.originValue || '');
+        var live = ink.input && window.__shSpenNormalizeNumber
+            ? window.__shSpenNormalizeNumber(ink.input.value)
+            : '';
+        var ime = window.__shSpenNormalizeNumber
+            ? window.__shSpenNormalizeNumber(ink.imeText || '')
+            : '';
+        var best = '';
+        if (ime && ime !== origin) best = ime;
+        if (live && live !== origin && live.length >= best.length) best = live;
+        return best || '';
+    }
+
+    function waitIme(ms) {
+        return new Promise(function (resolve) {
+            var t0 = Date.now();
+            var tick = function () {
+                var n = imeNumberNow();
+                if (n || Date.now() - t0 >= ms) {
+                    resolve(n);
+                    return;
+                }
+                setTimeout(tick, 40);
+            };
+            tick();
+        });
+    }
+
     window.__shSpenRecognizeStrokes = function (strokeSnap) {
         var raw = strokeSnap || [];
-        if (!raw || !raw.length) return Promise.resolve('');
-        return window.__shSpenNativeRecognize(raw).then(function (text) {
-            return (window.__shSpenNormalizeNumber ? window.__shSpenNormalizeNumber(text) : String(text || '')) || '';
+        return waitIme(380).then(function (ime) {
+            if (ime) return ime;
+            if (!raw.length) return '';
+            return window.__shSpenNativeRecognize(raw).then(function (text) {
+                return (window.__shSpenNormalizeNumber
+                    ? window.__shSpenNormalizeNumber(text)
+                    : String(text || '')) || '';
+            });
         });
     };
 
     window.__shSpenRecognizeDigitsLocal = function () { return ''; };
 
-    function killImeAttr(el) {
+    function allowIme(el) {
         if (!el || el.nodeType !== 1) return;
-        el.setAttribute('writingsuggestions', 'false');
+        if (el.id === 'inp-sec-note') return;
+        el.setAttribute('writingsuggestions', 'true');
     }
-    killImeAttr(document.documentElement);
-    if (document.body) killImeAttr(document.body);
+    allowIme(document.documentElement);
+    if (document.body) allowIme(document.body);
     var mc = document.querySelector('.main-container');
-    if (mc) killImeAttr(mc);
-    document.querySelectorAll('.main-container input, .main-container textarea').forEach(killImeAttr);
-
-    if (!window.__shNativeImeGuardReady) {
-        window.__shNativeImeGuardReady = true;
-        document.addEventListener('beforeinput', function (e) {
-            var ink = window.__shSpenInk;
-            if (!ink || !ink.active || e.target !== ink.input) return;
-            if (window.__shPenIsDown || (ink.current && ink.current.length)) {
-                if (e.cancelable) e.preventDefault();
-            }
-        }, true);
-    }
+    if (mc) allowIme(mc);
+    document.querySelectorAll('.main-container input, .main-container textarea').forEach(allowIme);
 })();

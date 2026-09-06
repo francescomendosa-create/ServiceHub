@@ -16,7 +16,6 @@ import java.nio.charset.StandardCharsets;
 
 public class MainActivity extends AppCompatActivity {
     private WebView webView;
-    private SpenOverlayView spenOverlay;
     private InkRecognizer ink;
     private String nativeHookJs;
 
@@ -26,11 +25,10 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
         nativeHookJs = readAssetUtf8("native_spen_hook.js");
         webView = findViewById(R.id.hub_webview);
-        spenOverlay = findViewById(R.id.spen_overlay);
         ink = new InkRecognizer();
         ink.ensureReady();
-        if (spenOverlay != null) spenOverlay.attach(webView, ink);
         setupWebView();
+        new SpenSamsungIme(webView).attach();
         webView.loadUrl(getString(R.string.hub_url));
     }
 
@@ -57,7 +55,6 @@ public class MainActivity extends AppCompatActivity {
             public void onPageFinished(WebView view, String url) {
                 injectHook(view);
                 view.postDelayed(() -> injectHook(view), 800);
-                if (spenOverlay != null) spenOverlay.onPageReady();
             }
         });
         webView.addJavascriptInterface(new SpenBridge(webView, ink), "ServiceHubAndroidSpen");

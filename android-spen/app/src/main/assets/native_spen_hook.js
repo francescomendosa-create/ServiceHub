@@ -254,7 +254,9 @@
             ink.pendingPred = null;
             ink.pendingPredCount = 0;
             ink.writeGen = (ink.writeGen || 0) + 1;
+            ink.writeLocked = false;
             if (input) ink.sessionOrigin = String(input.value || '');
+            ink.sessionStartedEmpty = !onlyNumber(ink.sessionOrigin);
         }
         ink.originValue = ink.sessionOrigin != null ? String(ink.sessionOrigin) : (input ? String(input.value || '') : '');
         ink.imeText = ink.originValue;
@@ -418,6 +420,7 @@
     function canCommitTo(input) {
         var ink = window.__shSpenInk;
         if (!input || !input.id || !ink || !ink.pendingCommitIds) return false;
+        if (ink.writeLocked) return false;
         return !!ink.pendingCommitIds[input.id];
     }
 
@@ -460,7 +463,7 @@
         return rec;
     }
 
-    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV31) {
+    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV33) {
         var applyOrig = window.__shSpenApplyFieldEdit;
         window.__shSpenApplyFieldEdit = function (input, recognized, origin, mode) {
             var ink = window.__shSpenInk;
@@ -481,7 +484,8 @@
             rec = stripDoubledPrefix(live, rec);
             rec = stripDoubledPrefix(onlyNumber(origin), rec);
             var useMode = mode || 'replace';
-            if (ink && ink.strokes && ink.strokes.length && typeof window.__shSpenEditModeFromStrokes === 'function') {
+            if (ink && ink.sessionStartedEmpty) useMode = 'replace';
+            else if (ink && ink.strokes && ink.strokes.length && typeof window.__shSpenEditModeFromStrokes === 'function') {
                 try {
                     useMode = window.__shSpenEditModeFromStrokes(ink.strokes, input, from, ink.hostRect) || useMode;
                 } catch (e) {}
@@ -489,9 +493,11 @@
             rec = mergeByPosition(from, rec, useMode);
             rec = stripDoubledPrefix(from, rec);
             rec = stripDoubledPrefix(live, rec);
+            if (live && rec === live.charAt(0) + live) rec = live;
             if (!rec) return false;
             if (ink) {
                 ink.showResult = true;
+                ink.writeLocked = true;
                 ink.sessionOrigin = rec;
                 ink.originValue = rec;
                 ink.imePending = '';
@@ -503,7 +509,7 @@
             hideBox();
             return ok;
         };
-        window.__shSpenApplyFieldEdit.__shV31 = true;
+        window.__shSpenApplyFieldEdit.__shV33 = true;
     }
 
     if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV23) {

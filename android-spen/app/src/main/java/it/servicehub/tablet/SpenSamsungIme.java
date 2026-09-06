@@ -78,11 +78,25 @@ final class SpenSamsungIme {
         webView.evaluateJavascript(js, result -> {
             boolean hit = result != null && result.contains("true");
             if (hit && startIme) {
-                webView.post(this::startSamsung);
+                webView.postDelayed(this::startSamsungIfNotCut, 140);
             } else {
                 busy = false;
             }
         });
+    }
+
+    private void startSamsungIfNotCut() {
+        webView.evaluateJavascript(
+                "(function(){return !!(window.__shSpenSkipIme || (window.__shSpenInk&&window.__shSpenInk.imeCleared));})()",
+                result -> {
+                    if (result != null && result.contains("true")) {
+                        Log.i(TAG, "samsung ime saltato (taglio)");
+                        busy = false;
+                        return;
+                    }
+                    startSamsung();
+                }
+        );
     }
 
     private void startSamsung() {

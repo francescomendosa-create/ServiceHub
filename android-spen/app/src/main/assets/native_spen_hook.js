@@ -91,6 +91,19 @@
         ink.ctx.lineWidth = 2.2;
     }
 
+    function clearInkPixels(ink) {
+        if (!ink) return;
+        ink.strokes = [];
+        ink.current = null;
+        ink.pendingPred = null;
+        ink.pendingPredCount = 0;
+        if (ink.ctx && ink.hostRect) {
+            try { ink.ctx.clearRect(0, 0, ink.hostRect.w, ink.hostRect.h); } catch (e) {}
+        } else if (ink.ctx && ink.canvas) {
+            try { ink.ctx.clearRect(0, 0, ink.canvas.width, ink.canvas.height); } catch (e) {}
+        }
+    }
+
     function layoutBoxOn(input) {
         if (!input || !input.isConnected) return false;
         var ink = ensureInk();
@@ -105,8 +118,10 @@
         var h = r.height + pad * 2;
         if (w < 2 || h < 2) return false;
         var key = (input.id || '') + ':' + Math.round(left) + ':' + Math.round(top) + ':' + Math.round(w) + ':' + Math.round(h);
+        var fieldChanged = !!(ink.hoverInput && ink.hoverInput !== input);
         ink.hoverInput = input;
         ink.hostRect = { left: left, top: top, w: w, h: h };
+        if (fieldChanged && !window.__shPenIsDown) clearInkPixels(ink);
         if (ink.layoutKey === key && ink.canvas && ink.ctx && host.style.display === 'block') {
             if (document.body) document.body.classList.add('sh-spen-ink-open');
             return true;
@@ -191,6 +206,10 @@
         ink.showResult = false;
         ink.released = false;
         ink.imePending = '';
+        ink.imeText = '';
+        ink.pendingPred = null;
+        ink.pendingPredCount = 0;
+        ink.writeGen = (ink.writeGen || 0) + 1;
         window.__shSpenSkipIme = true;
         if (input) {
             ink.originValue = String(input.value || '');
@@ -256,12 +275,11 @@
         }
         if (ink.active && ink.input && ink.input !== input) {
             if (looksLikeCut(ink)) forceClear(ink);
-            else if ((ink.strokes && ink.strokes.length) && typeof window.__shSpenCommitNow === 'function') {
-                window.__shSpenCommitNow();
-            }
         }
-        ink.strokes = [];
-        ink.current = null;
+        ink.epoch = (ink.epoch || 0) + 1;
+        clearInkPixels(ink);
+        ink.imeText = '';
+        ink.imePending = '';
         ink.active = true;
         ink.input = input;
         ink.inputId = input.id || '';
@@ -321,30 +339,63 @@
             forceClear(ink);
             return Promise.resolve('');
         }
-        return nativeRecognize(strokeSnap || []);
+        var gen = ink ? ink.writeGen : 0;
+        return nativeRecognize(strokeSnap || []).then(function (n) {
+            var now = window.__shSpenInk;
+            if (!now || now.writeGen !== gen) return '';
+            return n;
+        });
     };
 
-    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV22) {
+    function canCommitTo(input) {
+        var ink = window.__shSpenInk;
+        if (!input || !input.id || !ink || !ink.pendingCommitIds) return false;
+        return !!ink.pendingCommitIds[input.id];
+    }
+
+    function markPendingCommit(input) {
+        var ink = window.__shSpenInk;
+        if (!ink || !input || !input.id) return;
+        ink.pendingCommitIds = ink.pendingCommitIds || {};
+        ink.pendingCommitIds[input.id] = Date.now();
+    }
+
+    function consumePendingCommit(input) {
+        var ink = window.__shSpenInk;
+        if (!ink || !ink.pendingCommitIds || !input || !input.id) return;
+        delete ink.pendingCommitIds[input.id];
+    }
+
+    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV24) {
         var applyOrig = window.__shSpenApplyFieldEdit;
         window.__shSpenApplyFieldEdit = function (input, recognized, origin, mode) {
             var ink = window.__shSpenInk;
-            if (mode === 'clear') return applyOrig(input, '', origin, 'clear');
-            if (ink && ink.holdClear) return false;
-            if (window.__shPenIsDown) return false;
+            if (mode === 'clear') {
+                var cleared = applyOrig(input, '', origin, 'clear');
+                clearInkPixels(ink);
+                if (ink) ink.imeText = '';
+                return cleared;
+            }
+            if (ink && ink.holdClear) return true;
             var rec = onlyNumber(recognized);
             if (!rec) return false;
+            if (!canCommitTo(input)) return true;
+            if (window.__shPenIsDown) return true;
             if (ink) {
                 ink.showResult = true;
                 ink.originValue = rec;
                 ink.imePending = '';
+                ink.imeText = '';
             }
-            if (input && String(input.value || '') === rec) return true;
-            return applyOrig(input, rec, origin, mode || 'replace');
+            var ok = (input && String(input.value || '') === rec) ? true : applyOrig(input, rec, origin, mode || 'replace');
+            consumePendingCommit(input);
+            clearInkPixels(ink);
+            return ok;
         };
-        window.__shSpenApplyFieldEdit.__shV22 = true;
+        window.__shSpenApplyFieldEdit.__shV24 = true;
     }
 
-    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV22) {
+    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV23) {
         var downOrig = window.__shSpenOnPenDown;
         window.__shSpenOnPenDown = function (ev) {
             var inp = ev ? findFieldAt(ev.clientX, ev.clientY) : null;
@@ -357,10 +408,10 @@
             }
             return downOrig.apply(this, arguments);
         };
-        window.__shSpenOnPenDown.__shV22 = true;
+        window.__shSpenOnPenDown.__shV23 = true;
     }
 
-    if (typeof window.__shSpenOnPenMove === 'function' && !window.__shSpenOnPenMove.__shV22) {
+    if (typeof window.__shSpenOnPenMove === 'function' && !window.__shSpenOnPenMove.__shV23) {
         var moveOrig = window.__shSpenOnPenMove;
         window.__shSpenOnPenMove = function (ev) {
             var ink = window.__shSpenInk;
@@ -370,10 +421,10 @@
             if (ink && !ink.holdClear && looksLikeCut(ink)) forceClear(ink);
             return r;
         };
-        window.__shSpenOnPenMove.__shV22 = true;
+        window.__shSpenOnPenMove.__shV23 = true;
     }
 
-    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV22) {
+    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV23) {
         var upOrig = window.__shSpenOnPenUp;
         window.__shSpenOnPenUp = function (ev, cancelled) {
             var ink = window.__shSpenInk;
@@ -384,13 +435,21 @@
                 keepEmpty(boundInput(ink));
                 return;
             }
-            return upOrig.apply(this, arguments);
+            var target = boundInput(ink);
+            if (target && allStrokes(ink).length) markPendingCommit(target);
+            var r = upOrig.apply(this, arguments);
+            setTimeout(function () {
+                var later = window.__shSpenInk;
+                if (!later || window.__shPenIsDown) return;
+                if (later.showResult || later.holdClear) clearInkPixels(later);
+            }, 360);
+            return r;
         };
-        window.__shSpenOnPenUp.__shV22 = true;
+        window.__shSpenOnPenUp.__shV23 = true;
     }
 
-    if (!window.__shNativeHookV22) {
-        window.__shNativeHookV22 = true;
+    if (!window.__shNativeHookV23) {
+        window.__shNativeHookV23 = true;
         if (!document.getElementById('sh-spen-noflicker-css')) {
             var css = document.createElement('style');
             css.id = 'sh-spen-noflicker-css';

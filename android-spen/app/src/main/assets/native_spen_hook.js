@@ -250,15 +250,16 @@
         ink.showResult = false;
         ink.released = false;
         ink.imePending = '';
-        ink.imeText = '';
         if (!continueWrite) {
             ink.pendingPred = null;
             ink.pendingPredCount = 0;
             ink.writeGen = (ink.writeGen || 0) + 1;
+            if (input) ink.sessionOrigin = String(input.value || '');
         }
+        ink.originValue = ink.sessionOrigin != null ? String(ink.sessionOrigin) : (input ? String(input.value || '') : '');
+        ink.imeText = ink.originValue;
         window.__shSpenSkipIme = true;
         if (input) {
-            if (!continueWrite) ink.originValue = String(input.value || '');
             ink.clearInputId = '';
             if (input.id !== 'inp-sec-note') {
                 input.setAttribute('inputmode', 'decimal');
@@ -312,7 +313,8 @@
         if (!input || (window.__shSpenIsWritableInput && !window.__shSpenIsWritableInput(input))) return false;
         var ink = ensureInk();
         if (ink.input === input && ink.active) {
-            beginWrite(ink, input, true);
+            var more = !!(!ink.showResult && ink.strokes && ink.strokes.length);
+            beginWrite(ink, input, more);
             layoutBoxOn(input);
             if (document.activeElement !== input) {
                 try { input.focus({ preventScroll: true }); } catch (e) { try { input.focus(); } catch (e2) {} }
@@ -432,18 +434,33 @@
         delete ink.pendingCommitIds[input.id];
     }
 
-    function pickFinalNumber(origin, rec) {
-        var orig = onlyNumber(origin);
+    function stripDoubledPrefix(prefix, rec) {
+        prefix = onlyNumber(prefix);
         rec = onlyNumber(rec);
-        if (!rec) return '';
-        if (!orig) return rec;
-        if (rec === orig) return rec;
-        if (rec.indexOf(orig) === 0) return rec;
-        if (orig.indexOf(rec) === 0) return orig;
+        if (!prefix || !rec || rec.length <= prefix.length) return rec;
+        while (rec.indexOf(prefix + prefix) === 0) rec = rec.slice(prefix.length);
+        if (rec.indexOf(prefix) === 0) {
+            var extra = rec.slice(prefix.length);
+            if (extra.indexOf(prefix) === 0) rec = extra;
+        }
         return rec;
     }
 
-    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV29) {
+    function mergeByPosition(origin, rec, mode) {
+        var orig = onlyNumber(origin);
+        rec = onlyNumber(rec);
+        if (!rec) return orig;
+        rec = stripDoubledPrefix(orig, rec);
+        if (!orig) return rec;
+        if (rec === orig) return orig;
+        if (rec.indexOf(orig) === 0) return rec;
+        if (rec.length > orig.length && rec.slice(-orig.length) === orig) return rec;
+        if (mode === 'prepend') return rec + orig;
+        if (mode === 'append') return orig + rec;
+        return rec;
+    }
+
+    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV31) {
         var applyOrig = window.__shSpenApplyFieldEdit;
         window.__shSpenApplyFieldEdit = function (input, recognized, origin, mode) {
             var ink = window.__shSpenInk;
@@ -459,14 +476,26 @@
             if (!canCommitTo(input)) return true;
             if (window.__shPenIsDown) return true;
             var live = input ? onlyNumber(input.value) : '';
-            var from = live || onlyNumber(origin) || (ink && onlyNumber(ink.originValue)) || '';
-            rec = pickFinalNumber(from, rec);
+            var from = onlyNumber(ink && ink.sessionOrigin != null ? ink.sessionOrigin : origin);
+            rec = stripDoubledPrefix(from, rec);
+            rec = stripDoubledPrefix(live, rec);
+            rec = stripDoubledPrefix(onlyNumber(origin), rec);
+            var useMode = mode || 'replace';
+            if (ink && ink.strokes && ink.strokes.length && typeof window.__shSpenEditModeFromStrokes === 'function') {
+                try {
+                    useMode = window.__shSpenEditModeFromStrokes(ink.strokes, input, from, ink.hostRect) || useMode;
+                } catch (e) {}
+            }
+            rec = mergeByPosition(from, rec, useMode);
+            rec = stripDoubledPrefix(from, rec);
+            rec = stripDoubledPrefix(live, rec);
             if (!rec) return false;
             if (ink) {
                 ink.showResult = true;
+                ink.sessionOrigin = rec;
                 ink.originValue = rec;
                 ink.imePending = '';
-                ink.imeText = '';
+                ink.imeText = rec;
             }
             var ok = (input && onlyNumber(input.value) === rec) ? true : applyOrig(input, rec, from, 'replace');
             consumePendingCommit(input);
@@ -474,7 +503,7 @@
             hideBox();
             return ok;
         };
-        window.__shSpenApplyFieldEdit.__shV29 = true;
+        window.__shSpenApplyFieldEdit.__shV31 = true;
     }
 
     if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV23) {
@@ -489,7 +518,13 @@
                 retarget(inp);
                 layoutBoxOn(inp);
             }
-            return downOrig.apply(this, arguments);
+            var r = downOrig.apply(this, arguments);
+            ink = window.__shSpenInk;
+            if (ink) {
+                ink.originValue = ink.sessionOrigin != null ? String(ink.sessionOrigin) : ink.originValue;
+                ink.imeText = ink.originValue || '';
+            }
+            return r;
         };
         window.__shSpenOnPenDown.__shV23 = true;
     }
@@ -564,6 +599,9 @@
             if (ink && ink.holdClear && (ink.input === e.target || ink.clearInputId === e.target.id)) {
                 keepEmpty(e.target);
                 return;
+            }
+            if (ink && (ink.input === e.target || ink.inputId === e.target.id)) {
+                ink.imeText = ink.originValue || ink.sessionOrigin || '';
             }
             if (window.__shPenIsDown && ink && (ink.input === e.target || ink.inputId === e.target.id)) {
                 if (String(e.target.value || '') !== String(ink.originValue || '')) {

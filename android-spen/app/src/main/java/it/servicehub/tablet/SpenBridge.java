@@ -28,12 +28,7 @@ public final class SpenBridge {
     public void recognize(String requestId, String strokesJson) {
         if (requestId == null) return;
         String json = strokesJson == null ? "[]" : strokesJson;
-        ink.recognizeJson(json)
-                .addOnSuccessListener(text -> deliver(requestId, text == null ? "" : text))
-                .addOnFailureListener(err -> {
-                    Log.e("ShSpenInk", "bridge recognize", err);
-                    deliver(requestId, "");
-                });
+        deliver(requestId, "");
     }
 
     private void deliver(String requestId, String text) {

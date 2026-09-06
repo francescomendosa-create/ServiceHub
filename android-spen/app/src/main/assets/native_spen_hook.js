@@ -313,6 +313,7 @@
         }
         return new Promise(function (resolve) {
             var t0 = Date.now();
+            var last = '';
             var tick = function () {
                 if (ink && ink.imeCleared) {
                     resolve('');
@@ -320,16 +321,9 @@
                 }
                 var n = onlyNumber(ink && (ink.imePending || ink.imeText));
                 var origin = onlyNumber(ink && ink.originValue);
-                if (n && n !== origin) {
-                    resolve(n);
-                    return;
-                }
-                if (Date.now() - t0 >= 580) {
-                    if (!raw.length) {
-                        resolve('');
-                        return;
-                    }
-                    window.__shSpenNativeRecognize(raw).then(function (t) { resolve(onlyNumber(t)); });
+                if (n && n !== origin) last = n;
+                if (Date.now() - t0 >= 750) {
+                    resolve(last);
                     return;
                 }
                 setTimeout(tick, 40);
@@ -441,7 +435,7 @@
             if (isLiveWrite(ink)) {
                 var n = onlyNumber(data);
                 if (n && ink) ink.imePending = n;
-                if (e.cancelable) e.preventDefault();
+                if (data && !/^[0-9,]+$/.test(data) && e.cancelable) e.preventDefault();
                 hideLive(e.target, ink);
                 return;
             }

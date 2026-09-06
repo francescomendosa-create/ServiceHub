@@ -413,7 +413,7 @@
         return nativeRecognize(strokeSnap || []).then(function (n) {
             var now = window.__shSpenInk;
             if (!now || now.writeGen !== gen) return '';
-            return n;
+            return dropGhostLeadDigit(n, strokeSnap);
         });
     };
 
@@ -449,6 +449,26 @@
         return rec;
     }
 
+    function strokeGroupCount(strokes) {
+        if (!strokes || !strokes.length) return 0;
+        try {
+            if (typeof window.__shSpenClusterStrokes === 'function') {
+                var g = window.__shSpenClusterStrokes(strokes);
+                if (g && g.length) return g.length;
+            }
+        } catch (e) {}
+        return strokes.length;
+    }
+
+    /** 13 letto 113: una cifra in più uguale alla prima, e i tratti sono di una cifra in meno. */
+    function dropGhostLeadDigit(rec, strokes) {
+        rec = onlyNumber(rec);
+        if (rec.length < 3 || rec.charAt(0) !== rec.charAt(1)) return rec;
+        var groups = strokeGroupCount(strokes);
+        if (groups >= 1 && rec.length === groups + 1) return rec.slice(1);
+        return rec;
+    }
+
     function mergeByPosition(origin, rec, mode) {
         var orig = onlyNumber(origin);
         rec = onlyNumber(rec);
@@ -463,7 +483,7 @@
         return rec;
     }
 
-    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV33) {
+    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV34) {
         var applyOrig = window.__shSpenApplyFieldEdit;
         window.__shSpenApplyFieldEdit = function (input, recognized, origin, mode) {
             var ink = window.__shSpenInk;
@@ -475,6 +495,7 @@
             }
             if (ink && ink.holdClear) return true;
             var rec = onlyNumber(recognized);
+            rec = dropGhostLeadDigit(rec, ink && ink.strokes);
             if (!rec) return false;
             if (!canCommitTo(input)) return true;
             if (window.__shPenIsDown) return true;
@@ -491,6 +512,7 @@
                 } catch (e) {}
             }
             rec = mergeByPosition(from, rec, useMode);
+            rec = dropGhostLeadDigit(rec, ink && ink.strokes);
             rec = stripDoubledPrefix(from, rec);
             rec = stripDoubledPrefix(live, rec);
             if (live && rec === live.charAt(0) + live) rec = live;
@@ -509,7 +531,7 @@
             hideBox();
             return ok;
         };
-        window.__shSpenApplyFieldEdit.__shV33 = true;
+        window.__shSpenApplyFieldEdit.__shV34 = true;
     }
 
     if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV23) {

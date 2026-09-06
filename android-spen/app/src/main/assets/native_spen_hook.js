@@ -123,7 +123,7 @@
         ink.hostRect = { left: left, top: top, w: w, h: h };
         if (fieldChanged && !window.__shPenIsDown) clearInkPixels(ink);
         if (ink.layoutKey === key && ink.canvas && ink.ctx && host.style.display === 'block') {
-            if (document.body) document.body.classList.add('sh-spen-ink-open');
+            syncWriteLock(window.__shPenIsDown);
             return true;
         }
         ink.layoutKey = key;
@@ -137,9 +137,39 @@
         host.classList.add('sh-spen-ink-on');
         if (!ink.canvas || !ink.ctx) sizeCanvas(ink, w, h);
         else if (!window.__shPenIsDown) sizeCanvas(ink, w, h);
-        if (document.body) document.body.classList.add('sh-spen-ink-open');
+        syncWriteLock(window.__shPenIsDown);
         return true;
     }
+
+    function syncWriteLock(writing) {
+        if (!document.body) return;
+        if (writing) {
+            document.body.classList.add('sh-spen-ink-open', 'sh-spen-writing');
+        } else {
+            document.body.classList.remove('sh-spen-writing');
+            document.body.classList.remove('sh-spen-ink-open');
+        }
+    }
+
+    function hideBox() {
+        window.__shSpenWantBox = false;
+        var ink = window.__shSpenInk;
+        if (ink) {
+            ink.hoverInput = null;
+            ink.layoutKey = '';
+        }
+        var host = document.getElementById('sh-spen-ink-host');
+        if (host) {
+            host.style.display = 'none';
+            host.classList.remove('sh-spen-ink-on', 'sh-spen-ink-capture');
+        }
+        syncWriteLock(false);
+        if (ink && !window.__shPenIsDown) {
+            ink.active = false;
+            ink.watchOnly = false;
+        }
+    }
+    window.__shSpenHideBox = hideBox;
 
     function allStrokes(ink) {
         if (!ink) return [];
@@ -317,10 +347,24 @@
         });
     }
 
+    function cloneStrokes(raw) {
+        var out = [];
+        if (!raw) return out;
+        for (var i = 0; i < raw.length; i++) {
+            var pts = raw[i];
+            if (!pts || !pts.length) continue;
+            out.push(pts.map(function (p) { return { x: p.x, y: p.y, t: p.t }; }));
+        }
+        return out;
+    }
+
     window.__shSpenHoverAt = function (x, y) {
         if (window.__shPenIsDown) return false;
         var inp = findFieldAt(x, y);
-        if (!inp) return false;
+        if (!inp) {
+            hideBox();
+            return false;
+        }
         ensureInk().hoverInput = inp;
         return layoutBoxOn(inp);
     };
@@ -424,7 +468,7 @@
         window.__shSpenOnPenMove.__shV23 = true;
     }
 
-    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV23) {
+    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV25) {
         var upOrig = window.__shSpenOnPenUp;
         window.__shSpenOnPenUp = function (ev, cancelled) {
             var ink = window.__shSpenInk;
@@ -433,42 +477,43 @@
                 ink.strokes = [];
                 ink.current = null;
                 keepEmpty(boundInput(ink));
+                hideBox();
                 return;
             }
             var target = boundInput(ink);
-            if (target && allStrokes(ink).length) markPendingCommit(target);
-            var r = upOrig.apply(this, arguments);
-            setTimeout(function () {
-                var later = window.__shSpenInk;
-                if (!later || window.__shPenIsDown) return;
-                if (later.showResult || later.holdClear) clearInkPixels(later);
-            }, 360);
-            return r;
+            var snap = cloneStrokes(allStrokes(ink));
+            var origin = ink ? (ink.originValue || '') : '';
+            if (target && snap.length) markPendingCommit(target);
+            upOrig.apply(this, arguments);
+            clearInkPixels(ink);
+            hideBox();
+            if (target && snap.length && !cancelled) {
+                window.__shSpenRecognizeStrokes(snap).then(function (rec) {
+                    if (!rec || !canCommitTo(target)) return;
+                    applyFinal(target, rec, origin, 'replace');
+                });
+            }
         };
-        window.__shSpenOnPenUp.__shV23 = true;
+        window.__shSpenOnPenUp.__shV25 = true;
     }
 
-    if (!window.__shNativeHookV23) {
-        window.__shNativeHookV23 = true;
+    if (!window.__shNativeHookV25) {
+        window.__shNativeHookV25 = true;
         if (!document.getElementById('sh-spen-noflicker-css')) {
             var css = document.createElement('style');
             css.id = 'sh-spen-noflicker-css';
-            css.textContent = 'html.sh-android-tablet-boot .main-container input,html.sh-android-tablet-boot .main-container textarea{-webkit-tap-highlight-color:transparent;caret-color:transparent;}';
+            css.textContent = 'html.sh-android-tablet-boot .main-container input,html.sh-android-tablet-boot .main-container textarea{-webkit-tap-highlight-color:transparent;caret-color:transparent;}'
+                + 'html.sh-android-tablet-boot body.sh-spen-ink-open:not(.sh-spen-writing) .main-container{overflow:auto!important;overscroll-behavior:auto!important;}';
             (document.head || document.documentElement).appendChild(css);
         }
-        var hostWatch = function () {
-            var host = document.getElementById('sh-spen-ink-host');
-            if (!host || host.__shKeepBox) return;
-            host.__shKeepBox = true;
-            new MutationObserver(function () {
-                var ink = window.__shSpenInk;
-                if (!ink || window.__shPenIsDown || ink.holdClear) return;
-                var keep = ink.hoverInput || boundInput(ink);
-                if (keep && host.style.display === 'none') layoutBoxOn(keep);
-            }).observe(host, { attributes: true, attributeFilter: ['style', 'class'] });
-        };
-        hostWatch();
-        setTimeout(hostWatch, 900);
+        if (typeof window.__shSpenKeepWriteViewport === 'function' && !window.__shSpenKeepWriteViewport.__shV25) {
+            var keepView = window.__shSpenKeepWriteViewport;
+            window.__shSpenKeepWriteViewport = function () {
+                if (!window.__shPenIsDown) return;
+                return keepView.apply(this, arguments);
+            };
+            window.__shSpenKeepWriteViewport.__shV25 = true;
+        }
         document.addEventListener('beforeinput', function (e) {
             if (!isPlantField(e.target)) return;
             var typ = e.inputType || '';
@@ -509,18 +554,23 @@
             if (typeof ev.pressure === 'number' && ev.pressure > 0.08) return;
             window.__shSpenHoverAt(ev.clientX, ev.clientY);
         }, { capture: true, passive: true });
+        document.addEventListener('pointerleave', function (ev) {
+            if (!ev || ev.pointerType !== 'pen' || window.__shPenIsDown) return;
+            hideBox();
+        }, true);
         setInterval(function () {
             var ink = window.__shSpenInk;
-            if (!ink) return;
-            if (ink.holdClear) {
-                keepEmpty(boundInput(ink));
-                if (ink.clearInputId) keepEmpty(document.getElementById(ink.clearInputId));
-            }
-            var host = document.getElementById('sh-spen-ink-host');
-            var keep = ink.hoverInput || boundInput(ink);
-            if (host && keep && host.style.display === 'none' && !window.__shPenIsDown) {
-                layoutBoxOn(keep);
-            }
+            if (!ink || !ink.holdClear) return;
+            keepEmpty(boundInput(ink));
+            if (ink.clearInputId) keepEmpty(document.getElementById(ink.clearInputId));
         }, 80);
+    }
+    if (typeof window.__shSpenKeepWriteViewport === 'function' && !window.__shSpenKeepWriteViewport.__shV25) {
+        var keepViewLate = window.__shSpenKeepWriteViewport;
+        window.__shSpenKeepWriteViewport = function () {
+            if (!window.__shPenIsDown) return;
+            return keepViewLate.apply(this, arguments);
+        };
+        window.__shSpenKeepWriteViewport.__shV25 = true;
     }
 })();

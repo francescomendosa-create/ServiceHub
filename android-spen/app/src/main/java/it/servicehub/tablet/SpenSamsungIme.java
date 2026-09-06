@@ -32,6 +32,11 @@ final class SpenSamsungIme {
                 if (now - lastHoverMs < 28) return false;
                 lastHoverMs = now;
                 hoverAt(ev.getX(), ev.getY());
+            } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
+                lastHoverKey = "";
+                webView.evaluateJavascript(
+                        "(function(){try{if(window.__shSpenHideBox)window.__shSpenHideBox();return true;}catch(e){return false;}})()",
+                        null);
             }
             return false;
         });

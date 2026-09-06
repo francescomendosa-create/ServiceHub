@@ -166,14 +166,13 @@
     }
 
     function isLiveWrite(ink) {
-        if (window.__shPenIsDown) return true;
-        return !!(ink && ink.active && !ink.showResult && !ink.released);
+        return !!window.__shPenIsDown;
     }
 
     function hideLive(input, ink) {
-        if (!input || !ink || ink.showResult) return;
-        if (ink.cutGuardUntil && Date.now() < ink.cutGuardUntil) return;
-        if (isLiveWrite(ink)) maskField(input);
+        if (!input || !ink) return;
+        if (!window.__shPenIsDown) return;
+        maskField(input);
         var hold = ink.originValue != null ? String(ink.originValue) : '';
         if (String(input.value || '') !== hold) input.value = hold;
     }
@@ -182,12 +181,15 @@
         if (!ink) return;
         ink.imeCleared = true;
         ink.imePending = '';
-        ink.imeText = ink.originValue || '';
+        ink.imeText = '';
+        ink.originValue = '';
         ink.pendingPred = Promise.resolve('');
-        ink.cutGuardUntil = Date.now() + 1200;
+        ink.cutGuardUntil = Date.now() + 800;
         ink.showResult = true;
+        ink.released = true;
         ink.strokes = [];
         ink.current = null;
+        ink.sawImeClear = false;
         window.__shSpenSkipIme = true;
     }
 
@@ -211,7 +213,6 @@
 
     function shouldClear(ink) {
         if (!ink) return false;
-        if (ink.sawImeClear || ink.imeCleared) return true;
         if (!onlyNumber(ink.originValue)) return false;
         return isCut(allStrokes(ink), ink.hostRect);
     }
@@ -352,6 +353,9 @@
                 ink.released = true;
                 ink.imeCleared = false;
                 ink.cutGuardUntil = 0;
+                ink.originValue = rec;
+                ink.imePending = '';
+                ink.imeText = rec;
                 unmaskField(input);
             }
             return applyOrig(input, rec, origin, mode || 'replace');
@@ -418,7 +422,6 @@
                 return;
             }
             if (ink && ink.imePending) ink.imeText = ink.imePending;
-            if (ink && ink.input) hideLive(ink.input, ink);
             return upOrig.apply(this, arguments);
         };
         window.__shSpenOnPenUp.__shV15 = true;
@@ -451,12 +454,8 @@
                 return;
             }
             var next = onlyNumber(e.target.value);
-            if (ink.active && !ink.showResult) {
+            if (window.__shPenIsDown) {
                 if (next && next !== onlyNumber(ink.originValue)) ink.imePending = next;
-                if (!next && onlyNumber(ink.originValue)) {
-                    ink.sawImeClear = true;
-                    return;
-                }
                 hideLive(e.target, ink);
             }
         }, true);
@@ -473,7 +472,7 @@
                 ink.cutGuardUntil = 0;
             }
             if (ink && ink.active && ink.input) layoutBoxOn(ink.hoverInput || ink.input);
-            if (ink && ink.active && !ink.showResult && !ink.imeCleared && ink.input) hideLive(ink.input, ink);
+            if (window.__shPenIsDown && ink && ink.input) hideLive(ink.input, ink);
             if (!ink || !ink.active) return;
             var age = Date.now() - (ink.sessionStartMs || ink.startMs || 0);
             if (window.__shPenIsDown && (Date.now() - (window.__shPenLastEventTs || 0)) > 1600) window.__shPenIsDown = false;

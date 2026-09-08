@@ -413,7 +413,7 @@
         return nativeRecognize(strokeSnap || []).then(function (n) {
             var now = window.__shSpenInk;
             if (!now || now.writeGen !== gen) return '';
-            return dropGhostLeadDigit(n, strokeSnap);
+            return n;
         });
     };
 
@@ -449,26 +449,6 @@
         return rec;
     }
 
-    function strokeGroupCount(strokes) {
-        if (!strokes || !strokes.length) return 0;
-        try {
-            if (typeof window.__shSpenClusterStrokes === 'function') {
-                var g = window.__shSpenClusterStrokes(strokes);
-                if (g && g.length) return g.length;
-            }
-        } catch (e) {}
-        return strokes.length;
-    }
-
-    /** 13 letto 113: una cifra in più uguale alla prima, e i tratti sono di una cifra in meno. */
-    function dropGhostLeadDigit(rec, strokes) {
-        rec = onlyNumber(rec);
-        if (rec.length < 3 || rec.charAt(0) !== rec.charAt(1)) return rec;
-        var groups = strokeGroupCount(strokes);
-        if (groups >= 1 && rec.length === groups + 1) return rec.slice(1);
-        return rec;
-    }
-
     function mergeByPosition(origin, rec, mode) {
         var orig = onlyNumber(origin);
         rec = onlyNumber(rec);
@@ -483,7 +463,7 @@
         return rec;
     }
 
-    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV35) {
+    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV36) {
         var applyOrig = window.__shSpenApplyFieldEdit;
         window.__shSpenApplyFieldEdit = function (input, recognized, origin, mode) {
             var ink = window.__shSpenInk;
@@ -529,7 +509,7 @@
             hideBox();
             return ok;
         };
-        window.__shSpenApplyFieldEdit.__shV35 = true;
+        window.__shSpenApplyFieldEdit.__shV36 = true;
     }
 
     if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV23) {

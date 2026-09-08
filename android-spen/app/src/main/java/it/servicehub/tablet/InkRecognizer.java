@@ -19,8 +19,6 @@ import com.google.mlkit.vision.digitalink.recognition.WritingArea;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
@@ -165,64 +163,33 @@ final class InkRecognizer {
         return picked;
     }
 
-    private static int digitCount(String n) {
-        int d = 0;
-        for (int c = 0; c < n.length(); c++) {
-            if (n.charAt(c) >= '0' && n.charAt(c) <= '9') d++;
-        }
-        return d;
-    }
-
-    /** 113 è "1"+"13": scarta il più lungo se esiste già il più corto. Non tocca 11 vs 1. */
-    private static boolean isDoubledLeadExtra(String n, List<String> nums) {
-        if (n == null || n.length() < 3) return false;
-        char lead = n.charAt(0);
-        for (int i = 0; i < nums.size(); i++) {
-            String s = nums.get(i);
-            if (s == null || s.length() >= n.length()) continue;
-            if (n.equals(lead + s) && s.charAt(0) == lead) return true;
-        }
-        return false;
-    }
-
     private static String pickBestNumber(RecognitionResult result) {
-        List<String> nums = new ArrayList<>();
-        StringBuilder dump = new StringBuilder("candidati=");
-        int limit = Math.min(result.getCandidates().size(), 12);
-        for (int i = 0; i < limit; i++) {
+        String best = "";
+        int bestDigits = 0;
+        boolean bestClean = false;
+        for (int i = 0; i < result.getCandidates().size(); i++) {
             String raw = result.getCandidates().get(i).getText();
-            dump.append('[').append(i).append(']').append(raw).append(' ');
             if (isSymbolGarbage(raw)) continue;
             String n = normalizeNumber(raw);
-            if (n.isEmpty() || digitCount(n) == 0) continue;
-            if (!nums.contains(n)) nums.add(n);
-        }
-        Log.i(TAG, dump.toString().trim());
-
-        List<String> filtered = new ArrayList<>();
-        for (int i = 0; i < nums.size(); i++) {
-            String n = nums.get(i);
-            if (isDoubledLeadExtra(n, nums)) {
-                Log.i(TAG, "scarto doppio " + n);
+            if (n.isEmpty()) continue;
+            boolean clean = raw.matches("[0-9OolI|sSbB.,\\s]+");
+            int d = 0;
+            for (int c = 0; c < n.length(); c++) {
+                if (n.charAt(c) >= '0' && n.charAt(c) <= '9') d++;
+            }
+            if (d == 0) continue;
+            if (!bestClean && clean) {
+                best = n;
+                bestDigits = d;
+                bestClean = true;
                 continue;
             }
-            filtered.add(n);
-        }
-        if (filtered.isEmpty()) filtered = nums;
-        if (filtered.isEmpty()) return "";
-
-        // Il primo è il più attendibile. Allunga 1→13 solo se il 13 è subito dopo.
-        // Non prendere 49/17 da un candidato in fondo alla lista.
-        String best = filtered.get(0);
-        if (digitCount(best) == 1) {
-            int look = Math.min(filtered.size(), 3);
-            for (int i = 1; i < look; i++) {
-                String n = filtered.get(i);
-                if (digitCount(n) == 2 && n.startsWith(best)) {
-                    best = n;
-                    break;
-                }
+            if (bestClean && !clean) continue;
+            if (d > bestDigits || (d == bestDigits && n.length() > best.length())) {
+                best = n;
+                bestDigits = d;
             }
+            if (bestDigits >= 1 && i >= 8) break;
         }
         return best;
     }

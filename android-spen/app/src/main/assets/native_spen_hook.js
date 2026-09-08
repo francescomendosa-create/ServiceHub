@@ -483,7 +483,7 @@
         return rec;
     }
 
-    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV34) {
+    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV35) {
         var applyOrig = window.__shSpenApplyFieldEdit;
         window.__shSpenApplyFieldEdit = function (input, recognized, origin, mode) {
             var ink = window.__shSpenInk;
@@ -495,7 +495,6 @@
             }
             if (ink && ink.holdClear) return true;
             var rec = onlyNumber(recognized);
-            rec = dropGhostLeadDigit(rec, ink && ink.strokes);
             if (!rec) return false;
             if (!canCommitTo(input)) return true;
             if (window.__shPenIsDown) return true;
@@ -512,7 +511,6 @@
                 } catch (e) {}
             }
             rec = mergeByPosition(from, rec, useMode);
-            rec = dropGhostLeadDigit(rec, ink && ink.strokes);
             rec = stripDoubledPrefix(from, rec);
             rec = stripDoubledPrefix(live, rec);
             if (live && rec === live.charAt(0) + live) rec = live;
@@ -531,7 +529,7 @@
             hideBox();
             return ok;
         };
-        window.__shSpenApplyFieldEdit.__shV34 = true;
+        window.__shSpenApplyFieldEdit.__shV35 = true;
     }
 
     if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV23) {

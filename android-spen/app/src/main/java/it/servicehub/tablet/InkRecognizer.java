@@ -209,15 +209,19 @@ final class InkRecognizer {
             filtered.add(n);
         }
         if (filtered.isEmpty()) filtered = nums;
+        if (filtered.isEmpty()) return "";
 
-        String best = "";
-        int bestDigits = 0;
-        for (int i = 0; i < filtered.size(); i++) {
-            String n = filtered.get(i);
-            int d = digitCount(n);
-            if (d > bestDigits) {
-                best = n;
-                bestDigits = d;
+        // Il primo è il più attendibile. Allunga 1→13 solo se il 13 è subito dopo.
+        // Non prendere 49/17 da un candidato in fondo alla lista.
+        String best = filtered.get(0);
+        if (digitCount(best) == 1) {
+            int look = Math.min(filtered.size(), 3);
+            for (int i = 1; i < look; i++) {
+                String n = filtered.get(i);
+                if (digitCount(n) == 2 && n.startsWith(best)) {
+                    best = n;
+                    break;
+                }
             }
         }
         return best;

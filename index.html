@@ -1031,7 +1031,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.06.14-robot-v564';
+        window.SERVICEHUB_BUILD = '2026.06.14-robot-v565';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -4344,8 +4344,14 @@ window.colorPreviewNumber = function(tankName, value) {
 
             try {
                 var t = localStorage.getItem('gemini_chat_transcript') || '';
-                if (t.length > 80000) {
-                    localStorage.setItem('gemini_chat_transcript', t.slice(-80000));
+                if (typeof window.clipAIChatTranscript === 'function') {
+                    var clipped = window.clipAIChatTranscript(t, window.AI_CHAT_KEEP_EXCHANGES || 24);
+                    if (clipped !== t) {
+                        localStorage.setItem('gemini_chat_transcript', clipped);
+                        trimNotes.push('chat AI accorciata');
+                    }
+                } else if (t.length > 24000) {
+                    localStorage.setItem('gemini_chat_transcript', t.slice(-24000));
                     trimNotes.push('chat AI accorciata');
                 }
             } catch (e4) {}
@@ -10722,9 +10728,12 @@ window.updateStoricoButton = async function() {
             }
         };
 
-        // Storico conversazione AI (testo completo, stesso contenuto della finestra chat)
+        // Storico conversazione AI (solo le ultime battute in finestra e in salvataggio)
         window.saveAIChatTranscript = async function(transcript) {
-            const t = transcript == null ? '' : String(transcript);
+            var t = transcript == null ? '' : String(transcript);
+            if (typeof window.clipAIChatTranscript === 'function') {
+                t = window.clipAIChatTranscript(t, window.AI_CHAT_KEEP_EXCHANGES || 24);
+            }
             const ts = String(Date.now());
             try {
                 localStorage.setItem('gemini_chat_transcript', t);
@@ -60480,14 +60489,30 @@ window.splitAIChatExchanges = function(text) {
     return text.split(/\n\n(?=Tu: )/).map(function(s) { return s.trim(); }).filter(Boolean);
 };
 
+window.AI_CHAT_SHOW_EXCHANGES = 14;
+window.AI_CHAT_KEEP_EXCHANGES = 24;
+
+window.clipAIChatTranscript = function(text, maxParts) {
+    text = window.normalizeAIChatTranscript(text);
+    if (!text) return '';
+    var n = maxParts == null ? (window.AI_CHAT_SHOW_EXCHANGES || 14) : maxParts;
+    var parts = window.splitAIChatExchanges(text);
+    if (parts.length <= n) return text;
+    return parts.slice(-n).join('\n\n');
+};
+
 window.mergeAIChatTranscripts = function(cloud, local, cloudUpdated, localUpdated) {
+    var keep = window.AI_CHAT_KEEP_EXCHANGES || 24;
+    var finish = function(t) {
+        return window.clipAIChatTranscript(t, keep);
+    };
     cloud = window.normalizeAIChatTranscript(cloud);
     local = window.normalizeAIChatTranscript(local);
-    if (!cloud) return local;
-    if (!local) return cloud;
-    if (cloud === local) return cloud;
-    if (local.indexOf(cloud) >= 0) return local;
-    if (cloud.indexOf(local) >= 0) return cloud;
+    if (!cloud) return finish(local);
+    if (!local) return finish(cloud);
+    if (cloud === local) return finish(cloud);
+    if (local.indexOf(cloud) >= 0) return finish(local);
+    if (cloud.indexOf(local) >= 0) return finish(cloud);
 
     var cloudParts = window.splitAIChatExchanges(cloud);
     var localParts = window.splitAIChatExchanges(local);
@@ -60506,11 +60531,13 @@ window.mergeAIChatTranscripts = function(cloud, local, cloudUpdated, localUpdate
         merged = cloudParts.concat(localParts.slice(cloudParts.length));
     }
 
-    return merged.join('\n\n');
+    return finish(merged.join('\n\n'));
 };
 
 window.renderTranscriptToHistoryHtml = function(text) {
-    text = window.normalizeAIChatTranscript(text);
+    text = window.clipAIChatTranscript
+        ? window.clipAIChatTranscript(text, window.AI_CHAT_SHOW_EXCHANGES || 14)
+        : window.normalizeAIChatTranscript(text);
     if (!text) {
         return window._escapeHtmlConv("Inizia una conversazione con l'AI...");
     }
@@ -60577,6 +60604,13 @@ window.showConversationModal = async function(draftUserLine) {
     } catch (e) {}
 
     let historyText = (cloudText || '').trim();
+    if (typeof window.clipAIChatTranscript === 'function') {
+        var kept = window.clipAIChatTranscript(historyText, window.AI_CHAT_KEEP_EXCHANGES || 24);
+        if (kept.length < historyText.length && window.saveAIChatTranscript) {
+            void window.saveAIChatTranscript(kept);
+        }
+        historyText = kept;
+    }
     const historyHtml = window.renderTranscriptToHistoryHtml
         ? window.renderTranscriptToHistoryHtml(historyText)
         : window._escapeHtmlConv(historyText || "Inizia una conversazione con l'AI...").replace(/\n/g, '<br>');
@@ -60628,6 +60662,8 @@ window.showConversationModal = async function(draftUserLine) {
     `;
     document.body.appendChild(div);
     window.initConversationModal(draftUserLine || '');
+    var histEl = document.getElementById('conversation-history');
+    if (histEl) histEl.scrollTop = histEl.scrollHeight;
 };
 
 window.initConversationModal = function(draftUserLine) {

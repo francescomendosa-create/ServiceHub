@@ -413,9 +413,27 @@
         return nativeRecognize(strokeSnap || []).then(function (n) {
             var now = window.__shSpenInk;
             if (!now || now.writeGen !== gen) return '';
-            return n;
+            return collapseDoubledLead(n, strokeSnap);
         });
-    };
+    }
+
+    /** Solo 13→113. Non toccare 11/22: due cifre uguali sono un numero vero. */
+    function collapseDoubledLead(rec, strokes) {
+        rec = onlyNumber(rec);
+        if (!rec) return rec;
+        var groups = 0;
+        if (strokes && strokes.length) {
+            groups = strokes.length;
+            try {
+                if (typeof window.__shSpenClusterStrokes === 'function') {
+                    var g = window.__shSpenClusterStrokes(strokes);
+                    if (g && g.length) groups = g.length;
+                }
+            } catch (e) {}
+        }
+        if (groups === 2 && rec.length === 3 && rec.charAt(0) === rec.charAt(1)) return rec.slice(1);
+        return rec;
+    }
 
     function canCommitTo(input) {
         var ink = window.__shSpenInk;
@@ -463,7 +481,7 @@
         return rec;
     }
 
-    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV36) {
+    if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV38) {
         var applyOrig = window.__shSpenApplyFieldEdit;
         window.__shSpenApplyFieldEdit = function (input, recognized, origin, mode) {
             var ink = window.__shSpenInk;
@@ -493,7 +511,7 @@
             rec = mergeByPosition(from, rec, useMode);
             rec = stripDoubledPrefix(from, rec);
             rec = stripDoubledPrefix(live, rec);
-            if (live && rec === live.charAt(0) + live) rec = live;
+            if (live.length >= 2 && rec === live.charAt(0) + live) rec = live;
             if (!rec) return false;
             if (ink) {
                 ink.showResult = true;
@@ -502,6 +520,8 @@
                 ink.originValue = rec;
                 ink.imePending = '';
                 ink.imeText = rec;
+                try { clearTimeout(ink.commitTimer); } catch (e) {}
+                try { clearTimeout(ink.forceCloseTimer); } catch (e2) {}
             }
             var ok = (input && onlyNumber(input.value) === rec) ? true : applyOrig(input, rec, from, 'replace');
             consumePendingCommit(input);
@@ -509,7 +529,7 @@
             hideBox();
             return ok;
         };
-        window.__shSpenApplyFieldEdit.__shV36 = true;
+        window.__shSpenApplyFieldEdit.__shV38 = true;
     }
 
     if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV23) {

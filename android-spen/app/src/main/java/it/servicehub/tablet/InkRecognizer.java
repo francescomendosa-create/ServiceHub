@@ -191,7 +191,40 @@ final class InkRecognizer {
             }
             if (bestDigits >= 1 && i >= 8) break;
         }
-        return best;
+        String first = firstCleanNumber(result);
+        String fixed = undoubleFirstDigit(best, first);
+        if (!fixed.isEmpty() && !fixed.equals(best)) {
+            Log.i(TAG, "prima cifra doppia " + best + "->" + fixed);
+        }
+        return fixed.isEmpty() ? best : fixed;
+    }
+
+    private static String firstCleanNumber(RecognitionResult result) {
+        int limit = Math.min(result.getCandidates().size(), 8);
+        for (int i = 0; i < limit; i++) {
+            String raw = result.getCandidates().get(i).getText();
+            if (isSymbolGarbage(raw)) continue;
+            if (!raw.matches("[0-9OolI|sSbB.,\\s]+")) continue;
+            String n = normalizeNumber(raw);
+            if (n.isEmpty()) continue;
+            return n;
+        }
+        return "";
+    }
+
+    /** Solo 13→113 (una cifra in più davanti). Non toccare 11/22: sono numeri veri. */
+    private static String undoubleFirstDigit(String picked, String first) {
+        if (picked == null || picked.isEmpty() || first == null || first.isEmpty()) {
+            return picked == null ? "" : picked;
+        }
+        if (picked.equals(first)) return picked;
+        if (first.length() >= 2
+                && picked.length() == first.length() + 1
+                && picked.charAt(0) == first.charAt(0)
+                && picked.substring(1).equals(first)) {
+            return first;
+        }
+        return picked;
     }
 
     private static boolean isSymbolGarbage(String raw) {

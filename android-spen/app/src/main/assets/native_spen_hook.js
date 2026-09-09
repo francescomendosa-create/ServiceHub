@@ -459,22 +459,70 @@
         return (el && el.closest) ? el.closest(HORIZ_BAR_SEL) : null;
     }
 
-    function inputFromSigla(el) {
-        if (!el || !el.closest) return null;
-        if (vertLabelFromEl(el) || horizBarFromEl(el) || isAmbPopupTrigger(el)) return null;
-        var lab = el.closest('.cell-label-main, .bd-label, .amb-label, .nott-stocc-sigla-cell, .cond-tendina-lbl');
-        if (!lab) return null;
+    var SIGLA_SEL = '.cell-label-main, .bd-label, .amb-label, .nott-stocc-sigla-cell, .cond-tendina-lbl';
+
+    function writableOrNull(inp) {
+        if (!inp) return null;
+        if (window.__shSpenIsWritableInput && !window.__shSpenIsWritableInput(inp)) return null;
+        return inp;
+    }
+
+    function pairInputFromLabel(lab) {
+        if (!lab || !lab.closest) return null;
         var inp = null;
         try {
             if (typeof window.resolveNumpadInputFromLabel === 'function') inp = window.resolveNumpadInputFromLabel(lab);
         } catch (e) {}
+        if (!inp && lab.classList.contains('cond-tendina-lbl')) {
+            var cell = lab.closest('.cond-tendina-cell');
+            if (cell) inp = cell.querySelector('input:not([type="hidden"]), textarea');
+        }
         if (!inp) {
-            var row = lab.closest('tr, .amb-row, .bd-input-row, .nott-stocc-row, .cond-tendina-cell');
+            var nxt = lab.nextElementSibling;
+            if (nxt) {
+                if (nxt.tagName === 'INPUT' || nxt.tagName === 'TEXTAREA') inp = nxt;
+                else if (nxt.querySelector) inp = nxt.querySelector('input:not([type="hidden"]), textarea');
+            }
+        }
+        if (!inp) {
+            var row = lab.closest('tr, .amb-row, .bd-input-row, .nott-stocc-row, .cond-tendina-cell, .analisi-inline-cell');
             if (row) inp = row.querySelector('input:not([type="hidden"]), textarea');
         }
-        if (!inp) return null;
-        if (window.__shSpenIsWritableInput && !window.__shSpenIsWritableInput(inp)) return null;
-        return inp;
+        return writableOrNull(inp);
+    }
+
+    function labelFromEl(el) {
+        if (!el || !el.closest) return null;
+        if (vertLabelFromEl(el) || horizBarFromEl(el) || isAmbPopupTrigger(el)) return null;
+        return el.closest(SIGLA_SEL);
+    }
+
+    function inputFromSigla(el) {
+        return pairInputFromLabel(labelFromEl(el));
+    }
+
+    function inputFromSiglaAt(x, y) {
+        var hit = inputFromSigla(elementFromPen(x, y));
+        if (hit) return hit;
+        var labs = document.querySelectorAll(SIGLA_SEL);
+        for (var i = 0; i < labs.length; i++) {
+            var lab = labs[i];
+            if (vertLabelFromEl(lab) || horizBarFromEl(lab) || isAmbPopupTrigger(lab)) continue;
+            var r = lab.getBoundingClientRect();
+            if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue;
+            var inp = pairInputFromLabel(lab);
+            if (inp) return inp;
+        }
+        return null;
+    }
+
+    function horizBarNear(x, y) {
+        var bar = hoverHorizBar;
+        if (!bar || !bar.isConnected) return null;
+        var r = bar.getBoundingClientRect();
+        var pad = 18;
+        if (x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad) return bar;
+        return null;
     }
 
     function startPressIdFromEl(el) {
@@ -579,13 +627,16 @@
             if (stay) return layoutBoxOn(stay);
         }
         var bar = horizBarFromEl(over);
+        var sigInp = inputFromSigla(over) || inputFromSiglaAt(x, y);
+        if (sigInp && !bar) {
+            hoverHorizBar = null;
+            return layoutBoxOn(sigInp);
+        }
         if (bar) {
             hoverHorizBar = bar;
             return placeFrame(bar, 'hbar', null);
         }
         hoverHorizBar = null;
-        var sigInp = inputFromSigla(over);
-        if (sigInp) return layoutBoxOn(sigInp);
         var inp = findFieldAt(x, y);
         if (!inp) {
             if (!writing) hideBox();
@@ -711,7 +762,27 @@
         window.__shSpenApplyFieldEdit.__shV39 = true;
     }
 
-    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV42) {
+    if (typeof window.__shSpenFindWritableInput === 'function' && !window.__shSpenFindWritableInput.__shV43) {
+        var findElOrig = window.__shSpenFindWritableInput;
+        window.__shSpenFindWritableInput = function (el) {
+            var fromLab = inputFromSigla(el);
+            if (fromLab) return fromLab;
+            return findElOrig.apply(this, arguments);
+        };
+        window.__shSpenFindWritableInput.__shV43 = true;
+    }
+
+    if (typeof window.__shSpenFindWritableInputAt === 'function' && !window.__shSpenFindWritableInputAt.__shV43) {
+        var findAtOrig = window.__shSpenFindWritableInputAt;
+        window.__shSpenFindWritableInputAt = function (x, y) {
+            var fromLab = inputFromSiglaAt(x, y);
+            if (fromLab) return fromLab;
+            return findAtOrig.apply(this, arguments);
+        };
+        window.__shSpenFindWritableInputAt.__shV43 = true;
+    }
+
+    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV43) {
         var downOrig = window.__shSpenOnPenDown;
         window.__shSpenOnPenDown = function (ev) {
             pinScrollHere();
@@ -730,6 +801,13 @@
                 };
                 return;
             }
+            var sigInp = ev ? (inputFromSigla(el) || inputFromSiglaAt(ev.clientX, ev.clientY)) : inputFromSigla(el);
+            if (sigInp) {
+                penUiTap = null;
+                hoverHorizBar = null;
+                retarget(sigInp);
+                return;
+            }
             var vert = vertLabelFromEl(el);
             if (vert) {
                 hideBox();
@@ -737,7 +815,7 @@
                 penChrome = { kind: 'vert', x: ev.clientX, y: ev.clientY, lastY: ev.clientY, moved: false };
                 return;
             }
-            var bar = horizBarFromEl(el) || hoverHorizBar;
+            var bar = horizBarFromEl(el) || (ev ? horizBarNear(ev.clientX, ev.clientY) : null);
             if (bar) {
                 placeFrame(bar, 'hbar', null);
                 penUiTap = null;
@@ -761,8 +839,7 @@
                 return;
             }
             penUiTap = null;
-            var sigInp = inputFromSigla(el);
-            var inp = sigInp || (ev ? findFieldAt(ev.clientX, ev.clientY) : null);
+            var inp = ev ? findFieldAt(ev.clientX, ev.clientY) : null;
             if (!inp && ev && window.__shSpenFindWritableInput) inp = window.__shSpenFindWritableInput(ev.target);
             var ink = ensureInk();
             if (!inp && ink) inp = ink.hoverInput;
@@ -778,10 +855,10 @@
             }
             return r;
         };
-        window.__shSpenOnPenDown.__shV42 = true;
+        window.__shSpenOnPenDown.__shV43 = true;
     }
 
-    if (typeof window.__shSpenOnPenMove === 'function' && !window.__shSpenOnPenMove.__shV42) {
+    if (typeof window.__shSpenOnPenMove === 'function' && !window.__shSpenOnPenMove.__shV43) {
         var moveOrig = window.__shSpenOnPenMove;
         window.__shSpenOnPenMove = function (ev) {
             if (penChrome && ev) {
@@ -806,10 +883,10 @@
             if (ink && !ink.holdClear && looksLikeCut(ink)) forceClear(ink);
             return r;
         };
-        window.__shSpenOnPenMove.__shV42 = true;
+        window.__shSpenOnPenMove.__shV43 = true;
     }
 
-    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV42) {
+    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV43) {
         var upOrig = window.__shSpenOnPenUp;
         window.__shSpenOnPenUp = function (ev, cancelled) {
             if (penChrome) {
@@ -848,7 +925,7 @@
             if (target && allStrokes(ink).length) markPendingCommit(target);
             return upOrig.apply(this, arguments);
         };
-        window.__shSpenOnPenUp.__shV42 = true;
+        window.__shSpenOnPenUp.__shV43 = true;
     }
 
     if (!window.__shNativeHookV25) {

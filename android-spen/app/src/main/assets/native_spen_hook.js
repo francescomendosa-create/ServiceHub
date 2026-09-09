@@ -106,13 +106,12 @@
         }
     }
 
-    function placeFrame(boxEl, keyId, hoverInput) {
-        if (!boxEl || !boxEl.isConnected) return false;
+    function placeFrameFromRect(r, keyId, hoverInput, pad) {
+        if (!r || r.width < 2 || r.height < 2) return false;
         var ink = ensureInk();
         var host = ensureHost();
         if (!host) return false;
-        var r = boxEl.getBoundingClientRect();
-        var pad = 6;
+        pad = pad == null ? 2 : pad;
         var left = Math.max(0, r.left - pad);
         var top = Math.max(0, r.top - pad);
         var w = r.width + pad * 2;
@@ -141,8 +140,68 @@
         return true;
     }
 
+    function placeFrame(boxEl, keyId, hoverInput) {
+        if (!boxEl || !boxEl.isConnected) return false;
+        var r = boxEl.getBoundingClientRect();
+        return placeFrameFromRect({
+            left: r.left,
+            top: r.top,
+            width: r.width,
+            height: r.height
+        }, keyId, hoverInput, 2);
+    }
+
+    function clipRectToOverflow(el, left, top, right, bottom) {
+        var p = el && el.parentElement;
+        while (p && p !== document.body && p !== document.documentElement) {
+            var st;
+            try { st = window.getComputedStyle(p); } catch (e) { st = null; }
+            if (st) {
+                var ox = st.overflowX;
+                var oy = st.overflowY;
+                if (ox === 'auto' || ox === 'scroll' || ox === 'hidden' ||
+                    oy === 'auto' || oy === 'scroll' || oy === 'hidden') {
+                    var pr = p.getBoundingClientRect();
+                    left = Math.max(left, pr.left);
+                    top = Math.max(top, pr.top);
+                    right = Math.min(right, pr.right);
+                    bottom = Math.min(bottom, pr.bottom);
+                }
+            }
+            p = p.parentElement;
+        }
+        return { left: left, top: top, right: right, bottom: bottom };
+    }
+
+    function numericHitRect(input) {
+        if (!input || !input.getBoundingClientRect) return null;
+        var wrap = (input.closest && input.closest('.amb-input-box, .bd-input-box, .nott-stocc-inp-cell')) || input;
+        var r = wrap.getBoundingClientRect();
+        var left = r.left;
+        var top = r.top;
+        var right = r.right;
+        var bottom = r.bottom;
+        var row = input.closest && input.closest('.amb-row');
+        var status = row && row.querySelector('.tank-status-single');
+        if (status) {
+            var sr = status.getBoundingClientRect();
+            if (sr.left > left + 8) right = Math.min(right, sr.left - 2);
+        }
+        var clipped = clipRectToOverflow(wrap, left, top, right, bottom);
+        left = clipped.left;
+        top = clipped.top;
+        right = clipped.right;
+        bottom = clipped.bottom;
+        var w = right - left;
+        var h = bottom - top;
+        if (w < 8 || h < 8) return null;
+        return { left: left, top: top, width: w, height: h, right: right, bottom: bottom };
+    }
+
     function layoutBoxOn(input) {
         if (!input || !input.isConnected) return false;
+        var nr = numericHitRect(input);
+        if (nr) return placeFrameFromRect(nr, input.id || 'inp', input, 1);
         var box = window.__shSpenFieldBox ? window.__shSpenFieldBox(input) : input;
         return placeFrame(box, input.id || 'inp', input);
     }
@@ -223,16 +282,44 @@
         return isFullStrikethrough(allStrokes(ink), ink.hostRect);
     }
 
-    function findFieldAt(x, y) {
-        var inp = null;
-        if (typeof window.__shSpenFindWritableInputAt === 'function') inp = window.__shSpenFindWritableInputAt(x, y);
-        if (!inp) {
-            try {
-                var el = document.elementFromPoint(x, y);
-                if (typeof window.__shSpenFindWritableInput === 'function') inp = window.__shSpenFindWritableInput(el);
-            } catch (e) {}
+    function isStatusChrome(el) {
+        return !!(el && el.closest && el.closest('.tank-status-single, .status-cell-btn, .status-header'));
+    }
+
+    function pointInRect(x, y, r, slop) {
+        if (!r) return false;
+        slop = slop || 0;
+        return x >= r.left - slop && x <= r.right + slop && y >= r.top - slop && y <= r.bottom + slop;
+    }
+
+    function numericFieldAt(x, y) {
+        var over = elementFromPen(x, y);
+        if (isStatusChrome(over) || vertLabelFromEl(over) || horizBarFromEl(over) || isAmbPopupTrigger(over)) {
+            return null;
         }
-        return inp;
+        if (over && over.closest && over.closest(SIGLA_SEL) && !over.closest('.amb-input-box, .bd-input-box, input, textarea')) {
+            return null;
+        }
+        var best = null;
+        var bestArea = Infinity;
+        var nodes = document.querySelectorAll('.main-container input:not([type="hidden"]), .main-container textarea');
+        var i;
+        for (i = 0; i < nodes.length; i++) {
+            var n = nodes[i];
+            if (writableOrNull(n) !== n) continue;
+            var nr = numericHitRect(n);
+            if (!nr || !pointInRect(x, y, nr, 0)) continue;
+            var area = Math.max(1, nr.width * nr.height);
+            if (area < bestArea) {
+                bestArea = area;
+                best = n;
+            }
+        }
+        return best;
+    }
+
+    function findFieldAt(x, y) {
+        return numericFieldAt(x, y);
     }
 
     function pinScrollHere() {
@@ -616,7 +703,7 @@
     window.__shSpenHoverAt = function (x, y) {
         if (window.__shPenIsDown) return false;
         var over = elementFromPen(x, y);
-        if (isAmbPopupTrigger(over) || isAmbModalEl(over) || vertLabelFromEl(over)) {
+        if (isAmbPopupTrigger(over) || isAmbModalEl(over) || vertLabelFromEl(over) || isStatusChrome(over)) {
             hideBox();
             return false;
         }
@@ -626,28 +713,23 @@
             var stay = boundInput(ink);
             if (stay) return layoutBoxOn(stay);
         }
-        var bar = horizBarFromEl(over);
-        var sigInp = inputFromSigla(over) || inputFromSiglaAt(x, y);
-        if (sigInp && !bar) {
+        var inp = numericFieldAt(x, y);
+        if (inp) {
             hoverHorizBar = null;
-            return layoutBoxOn(sigInp);
+            return layoutBoxOn(inp);
         }
+        var bar = horizBarFromEl(over);
         if (bar) {
             hoverHorizBar = bar;
             return placeFrame(bar, 'hbar', null);
         }
         hoverHorizBar = null;
-        var inp = findFieldAt(x, y);
-        if (!inp) {
-            if (!writing) hideBox();
-            return false;
-        }
-        return layoutBoxOn(inp);
+        if (!writing) hideBox();
+        return false;
     };
 
     window.__shSpenPointAt = function (x, y) {
-        var ink = window.__shSpenInk;
-        var inp = findFieldAt(x, y) || (ink && ink.hoverInput);
+        var inp = numericFieldAt(x, y);
         if (!inp) return false;
         return retarget(inp);
     };
@@ -762,50 +844,46 @@
         window.__shSpenApplyFieldEdit.__shV39 = true;
     }
 
-    if (typeof window.__shSpenFindWritableInput === 'function' && !window.__shSpenFindWritableInput.__shV43) {
+    if (typeof window.__shSpenFindWritableInput === 'function' && !window.__shSpenFindWritableInput.__shV45) {
         var findElOrig = window.__shSpenFindWritableInput;
         window.__shSpenFindWritableInput = function (el) {
-            var fromLab = inputFromSigla(el);
-            if (fromLab) return fromLab;
+            if (isStatusChrome(el)) return null;
+            if (el && el.closest && el.closest(SIGLA_SEL) && !el.closest('.amb-input-box, .bd-input-box, input, textarea')) {
+                return null;
+            }
             return findElOrig.apply(this, arguments);
         };
-        window.__shSpenFindWritableInput.__shV43 = true;
+        window.__shSpenFindWritableInput.__shV45 = true;
     }
 
-    if (typeof window.__shSpenFindWritableInputAt === 'function' && !window.__shSpenFindWritableInputAt.__shV43) {
-        var findAtOrig = window.__shSpenFindWritableInputAt;
+    if (typeof window.__shSpenFindWritableInputAt === 'function' && !window.__shSpenFindWritableInputAt.__shV45) {
         window.__shSpenFindWritableInputAt = function (x, y) {
-            var fromLab = inputFromSiglaAt(x, y);
-            if (fromLab) return fromLab;
-            return findAtOrig.apply(this, arguments);
+            return numericFieldAt(x, y);
         };
-        window.__shSpenFindWritableInputAt.__shV43 = true;
+        window.__shSpenFindWritableInputAt.__shV45 = true;
     }
 
-    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV43) {
+    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV45) {
         var downOrig = window.__shSpenOnPenDown;
         window.__shSpenOnPenDown = function (ev) {
             pinScrollHere();
             var el = ev ? elementFromPen(ev.clientX, ev.clientY) : null;
             if (!el && ev && ev.target) el = ev.target;
             clearPenChrome();
-            if (isAmbPopupTrigger(el) || isAmbModalEl(el)) {
+            if (isAmbPopupTrigger(el) || isAmbModalEl(el) || isStatusChrome(el)) {
                 hideBox();
-                penUiTap = {
-                    x: ev.clientX,
-                    y: ev.clientY,
-                    el: el,
-                    popup: isAmbPopupTrigger(el),
-                    modal: isAmbModalEl(el),
-                    t: Date.now()
-                };
-                return;
-            }
-            var sigInp = ev ? (inputFromSigla(el) || inputFromSiglaAt(ev.clientX, ev.clientY)) : inputFromSigla(el);
-            if (sigInp) {
-                penUiTap = null;
-                hoverHorizBar = null;
-                retarget(sigInp);
+                if (isAmbPopupTrigger(el) || isAmbModalEl(el)) {
+                    penUiTap = {
+                        x: ev.clientX,
+                        y: ev.clientY,
+                        el: el,
+                        popup: isAmbPopupTrigger(el),
+                        modal: isAmbModalEl(el),
+                        t: Date.now()
+                    };
+                } else {
+                    penUiTap = null;
+                }
                 return;
             }
             var vert = vertLabelFromEl(el);
@@ -815,7 +893,10 @@
                 penChrome = { kind: 'vert', x: ev.clientX, y: ev.clientY, lastY: ev.clientY, moved: false };
                 return;
             }
-            var bar = horizBarFromEl(el) || (ev ? horizBarNear(ev.clientX, ev.clientY) : null);
+            var bar = horizBarFromEl(el);
+            if (!bar && ev && !numericFieldAt(ev.clientX, ev.clientY)) {
+                bar = horizBarNear(ev.clientX, ev.clientY);
+            }
             if (bar) {
                 placeFrame(bar, 'hbar', null);
                 penUiTap = null;
@@ -839,13 +920,19 @@
                 return;
             }
             penUiTap = null;
-            var inp = ev ? findFieldAt(ev.clientX, ev.clientY) : null;
-            if (!inp && ev && window.__shSpenFindWritableInput) inp = window.__shSpenFindWritableInput(ev.target);
+            var inp = ev ? numericFieldAt(ev.clientX, ev.clientY) : null;
             var ink = ensureInk();
-            if (!inp && ink) inp = ink.hoverInput;
+            if (!inp && ink && ink.hoverInput && ev) {
+                var hr = numericHitRect(ink.hoverInput);
+                if (hr && pointInRect(ev.clientX, ev.clientY, hr, 1)) inp = ink.hoverInput;
+            }
             if (inp) {
                 retarget(inp);
                 layoutBoxOn(inp);
+            } else {
+                hideBox();
+                if (ink) ink.hoverInput = null;
+                return;
             }
             var r = downOrig.apply(this, arguments);
             ink = window.__shSpenInk;
@@ -855,10 +942,10 @@
             }
             return r;
         };
-        window.__shSpenOnPenDown.__shV43 = true;
+        window.__shSpenOnPenDown.__shV45 = true;
     }
 
-    if (typeof window.__shSpenOnPenMove === 'function' && !window.__shSpenOnPenMove.__shV43) {
+    if (typeof window.__shSpenOnPenMove === 'function' && !window.__shSpenOnPenMove.__shV45) {
         var moveOrig = window.__shSpenOnPenMove;
         window.__shSpenOnPenMove = function (ev) {
             if (penChrome && ev) {
@@ -883,10 +970,10 @@
             if (ink && !ink.holdClear && looksLikeCut(ink)) forceClear(ink);
             return r;
         };
-        window.__shSpenOnPenMove.__shV43 = true;
+        window.__shSpenOnPenMove.__shV45 = true;
     }
 
-    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV43) {
+    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV45) {
         var upOrig = window.__shSpenOnPenUp;
         window.__shSpenOnPenUp = function (ev, cancelled) {
             if (penChrome) {
@@ -925,7 +1012,7 @@
             if (target && allStrokes(ink).length) markPendingCommit(target);
             return upOrig.apply(this, arguments);
         };
-        window.__shSpenOnPenUp.__shV43 = true;
+        window.__shSpenOnPenUp.__shV45 = true;
     }
 
     if (!window.__shNativeHookV25) {
@@ -1004,5 +1091,16 @@
             pinScrollHere();
         };
         window.__shSpenKeepWriteViewport.__shV28 = true;
+    }
+
+    if (!window.__shNativeHookV45Finger) {
+        window.__shNativeHookV45Finger = true;
+        document.addEventListener('pointerdown', function (ev) {
+            if (!ev || ev.pointerType === 'pen') return;
+            if (window.__shPenIsDown) return;
+            var ink = window.__shSpenInk;
+            if (ink && ink.active && ((ink.strokes && ink.strokes.length) || ink.current)) return;
+            if (isStatusChrome(ev.target) || !numericFieldAt(ev.clientX, ev.clientY)) hideBox();
+        }, true);
     }
 })();

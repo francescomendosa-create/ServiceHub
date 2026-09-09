@@ -378,8 +378,78 @@
         return out;
     }
 
+    var AMB_POPUP_SEL = '[data-vwt-trigger],[data-vwt-meter-trigger],[data-osmosi-trigger],[data-analisi-trigger],[data-sf3-run-trigger],#amb-row-vwt,#amb-row-osmosi,#amb-row-analisi,#inp-sf3';
+    var AMB_MODAL_SEL = '#vwt-modal,#vwt-meter-modal,#osmosi-modal,#osmosi-match-modal,#analisi-choice-modal,#analisi-choice-modal-page2,#sf3-run-modal';
+    var penUiTap = null;
+
+    function elementFromPen(x, y) {
+        var host = document.getElementById('sh-spen-ink-host');
+        var prev = host ? host.style.pointerEvents : '';
+        if (host) host.style.pointerEvents = 'none';
+        var el = null;
+        try { el = document.elementFromPoint(x, y); } catch (e) {}
+        if (host) host.style.pointerEvents = prev || 'none';
+        return el;
+    }
+
+    function isAmbPopupTrigger(el) {
+        if (!el) return false;
+        try {
+            if (typeof window.__isAmbSpecialPopupTarget === 'function' && window.__isAmbSpecialPopupTarget(el)) return true;
+        } catch (e) {}
+        return !!(el.closest && el.closest(AMB_POPUP_SEL));
+    }
+
+    function isAmbModalEl(el) {
+        return !!(el && el.closest && el.closest(AMB_MODAL_SEL));
+    }
+
+    function markPenPopupClick() {
+        window.__ambSpecialPopupFromTouch = true;
+        setTimeout(function () { window.__ambSpecialPopupFromTouch = false; }, 600);
+    }
+
+    function openAmbPopupFromEl(el) {
+        if (!el || !el.closest) return false;
+        if (el.closest(AMB_MODAL_SEL)) return false;
+        var meter = el.closest('[data-vwt-meter-trigger]');
+        var vwt = el.closest('[data-vwt-trigger]');
+        var osm = el.closest('[data-osmosi-trigger]');
+        var an = el.closest('[data-analisi-trigger]');
+        var sf3 = el.closest('[data-sf3-run-trigger], #inp-sf3');
+        markPenPopupClick();
+        try {
+            if (meter && !vwt && typeof window.openVwtMeterPopup === 'function') { window.openVwtMeterPopup(); return true; }
+            if (vwt && typeof window.openVwtPopup === 'function') { window.openVwtPopup(); return true; }
+            if (osm && typeof window.openOsmosiPopup === 'function') { window.openOsmosiPopup(); return true; }
+            if (an && typeof window.openAnalisiPopup === 'function') { window.openAnalisiPopup(); return true; }
+            if (sf3 && typeof window.openSf3RunPopup === 'function') { window.openSf3RunPopup(); return true; }
+        } catch (e) {}
+        return false;
+    }
+
+    function clickPenTarget(el) {
+        if (!el) return false;
+        var hit = el;
+        if (el.closest) {
+            hit = el.closest('button, [onclick], .vwt-btn, .osmosi-btn, .analisi-choice-btn, [data-vwt-trigger], [data-osmosi-trigger], [data-analisi-trigger], [data-sf3-run-trigger], [data-vwt-meter-trigger]') || el;
+        }
+        markPenPopupClick();
+        try {
+            hit.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, composed: true }));
+            return true;
+        } catch (e) {
+            try { hit.click(); return true; } catch (e2) { return false; }
+        }
+    }
+
     window.__shSpenHoverAt = function (x, y) {
         if (window.__shPenIsDown) return false;
+        var over = elementFromPen(x, y);
+        if (isAmbPopupTrigger(over) || isAmbModalEl(over)) {
+            hideBox();
+            return false;
+        }
         var ink = ensureInk();
         var writing = !!(ink.active && ((ink.strokes && ink.strokes.length) || (ink.current && ink.current.length)));
         if (writing) {
@@ -512,10 +582,25 @@
         window.__shSpenApplyFieldEdit.__shV39 = true;
     }
 
-    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV23) {
+    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV40) {
         var downOrig = window.__shSpenOnPenDown;
         window.__shSpenOnPenDown = function (ev) {
             pinScrollHere();
+            var el = ev ? elementFromPen(ev.clientX, ev.clientY) : null;
+            if (!el && ev && ev.target) el = ev.target;
+            if (isAmbPopupTrigger(el) || isAmbModalEl(el)) {
+                hideBox();
+                penUiTap = {
+                    x: ev.clientX,
+                    y: ev.clientY,
+                    el: el,
+                    popup: isAmbPopupTrigger(el),
+                    modal: isAmbModalEl(el),
+                    t: Date.now()
+                };
+                return;
+            }
+            penUiTap = null;
             var inp = ev ? findFieldAt(ev.clientX, ev.clientY) : null;
             if (!inp && ev && window.__shSpenFindWritableInput) inp = window.__shSpenFindWritableInput(ev.target);
             var ink = ensureInk();
@@ -532,7 +617,7 @@
             }
             return r;
         };
-        window.__shSpenOnPenDown.__shV23 = true;
+        window.__shSpenOnPenDown.__shV40 = true;
     }
 
     if (typeof window.__shSpenOnPenMove === 'function' && !window.__shSpenOnPenMove.__shV23) {
@@ -548,9 +633,24 @@
         window.__shSpenOnPenMove.__shV23 = true;
     }
 
-    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV27) {
+    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV40) {
         var upOrig = window.__shSpenOnPenUp;
         window.__shSpenOnPenUp = function (ev, cancelled) {
+            if (penUiTap && !cancelled && ev) {
+                var dx = (ev.clientX || 0) - penUiTap.x;
+                var dy = (ev.clientY || 0) - penUiTap.y;
+                var tap = (dx * dx + dy * dy) < 144;
+                var el = elementFromPen(ev.clientX, ev.clientY) || penUiTap.el;
+                var wasPopup = penUiTap.popup;
+                var wasModal = penUiTap.modal;
+                penUiTap = null;
+                if (tap) {
+                    if (wasPopup) openAmbPopupFromEl(el);
+                    else if (wasModal) clickPenTarget(el);
+                }
+                return;
+            }
+            penUiTap = null;
             var ink = window.__shSpenInk;
             if (ink && (ink.holdClear || looksLikeCut(ink))) {
                 if (!ink.holdClear) forceClear(ink);
@@ -564,7 +664,7 @@
             if (target && allStrokes(ink).length) markPendingCommit(target);
             return upOrig.apply(this, arguments);
         };
-        window.__shSpenOnPenUp.__shV27 = true;
+        window.__shSpenOnPenUp.__shV40 = true;
     }
 
     if (!window.__shNativeHookV25) {

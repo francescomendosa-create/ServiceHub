@@ -106,24 +106,22 @@
         }
     }
 
-    function layoutBoxOn(input) {
-        if (!input || !input.isConnected) return false;
+    function placeFrame(boxEl, keyId, hoverInput) {
+        if (!boxEl || !boxEl.isConnected) return false;
         var ink = ensureInk();
         var host = ensureHost();
         if (!host) return false;
-        var box = window.__shSpenFieldBox ? window.__shSpenFieldBox(input) : input;
-        var r = box.getBoundingClientRect();
+        var r = boxEl.getBoundingClientRect();
         var pad = 6;
         var left = Math.max(0, r.left - pad);
         var top = Math.max(0, r.top - pad);
         var w = r.width + pad * 2;
         var h = r.height + pad * 2;
         if (w < 2 || h < 2) return false;
-        var key = (input.id || '') + ':' + Math.round(left) + ':' + Math.round(top) + ':' + Math.round(w) + ':' + Math.round(h);
-        var fieldChanged = !!(ink.hoverInput && ink.hoverInput !== input);
-        ink.hoverInput = input;
+        var key = String(keyId || '') + ':' + Math.round(left) + ':' + Math.round(top) + ':' + Math.round(w) + ':' + Math.round(h);
+        if (hoverInput) ink.hoverInput = hoverInput;
+        else ink.hoverInput = null;
         ink.hostRect = { left: left, top: top, w: w, h: h };
-        if (fieldChanged && !window.__shPenIsDown) clearInkPixels(ink, true);
         if (ink.layoutKey === key && ink.canvas && ink.ctx && host.style.display === 'block') {
             syncWriteLock(window.__shPenIsDown);
             return true;
@@ -141,6 +139,12 @@
         else if (!window.__shPenIsDown) sizeCanvas(ink, w, h);
         syncWriteLock(window.__shPenIsDown);
         return true;
+    }
+
+    function layoutBoxOn(input) {
+        if (!input || !input.isConnected) return false;
+        var box = window.__shSpenFieldBox ? window.__shSpenFieldBox(input) : input;
+        return placeFrame(box, input.id || 'inp', input);
     }
 
     function syncWriteLock(writing) {
@@ -380,7 +384,9 @@
 
     var AMB_POPUP_SEL = '[data-vwt-trigger],[data-vwt-meter-trigger],[data-osmosi-trigger],[data-analisi-trigger],[data-sf3-run-trigger],#amb-row-vwt,#amb-row-osmosi,#amb-row-analisi,#inp-sf3';
     var AMB_MODAL_SEL = '#vwt-modal,#vwt-meter-modal,#osmosi-modal,#osmosi-match-modal,#analisi-choice-modal,#analisi-choice-modal-page2,#sf3-run-modal';
+    var HORIZ_BAR_SEL = '.cond-tendina-bar, .nott-filtra-tendina-bar, .nott-stocc-tendina-bar, .nott-chem-tendina-bar, .rapportino-custom-tendina-bar';
     var penUiTap = null;
+    var penChrome = null;
 
     function elementFromPen(x, y) {
         var host = document.getElementById('sh-spen-ink-host');
@@ -443,10 +449,109 @@
         }
     }
 
+    function vertLabelFromEl(el) {
+        return (el && el.closest) ? el.closest('.v-label-container') : null;
+    }
+
+    function horizBarFromEl(el) {
+        return (el && el.closest) ? el.closest(HORIZ_BAR_SEL) : null;
+    }
+
+    function inputFromSigla(el) {
+        if (!el || !el.closest) return null;
+        if (vertLabelFromEl(el) || horizBarFromEl(el) || isAmbPopupTrigger(el)) return null;
+        var lab = el.closest('.cell-label-main, .bd-label, .amb-label, .nott-stocc-sigla-cell, .cond-tendina-lbl');
+        if (!lab) return null;
+        var inp = null;
+        try {
+            if (typeof window.resolveNumpadInputFromLabel === 'function') inp = window.resolveNumpadInputFromLabel(lab);
+        } catch (e) {}
+        if (!inp) {
+            var row = lab.closest('tr, .amb-row, .bd-input-row, .nott-stocc-row, .cond-tendina-cell');
+            if (row) inp = row.querySelector('input:not([type="hidden"]), textarea');
+        }
+        if (!inp) return null;
+        if (window.__shSpenIsWritableInput && !window.__shSpenIsWritableInput(inp)) return null;
+        return inp;
+    }
+
+    function startPressIdFromEl(el) {
+        if (!el) return '';
+        var a = (el.getAttribute('ontouchstart') || '') + ' ' + (el.getAttribute('onmousedown') || '');
+        var m = a.match(/startPress\s*\(\s*event\s*,\s*['"]([^'"]+)['"]/);
+        return m ? m[1] : '';
+    }
+
+    function fakeTouch(target, type, x, y) {
+        return {
+            type: type,
+            touches: type === 'touchend' ? [] : [{ clientX: x, clientY: y }],
+            changedTouches: [{ clientX: x, clientY: y }],
+            clientX: x,
+            clientY: y,
+            currentTarget: target,
+            target: target,
+            pointerType: 'touch',
+            preventDefault: function () {},
+            stopPropagation: function () {}
+        };
+    }
+
+    function openHorizBar(bar, x, y) {
+        if (!bar) return false;
+        var raw = (bar.getAttribute('ontouchend') || bar.getAttribute('onmouseup') || '');
+        var ev = fakeTouch(bar, 'touchend', x, y);
+        var idm = raw.match(/['"]([^'"]+)['"]/);
+        var endName = (raw.match(/window\.(\w+)\s*\(/) || [])[1] || '';
+        var toggles = {
+            endPressNotturnoFiltraTendina: 'toggleNotturnoFiltraTendina',
+            endPressNotturnoStoccaggioTendina: 'toggleNotturnoStoccaggioTendina',
+            endPressNotturnoChemicalsTendina: 'toggleNotturnoChemicalsTendina',
+            endPressConducibilitaTendina: 'toggleConducibilitaTendina',
+            endPressLivelliLavaggiTendina: 'toggleLivelliLavaggiTendina',
+            endPressNoteSchedaTendina: 'toggleNoteSchedaTendina',
+            endPressContatoriTendina: 'toggleContatoriTendina',
+            endPressConteggioFiltraTendina: 'toggleConteggioFiltraTendina',
+            endPressRigenerazioneTendina: 'toggleRigenerazioneTendina'
+        };
+        try {
+            if (endName === 'endPressCustomSchedaTendina' && idm && typeof window.toggleCustomRapportinoSchedaTendina === 'function') {
+                window.toggleCustomRapportinoSchedaTendina(idm[1]);
+                return true;
+            }
+            var tn = toggles[endName];
+            if (tn && typeof window[tn] === 'function') {
+                window[tn](ev);
+                return true;
+            }
+            if (typeof bar.click === 'function') {
+                bar.click();
+                return true;
+            }
+        } catch (e) {}
+        return false;
+    }
+
+    function scrollMainBy(dy) {
+        var sc = document.querySelector('.main-container');
+        if (sc && (sc.scrollHeight > sc.clientHeight + 4)) {
+            sc.scrollTop += dy;
+            return;
+        }
+        window.scrollBy(0, dy);
+    }
+
+    function clearPenChrome() {
+        if (penChrome && penChrome.longTimer) {
+            try { clearTimeout(penChrome.longTimer); } catch (e) {}
+        }
+        penChrome = null;
+    }
+
     window.__shSpenHoverAt = function (x, y) {
         if (window.__shPenIsDown) return false;
         var over = elementFromPen(x, y);
-        if (isAmbPopupTrigger(over) || isAmbModalEl(over)) {
+        if (isAmbPopupTrigger(over) || isAmbModalEl(over) || vertLabelFromEl(over)) {
             hideBox();
             return false;
         }
@@ -456,12 +561,15 @@
             var stay = boundInput(ink);
             if (stay) return layoutBoxOn(stay);
         }
+        var bar = horizBarFromEl(over);
+        if (bar) return placeFrame(bar, 'hbar', null);
+        var sigInp = inputFromSigla(over);
+        if (sigInp) return layoutBoxOn(sigInp);
         var inp = findFieldAt(x, y);
         if (!inp) {
             if (!writing) hideBox();
             return false;
         }
-        ink.hoverInput = inp;
         return layoutBoxOn(inp);
     };
 
@@ -582,12 +690,13 @@
         window.__shSpenApplyFieldEdit.__shV39 = true;
     }
 
-    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV40) {
+    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV42) {
         var downOrig = window.__shSpenOnPenDown;
         window.__shSpenOnPenDown = function (ev) {
             pinScrollHere();
             var el = ev ? elementFromPen(ev.clientX, ev.clientY) : null;
             if (!el && ev && ev.target) el = ev.target;
+            clearPenChrome();
             if (isAmbPopupTrigger(el) || isAmbModalEl(el)) {
                 hideBox();
                 penUiTap = {
@@ -600,8 +709,39 @@
                 };
                 return;
             }
+            var vert = vertLabelFromEl(el);
+            if (vert) {
+                hideBox();
+                penUiTap = null;
+                penChrome = { kind: 'vert', x: ev.clientX, y: ev.clientY, lastY: ev.clientY, moved: false };
+                return;
+            }
+            var bar = horizBarFromEl(el);
+            if (bar) {
+                placeFrame(bar, 'hbar', null);
+                penUiTap = null;
+                var sid = startPressIdFromEl(bar);
+                penChrome = {
+                    kind: 'horiz',
+                    x: ev.clientX,
+                    y: ev.clientY,
+                    el: bar,
+                    id: sid,
+                    moved: false,
+                    didLong: false,
+                    longTimer: setTimeout(function () {
+                        if (!penChrome || penChrome.kind !== 'horiz' || penChrome.moved) return;
+                        penChrome.didLong = true;
+                        if (penChrome.id && typeof window.hideModule === 'function') {
+                            try { window.hideModule(penChrome.id, true); } catch (e) {}
+                        }
+                    }, 280)
+                };
+                return;
+            }
             penUiTap = null;
-            var inp = ev ? findFieldAt(ev.clientX, ev.clientY) : null;
+            var sigInp = inputFromSigla(el);
+            var inp = sigInp || (ev ? findFieldAt(ev.clientX, ev.clientY) : null);
             if (!inp && ev && window.__shSpenFindWritableInput) inp = window.__shSpenFindWritableInput(ev.target);
             var ink = ensureInk();
             if (!inp && ink) inp = ink.hoverInput;
@@ -617,12 +757,27 @@
             }
             return r;
         };
-        window.__shSpenOnPenDown.__shV40 = true;
+        window.__shSpenOnPenDown.__shV42 = true;
     }
 
-    if (typeof window.__shSpenOnPenMove === 'function' && !window.__shSpenOnPenMove.__shV23) {
+    if (typeof window.__shSpenOnPenMove === 'function' && !window.__shSpenOnPenMove.__shV42) {
         var moveOrig = window.__shSpenOnPenMove;
         window.__shSpenOnPenMove = function (ev) {
+            if (penChrome && ev) {
+                var dx = (ev.clientX || 0) - penChrome.x;
+                var dy = (ev.clientY || 0) - penChrome.y;
+                if ((dx * dx + dy * dy) > 225) penChrome.moved = true;
+                if (penChrome.kind === 'vert') {
+                    scrollMainBy(penChrome.lastY - ev.clientY);
+                    penChrome.lastY = ev.clientY;
+                    return;
+                }
+                if (penChrome.kind === 'horiz' && penChrome.moved && penChrome.longTimer) {
+                    try { clearTimeout(penChrome.longTimer); } catch (e) {}
+                    penChrome.longTimer = null;
+                }
+                return;
+            }
             var ink = window.__shSpenInk;
             if (ink && ink.holdClear) return;
             var r = moveOrig.apply(this, arguments);
@@ -630,12 +785,20 @@
             if (ink && !ink.holdClear && looksLikeCut(ink)) forceClear(ink);
             return r;
         };
-        window.__shSpenOnPenMove.__shV23 = true;
+        window.__shSpenOnPenMove.__shV42 = true;
     }
 
-    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV40) {
+    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV42) {
         var upOrig = window.__shSpenOnPenUp;
         window.__shSpenOnPenUp = function (ev, cancelled) {
+            if (penChrome) {
+                var ch = penChrome;
+                clearPenChrome();
+                if (!cancelled && ev && ch.kind === 'horiz' && !ch.didLong && !ch.moved) {
+                    openHorizBar(ch.el, ev.clientX, ev.clientY);
+                }
+                return;
+            }
             if (penUiTap && !cancelled && ev) {
                 var dx = (ev.clientX || 0) - penUiTap.x;
                 var dy = (ev.clientY || 0) - penUiTap.y;
@@ -664,7 +827,7 @@
             if (target && allStrokes(ink).length) markPendingCommit(target);
             return upOrig.apply(this, arguments);
         };
-        window.__shSpenOnPenUp.__shV40 = true;
+        window.__shSpenOnPenUp.__shV41 = true;
     }
 
     if (!window.__shNativeHookV25) {

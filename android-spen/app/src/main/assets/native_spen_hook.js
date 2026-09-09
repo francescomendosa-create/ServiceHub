@@ -158,6 +158,7 @@
     }
 
     function hideBox() {
+        hoverHorizBar = null;
         window.__shSpenWantBox = false;
         var ink = window.__shSpenInk;
         if (ink) ink.layoutKey = '';
@@ -387,6 +388,7 @@
     var HORIZ_BAR_SEL = '.cond-tendina-bar, .nott-filtra-tendina-bar, .nott-stocc-tendina-bar, .nott-chem-tendina-bar, .rapportino-custom-tendina-bar';
     var penUiTap = null;
     var penChrome = null;
+    var hoverHorizBar = null;
 
     function elementFromPen(x, y) {
         var host = document.getElementById('sh-spen-ink-host');
@@ -497,11 +499,37 @@
         };
     }
 
-    function openHorizBar(bar, x, y) {
+    function callToggle(name, arg) {
+        try {
+            if (typeof window[name] === 'function') {
+                window[name](arg);
+                return true;
+            }
+        } catch (e) {}
+        return false;
+    }
+
+    function openHorizBar(bar) {
         if (!bar) return false;
+        var dummy = { preventDefault: function () {}, stopPropagation: function () {} };
+        var pid = (bar.parentElement && bar.parentElement.id) || '';
+        var sid = startPressIdFromEl(bar);
+        if (bar.classList.contains('rapportino-custom-tendina-bar')) {
+            return callToggle('toggleCustomRapportinoSchedaTendina', sid || pid);
+        }
+        var byParent = {
+            'notturno-filtra-tendina': 'toggleNotturnoFiltraTendina',
+            'sec-stoccaggio-interno': 'toggleNotturnoStoccaggioTendina',
+            'notturno-chemicals-tendina': 'toggleNotturnoChemicalsTendina',
+            'rapportino-conducibilita-tendina': 'toggleConducibilitaTendina',
+            'rapportino-livelli-lavaggi-tendina': 'toggleLivelliLavaggiTendina',
+            'rapportino-contatori-tendina': 'toggleContatoriTendina',
+            'rapportino-conteggio-filtra-tendina': 'toggleConteggioFiltraTendina',
+            'rapportino-rigenerazione-tendina': 'toggleRigenerazioneTendina',
+            'rapportino-note-tendina': 'toggleNoteSchedaTendina'
+        };
+        if (byParent[pid] && callToggle(byParent[pid], dummy)) return true;
         var raw = (bar.getAttribute('ontouchend') || bar.getAttribute('onmouseup') || '');
-        var ev = fakeTouch(bar, 'touchend', x, y);
-        var idm = raw.match(/['"]([^'"]+)['"]/);
         var endName = (raw.match(/window\.(\w+)\s*\(/) || [])[1] || '';
         var toggles = {
             endPressNotturnoFiltraTendina: 'toggleNotturnoFiltraTendina',
@@ -514,21 +542,10 @@
             endPressConteggioFiltraTendina: 'toggleConteggioFiltraTendina',
             endPressRigenerazioneTendina: 'toggleRigenerazioneTendina'
         };
-        try {
-            if (endName === 'endPressCustomSchedaTendina' && idm && typeof window.toggleCustomRapportinoSchedaTendina === 'function') {
-                window.toggleCustomRapportinoSchedaTendina(idm[1]);
-                return true;
-            }
-            var tn = toggles[endName];
-            if (tn && typeof window[tn] === 'function') {
-                window[tn](ev);
-                return true;
-            }
-            if (typeof bar.click === 'function') {
-                bar.click();
-                return true;
-            }
-        } catch (e) {}
+        if (endName === 'endPressCustomSchedaTendina') {
+            return callToggle('toggleCustomRapportinoSchedaTendina', sid || pid);
+        }
+        if (toggles[endName] && callToggle(toggles[endName], dummy)) return true;
         return false;
     }
 
@@ -562,7 +579,11 @@
             if (stay) return layoutBoxOn(stay);
         }
         var bar = horizBarFromEl(over);
-        if (bar) return placeFrame(bar, 'hbar', null);
+        if (bar) {
+            hoverHorizBar = bar;
+            return placeFrame(bar, 'hbar', null);
+        }
+        hoverHorizBar = null;
         var sigInp = inputFromSigla(over);
         if (sigInp) return layoutBoxOn(sigInp);
         var inp = findFieldAt(x, y);
@@ -716,7 +737,7 @@
                 penChrome = { kind: 'vert', x: ev.clientX, y: ev.clientY, lastY: ev.clientY, moved: false };
                 return;
             }
-            var bar = horizBarFromEl(el);
+            var bar = horizBarFromEl(el) || hoverHorizBar;
             if (bar) {
                 placeFrame(bar, 'hbar', null);
                 penUiTap = null;
@@ -794,8 +815,8 @@
             if (penChrome) {
                 var ch = penChrome;
                 clearPenChrome();
-                if (!cancelled && ev && ch.kind === 'horiz' && !ch.didLong && !ch.moved) {
-                    openHorizBar(ch.el, ev.clientX, ev.clientY);
+                if (ch.kind === 'horiz' && !ch.didLong && !ch.moved) {
+                    openHorizBar(ch.el);
                 }
                 return;
             }
@@ -827,7 +848,7 @@
             if (target && allStrokes(ink).length) markPendingCommit(target);
             return upOrig.apply(this, arguments);
         };
-        window.__shSpenOnPenUp.__shV41 = true;
+        window.__shSpenOnPenUp.__shV42 = true;
     }
 
     if (!window.__shNativeHookV25) {

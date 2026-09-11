@@ -200,10 +200,16 @@
 
     function layoutBoxOn(input) {
         if (!input || !input.isConnected) return false;
+        var ink = window.__shSpenInk;
+        var writing = !!(ink && ink.active && ((ink.strokes && ink.strokes.length) || (ink.current && ink.current.length)));
+        if (writing || window.__shPenIsDown) {
+            var box = window.__shSpenFieldBox ? window.__shSpenFieldBox(input) : input;
+            return placeFrameFromRect(box.getBoundingClientRect(), input.id || 'inp', input, 6);
+        }
         var nr = numericHitRect(input);
         if (nr) return placeFrameFromRect(nr, input.id || 'inp', input, 1);
-        var box = window.__shSpenFieldBox ? window.__shSpenFieldBox(input) : input;
-        return placeFrame(box, input.id || 'inp', input);
+        var hoverBox = window.__shSpenFieldBox ? window.__shSpenFieldBox(input) : input;
+        return placeFrame(hoverBox, input.id || 'inp', input);
     }
 
     function syncWriteLock(writing) {
@@ -299,6 +305,18 @@
         }
         if (over && over.closest && over.closest(SIGLA_SEL) && !over.closest('.amb-input-box, .bd-input-box, input, textarea')) {
             return null;
+        }
+        var direct = null;
+        if (over) {
+            if (over.tagName === 'INPUT' || over.tagName === 'TEXTAREA') direct = over;
+            else if (over.closest) {
+                var box = over.closest('.amb-input-box, .bd-input-box, .nott-stocc-inp-cell');
+                if (box) direct = box.querySelector('input:not([type="hidden"]), textarea');
+            }
+            if (writableOrNull(direct) === direct) {
+                var dr = numericHitRect(direct);
+                if (!dr || pointInRect(x, y, dr, 3)) return direct;
+            }
         }
         var best = null;
         var bestArea = Infinity;
@@ -709,10 +727,7 @@
         }
         var ink = ensureInk();
         var writing = !!(ink.active && ((ink.strokes && ink.strokes.length) || (ink.current && ink.current.length)));
-        if (writing) {
-            var stay = boundInput(ink);
-            if (stay) return layoutBoxOn(stay);
-        }
+        if (writing) return true;
         var inp = numericFieldAt(x, y);
         if (inp) {
             hoverHorizBar = null;
@@ -844,7 +859,7 @@
         window.__shSpenApplyFieldEdit.__shV39 = true;
     }
 
-    if (typeof window.__shSpenFindWritableInput === 'function' && !window.__shSpenFindWritableInput.__shV45) {
+    if (typeof window.__shSpenFindWritableInput === 'function' && !window.__shSpenFindWritableInput.__shV46) {
         var findElOrig = window.__shSpenFindWritableInput;
         window.__shSpenFindWritableInput = function (el) {
             if (isStatusChrome(el)) return null;
@@ -853,17 +868,17 @@
             }
             return findElOrig.apply(this, arguments);
         };
-        window.__shSpenFindWritableInput.__shV45 = true;
+        window.__shSpenFindWritableInput.__shV46 = true;
     }
 
-    if (typeof window.__shSpenFindWritableInputAt === 'function' && !window.__shSpenFindWritableInputAt.__shV45) {
+    if (typeof window.__shSpenFindWritableInputAt === 'function' && !window.__shSpenFindWritableInputAt.__shV46) {
         window.__shSpenFindWritableInputAt = function (x, y) {
             return numericFieldAt(x, y);
         };
-        window.__shSpenFindWritableInputAt.__shV45 = true;
+        window.__shSpenFindWritableInputAt.__shV46 = true;
     }
 
-    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV45) {
+    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV46) {
         var downOrig = window.__shSpenOnPenDown;
         window.__shSpenOnPenDown = function (ev) {
             pinScrollHere();
@@ -920,32 +935,17 @@
                 return;
             }
             penUiTap = null;
-            var inp = ev ? numericFieldAt(ev.clientX, ev.clientY) : null;
-            var ink = ensureInk();
-            if (!inp && ink && ink.hoverInput && ev) {
-                var hr = numericHitRect(ink.hoverInput);
-                if (hr && pointInRect(ev.clientX, ev.clientY, hr, 1)) inp = ink.hoverInput;
-            }
-            if (inp) {
-                retarget(inp);
-                layoutBoxOn(inp);
-            } else {
+            if (!numericFieldAt(ev.clientX, ev.clientY)) {
                 hideBox();
-                if (ink) ink.hoverInput = null;
-                return;
+                var idleInk = window.__shSpenInk;
+                if (idleInk) idleInk.hoverInput = null;
             }
-            var r = downOrig.apply(this, arguments);
-            ink = window.__shSpenInk;
-            if (ink) {
-                ink.originValue = ink.sessionOrigin != null ? String(ink.sessionOrigin) : ink.originValue;
-                ink.imeText = ink.originValue || '';
-            }
-            return r;
+            return downOrig.apply(this, arguments);
         };
-        window.__shSpenOnPenDown.__shV45 = true;
+        window.__shSpenOnPenDown.__shV46 = true;
     }
 
-    if (typeof window.__shSpenOnPenMove === 'function' && !window.__shSpenOnPenMove.__shV45) {
+    if (typeof window.__shSpenOnPenMove === 'function' && !window.__shSpenOnPenMove.__shV46) {
         var moveOrig = window.__shSpenOnPenMove;
         window.__shSpenOnPenMove = function (ev) {
             if (penChrome && ev) {
@@ -970,10 +970,10 @@
             if (ink && !ink.holdClear && looksLikeCut(ink)) forceClear(ink);
             return r;
         };
-        window.__shSpenOnPenMove.__shV45 = true;
+        window.__shSpenOnPenMove.__shV46 = true;
     }
 
-    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV45) {
+    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV46) {
         var upOrig = window.__shSpenOnPenUp;
         window.__shSpenOnPenUp = function (ev, cancelled) {
             if (penChrome) {
@@ -1012,7 +1012,7 @@
             if (target && allStrokes(ink).length) markPendingCommit(target);
             return upOrig.apply(this, arguments);
         };
-        window.__shSpenOnPenUp.__shV45 = true;
+        window.__shSpenOnPenUp.__shV46 = true;
     }
 
     if (!window.__shNativeHookV25) {

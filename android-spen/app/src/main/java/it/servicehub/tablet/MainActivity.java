@@ -1,9 +1,9 @@
 package it.servicehub.tablet;
 
 import android.annotation.SuppressLint;
+import android.content.Intent;
 import android.os.Bundle;
 import android.webkit.CookieManager;
-import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -18,6 +18,7 @@ public class MainActivity extends AppCompatActivity {
     private WebView webView;
     private InkRecognizer ink;
     private String nativeHookJs;
+    private HubWebChrome hubChrome;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -27,6 +28,7 @@ public class MainActivity extends AppCompatActivity {
         webView = findViewById(R.id.hub_webview);
         ink = new InkRecognizer();
         ink.ensureReady();
+        ink.ensureTextReady();
         setupWebView();
         new SpenSamsungIme(webView).attach();
         webView.loadUrl(getString(R.string.hub_url));
@@ -49,7 +51,9 @@ public class MainActivity extends AppCompatActivity {
         CookieManager cookies = CookieManager.getInstance();
         cookies.setAcceptCookie(true);
         cookies.setAcceptThirdPartyCookies(webView, true);
-        webView.setWebChromeClient(new WebChromeClient());
+        hubChrome = new HubWebChrome(this, webView);
+        webView.setWebChromeClient(hubChrome);
+        WebView.setWebContentsDebuggingEnabled(true);
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
@@ -58,7 +62,7 @@ public class MainActivity extends AppCompatActivity {
                 view.postDelayed(() -> injectHook(view), 2200);
             }
         });
-        webView.addJavascriptInterface(new SpenBridge(webView, ink), "ServiceHubAndroidSpen");
+        webView.addJavascriptInterface(new SpenBridge(webView, ink, () -> hubChrome.startDirectOcr()), "ServiceHubAndroidSpen");
     }
 
     private void injectHook(WebView view) {
@@ -78,6 +82,18 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) {
             return "window.__SH_NATIVE_ANDROID=true;";
         }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (hubChrome != null) hubChrome.onPermissionResult(requestCode, grantResults);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (hubChrome != null) hubChrome.onActivityResult(requestCode, resultCode, data);
     }
 
     @Override

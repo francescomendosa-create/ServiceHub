@@ -3719,6 +3719,9 @@
             if (ev && ev.pointerType === 'pen') return;
             var t = ev && ev.target;
             if (t && t.closest && t.closest('#smart-capture-menu, [id*="smart-capture"], #splash-screen')) return;
+            if (t && t.closest && t.closest('#numpad-drag-handle, #numpad-modal-panel') && !(t.closest && t.closest('.numpad-display-bezel, #numpad-display'))) {
+                return;
+            }
             if (ev && ev.cancelable) ev.preventDefault();
             if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
         };
@@ -3758,4 +3761,24 @@
         }
         if (typeof window.openNativeCameraCapture === 'function') window.openNativeCameraCapture();
     };
+
+    // I tocchi a sinistra/destra del nome serbatoio devono arrivare al bordo scuro
+    // (quello che già sposta), non alla riga larga quanto il pannello.
+    var punchNumpadTitleRow = function () {
+        var title = document.getElementById('numpad-title');
+        if (!title || !title.parentElement) return;
+        title.parentElement.style.pointerEvents = 'none';
+        title.style.pointerEvents = 'auto';
+        title.style.touchAction = 'none';
+    };
+    punchNumpadTitleRow();
+    if (!window.__shNumpadTitleRowPunch) {
+        window.__shNumpadTitleRowPunch = true;
+        document.addEventListener('pointerdown', function (ev) {
+            if (!ev || ev.pointerType === 'pen') return;
+            var modal = document.getElementById('numpad-modal');
+            if (!modal || !modal.classList.contains('active')) return;
+            punchNumpadTitleRow();
+        }, true);
+    }
 })();

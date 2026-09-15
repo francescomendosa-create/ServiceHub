@@ -11417,7 +11417,7 @@ window.updateStoricoButton = async function() {
             let startY = 0;
             let origX = 0;
             let origY = 0;
-            const DRAG_THRESHOLD = 4;
+            const DRAG_THRESHOLD = 10;
 
             const onMove = function (clientX, clientY) {
                 if (pendingDrag && !dragging) {
@@ -11426,6 +11426,7 @@ window.updateStoricoButton = async function() {
                     if (Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
                     dragging = true;
                     pendingDrag = false;
+                    window.__numpadDidDrag = true;
                     handle.classList.add('numpad-drag-handle--active');
                     panel.classList.add('numpad-modal-panel--dragging');
                 }
@@ -11458,6 +11459,7 @@ window.updateStoricoButton = async function() {
                 if (pendingDrag || dragging) return true;
                 pendingDrag = true;
                 dragging = false;
+                window.__numpadDidDrag = false;
                 startX = clientX;
                 startY = clientY;
                 origX = (window.__numpadDragPos || { x: 0 }).x;
@@ -11466,30 +11468,65 @@ window.updateStoricoButton = async function() {
                     panel.__numpadDragPointerId = e.pointerId;
                     try { panel.setPointerCapture(e.pointerId); } catch (_) {}
                 }
-                if (e && e.stopPropagation) e.stopPropagation();
-                if (e && e.preventDefault) e.preventDefault();
                 return true;
             };
 
-            // Si trascina da qualunque punto libero del pannello: restano fuori solo i
-            // comandi veri e il display, dove si scrive col pennino.
-            const DRAG_EXCLUDE_SEL = 'button, a, input, textarea, select, [onclick], [role="button"],'
-                + ' .numpad-display-bezel, .numpad-alarm-row, #numpad-title.numpad-title--tank-detail';
+            // Tutto il capo libero (titolo + display) sposta il numpad col dito.
+            // Solo i tasti veri, X, ... e le righe allarme restano cliccabili.
+            const NO_DRAG_SEL = '#numpad-close-btn, #numpad-tank-btn, #numpad-settings-btn,'
+                + ' #numpad-display-scale-btn, #numpad-alarm-reset-btn,'
+                + ' .numpad-btn, .numpad-enter-btn, .numpad-nav-btn, .numpad-alarm-row';
 
-            const isDragExcludedTarget = function (target) {
-                if (!target || !target.closest) return false;
-                return !!target.closest(DRAG_EXCLUDE_SEL);
+            const eventEl = function (e) {
+                var t = e && e.target;
+                if (t && t.nodeType !== 1) t = t.parentElement;
+                return t || null;
             };
 
-            panel.addEventListener('pointerdown', function (e) {
-                if (isDragExcludedTarget(e.target)) return;
-                if (e.pointerType === 'mouse' && e.button !== 0) return;
-                beginDrag(e.clientX, e.clientY, e);
-            });
+            const canStartNumpadDrag = function (e) {
+                if (!e) return false;
+                if (e.pointerType === 'pen') return false;
+                if (e.pointerType === 'mouse' && e.button !== 0) return false;
+                const t = eventEl(e);
+                if (t && t.closest && t.closest(NO_DRAG_SEL)) return false;
+                const grid = panel.querySelector('.numpad-grid');
+                if (grid) {
+                    const firstKey = grid.querySelector('.numpad-btn, .numpad-enter-btn, .numpad-nav-btn');
+                    const keysTop = firstKey
+                        ? firstKey.getBoundingClientRect().top
+                        : grid.getBoundingClientRect().top;
+                    if (e.clientY < keysTop) return true;
+                }
+                if (t && t.closest && t.closest('#numpad-drag-handle, #numpad-value-panel, #numpad-alarm-panel')) {
+                    return true;
+                }
+                return false;
+            };
 
-            panel.addEventListener('pointermove', onPointerMove);
-            panel.addEventListener('pointerup', endDrag);
-            panel.addEventListener('pointercancel', endDrag);
+            const tryBeginNumpadDrag = function (e) {
+                if (!canStartNumpadDrag(e)) return;
+                beginDrag(e.clientX, e.clientY, e);
+            };
+
+            handle.addEventListener('pointerdown', tryBeginNumpadDrag, true);
+            panel.addEventListener('pointerdown', tryBeginNumpadDrag);
+            document.addEventListener('pointerdown', function (e) {
+                var t = eventEl(e);
+                if (!t || !panel.contains(t)) return;
+                tryBeginNumpadDrag(e);
+            }, true);
+
+            document.addEventListener('pointermove', onPointerMove, { passive: false });
+            document.addEventListener('touchmove', function (e) {
+                if (!pendingDrag && !dragging) return;
+                if (e.cancelable) e.preventDefault();
+                var t = e.touches && e.touches[0];
+                if (t) onMove(t.clientX, t.clientY);
+            }, { passive: false, capture: true });
+            document.addEventListener('pointerup', endDrag);
+            document.addEventListener('pointercancel', endDrag);
+            document.addEventListener('touchend', endDrag);
+            document.addEventListener('touchcancel', endDrag);
         };
 
         window.syncNumpadLivePreview = function () {
@@ -11972,11 +12009,13 @@ window.updateStoricoButton = async function() {
             var titleEl = document.getElementById('numpad-title');
             if (!titleEl) return;
             window.__numpadTitleDetailInited = true;
-            titleEl.addEventListener('pointerdown', function (e) {
-                if (!titleEl.classList.contains('numpad-title--tank-detail')) return;
-                e.stopPropagation();
-            }, true);
             titleEl.addEventListener('click', function (e) {
+                if (window.__numpadDidDrag) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    window.__numpadDidDrag = false;
+                    return;
+                }
                 if (!titleEl.classList.contains('numpad-title--tank-detail')) return;
                 window.onNumpadTitleClick(e);
             });
@@ -12014,6 +12053,10 @@ window.updateStoricoButton = async function() {
                 if (t.closest('#numpad-title')) {
                     e.preventDefault();
                     e.stopPropagation();
+                    if (window.__numpadDidDrag) {
+                        window.__numpadDidDrag = false;
+                        return;
+                    }
                     window.onNumpadTitleClick(e);
                     return;
                 }
@@ -25823,7 +25866,7 @@ window.updateStoricoButton = async function() {
                 '#digital-preview-container.digital-focus-stocc .tank-gauge-detail-trigger .digital-tank3d-sigla-svg{pointer-events:none}' +
                 '#digital-preview-container.digital-focus-stocc .digital-stocc-sigla-under{cursor:pointer;touch-action:manipulation}' +
                 '.numpad-tank-trend-arrow{position:absolute;right:2.75rem;top:58%;transform:translateY(-50%);line-height:0;pointer-events:none;z-index:2;display:inline-flex;align-items:center;justify-content:center}' +
-                '#numpad-title.numpad-title--tank-detail{cursor:pointer;touch-action:manipulation;transition:color 0.15s ease}' +
+                '#numpad-title.numpad-title--tank-detail{cursor:pointer;touch-action:none;transition:color 0.15s ease}' +
                 '#numpad-title.numpad-title--tank-detail:hover,#numpad-title.numpad-title--tank-detail:focus{color:#93c5fd;outline:none}';
         };
 
@@ -46070,6 +46113,20 @@ window.convertToHtml = async () => {
             user-select: none;
             -webkit-user-select: none;
         }
+        /* La riga del nome è larga quanto il pannello: senza questo i tocchi a
+           sinistra/destra del testo restano sulla riga e non sul bordo che già sposta. */
+        body:not(.sh-device-phone) .numpad-title-row {
+            pointer-events: none;
+        }
+        body:not(.sh-device-phone) #numpad-title {
+            width: max-content !important;
+            max-width: calc(100% - 96px);
+            display: inline-block;
+            pointer-events: auto;
+            touch-action: none !important;
+            position: relative;
+            z-index: 2;
+        }
         body:not(.sh-device-phone) .numpad-drag-handle.numpad-drag-handle--active {
             cursor: grabbing;
         }
@@ -48786,8 +48843,8 @@ window.convertToHtml = async () => {
                     <button type="button" id="numpad-alarm-reset-btn" class="numpad-alarm-reset-btn" onclick="window.resetNumpadAlarms()" aria-label="Ripristina allarmi salvati" hidden title="Ripristina allarmi salvati">R</button>
                 </div>
                 <div class="absolute left-1/2 top-0 transform -translate-x-1/2"><span id="numpad-context" class="text-[15px] font-black bg-blue-600 text-white px-2 py-0.5 rounded uppercase" style="border-top-right-radius: 12px; border-bottom-right-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.2), 0 1px 2px rgba(0,0,0,0.1); text-shadow: 0 1px 2px rgba(0,0,0,0.5); transform: translateY(-1px); border-bottom: 2px solid #1e40af;">MODULO</span></div>
-                <div class="flex items-center justify-center w-full relative">
-                    <span id="numpad-title" class="font-black uppercase italic text-4xl tracking-widest text-white mt-6 text-center w-full" onclick="window.onNumpadTitleClick(event)">PARAMETRO</span>
+                <div class="numpad-title-row flex items-center justify-center w-full relative">
+                    <span id="numpad-title" class="font-black uppercase italic text-4xl tracking-widest text-white mt-6 text-center" onclick="window.onNumpadTitleClick(event)">PARAMETRO</span>
                     <span id="numpad-tank-trend-arrow" class="numpad-tank-trend-arrow" hidden aria-hidden="true"></span>
                 </div>
                 <button type="button" id="numpad-close-btn" onclick="window.shNumpadDispatch('close', event)" class="absolute right-3 top-2 w-8 h-8 bg-red-600 text-white font-black text-sm font-bold rounded-full border-2 border-red-800 shadow-lg hover:bg-red-700 transition-all transform" style="background-color: #dc2626; border-bottom: 6px solid #991b1b; border-left: none; border-right: none; border-top: none; transition: all 0.15s ease; box-shadow: 0 6px 12px rgba(220, 38, 38, 0.4), 0 3px 6px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.06); transform: translateY(-1px);" onmousedown="this.style.transform='translateY(2px) scale(0.9)'" onmouseup="this.style.transform='translateY(-1px)'" onmouseleave="this.style.transform='translateY(-1px)'" ontouchstart="this.style.transform='translateY(2px) scale(0.9)'" ontouchend="this.style.transform='translateY(-1px)'">X</button>

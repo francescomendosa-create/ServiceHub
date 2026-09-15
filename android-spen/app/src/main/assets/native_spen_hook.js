@@ -709,19 +709,20 @@
 
     // Dopo il click sintetico del pennino il WebView consegna anche il proprio click nativo:
     // sui tasti del numpad arrivavano due cifre per ogni tocco.
-    var penClickGuard = null;
+    // Lo stato vive su window: l'hook viene iniettato piu' volte e il listener registrato dalla
+    // prima copia deve vedere la guardia armata da qualunque altra.
     function armNativeClickGuard(el) {
-        penClickGuard = el ? { el: el, t: Date.now() } : null;
+        window.__shPenClickGuard = el ? { el: el, t: Date.now() } : null;
     }
     if (!window.__shPenClickDedup) {
         window.__shPenClickDedup = true;
         document.addEventListener('click', function (ev) {
-            if (!ev || !ev.isTrusted || !penClickGuard) return;
-            var g = penClickGuard;
-            if (Date.now() - g.t > 350) { penClickGuard = null; return; }
+            var g = window.__shPenClickGuard;
+            if (!ev || !ev.isTrusted || !g) return;
+            if (Date.now() - g.t > 350) { window.__shPenClickGuard = null; return; }
             var t = ev.target;
             if (!g.el || !(g.el === t || (g.el.contains && g.el.contains(t)))) return;
-            penClickGuard = null;
+            window.__shPenClickGuard = null;
             ev.stopPropagation();
             if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
             if (ev.cancelable) ev.preventDefault();

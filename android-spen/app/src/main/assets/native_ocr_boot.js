@@ -158,30 +158,55 @@
         });
     }
 
+    function pageGeminiFetch(apiKey, modelName, parts, timeoutMs, genConfig) {
+        var orig = window.__shPageGeminiFetch;
+        if (typeof orig === 'function' && !orig.__shNative) {
+            return orig(apiKey, modelName, parts, timeoutMs, genConfig);
+        }
+        var controller = typeof AbortController === 'function' ? new AbortController() : null;
+        var timer = setTimeout(function () {
+            try { if (controller) controller.abort(); } catch (e) {}
+        }, timeoutMs || 65000);
+        var url = 'https://generativelanguage.googleapis.com/v1beta/models/'
+            + modelName + ':generateContent?key=' + apiKey;
+        var body = {
+            contents: [{ parts: parts }],
+            generationConfig: genConfig || { temperature: 0.15, maxOutputTokens: 2048 }
+        };
+        return fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: controller ? controller.signal : undefined
+        }).then(function (response) {
+            return response.json().then(function (data) {
+                clearTimeout(timer);
+                if (data && data.error) {
+                    var err = new Error(data.error.message || 'Gemini error');
+                    err.geminiApiError = true;
+                    throw err;
+                }
+                if (!response.ok) throw new Error('HTTP ' + response.status + ' su ' + modelName);
+                var cand = data.candidates && data.candidates[0];
+                var partsOut = cand && cand.content && cand.content.parts;
+                var text = '';
+                if (partsOut) {
+                    for (var i = 0; i < partsOut.length; i++) text += partsOut[i].text || '';
+                }
+                text = String(text || '').trim();
+                if (text) return text;
+                throw new Error('Risposta vuota da ' + modelName);
+            });
+        }).then(function (text) {
+            clearTimeout(timer);
+            return text;
+        }, function (err) {
+            clearTimeout(timer);
+            throw err;
+        });
+    }
+
     function patchOnce() {
-        if (typeof window.clearAllGeminiKeyCooldowns === 'function' && !window.__shClearedCooldownsV100) {
-            try { window.clearAllGeminiKeyCooldowns(); } catch (eC) {}
-            window.__shClearedCooldownsV100 = true;
-        }
-        if (typeof window.geminiFetchModelOnce === 'function' && !window.geminiFetchModelOnce.__shV100) {
-            window.geminiFetchModelOnce = function (apiKey, modelName, parts, timeoutMs, genConfig) {
-                return nativeGeminiFetch(apiKey, modelName, parts, timeoutMs, genConfig);
-            };
-            window.geminiFetchModelOnce.__shV100 = true;
-        }
-        if (typeof window.runGeminiWithKeyRotation === 'function' && !window.runGeminiWithKeyRotation.__shV100) {
-            window.runGeminiWithKeyRotation = function (parts, opts) {
-                opts = Object.assign({}, opts || {});
-                var key = window.getGeminiApiKey && window.getGeminiApiKey();
-                if (!key) return Promise.reject(new Error('Nessuna chiave Gemini'));
-                var model = (opts.models && opts.models[0]) || 'gemini-2.5-flash';
-                return window.geminiFetchModelOnce(key, model, parts, opts.timeoutMs || 68000, opts.generationConfig)
-                    .then(function (text) {
-                        return { text: text, model: model, keyLabel: 'chiave attiva' };
-                    });
-            };
-            window.runGeminiWithKeyRotation.__shV100 = true;
-        }
         if (typeof window.mergeCaptureFieldsForGemini === 'function' && !window.mergeCaptureFieldsForGemini.__shV106) {
             var origMerge = window.mergeCaptureFieldsForGemini;
             window.mergeCaptureFieldsForGemini = function () {

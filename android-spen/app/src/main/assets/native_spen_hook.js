@@ -1086,6 +1086,10 @@
         tendina.style.zIndex = '';
         tendina.style.maxHeight = '';
     }
+    window.__shUnpinNoteForModals = function () {
+        unpinNoteFromKeyboard();
+        if (typeof window.__shUnpinKbCards === 'function') window.__shUnpinKbCards();
+    };
 
     function typingInOtherField() {
         var ae = document.activeElement;
@@ -1108,7 +1112,9 @@
     function pinNoteAboveKeyboard() {
         var tendina = document.getElementById('rapportino-note-tendina');
         var ta = document.getElementById('inp-sec-note');
-        if (!tendina || notesFullscreenOn() || !notesTendinaOpen() || !ta || document.activeElement !== ta) {
+        var mgmtOpen = document.getElementById('management-modal');
+        if (!tendina || notesFullscreenOn() || !notesTendinaOpen() || !ta || document.activeElement !== ta
+            || (mgmtOpen && mgmtOpen.classList.contains('active'))) {
             unpinNoteFromKeyboard();
             return;
         }
@@ -1756,7 +1762,7 @@
             + 'flex-direction:column!important;background:#f8fafc!important;border-bottom:none!important;}'
             + '.dark #rapportino-note-tendina.sh-spen-note-fs-card{background:#0f172a!important;}'
             + '#rapportino-note-tendina.sh-spen-note-fs-card .cond-tendina-bar{'
-            + 'flex:0 0 auto!important;position:relative!important;z-index:100003!important;}'
+            + 'flex:0 0 auto!important;position:relative!important;z-index:40!important;}'
             + '#rapportino-note-tendina.sh-spen-note-fs-card .cond-tendina-body{'
             + 'flex:1 1 auto!important;max-height:none!important;overflow:hidden!important;'
             + 'padding:12px!important;display:flex!important;flex-direction:column!important;}'
@@ -1770,8 +1776,16 @@
             + '{color:transparent!important;opacity:0!important;}'
             + '#rapportino-note-tendina:not(.sh-spen-note-fs-card){position:relative!important;}'
             + '#rapportino-note-tendina .cond-tendina-bar{'
-            + 'position:relative!important;z-index:100002!important;flex-shrink:0!important;'
+            + 'position:relative!important;z-index:20!important;flex-shrink:0!important;'
             + 'pointer-events:auto!important;}'
+            + '#management-modal.active,#settings-modal.active{'
+            + 'z-index:110010!important;}'
+            + 'body.sh-modal-open #rapportino-note-tendina,'
+            + 'body.sh-modal-open #rapportino-note-tendina .cond-tendina-bar{'
+            + 'z-index:1!important;}'
+            + '.sh-kb-pin-card{background:#f8fafc!important;box-shadow:0 -10px 28px rgba(15,23,42,.28)!important;}'
+            + '.dark .sh-kb-pin-card{background:#0f172a!important;}'
+            + 'body.sh-modal-open .sh-kb-pin-card{z-index:1!important;}'
             + '#rapportino-note-tendina .cond-tendina-bar::after{'
             + 'content:"";position:absolute;left:50%;top:50%;width:76px;height:6px;'
             + 'margin-left:-38px;margin-top:-3px;border-radius:999px;'
@@ -3838,5 +3852,261 @@
         };
         wrapOpenNumpad();
         setInterval(wrapOpenNumpad, 800);
+    }
+
+    if (!window.__shKbLiftCards) {
+        window.__shKbLiftCards = true;
+        var kbPinCard = null;
+        var kbLiftGen = 0;
+        function modalBlocksKbLift() {
+            var ids = ['management-modal', 'settings-modal', 'numpad-modal', 'archive-list-modal'];
+            for (var i = 0; i < ids.length; i++) {
+                var el = document.getElementById(ids[i]);
+                if (el && el.classList.contains('active')) return true;
+            }
+            return false;
+        }
+        function isImePlantField(el) {
+            if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA')) return false;
+            if (el.readOnly || el.disabled) return false;
+            var typ = String(el.type || '').toLowerCase();
+            if (typ === 'hidden' || typ === 'checkbox' || typ === 'radio' || typ === 'button' || typ === 'submit') return false;
+            if (el.closest && el.closest('#numpad-modal, #management-modal, #settings-modal, #rapportino-note-tendina')) return false;
+            if (el.id === 'inp-sec-note') return false;
+            if (el.getAttribute('data-aria-keyboard') === '1') return true;
+            if (el.closest && el.closest('#sec-scam, #sec-filtra, #sec-bluedown')) return true;
+            if (el.tagName === 'TEXTAREA') return true;
+            var im = String(el.getAttribute('inputmode') || '').toLowerCase();
+            if (im === 'none') return false;
+            if (im === 'text' || im === 'search' || im === 'email' || im === 'url') return true;
+            if (typ === 'text' || typ === 'search' || typ === 'email') return true;
+            return false;
+        }
+        function cardForImeField(el) {
+            if (!el || !el.closest) return null;
+            return el.closest('[id^="rapportino-"][id$="-tendina"]')
+                || el.closest('.rapportino-custom-tendina')
+                || el.closest('.col-section')
+                || el.closest('.nott-stocc-panel, .nott-filtra-tendina, .nott-chem-tendina, .nott-stocc-tendina')
+                || el.closest('.row-block');
+        }
+        function clearKbScrollPad() {
+            var mc = document.querySelector('.main-container');
+            if (!mc || mc.getAttribute('data-sh-kb-pad') !== '1') return;
+            mc.style.paddingBottom = '';
+            mc.style.scrollPaddingBottom = '';
+            mc.removeAttribute('data-sh-kb-pad');
+        }
+        function unpinKbCard() {
+            document.querySelectorAll('.sh-kb-pin-card').forEach(function (card) {
+                card.classList.remove('sh-kb-pin-card');
+                card.style.position = '';
+                card.style.left = '';
+                card.style.right = '';
+                card.style.bottom = '';
+                card.style.top = '';
+                card.style.width = '';
+                card.style.zIndex = '';
+                card.style.maxHeight = '';
+                card.style.overflow = '';
+            });
+            kbPinCard = null;
+            clearKbScrollPad();
+        }
+        window.__shUnpinKbCards = unpinKbCard;
+        function dockFieldToKeyboard(el) {
+            if (!el || modalBlocksKbLift()) {
+                clearKbScrollPad();
+                return;
+            }
+            var vv = window.visualViewport;
+            var viewH = vv ? vv.height : window.innerHeight;
+            var viewTop = vv ? vv.offsetTop : 0;
+            var kb = keyboardOverlapPx();
+            var mc = document.querySelector('.main-container');
+            if (kb >= 80 && mc) {
+                mc.setAttribute('data-sh-kb-pad', '1');
+                mc.style.paddingBottom = Math.round(kb + 28) + 'px';
+                mc.style.scrollPaddingBottom = Math.round(kb + 16) + 'px';
+            } else {
+                clearKbScrollPad();
+            }
+            var r = el.getBoundingClientRect();
+            var dockBottom = viewTop + viewH - 12;
+            var delta = r.bottom - dockBottom;
+            if (Math.abs(delta) < 1.5) return;
+            var node = el.parentElement;
+            while (node && node !== document.body) {
+                var oy = '';
+                try { oy = window.getComputedStyle(node).overflowY; } catch (eOy) {}
+                if ((node.scrollHeight - node.clientHeight) > 4 && (oy === 'auto' || oy === 'scroll')) {
+                    node.scrollTop += delta;
+                    return;
+                }
+                node = node.parentElement;
+            }
+            if (mc && mc.scrollHeight > mc.clientHeight + 4) mc.scrollTop += delta;
+            else window.scrollBy(0, delta);
+        }
+        function pinKbCardAboveKeyboard() {
+            if (modalBlocksKbLift()) {
+                unpinKbCard();
+                return;
+            }
+            var ae = document.activeElement;
+            if (!isImePlantField(ae)) {
+                unpinKbCard();
+                return;
+            }
+            dockFieldToKeyboard(ae);
+        }
+        function scheduleKbLift() {
+            var gen = (kbLiftGen += 1);
+            var run = function () {
+                if (gen !== kbLiftGen) return;
+                pinKbCardAboveKeyboard();
+            };
+            run();
+            setTimeout(run, 80);
+            setTimeout(run, 220);
+            setTimeout(run, 480);
+        }
+        var TAP_SLOP = 16;
+        var fingerGuard = null;
+        function fieldFromEv(ev) {
+            var t = ev && ev.target;
+            if (!t) return null;
+            if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA') return t;
+            return t.closest ? t.closest('.main-container input, .main-container textarea') : null;
+        }
+        function isGuardedField(el) {
+            if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA')) return false;
+            if (el.id === 'inp-sec-note') return false;
+            if (el.closest && el.closest('#numpad-modal, #rapportino-note-tendina')) return false;
+            if (!el.closest || !el.closest('.main-container')) return false;
+            var typ = String(el.type || '').toLowerCase();
+            if (typ === 'hidden' || typ === 'checkbox' || typ === 'radio' || typ === 'button') return false;
+            return true;
+        }
+        function scrollMark() {
+            var mc = document.querySelector('.main-container');
+            return mc ? mc.scrollTop : (window.scrollY || 0);
+        }
+        function armReadonly(el) {
+            if (!el || el.readOnly) return;
+            el.setAttribute('data-sh-tap-ro', '1');
+            el.setAttribute('readonly', 'readonly');
+        }
+        function disarmReadonly(el) {
+            if (!el || el.getAttribute('data-sh-tap-ro') !== '1') return;
+            el.removeAttribute('readonly');
+            el.removeAttribute('data-sh-tap-ro');
+        }
+        function endFingerGuard(isTap) {
+            var g = fingerGuard;
+            fingerGuard = null;
+            window.__shScrollNotTap = !isTap;
+            if (g && g.el) {
+                disarmReadonly(g.el);
+                if (isTap && isImePlantField(g.el)) {
+                    try { g.el.focus({ preventScroll: true }); } catch (eF) {
+                        try { g.el.focus(); } catch (eF2) {}
+                    }
+                    setNoteSoftInput(true);
+                    scheduleKbLift();
+                } else if (g.el === document.activeElement && !isTap) {
+                    try { g.el.blur(); } catch (eB) {}
+                }
+            }
+            if (!isTap) {
+                setTimeout(function () { window.__shScrollNotTap = false; }, 280);
+            } else {
+                window.__shScrollNotTap = false;
+            }
+        }
+        document.addEventListener('pointerdown', function (ev) {
+            if (!ev || ev.pointerType === 'pen') return;
+            if (ev.pointerType && ev.pointerType !== 'touch' && ev.pointerType !== 'mouse') return;
+            var el = fieldFromEv(ev);
+            if (!isGuardedField(el)) return;
+            fingerGuard = {
+                id: ev.pointerId,
+                el: el,
+                x: ev.clientX,
+                y: ev.clientY,
+                moved: false,
+                scroll0: scrollMark(),
+                already: document.activeElement === el
+            };
+            window.__shScrollNotTap = false;
+            if (!fingerGuard.already) armReadonly(el);
+        }, true);
+        var onFingerMove = function (ev) {
+            var g = fingerGuard;
+            if (!g || ev.pointerType === 'pen') return;
+            if (g.id != null && ev.pointerId != null && ev.pointerId !== g.id) return;
+            var dx = ev.clientX - g.x;
+            var dy = ev.clientY - g.y;
+            if ((dx * dx + dy * dy) > (TAP_SLOP * TAP_SLOP) || Math.abs(scrollMark() - g.scroll0) > 4) {
+                g.moved = true;
+                window.__shScrollNotTap = true;
+            }
+        };
+        document.addEventListener('pointermove', onFingerMove, true);
+        document.addEventListener('touchmove', function (ev) {
+            if (!fingerGuard || !ev.touches || !ev.touches[0]) return;
+            var t = ev.touches[0];
+            var dx = t.clientX - fingerGuard.x;
+            var dy = t.clientY - fingerGuard.y;
+            if ((dx * dx + dy * dy) > (TAP_SLOP * TAP_SLOP) || Math.abs(scrollMark() - fingerGuard.scroll0) > 4) {
+                fingerGuard.moved = true;
+                window.__shScrollNotTap = true;
+            }
+        }, { capture: true, passive: true });
+        document.addEventListener('pointerup', function (ev) {
+            if (!fingerGuard || ev.pointerType === 'pen') return;
+            if (fingerGuard.id != null && ev.pointerId != null && ev.pointerId !== fingerGuard.id) return;
+            var g = fingerGuard;
+            if (g.moved || Math.abs(scrollMark() - g.scroll0) > 4) {
+                endFingerGuard(false);
+                return;
+            }
+            endFingerGuard(true);
+        }, true);
+        document.addEventListener('pointercancel', function (ev) {
+            if (!fingerGuard) return;
+            endFingerGuard(false);
+        }, true);
+        document.addEventListener('focusin', function (e) {
+            var el = e && e.target;
+            if (fingerGuard && !fingerGuard.moved && !fingerGuard.already && isGuardedField(el)) {
+                try { el.blur(); } catch (eBl) {}
+                return;
+            }
+            if (window.__shScrollNotTap && isGuardedField(el)) {
+                try { el.blur(); } catch (eBl2) {}
+                return;
+            }
+            if (!isImePlantField(el)) return;
+            setNoteSoftInput(true);
+            scheduleKbLift();
+        }, true);
+        document.addEventListener('focusout', function (e) {
+            if (!isImePlantField(e && e.target)) return;
+            setTimeout(function () {
+                var ae = document.activeElement;
+                if (isImePlantField(ae) || (ae && ae.id === 'inp-sec-note')) return;
+                unpinKbCard();
+                if (!typingInOtherField()) setNoteSoftInput(false);
+            }, 80);
+        }, true);
+        if (window.visualViewport) {
+            var onKbVv = function () {
+                if (document.activeElement && document.activeElement.id === 'inp-sec-note') return;
+                pinKbCardAboveKeyboard();
+            };
+            window.visualViewport.addEventListener('resize', onKbVv);
+            window.visualViewport.addEventListener('scroll', onKbVv);
+        }
     }
 })();

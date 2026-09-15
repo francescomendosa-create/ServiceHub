@@ -46,10 +46,22 @@ final class HubWebChrome extends WebChromeClient {
     private Uri cameraImageUri;
     private boolean pendingCaptureAfterPerm;
     private boolean directOcr;
+    private final InAppOcrCamera inAppCamera;
+    static volatile String lastOcrB64;
 
     HubWebChrome(Activity activity, WebView webView) {
         this.activity = activity;
         this.webView = webView;
+        this.inAppCamera = new InAppOcrCamera(activity);
+    }
+
+    boolean hideInAppCamera() {
+        if (inAppCamera == null || !inAppCamera.isOpen()) return false;
+        inAppCamera.close();
+        directOcr = false;
+        clearFileCallback(null);
+        stopOcrLoading();
+        return true;
     }
 
     void startDirectOcr() {
@@ -59,10 +71,35 @@ final class HubWebChrome extends WebChromeClient {
             ActivityCompat.requestPermissions(activity, new String[]{Manifest.permission.CAMERA}, REQ_CAMERA_PERM);
             return;
         }
-        if (!launchCamera()) {
-            directOcr = false;
-            injectOcrError("Fotocamera non disponibile.");
-        }
+        openInAppCamera();
+    }
+
+    private void openInAppCamera() {
+        Log.i(TAG, "inApp camera open");
+        inAppCamera.open(new InAppOcrCamera.Listener() {
+            @Override
+            public void onPhoto(File jpeg) {
+                Log.i(TAG, "inApp photo → OnFiles");
+                clearFileCallback(null);
+                injectOcrPhoto(jpeg, null);
+            }
+            @Override
+            public void onCancel() {
+                clearFileCallback(null);
+                stopOcrLoading();
+            }
+            @Override
+            public void onError(String msg) {
+                Log.w(TAG, "inApp camera fail: " + msg);
+                clearFileCallback(null);
+                injectOcrError(msg == null ? "Fotocamera non disponibile." : msg);
+            }
+        });
+    }
+
+    private void stopOcrLoading() {
+        webView.post(() -> webView.evaluateJavascript(
+                "window.setSmartCaptureLoading&&window.setSmartCaptureLoading(false)", null));
     }
 
     @Override
@@ -106,13 +143,15 @@ final class HubWebChrome extends WebChromeClient {
         clearFileCallback(null);
         this.filePathCallback = filePathCallback;
         boolean capture = fileChooserParams != null && fileChooserParams.isCaptureEnabled();
+        Log.i(TAG, "fileChooser capture=" + capture);
         if (capture) {
             if (!hasCameraPerm()) {
                 pendingCaptureAfterPerm = true;
                 ActivityCompat.requestPermissions(activity, new String[]{Manifest.permission.CAMERA}, REQ_CAMERA_PERM);
                 return true;
             }
-            if (launchCamera()) return true;
+            openInAppCamera();
+            return true;
         }
         return launchFiles(fileChooserParams);
     }
@@ -129,14 +168,15 @@ final class HubWebChrome extends WebChromeClient {
         }
         if (pendingCaptureAfterPerm) {
             pendingCaptureAfterPerm = false;
-            if (ok && launchCamera()) return;
-            directOcr = false;
-            if (!ok) {
-                clearFileCallback(null);
-                injectOcrError("Permesso fotocamera negato.");
-            } else if (!launchFiles(null)) {
-                clearFileCallback(null);
+            if (ok) {
+                if (filePathCallback != null) {
+                    openInAppCamera();
+                    return;
+                }
+                startDirectOcr();
+                return;
             }
+            clearFileCallback(null);
         }
     }
 
@@ -146,29 +186,26 @@ final class HubWebChrome extends WebChromeClient {
         File compact = null;
         if (resultCode == Activity.RESULT_OK) {
             if (requestCode == REQ_CAPTURE && cameraImageUri != null) {
+                // Stesso file della fotocamera: la pagina web fa normalize come su iPhone.
+                result = new Uri[]{cameraImageUri};
                 compact = compressJpeg(cameraImageUri);
-                if (compact != null) {
-                    result = new Uri[]{FileProvider.getUriForFile(
-                            activity, activity.getPackageName() + ".fileprovider", compact)};
-                } else {
-                    result = new Uri[]{cameraImageUri};
-                }
             } else {
                 result = urisFromIntent(data);
-                if (result != null && result.length == 1) compact = compressJpeg(result[0]);
             }
         }
         boolean ocr = directOcr;
         directOcr = false;
+        Log.i(TAG, "cameraResult ok=" + (resultCode == Activity.RESULT_OK)
+                + " uris=" + (result == null ? 0 : result.length) + " directOcr=" + ocr);
         clearFileCallback(result);
+        // File chooser / input web: solo callback, stesso percorso iPhone.
+        // inject JS solo per il ponte diretto (fallback).
         if (ocr) {
             if (compact != null || (result != null && result.length > 0)) {
                 injectOcrPhoto(compact != null ? compact : null, compact == null && result != null ? result[0] : null);
             } else {
                 injectOcrError("Foto non acquisita.");
             }
-        } else if (compact != null) {
-            injectOcrPhoto(compact, null);
         }
         cameraImageUri = null;
     }
@@ -180,14 +217,27 @@ final class HubWebChrome extends WebChromeClient {
                 injectOcrError("Foto vuota.");
                 return;
             }
-            String b64 = Base64.encodeToString(raw, Base64.NO_WRAP);
-            Log.i(TAG, "ocr photo bytes=" + raw.length);
-            String js = "window.__shNativeOcrPhoto&&window.__shNativeOcrPhoto('data:image/jpeg;base64," + b64 + "')";
-            webView.post(() -> webView.evaluateJavascript(js, null));
+            final String b64 = Base64.encodeToString(raw, Base64.NO_WRAP);
+            lastOcrB64 = b64;
+            Log.i(TAG, "ocr photo bytes=" + raw.length + " b64=" + b64.length());
+            webView.post(() -> webView.evaluateJavascript(
+                    "window.__shOcrPull&&window.__shOcrPull()", null));
         } catch (Exception e) {
             Log.w(TAG, "injectOcrPhoto", e);
             injectOcrError("Lettura foto fallita.");
         }
+    }
+
+    private void pushOcrChunk(String b64, int offset) {
+        if (offset >= b64.length()) {
+            webView.evaluateJavascript("window.__shOcrFinish&&window.__shOcrFinish()", null);
+            return;
+        }
+        int end = Math.min(offset + 160000, b64.length());
+        String chunk = b64.substring(offset, end);
+        String js = "window.__shOcrPush&&window.__shOcrPush('" + chunk + "')";
+        final int next = end;
+        webView.evaluateJavascript(js, unused -> pushOcrChunk(b64, next));
     }
 
     private void injectOcrError(String msg) {
@@ -205,7 +255,7 @@ final class HubWebChrome extends WebChromeClient {
             in = activity.getContentResolver().openInputStream(uri);
             BitmapFactory.decodeStream(in, null, bounds);
             if (in != null) in.close();
-            int max = 1280;
+            int max = 2048;
             int sample = 1;
             int w = Math.max(1, bounds.outWidth);
             int h = Math.max(1, bounds.outHeight);
@@ -231,7 +281,7 @@ final class HubWebChrome extends WebChromeClient {
             }
             File out = new File(dir, "ocr_send.jpg");
             try (FileOutputStream fos = new FileOutputStream(out)) {
-                bmp.compress(Bitmap.CompressFormat.JPEG, 78, fos);
+                bmp.compress(Bitmap.CompressFormat.JPEG, 93, fos);
             }
             bmp.recycle();
             return out;

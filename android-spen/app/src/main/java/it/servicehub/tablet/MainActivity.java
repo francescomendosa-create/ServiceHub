@@ -18,6 +18,7 @@ public class MainActivity extends AppCompatActivity {
     private WebView webView;
     private InkRecognizer ink;
     private String nativeHookJs;
+    private String nativeOcrBootJs;
     private HubWebChrome hubChrome;
 
     @Override
@@ -25,6 +26,7 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         nativeHookJs = readAssetUtf8("native_spen_hook.js");
+        nativeOcrBootJs = readAssetUtf8("native_ocr_boot.js");
         webView = findViewById(R.id.hub_webview);
         ink = new InkRecognizer();
         ink.ensureReady();
@@ -47,6 +49,8 @@ public class MainActivity extends AppCompatActivity {
         s.setDisplayZoomControls(false);
         s.setMediaPlaybackRequiresUserGesture(false);
         s.setJavaScriptCanOpenWindowsAutomatically(true);
+        s.setAllowFileAccess(true);
+        s.setAllowContentAccess(true);
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
         CookieManager cookies = CookieManager.getInstance();
         cookies.setAcceptCookie(true);
@@ -58,16 +62,27 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 injectHook(view);
+                view.postDelayed(() -> injectOcrBoot(view), 200);
                 view.postDelayed(() -> injectHook(view), 800);
+                view.postDelayed(() -> injectOcrBoot(view), 900);
                 view.postDelayed(() -> injectHook(view), 2200);
+                view.postDelayed(() -> injectOcrBoot(view), 2400);
             }
         });
         webView.addJavascriptInterface(new SpenBridge(webView, ink, () -> hubChrome.startDirectOcr()), "ServiceHubAndroidSpen");
     }
 
     private void injectHook(WebView view) {
-        if (view == null || nativeHookJs == null || nativeHookJs.isEmpty()) return;
-        view.evaluateJavascript(nativeHookJs, null);
+        if (view == null) return;
+        if (nativeHookJs != null && !nativeHookJs.isEmpty()) {
+            view.evaluateJavascript(nativeHookJs, null);
+        }
+        injectOcrBoot(view);
+    }
+
+    private void injectOcrBoot(WebView view) {
+        if (view == null || nativeOcrBootJs == null || nativeOcrBootJs.isEmpty()) return;
+        view.evaluateJavascript(nativeOcrBootJs, null);
     }
 
     private String readAssetUtf8(String name) {
@@ -98,6 +113,9 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
+        if (hubChrome != null && hubChrome.hideInAppCamera()) {
+            return;
+        }
         if (webView != null && webView.canGoBack()) {
             webView.goBack();
             return;

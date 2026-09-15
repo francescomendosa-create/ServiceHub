@@ -1,7 +1,7 @@
 (function () {
     window.__SH_NATIVE_ANDROID = true;
     window.__shSpenSkipIme = true;
-    window.__SPEN_COMMIT_MS = 500;
+    window.__SPEN_COMMIT_MS = 600;
     window.__shSpenHasNativeEngine = function () {
         try {
             return !!(window.ServiceHubAndroidSpen && typeof window.ServiceHubAndroidSpen.recognize === 'function');
@@ -976,11 +976,20 @@
         tendina.style.maxHeight = '';
     }
 
+    function typingInOtherField() {
+        var ae = document.activeElement;
+        if (!ae || ae.id === 'inp-sec-note') return false;
+        if (ae.tagName !== 'INPUT' && ae.tagName !== 'TEXTAREA') return false;
+        return !ae.readOnly && !ae.disabled;
+    }
+
     function dismissNoteKeyboard() {
         noteKbGen += 1;
         window.__shNotePenWrite = false;
         blurNoteField();
-        setNoteSoftInput(false);
+        // setNoteSoftInput agisce sull'intera finestra: col dito su un altro campo
+        // chiuderebbe la tastiera appena aperta.
+        if (!typingInOtherField()) setNoteSoftInput(false);
         unpinNoteFromKeyboard();
         clearNoteInk();
     }
@@ -1152,6 +1161,11 @@
         lastNoteBarAction = now;
         dismissNoteKeyboard();
         if (notesTendinaOpen()) {
+            // Centro sull'anteprima: va diretto a schermo intero, senza passare dalla chiusura.
+            if (zone === 'center' && !notesFullscreenOn()) {
+                setNoteSchedaOpen(true, 'fs');
+                return;
+            }
             setNoteSchedaOpen(false);
             return;
         }
@@ -1927,6 +1941,46 @@
         };
         window.__shSpenApplyFieldEdit.__shV79 = true;
     }
+    // Il campo viene svuotato subito dopo la scrittura: registra chi lo fa e riscrive il valore.
+    function watchWipe(input, rec) {
+        if (!input || input.__shWipeWatch) return;
+        try {
+            var proto = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+            if (!proto || !proto.get || !proto.set) return;
+            input.__shWipeWatch = true;
+            Object.defineProperty(input, 'value', {
+                configurable: true,
+                get: function () { return proto.get.call(this); },
+                set: function (v) {
+                    if ((v === '' || v == null) && onlyNumber(proto.get.call(this))) {
+                        var st = '';
+                        try { st = String(new Error().stack || '').split('\n').slice(1, 5).join(' | '); } catch (e) {}
+                        console.log('[SH PEN] WIPE ' + (input.id || '?') + ' <- ' + st);
+                    }
+                    proto.set.call(this, v);
+                }
+            });
+        } catch (e) {}
+    }
+
+    function reassertValue(input, rec) {
+        if (!input || !rec) return;
+        var again = function () {
+            if (onlyNumber(input.value) === rec) return;
+            console.log('[SH PEN] riscrivo ' + (input.id || '?') + ' = ' + rec);
+            input.value = rec;
+        };
+        setTimeout(again, 0);
+        setTimeout(again, 90);
+        setTimeout(again, 300);
+        setTimeout(function () {
+            again();
+            if (onlyNumber(input.value) === rec) {
+                try { input.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+            }
+        }, 700);
+    }
+
     if (typeof window.__shSpenApplyFieldEdit === 'function' && !window.__shSpenApplyFieldEdit.__shV50) {
         var applyOrig = window.__shSpenApplyFieldEdit;
         window.__shSpenApplyFieldEdit = function (input, recognized, origin, mode) {
@@ -1937,11 +1991,12 @@
                 if (ink) ink.imeText = '';
                 return cleared;
             }
-            if (ink && ink.holdClear) return true;
+            var dbgId = (input && input.id) || '?';
+            if (ink && ink.holdClear) { console.log('[SH PEN] skip holdClear ' + dbgId); return true; }
             var rec = onlyNumber(recognized);
-            if (!rec) return false;
-            if (!canCommitTo(input)) return true;
-            if (window.__shPenIsDown) return true;
+            if (!rec) { console.log('[SH PEN] skip norec ' + dbgId + ' in=' + recognized); return false; }
+            if (!canCommitTo(input)) { console.log('[SH PEN] skip nopending ' + dbgId + ' rec=' + rec); return true; }
+            if (window.__shPenIsDown) { console.log('[SH PEN] skip pendown ' + dbgId + ' rec=' + rec); return true; }
             var live = input ? onlyNumber(input.value) : '';
             var from = onlyNumber(ink && ink.sessionOrigin != null ? ink.sessionOrigin : origin);
             var scamId = input && input.id;
@@ -1971,7 +2026,10 @@
                 ink.imePending = '';
                 ink.imeText = rec;
             }
+            watchWipe(input, rec);
             var ok = (input && onlyNumber(input.value) === rec) ? true : applyOrig(input, rec, from, 'replace');
+            console.log('[SH PEN] apply ' + dbgId + ' rec=' + rec + ' ok=' + ok + ' val=' + (input ? input.value : '-'));
+            reassertValue(input, rec);
             consumePendingCommit(input);
             clearInkPixels(ink);
             hideBox();
@@ -2642,6 +2700,7 @@
     if (typeof window.__shSpenOnPenMove === 'function' && !window.__shSpenOnPenMove.__shV80) {
         var movePrev80 = window.__shSpenOnPenMove;
         window.__shSpenOnPenMove = function (ev) {
+            if (penChrome && penChrome.kind === 'noteBar') return movePrev80.apply(this, arguments);
             if (window.__shNotePenWrite || penOnNoteField(ev) || noteInk.current) {
                 noteInk.current = null;
                 return;
@@ -2654,6 +2713,9 @@
     if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV80) {
         var upPrev80 = window.__shSpenOnPenUp;
         window.__shSpenOnPenUp = function (ev, cancelled) {
+            // Dopo la scrittura __shNotePenWrite resta attivo: senza questa uscita il tocco
+            // sulla barra non arriverebbe mai al toggle della scheda.
+            if (penChrome && penChrome.kind === 'noteBar') return upPrev80.apply(this, arguments);
             if (window.__shNotePenWrite || penOnNoteField(ev) || noteInk.current) {
                 noteInk.current = null;
                 noteInk.strokes = [];
@@ -2948,6 +3010,26 @@
             setNoteSoftInput(false);
             if (window.__shNotePenWrite || window.__shLastNotePointer === 'pen' || window.__shPenIsDown) return;
             try { e.target.blur(); } catch (err) {}
+        }, true);
+    }
+    // Col dito la pagina apre la tastiera completa: sui campi impianto serve il tastierino.
+    if (!window.__shFingerNumpad) {
+        window.__shFingerNumpad = true;
+        var numpadTarget = function (el) {
+            if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA')) return null;
+            if (!isPlantField(el)) return null;
+            if (el.readOnly || el.disabled) return null;
+            if (el.getAttribute('data-no-numpad') === '1') return null;
+            if (String(el.getAttribute('inputmode') || '').toLowerCase() === 'text') return null;
+            return el;
+        };
+        document.addEventListener('pointerdown', function (ev) {
+            if (!ev || ev.pointerType === 'pen') return;
+            var el = ev.target;
+            var inp = numpadTarget(el) || numpadTarget(numericFromEl(el));
+            if (!inp) return;
+            inp.setAttribute('inputmode', 'decimal');
+            if (!inp.getAttribute('pattern')) inp.setAttribute('pattern', '[0-9,]*');
         }, true);
     }
     if (!window.__shNoteCloseKb75) {

@@ -795,7 +795,9 @@
         window[name] = function (id) {
             var key = String(id == null ? '' : id) + ':' + String(arguments[1] == null ? '' : arguments[1]);
             var now = Date.now();
-            if (key && lastKey === key && (now - lastT) < 500) return;
+            // Serve solo a scartare il click doppio del pennino (sintetico + nativo, pochi ms):
+            // oltre questa soglia sono pressioni vere e vanno accettate.
+            if (key && lastKey === key && (now - lastT) < 120) return;
             lastKey = key;
             lastT = now;
             return orig.apply(this, arguments);
@@ -3253,5 +3255,395 @@
             if (typeof window.openNativeCameraCapture === 'function') window.openNativeCameraCapture();
         };
         window.smartCaptureFromCamera.__shV57 = true;
+    }
+
+    // ---- Scrittura a penna sul display del numpad ----
+    var numInk = { strokes: [], current: null, timer: null, rect: null, dpr: 1 };
+
+    function numpadInkArea() {
+        var modal = document.getElementById('numpad-modal');
+        if (!modal || !modal.classList.contains('active')) return null;
+        var disp = document.getElementById('numpad-display');
+        if (!disp || disp.hidden) return null;
+        var box = (disp.closest && disp.closest('.numpad-display-bezel')) || disp;
+        var r = box.getBoundingClientRect();
+        if (r.width < 8 || r.height < 8) return null;
+        return r;
+    }
+
+    function numpadInkHit(x, y) {
+        if (x == null || y == null) return null;
+        var r = numpadInkArea();
+        if (!r) return null;
+        if (x < r.left || x > r.right || y < r.top || y > r.bottom) return null;
+        return r;
+    }
+
+    function numpadInkHost() {
+        var host = document.getElementById('sh-spen-numpad-ink');
+        if (!host) {
+            host = document.createElement('div');
+            host.id = 'sh-spen-numpad-ink';
+            host.setAttribute('aria-hidden', 'true');
+            // Il numpad sta a z-index 10000002: sotto quel valore l'inchiostro resta nascosto dal pannello.
+            host.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483646;display:none;';
+            var cvs = document.createElement('canvas');
+            cvs.style.cssText = 'display:block;width:100%;height:100%;';
+            host.appendChild(cvs);
+            (document.body || document.documentElement).appendChild(host);
+        }
+        return host;
+    }
+
+    function layoutNumpadInk() {
+        var r = numpadInkArea();
+        var host = numpadInkHost();
+        if (!r) {
+            host.style.display = 'none';
+            return;
+        }
+        host.style.display = 'block';
+        host.style.left = r.left + 'px';
+        host.style.top = r.top + 'px';
+        host.style.width = r.width + 'px';
+        host.style.height = r.height + 'px';
+        var cvs = host.querySelector('canvas');
+        if (!cvs) return;
+        var dpr = window.devicePixelRatio || 1;
+        cvs.width = Math.max(1, Math.round(r.width * dpr));
+        cvs.height = Math.max(1, Math.round(r.height * dpr));
+        numInk.rect = r;
+        numInk.dpr = dpr;
+        redrawNumpadInk();
+    }
+
+    function redrawNumpadInk() {
+        var host = document.getElementById('sh-spen-numpad-ink');
+        var cvs = host && host.querySelector('canvas');
+        if (!cvs) return;
+        var ctx = cvs.getContext('2d');
+        ctx.clearRect(0, 0, cvs.width, cvs.height);
+        var r = numInk.rect;
+        if (!r) return;
+        var dpr = numInk.dpr || 1;
+        ctx.strokeStyle = '#1e3a8a';
+        ctx.lineWidth = 2.6 * dpr;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        var all = numInk.strokes.slice();
+        if (numInk.current && numInk.current.length) all.push(numInk.current);
+        for (var s = 0; s < all.length; s++) {
+            var pts = all[s];
+            if (!pts || !pts.length) continue;
+            ctx.beginPath();
+            ctx.moveTo((pts[0].x - r.left) * dpr, (pts[0].y - r.top) * dpr);
+            for (var i = 1; i < pts.length; i++) {
+                ctx.lineTo((pts[i].x - r.left) * dpr, (pts[i].y - r.top) * dpr);
+            }
+            ctx.stroke();
+        }
+    }
+
+    function clearNumpadInk() {
+        window.__shNumpadInkWriting = false;
+        numpadHidePlaceholder(false);
+        numInk.strokes = [];
+        numInk.current = null;
+        if (numInk.timer) {
+            try { clearTimeout(numInk.timer); } catch (e) {}
+            numInk.timer = null;
+        }
+        var host = document.getElementById('sh-spen-numpad-ink');
+        if (!host) return;
+        var cvs = host.querySelector('canvas');
+        if (cvs) {
+            try { cvs.getContext('2d').clearRect(0, 0, cvs.width, cvs.height); } catch (e2) {}
+        }
+        host.style.display = 'none';
+    }
+
+    function numpadKey(v) {
+        try {
+            if (typeof window.numpadAction === 'function') window.numpadAction(v);
+        } catch (e) {}
+    }
+
+    // Come le unita' di misura sui campi: mentre il pennino scrive, lo "0.00" del display sparisce.
+    function numpadHidePlaceholder(on) {
+        var d = document.getElementById('numpad-display');
+        if (!d) return;
+        if (on) {
+            if (d.getAttribute('data-sh-np-ph') == null) {
+                d.setAttribute('data-sh-np-ph', d.getAttribute('placeholder') || '');
+            }
+            d.setAttribute('placeholder', '');
+        } else if (d.getAttribute('data-sh-np-ph') != null) {
+            d.setAttribute('placeholder', d.getAttribute('data-sh-np-ph') || '');
+            d.removeAttribute('data-sh-np-ph');
+        }
+    }
+
+    function strokesCenterX(strokes) {
+        var minx = null, maxx = null;
+        for (var s = 0; s < (strokes || []).length; s++) {
+            var pts = strokes[s] || [];
+            for (var i = 0; i < pts.length; i++) {
+                if (minx == null || pts[i].x < minx) minx = pts[i].x;
+                if (maxx == null || pts[i].x > maxx) maxx = pts[i].x;
+            }
+        }
+        return minx == null ? null : (minx + maxx) / 2;
+    }
+
+    function numpadDisplayValue() {
+        var d = document.getElementById('numpad-display');
+        return d ? String(d.value || '') : '';
+    }
+
+    // Posizione sullo schermo di ogni cifra del display: serve sia per capire se la cifra
+    // nuova va prima o dopo, sia per sapere quali cifre attraversa un taglio.
+    function numpadCharBoxes() {
+        var d = document.getElementById('numpad-display');
+        var txt = numpadDisplayValue();
+        if (!d || !txt) return null;
+        var r = d.getBoundingClientRect();
+        if (!r.width) return null;
+        var cs = window.getComputedStyle(d);
+        var ctx;
+        try {
+            var cv = numpadCharBoxes.__cv || (numpadCharBoxes.__cv = document.createElement('canvas'));
+            ctx = cv.getContext('2d');
+            ctx.font = cs.font || ((cs.fontStyle || '') + ' ' + (cs.fontWeight || '') + ' ' + cs.fontSize + ' ' + cs.fontFamily);
+        } catch (e) { return null; }
+        // Il pannello del numpad puo' essere scalato: le misure del font vanno riportate
+        // alla dimensione effettiva sullo schermo.
+        var k = d.offsetWidth ? (r.width / d.offsetWidth) : 1;
+        var widths = [];
+        var total = 0;
+        for (var i = 0; i < txt.length; i++) {
+            var w = ctx.measureText(txt.charAt(i)).width * k;
+            widths.push(w);
+            total += w;
+        }
+        if (!total) return null;
+        var align = cs.textAlign;
+        var padL = (parseFloat(cs.paddingLeft) || 0) * k;
+        var padR = (parseFloat(cs.paddingRight) || 0) * k;
+        var x;
+        if (align === 'right' || align === 'end') x = r.right - padR - total;
+        else if (align === 'left' || align === 'start') x = r.left + padL;
+        else x = r.left + (r.width - total) / 2;
+        var boxes = [];
+        for (var j = 0; j < txt.length; j++) {
+            boxes.push({ ch: txt.charAt(j), x0: x, x1: x + widths[j] });
+            x += widths[j];
+        }
+        return boxes;
+    }
+
+    function numpadTextCenterX() {
+        var boxes = numpadCharBoxes();
+        if (!boxes || !boxes.length) return null;
+        return (boxes[0].x0 + boxes[boxes.length - 1].x1) / 2;
+    }
+
+    // Un tratto cancella se e' una riga netta (orizzontale o diagonale) oppure uno
+    // scarabocchio: spariscono solo le cifre che attraversa davvero.
+    function numpadEraseResult(strokes, rect) {
+        if (!strokes || strokes.length !== 1) return null;
+        var pts = strokes[0] || [];
+        if (pts.length < 3) return null;
+        var dx = pts[pts.length - 1].x - pts[0].x;
+        var dy = pts[pts.length - 1].y - pts[0].y;
+        var chord = Math.sqrt(dx * dx + dy * dy);
+        var path = 0;
+        for (var i = 1; i < pts.length; i++) {
+            var px = pts[i].x - pts[i - 1].x;
+            var py = pts[i].y - pts[i - 1].y;
+            path += Math.sqrt(px * px + py * py);
+        }
+        var scarabocchio = numpadScribble(strokes, rect);
+        // Quasi verticale e' un "1", non un taglio.
+        var riga = chord >= 25 && path <= chord * 1.35 && Math.abs(dx) >= Math.abs(dy) * 0.6;
+        if (!riga && !scarabocchio) return null;
+        var boxes = numpadCharBoxes();
+        if (!boxes || !boxes.length) return null;
+        var b = strokeBoxX(pts);
+        var out = '';
+        var colpite = 0;
+        for (var c = 0; c < boxes.length; c++) {
+            var bx = boxes[c];
+            var over = Math.min(b.x1, bx.x1) - Math.max(b.x0, bx.x0);
+            var largh = bx.x1 - bx.x0;
+            if (over > 0 && largh > 0 && over >= largh * 0.45) colpite++;
+            else out += bx.ch;
+        }
+        if (!colpite) return null;
+        return out;
+    }
+
+    function strokeBoxX(pts) {
+        var x0 = pts[0].x, x1 = pts[0].x;
+        for (var i = 1; i < pts.length; i++) {
+            if (pts[i].x < x0) x0 = pts[i].x;
+            if (pts[i].x > x1) x1 = pts[i].x;
+        }
+        return { x0: x0, x1: x1 };
+    }
+
+    function numpadSetValue(str) {
+        numpadKey('CLR');
+        for (var i = 0; i < str.length; i++) {
+            var ch = str.charAt(i);
+            numpadKey(ch === '.' ? ',' : ch);
+        }
+    }
+
+    // Scarabocchio: avanti e indietro sopra il numero, come gesto di cancellazione.
+    function numpadScribble(strokes, rect) {
+        if (!strokes || !strokes.length || !rect) return false;
+        var pts = [];
+        for (var s = 0; s < strokes.length; s++) pts = pts.concat(strokes[s] || []);
+        if (pts.length < 8) return false;
+        var box = strokeBox(pts);
+        // Basta che copra una cifra: lo scarabocchio puo' essere mirato all'ultima.
+        if (!box || box.w < 30) return false;
+        var dir = 0;
+        var flips = 0;
+        var lastX = pts[0].x;
+        for (var i = 1; i < pts.length; i++) {
+            var dx = pts[i].x - lastX;
+            if (Math.abs(dx) < 4) continue;
+            var nd = dx > 0 ? 1 : -1;
+            if (dir && nd !== dir) flips++;
+            dir = nd;
+            lastX = pts[i].x;
+        }
+        return flips >= 3;
+    }
+
+    function commitNumpadInk() {
+        var strokes = cloneStrokes(numInk.strokes);
+        var rect = numInk.rect;
+        numInk.strokes = [];
+        numInk.current = null;
+        if (!strokes.length) {
+            clearNumpadInk();
+            return;
+        }
+        var resto = numpadEraseResult(strokes, rect);
+        if (resto !== null) {
+            clearNumpadInk();
+            numpadSetValue(resto);
+            return;
+        }
+        var inkCx = strokesCenterX(strokes);
+        var textCx = numpadTextCenterX();
+        nativeRecognize(strokes).then(function (num) {
+            clearNumpadInk();
+            num = String(num || '').trim();
+            if (!num) return;
+            var prev = numpadDisplayValue();
+            if (!prev) {
+                numpadSetValue(num);
+                return;
+            }
+            var prima = inkCx != null && textCx != null && inkCx < textCx;
+            numpadSetValue(prima ? (num + prev) : (prev + num));
+        });
+    }
+
+    function scheduleNumpadInkCommit() {
+        if (numInk.timer) {
+            try { clearTimeout(numInk.timer); } catch (e) {}
+        }
+        numInk.timer = setTimeout(function () {
+            numInk.timer = null;
+            if (window.__shPenIsDown) {
+                scheduleNumpadInkCommit();
+                return;
+            }
+            commitNumpadInk();
+        }, window.__SPEN_COMMIT_MS || 600);
+    }
+
+    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV122) {
+        var downPrev122 = window.__shSpenOnPenDown;
+        window.__shSpenOnPenDown = function (ev) {
+            if (!ev || !numpadInkHit(ev.clientX, ev.clientY)) return downPrev122.apply(this, arguments);
+            if (ev.cancelable) ev.preventDefault();
+            hideBox();
+            penUiTap = null;
+            clearPenChrome();
+            if (numInk.timer) {
+                try { clearTimeout(numInk.timer); } catch (e) {}
+                numInk.timer = null;
+            }
+            window.__shNumpadInkWriting = true;
+            numpadHidePlaceholder(true);
+            layoutNumpadInk();
+            numInk.current = [{ x: ev.clientX, y: ev.clientY, t: Date.now() }];
+            redrawNumpadInk();
+        };
+        window.__shSpenOnPenDown.__shV122 = true;
+    }
+
+    if (typeof window.__shSpenOnPenMove === 'function' && !window.__shSpenOnPenMove.__shV122) {
+        var movePrev122 = window.__shSpenOnPenMove;
+        window.__shSpenOnPenMove = function (ev) {
+            if (!numInk.current || !ev) return movePrev122.apply(this, arguments);
+            if (ev.cancelable) ev.preventDefault();
+            numInk.current.push({ x: ev.clientX, y: ev.clientY, t: Date.now() });
+            redrawNumpadInk();
+        };
+        window.__shSpenOnPenMove.__shV122 = true;
+    }
+
+    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV122) {
+        var upPrev122 = window.__shSpenOnPenUp;
+        window.__shSpenOnPenUp = function (ev, cancelled) {
+            if (!numInk.current) return upPrev122.apply(this, arguments);
+            var pts = numInk.current;
+            numInk.current = null;
+            if (!cancelled && pts && pts.length > 1) numInk.strokes.push(pts);
+            redrawNumpadInk();
+            // Il taglio non ha bisogno dell'attesa del riconoscimento: si vede subito dalla forma.
+            var resto = numpadEraseResult(numInk.strokes, numInk.rect);
+            if (resto !== null) {
+                if (numInk.timer) {
+                    try { clearTimeout(numInk.timer); } catch (eT) {}
+                    numInk.timer = null;
+                }
+                clearNumpadInk();
+                numpadSetValue(resto);
+                return;
+            }
+            scheduleNumpadInkCommit();
+        };
+        window.__shSpenOnPenUp.__shV122 = true;
+    }
+
+    // Mentre il pennino scrive sul display, il dito o il palmo non devono muovere nulla sotto.
+    if (!window.__shNumpadInkTouchLock) {
+        window.__shNumpadInkTouchLock = true;
+        var blockWhileNumInk = function (ev) {
+            if (!window.__shNumpadInkWriting) return;
+            if (ev && ev.pointerType === 'pen') return;
+            if (ev && ev.cancelable) ev.preventDefault();
+            if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
+        };
+        ['touchstart', 'touchmove', 'pointerdown', 'pointermove'].forEach(function (name) {
+            document.addEventListener(name, blockWhileNumInk, { capture: true, passive: false });
+        });
+    }
+
+    if (!window.__shNumpadInkWatch) {
+        window.__shNumpadInkWatch = true;
+        var numModal = document.getElementById('numpad-modal');
+        if (numModal) {
+            new MutationObserver(function () {
+                if (!numModal.classList.contains('active')) clearNumpadInk();
+            }).observe(numModal, { attributes: true, attributeFilter: ['class'] });
+        }
     }
 })();

@@ -51,7 +51,8 @@ public class MainActivity extends AppCompatActivity {
         s.setJavaScriptCanOpenWindowsAutomatically(true);
         s.setAllowFileAccess(true);
         s.setAllowContentAccess(true);
-        s.setCacheMode(WebSettings.LOAD_DEFAULT);
+        s.setCacheMode(WebSettings.LOAD_NO_CACHE);
+        webView.clearCache(true);
         CookieManager cookies = CookieManager.getInstance();
         cookies.setAcceptCookie(true);
         cookies.setAcceptThirdPartyCookies(webView, true);

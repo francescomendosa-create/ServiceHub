@@ -707,6 +707,27 @@
         return false;
     }
 
+    // Dopo il click sintetico del pennino il WebView consegna anche il proprio click nativo:
+    // sui tasti del numpad arrivavano due cifre per ogni tocco.
+    var penClickGuard = null;
+    function armNativeClickGuard(el) {
+        penClickGuard = el ? { el: el, t: Date.now() } : null;
+    }
+    if (!window.__shPenClickDedup) {
+        window.__shPenClickDedup = true;
+        document.addEventListener('click', function (ev) {
+            if (!ev || !ev.isTrusted || !penClickGuard) return;
+            var g = penClickGuard;
+            if (Date.now() - g.t > 350) { penClickGuard = null; return; }
+            var t = ev.target;
+            if (!g.el || !(g.el === t || (g.el.contains && g.el.contains(t)))) return;
+            penClickGuard = null;
+            ev.stopPropagation();
+            if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
+            if (ev.cancelable) ev.preventDefault();
+        }, true);
+    }
+
     function clickPenTarget(el) {
         if (!el) return false;
         var status = el.closest ? el.closest('.status-cell-btn') : null;
@@ -727,6 +748,7 @@
             hit = el.closest('button, [onclick], .status-cell-btn, .status-header, .tank-status-single, .vwt-btn, .osmosi-btn, .analisi-choice-btn, [data-vwt-trigger], [data-osmosi-trigger], [data-analisi-trigger], [data-sf3-run-trigger], [data-vwt-meter-trigger]') || el;
         }
         markPenPopupClick();
+        armNativeClickGuard(hit);
         try {
             hit.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, composed: true }));
             return true;

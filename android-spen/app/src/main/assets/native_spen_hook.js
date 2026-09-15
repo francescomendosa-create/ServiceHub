@@ -3628,7 +3628,14 @@
         window.__shNumpadInkTouchLock = true;
         var blockWhileNumInk = function (ev) {
             if (!window.__shNumpadInkWriting) return;
+            var modal = document.getElementById('numpad-modal');
+            if (!modal || !modal.classList.contains('active')) {
+                window.__shNumpadInkWriting = false;
+                return;
+            }
             if (ev && ev.pointerType === 'pen') return;
+            var t = ev && ev.target;
+            if (t && t.closest && t.closest('#smart-capture-menu, [id*="smart-capture"], #splash-screen')) return;
             if (ev && ev.cancelable) ev.preventDefault();
             if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
         };
@@ -3646,4 +3653,26 @@
             }).observe(numModal, { attributes: true, attributeFilter: ['class'] });
         }
     }
+
+    // Sempre, anche se il primo inject e' arrivato prima della pagina:
+    // l'OCR in-app deve aprire la fotocamera nativa, non quella web.
+    window.smartCaptureFromCamera = function () {
+        try { seedAndroidGeminiKeys(); } catch (eCam0) {}
+        var menu = document.getElementById('smart-capture-menu');
+        if (menu) menu.classList.remove('open');
+        if (!window._smartCaptureLetturaMode && !window._smartCaptureNotturnoGiornalieroMode) {
+            window._smartCaptureTankMode = true;
+        }
+        window._smartCaptureAbort = false;
+        window.__shOcrStarted = false;
+        if (typeof window.ensureGeminiApiKeySaved === 'function') window.ensureGeminiApiKeySaved();
+        if (window.ServiceHubAndroidSpen && typeof window.ServiceHubAndroidSpen.startOcrCamera === 'function') {
+            if (typeof window.setSmartCaptureLoading === 'function') {
+                window.setSmartCaptureLoading(true, 'Fotocamera…');
+            }
+            try { window.ServiceHubAndroidSpen.startOcrCamera(); } catch (eCam1) {}
+            return;
+        }
+        if (typeof window.openNativeCameraCapture === 'function') window.openNativeCameraCapture();
+    };
 })();

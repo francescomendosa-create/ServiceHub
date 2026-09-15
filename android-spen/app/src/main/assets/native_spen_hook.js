@@ -3131,6 +3131,8 @@
             if (!isPlantField(el)) return null;
             if (el.readOnly || el.disabled) return null;
             if (el.getAttribute('data-no-numpad') === '1') return null;
+            if (el.getAttribute('data-aria-keyboard') === '1') return null;
+            if (el.id && /^(sa-.+)-(portata|temp|press)$/.test(el.id)) return null;
             if (String(el.getAttribute('inputmode') || '').toLowerCase() === 'text') return null;
             return el;
         };

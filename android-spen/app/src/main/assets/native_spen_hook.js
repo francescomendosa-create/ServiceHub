@@ -3783,4 +3783,60 @@
             punchNumpadTitleRow();
         }, true);
     }
+
+    // Scheda Aria: il quadrante è solo tastiera. Il numpad si apre solo dalla sigla.
+    if (!window.__shAriaBoxGuard) {
+        window.__shAriaBoxGuard = true;
+        var ariaMeasureFromEv = function (target) {
+            if (!target) return null;
+            if (target.nodeType !== 1) target = target.parentElement;
+            if (!target || !target.closest) return null;
+            if (target.closest('.cell-label-main, .status-cell-btn, #numpad-modal')) return null;
+            var inp = target.closest('#sec-aria input[id]');
+            if (inp && /^(sa-.+)-(portata|temp|press)$/.test(inp.id)) return inp;
+            var td = target.closest('#sec-aria td');
+            if (!td || td.querySelector('.cell-label-main, .status-cell-btn')) return null;
+            inp = td.querySelector('input[id]');
+            if (inp && /^(sa-.+)-(portata|temp|press)$/.test(inp.id)) return inp;
+            return null;
+        };
+        var markAriaBox = function (ev) {
+            if (!ev || ev.pointerType === 'pen') return;
+            if (!ariaMeasureFromEv(ev.target)) return;
+            window.__shAriaBoxHit = Date.now();
+            var modal = document.getElementById('numpad-modal');
+            if (modal && modal.classList.contains('active') && typeof window.closeNumpad === 'function') {
+                try { window.closeNumpad(); } catch (eC) {}
+            }
+        };
+        document.addEventListener('pointerdown', markAriaBox, true);
+        document.addEventListener('touchstart', markAriaBox, true);
+        document.addEventListener('click', function (ev) {
+            if (!ariaMeasureFromEv(ev.target)) return;
+            ev.stopPropagation();
+            if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
+        }, true);
+        var wrapOpenNumpad = function () {
+            if (typeof window.openNumpad !== 'function' || window.openNumpad.__shAriaHookGuard) return;
+            var orig = window.openNumpad;
+            window.openNumpad = function (labelEl, explicitInput) {
+                if (window.__shAriaBoxHit && (Date.now() - window.__shAriaBoxHit) < 900) return;
+                var ret = orig.apply(this, arguments);
+                var modal = document.getElementById('numpad-modal');
+                if (modal && modal.classList.contains('active')) {
+                    var ae = document.activeElement;
+                    if (ae && ae.tagName === 'INPUT' && ae.id !== 'numpad-display') {
+                        try { ae.blur(); } catch (eB) {}
+                    }
+                    document.querySelectorAll('#sec-aria input[id]').forEach(function (inp) {
+                        if (/^(sa-.+)-(portata|temp|press)$/.test(inp.id)) inp.setAttribute('inputmode', 'none');
+                    });
+                }
+                return ret;
+            };
+            window.openNumpad.__shAriaHookGuard = true;
+        };
+        wrapOpenNumpad();
+        setInterval(wrapOpenNumpad, 800);
+    }
 })();

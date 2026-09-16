@@ -4318,4 +4318,211 @@
             window.visualViewport.addEventListener('scroll', onAwayScroll);
         }
     }
+
+    if (!window.__shApkUnlockUi177) {
+        window.__shApkUnlockUi177 = true;
+        var stPrev = document.getElementById('sh-apk-preview-unlock-css');
+        if (!stPrev) {
+            stPrev = document.createElement('style');
+            stPrev.id = 'sh-apk-preview-unlock-css';
+            (document.head || document.documentElement).appendChild(stPrev);
+        }
+        stPrev.textContent = '#preview-screen:not(.active){pointer-events:none!important;}'
+            + '#preview-screen.active{pointer-events:auto!important;}'
+            + '#digital-preview-container:not(.active){pointer-events:none!important;}';
+        var clearPreviewInline = function () {
+            var prev = document.getElementById('preview-screen');
+            if (!prev) return;
+            prev.style.removeProperty('display');
+            prev.style.removeProperty('pointer-events');
+            prev.style.removeProperty('visibility');
+            prev.style.removeProperty('z-index');
+            prev.style.removeProperty('opacity');
+        };
+        var unlockTabletScroll = function () {
+            var prev = document.getElementById('preview-screen');
+            var dig = document.getElementById('digital-preview-container');
+            if (prev && prev.classList.contains('active')) return;
+            if (dig && dig.classList.contains('active') && dig.style.display === 'flex') return;
+            try {
+                window.__shPenIsDown = false;
+                window.__shNoteLockScroll = false;
+                var ink = window.__shSpenInk;
+                if (ink) {
+                    ink.active = false;
+                    ink.current = null;
+                }
+                hideBox();
+                syncWriteLock(false);
+                var shield = document.getElementById('sh-post-long-press-shield');
+                if (shield) {
+                    shield.style.display = 'none';
+                    shield.style.pointerEvents = 'none';
+                }
+                window.__postLongPressShieldActive = false;
+                window.__postLongPressHoldUntilUp = false;
+                if (document.body) {
+                    document.body.classList.remove('sh-spen-ink-open', 'sh-spen-writing', 'sh-stylus-pen-active', 'sh-long-press-lock');
+                }
+                var mc = document.querySelector('.main-container');
+                if (mc) {
+                    mc.style.removeProperty('overflow');
+                    mc.style.touchAction = 'pan-y';
+                    if (!document.body || !document.body.classList.contains('sh-all-modules-sent')) {
+                        mc.style.pointerEvents = 'auto';
+                    }
+                }
+                if (prev && !prev.classList.contains('active')) {
+                    prev.style.setProperty('pointer-events', 'none', 'important');
+                }
+                if (typeof window.__unlockServiceHubUi === 'function') window.__unlockServiceHubUi();
+            } catch (eU) {}
+        };
+        window.__shUnlockTabletScroll = unlockTabletScroll;
+        var wrapFn = function (name, afterClose) {
+            var orig = window[name];
+            if (typeof orig !== 'function' || orig.__shUnlock177) return;
+            var wrapped = function () {
+                if (!afterClose) clearPreviewInline();
+                var ret;
+                try { ret = orig.apply(this, arguments); } catch (eW) {}
+                if (afterClose) {
+                    setTimeout(unlockTabletScroll, 0);
+                    setTimeout(unlockTabletScroll, 200);
+                } else {
+                    clearPreviewInline();
+                }
+                return ret;
+            };
+            wrapped.__shUnlock177 = true;
+            window[name] = wrapped;
+        };
+        var bindFns = function () {
+            wrapFn('openPreview', false);
+            wrapFn('openDigitalPreview', false);
+            wrapFn('closePreview', true);
+            wrapFn('closeDigitalPreview', true);
+        };
+        bindFns();
+        setTimeout(bindFns, 600);
+        setTimeout(bindFns, 2000);
+        document.addEventListener('click', function (ev) {
+            var t = ev && ev.target;
+            if (!t || !t.closest) return;
+            if (t.closest('#preview-back-btn')) {
+                setTimeout(unlockTabletScroll, 0);
+                setTimeout(unlockTabletScroll, 250);
+            }
+        }, true);
+        setInterval(function () {
+            bindFns();
+            var prev = document.getElementById('preview-screen');
+            var prevOn = !!(prev && prev.classList.contains('active'));
+            if (prevOn) clearPreviewInline();
+            var dig = document.getElementById('digital-preview-container');
+            var digOn = !!(dig && dig.classList.contains('active') && dig.style.display !== 'none');
+            if (window.__shPrevOverlayOn && !prevOn && !digOn) unlockTabletScroll();
+            window.__shPrevOverlayOn = prevOn || digOn;
+        }, 400);
+    }
+})();
+        var stPrev = document.getElementById('sh-apk-preview-unlock-css');
+        if (!stPrev) {
+            stPrev = document.createElement('style');
+            stPrev.id = 'sh-apk-preview-unlock-css';
+            (document.head || document.documentElement).appendChild(stPrev);
+        }
+        stPrev.textContent = '#preview-screen:not(.active){display:none!important;pointer-events:none!important;visibility:hidden!important;z-index:0!important;opacity:0!important;}'
+            + '#preview-screen.active{display:flex!important;pointer-events:auto!important;visibility:visible!important;z-index:2147483600!important;}'
+            + '#digital-preview-container:not(.active){pointer-events:none!important;}'
+            + 'html.sh-android-tablet-boot .main-container{touch-action:pan-y!important;}'
+            + 'html.sh-android-tablet-boot body.sh-spen-ink-open .main-container{overflow:auto!important;}';
+        var buryClosedOverlays = function () {
+            var prev = document.getElementById('preview-screen');
+            if (prev && !prev.classList.contains('active')) {
+                prev.style.setProperty('display', 'none', 'important');
+                prev.style.setProperty('pointer-events', 'none', 'important');
+                prev.style.setProperty('visibility', 'hidden', 'important');
+                prev.style.setProperty('z-index', '0', 'important');
+            }
+            var dig = document.getElementById('digital-preview-container');
+            if (dig && !dig.classList.contains('active')) {
+                dig.style.setProperty('pointer-events', 'none', 'important');
+            }
+        };
+        var unlockTabletScroll = function () {
+            try {
+                window.__shPenIsDown = false;
+                window.__shNoteLockScroll = false;
+                var ink = window.__shSpenInk;
+                if (ink) {
+                    ink.active = false;
+                    ink.current = null;
+                }
+                hideBox();
+                syncWriteLock(false);
+                var shield = document.getElementById('sh-post-long-press-shield');
+                if (shield) {
+                    shield.style.display = 'none';
+                    shield.style.pointerEvents = 'none';
+                }
+                window.__postLongPressShieldActive = false;
+                window.__postLongPressHoldUntilUp = false;
+                if (document.body) {
+                    document.body.classList.remove('sh-spen-ink-open', 'sh-spen-writing', 'sh-stylus-pen-active', 'sh-long-press-lock');
+                }
+                var mc = document.querySelector('.main-container');
+                if (mc) {
+                    mc.style.removeProperty('overflow');
+                    mc.style.touchAction = 'pan-y';
+                    if (!document.body || !document.body.classList.contains('sh-all-modules-sent')) {
+                        mc.style.pointerEvents = 'auto';
+                    }
+                }
+                buryClosedOverlays();
+                if (typeof window.__unlockServiceHubUi === 'function') window.__unlockServiceHubUi();
+            } catch (eU) {}
+        };
+        window.__shUnlockTabletScroll = unlockTabletScroll;
+        var wrapClose = function (name) {
+            var orig = window[name];
+            if (typeof orig !== 'function' || orig.__shUnlock176) return;
+            var wrapped = function () {
+                var ret;
+                try { ret = orig.apply(this, arguments); } catch (eW) {}
+                buryClosedOverlays();
+                setTimeout(unlockTabletScroll, 0);
+                setTimeout(unlockTabletScroll, 150);
+                setTimeout(unlockTabletScroll, 400);
+                return ret;
+            };
+            wrapped.__shUnlock176 = true;
+            window[name] = wrapped;
+        };
+        var bindCloses = function () {
+            wrapClose('closePreview');
+            wrapClose('closeDigitalPreview');
+        };
+        bindCloses();
+        setTimeout(bindCloses, 500);
+        setTimeout(bindCloses, 2000);
+        document.addEventListener('click', function (ev) {
+            var t = ev && ev.target;
+            if (!t || !t.closest) return;
+            if (t.id === 'preview-back-btn' || (t.closest && t.closest('#preview-back-btn'))) {
+                setTimeout(unlockTabletScroll, 0);
+                setTimeout(unlockTabletScroll, 250);
+            }
+        }, true);
+        setInterval(function () {
+            bindCloses();
+            var prev = document.getElementById('preview-screen');
+            var dig = document.getElementById('digital-preview-container');
+            var prevOn = !!(prev && prev.classList.contains('active'));
+            var digOn = !!(dig && dig.classList.contains('active') && dig.style.display !== 'none');
+            if (!prevOn) buryClosedOverlays();
+            if (window.__shPrevOverlayOn && !prevOn && !digOn) unlockTabletScroll();
+            window.__shPrevOverlayOn = prevOn || digOn;
+        }, 350);
+    }
 })();

@@ -74,16 +74,6 @@ public class MainActivity extends AppCompatActivity {
         webView.addJavascriptInterface(new SpenBridge(webView, ink, () -> hubChrome.startDirectOcr()), "ServiceHubAndroidSpen");
     }
 
-    @Override
-    protected void onResume() {
-        super.onResume();
-        if (webView != null) {
-            webView.evaluateJavascript(
-                    "(function(){try{if(window.__shUnlockTabletScroll)window.__shUnlockTabletScroll();return true;}catch(e){return false;}})()",
-                    null);
-        }
-    }
-
     private void injectHook(WebView view) {
         if (view == null) return;
         if (nativeHookJs != null && !nativeHookJs.isEmpty()) {

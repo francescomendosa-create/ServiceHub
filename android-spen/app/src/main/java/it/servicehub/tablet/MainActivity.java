@@ -2,6 +2,7 @@ package it.servicehub.tablet;
 
 import android.annotation.SuppressLint;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.os.Bundle;
 import android.webkit.CookieManager;
 import android.webkit.WebSettings;
@@ -24,6 +25,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
         setContentView(R.layout.activity_main);
         nativeHookJs = readAssetUtf8("native_spen_hook.js");
         nativeOcrBootJs = readAssetUtf8("native_ocr_boot.js");

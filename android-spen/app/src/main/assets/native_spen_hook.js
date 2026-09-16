@@ -1085,6 +1085,11 @@
         tendina.style.width = '';
         tendina.style.zIndex = '';
         tendina.style.maxHeight = '';
+        tendina.style.margin = '';
+        tendina.style.transform = '';
+        tendina.style.height = '';
+        var mgmt = document.querySelector('.fixed-management-container');
+        if (mgmt) mgmt.style.visibility = '';
     }
     window.__shUnpinNoteForModals = function () {
         unpinNoteFromKeyboard();
@@ -1100,6 +1105,9 @@
 
     function dismissNoteKeyboard() {
         noteKbGen += 1;
+        window.__shNoteLockScroll = true;
+        window.__shNoteLastKb = -1;
+        window.__shWinH0 = 0;
         window.__shNotePenWrite = false;
         blurNoteField();
         // setNoteSoftInput agisce sull'intera finestra: col dito su un altro campo
@@ -1110,6 +1118,7 @@
     }
 
     function pinNoteAboveKeyboard() {
+        if (window.__shNoteLockScroll) return;
         var tendina = document.getElementById('rapportino-note-tendina');
         var ta = document.getElementById('inp-sec-note');
         var mgmtOpen = document.getElementById('management-modal');
@@ -1118,24 +1127,45 @@
             unpinNoteFromKeyboard();
             return;
         }
+        window.__shWinH0 = window.__shWinH0 || (window.innerHeight || 0);
         var vv = window.visualViewport;
-        var kb = keyboardOverlapPx();
-        var viewH = vv ? vv.height : window.innerHeight;
-        if (kb < 120) {
-            unpinNoteFromKeyboard();
-            return;
-        }
+        var inner = window.innerHeight || 0;
+        var vvH = vv ? vv.height : inner;
+        var vvTop = vv ? (vv.offsetTop || 0) : 0;
+        var overlayKb = Math.max(0, inner - vvH - vvTop);
+        var resizedKb = Math.max(0, (window.__shWinH0 || inner) - inner);
+        var kb = overlayKb >= 60 ? overlayKb : (resizedKb >= 80 ? resizedKb : 0);
+        var viewH = overlayKb >= 60 ? vvH : Math.max(120, inner - kb);
+        if (kb < 60) return;
+        var bottomPx = kb;
+        var bar = tendina.querySelector('.cond-tendina-bar');
+        var barH = bar ? bar.getBoundingClientRect().height : 46;
+        var compact = Math.max(150, Math.round(barH + Math.min(180, viewH * 0.28)));
         tendina.style.position = 'fixed';
         tendina.style.left = '0';
         tendina.style.right = '0';
         tendina.style.width = '100%';
-        tendina.style.bottom = Math.round(kb) + 'px';
+        tendina.style.margin = '0';
+        tendina.style.bottom = Math.round(bottomPx) + 'px';
         tendina.style.top = 'auto';
         tendina.style.zIndex = '60010';
-        tendina.style.maxHeight = Math.max(170, Math.round(viewH - 10)) + 'px';
+        tendina.style.maxHeight = Math.min(compact, Math.round(viewH - 4)) + 'px';
+        var mgmt = document.querySelector('.fixed-management-container');
+        if (mgmt) mgmt.style.visibility = 'hidden';
     }
 
     function prepareNoteFingerKeyboard() {
+        window.__shNoteLockScroll = false;
+        window.__shNoteLastKb = -1;
+        window.__shWinH0 = window.innerHeight || 0;
+        window.__shNoteKbArmUntil = Date.now() + 900;
+        var mcOpen = document.querySelector('.main-container');
+        window.__shNoteMcAtOpen = mcOpen ? mcOpen.scrollTop : (window.scrollY || 0);
+        setTimeout(function () {
+            var mc2 = document.querySelector('.main-container');
+            window.__shNoteMcAtOpen = mc2 ? mc2.scrollTop : (window.scrollY || 0);
+            window.__shNoteVvTop = window.visualViewport ? (window.visualViewport.offsetTop || 0) : 0;
+        }, 920);
         if (notesFullscreenOn()) {
             dismissNoteKeyboard();
             return;
@@ -1150,14 +1180,15 @@
         }
         revealNoteSmallIntoView();
         var later = function () {
+            if (window.__shNoteLockScroll) return;
             if (gen !== noteKbGen || !notesTendinaOpen()) return;
             if (document.activeElement !== ta) return;
             pinNoteAboveKeyboard();
-            revealNoteSmallIntoView();
         };
         setTimeout(later, 80);
         setTimeout(later, 220);
-        setTimeout(later, 480);
+        setTimeout(later, 420);
+        setTimeout(later, 700);
     }
 
     function blurNoteField() {
@@ -1201,15 +1232,13 @@
     }
 
     function revealNoteSmallIntoView() {
+        if (window.__shNoteLockScroll) return;
         if (notesFullscreenOn()) return;
         var tendina = document.getElementById('rapportino-note-tendina');
         if (!tendina || !notesTendinaOpen()) return;
         var run = function () {
-            if (notesFullscreenOn() || !notesTendinaOpen()) return;
-            if (keyboardOverlapPx() >= 80) {
-                pinNoteAboveKeyboard();
-                return;
-            }
+            if (window.__shNoteLockScroll || notesFullscreenOn() || !notesTendinaOpen()) return;
+            if (keyboardOverlapPx() >= 80) return;
             var mc = document.querySelector('.main-container');
             var mgmt = document.querySelector('.fixed-management-container');
             var mgmtH = 0;
@@ -1233,11 +1262,6 @@
             else window.scrollBy(0, delta);
         };
         run();
-        requestAnimationFrame(function () {
-            run();
-            setTimeout(run, 80);
-            setTimeout(run, 240);
-        });
     }
 
     function setNoteSchedaOpen(open, mode) {
@@ -1397,16 +1421,32 @@
         if (!ta) return;
         text = String(text || '').replace(/\s+/g, ' ').trim();
         if (!text) return;
-        applyNoteCaret(noteCaretPos(), !!window.__shNoteCaretPinned);
-        var start = noteCaretPos();
-        var end = start;
         var v = String(ta.value || '');
+        var start = noteCaretPos();
+        if (start === 0 && v.length > 0) {
+            if (typeof window.__shNoteCaret === 'number' && window.__shNoteCaret > 0) {
+                start = Math.min(v.length, window.__shNoteCaret);
+            } else if (typeof window.__shNoteLastInsertAt === 'number' && window.__shNoteLastInsertAt > 0) {
+                start = Math.min(v.length, window.__shNoteLastInsertAt);
+            } else {
+                start = v.length;
+            }
+        }
+        start = Math.max(0, Math.min(v.length, start));
         var before = v.slice(0, start);
         var pad = (before && !/\s$/.test(before)) ? ' ' : '';
-        ta.value = before + pad + text + v.slice(end);
-        var pos = start + pad.length + text.length;
-        applyNoteCaret(pos, !!window.__shNoteCaretPinned);
+        var chunk = pad + text;
+        if (!/\s$/.test(chunk)) chunk += ' ';
+        ta.value = before + chunk + v.slice(start);
+        var pos = start + chunk.length;
+        window.__shNoteLastInsertAt = pos;
+        applyNoteCaret(pos, true);
+        holdNoteCaret(900);
+        window.__shNoteSnapUntil = Date.now() + 2200;
         try { ta.dispatchEvent(new Event('input', { bubbles: true })); } catch (e2) {}
+        setTimeout(function () { applyNoteCaret(pos, true); }, 0);
+        setTimeout(function () { applyNoteCaret(pos, true); }, 80);
+        setTimeout(function () { applyNoteCaret(pos, true); }, 220);
         try {
             if (typeof window.schedulePersistNoteScheda === 'function') window.schedulePersistNoteScheda();
             else if (typeof window.saveData === 'function') window.saveData(true);
@@ -1451,13 +1491,22 @@
         ta.setAttribute('inputmode', 'text');
         ta.removeAttribute('pattern');
         setNoteHandwriting(true);
+        var keep = noteCaretPos();
+        if (keep === 0 && String(ta.value || '').length > 0) {
+            if (typeof window.__shNoteLastInsertAt === 'number' && window.__shNoteLastInsertAt > 0) {
+                keep = Math.min(String(ta.value || '').length, window.__shNoteLastInsertAt);
+            } else if (typeof window.__shNoteCaret === 'number' && window.__shNoteCaret > 0) {
+                keep = Math.min(String(ta.value || '').length, window.__shNoteCaret);
+            } else {
+                keep = String(ta.value || '').length;
+            }
+        }
         try { ta.focus({ preventScroll: true }); } catch (e) {
             try { ta.focus(); } catch (e2) {}
         }
-        if (window.__shNoteCaretPinned) {
-            applyNoteCaret(noteCaretPos(), true);
-            holdNoteCaret(160);
-        }
+        applyNoteCaret(keep, true);
+        holdNoteCaret(240);
+        window.__shNoteSnapUntil = Date.now() + 2000;
     }
 
     function leaveNotesForPlant() {
@@ -1649,18 +1698,19 @@
     function noteCmdBullet() {
         noteFieldApply(function (v, start, end) {
             var lineStart = v.lastIndexOf('\n', start - 1) + 1;
-            var beforeOnLine = v.slice(lineStart, start);
+            var lineEnd = v.indexOf('\n', start);
+            if (lineEnd < 0) lineEnd = v.length;
+            var line = v.slice(lineStart, lineEnd);
+            var already = line.match(/^\s*\u2022\s*/);
             var add = '\u2022 ';
-            // Cursore all'inizio riga (anche se la riga ha gia lettere): pallino sulla stessa riga, davanti.
+            var beforeOnLine = v.slice(lineStart, start);
+            if (already && !line.slice(already[0].length).trim() && start <= lineEnd) {
+                return { value: v, pos: lineStart + already[0].length };
+            }
             if (!beforeOnLine.trim()) {
-                var rest = v.slice(lineStart);
-                var already = rest.match(/^\s*\u2022\s*/);
-                if (already) {
-                    return { value: v, pos: lineStart + already[0].length };
-                }
+                if (already) return { value: v, pos: lineStart + already[0].length };
                 return { value: v.slice(0, lineStart) + add + v.slice(end), pos: lineStart + add.length };
             }
-            // Cursore dopo la frase: a capo + pallino.
             return { value: v.slice(0, start) + '\n' + add + v.slice(end), pos: start + 1 + add.length };
         });
     }
@@ -1669,7 +1719,7 @@
     function runNoteCmd(cmd) {
         cmd = String(cmd || '');
         var now = Date.now();
-        var gap = (cmd === 'up' || cmd === 'down' || cmd === 'left' || cmd === 'right' || cmd === 'del') ? 70 : 180;
+        var gap = (cmd === 'up' || cmd === 'down' || cmd === 'left' || cmd === 'right' || cmd === 'del') ? 70 : 400;
         if (now - noteCmdLastAt < gap) return;
         noteCmdLastAt = now;
         if (cmd === 'up') noteCmdMoveLine(-1);
@@ -1685,14 +1735,14 @@
 
     function noteCmdPanelHtml() {
         return ''
-            + '<div role="button" tabindex="0" class="sh-note-cmd-btn sh-note-cmd-arrow" data-sh-note-cmd="up" aria-label="Su">▲<span>Su</span></div>'
-            + '<div role="button" tabindex="0" class="sh-note-cmd-btn sh-note-cmd-arrow" data-sh-note-cmd="down" aria-label="Giu">▼<span>Giu</span></div>'
-            + '<div role="button" tabindex="0" class="sh-note-cmd-btn sh-note-cmd-arrow" data-sh-note-cmd="left" aria-label="Sinistra">◀<span>Sx</span></div>'
-            + '<div role="button" tabindex="0" class="sh-note-cmd-btn sh-note-cmd-arrow" data-sh-note-cmd="right" aria-label="Destra">▶<span>Dx</span></div>'
-            + '<div role="button" tabindex="0" class="sh-note-cmd-btn" data-sh-note-cmd="sp" aria-label="Spazio">␣<span>Spazio</span></div>'
-            + '<div role="button" tabindex="0" class="sh-note-cmd-btn" data-sh-note-cmd="del" aria-label="Cancella">⌫<span>Cancella</span></div>'
-            + '<div role="button" tabindex="0" class="sh-note-cmd-btn" data-sh-note-cmd="nl" aria-label="A capo">↵<span>A capo</span></div>'
-            + '<div role="button" tabindex="0" class="sh-note-cmd-btn" data-sh-note-cmd="dot" aria-label="Pallino">•<span>Pallino</span></div>';
+            + '<div role="button" tabindex="0" class="sh-note-cmd-btn sh-note-cmd-arrow" data-sh-note-cmd="up" aria-label="Su">▲</div>'
+            + '<div role="button" tabindex="0" class="sh-note-cmd-btn sh-note-cmd-arrow" data-sh-note-cmd="down" aria-label="Giu">▼</div>'
+            + '<div role="button" tabindex="0" class="sh-note-cmd-btn sh-note-cmd-arrow" data-sh-note-cmd="left" aria-label="Sinistra">◀</div>'
+            + '<div role="button" tabindex="0" class="sh-note-cmd-btn sh-note-cmd-arrow" data-sh-note-cmd="right" aria-label="Destra">▶</div>'
+            + '<div role="button" tabindex="0" class="sh-note-cmd-btn" data-sh-note-cmd="sp" aria-label="Spazio"><i class="sh-note-cmd-space"></i></div>'
+            + '<div role="button" tabindex="0" class="sh-note-cmd-btn" data-sh-note-cmd="del" aria-label="Cancella">⌫</div>'
+            + '<div role="button" tabindex="0" class="sh-note-cmd-btn sh-note-cmd-nl" data-sh-note-cmd="nl" aria-label="Return">↵<span class="sh-note-cmd-return">return</span></div>'
+            + '<div role="button" tabindex="0" class="sh-note-cmd-btn" data-sh-note-cmd="dot" aria-label="Pallino"><i class="sh-note-cmd-bullet"></i></div>';
     }
 
     function ensureNoteCmdPanel() {
@@ -1700,7 +1750,11 @@
         var body = document.getElementById('rapportino-note-tendina-body');
         if (!tendina || !body) return null;
         var pan = document.getElementById('sh-note-cmd');
-        var ver = '88';
+        var ver = '172';
+        if (pan && pan.getAttribute('data-sh-ver') !== ver) {
+            pan.remove();
+            pan = null;
+        }
         if (!pan) {
             pan = document.createElement('div');
             pan.id = 'sh-note-cmd';
@@ -1735,7 +1789,7 @@
                 var cmd = btn.getAttribute('data-sh-note-cmd');
                 runNoteCmd(cmd);
             };
-            var fire = { pointerup: 1, touchend: 1, click: 1, mouseup: 1 };
+            var fire = { pointerup: 1 };
             ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'touchstart', 'touchend', 'click'].forEach(function (type) {
                 pan.addEventListener(type, fire[type] ? onCmd : swallow, true);
             });
@@ -1774,6 +1828,9 @@
             + 'body.sh-spen-writing .main-container input::placeholder,'
             + 'body.sh-spen-writing .main-container textarea::placeholder'
             + '{color:transparent!important;opacity:0!important;}'
+            + '#rapportino-note-tendina:not(.sh-spen-note-fs-card),'
+            + '#rapportino-note-tendina-body,#inp-sec-note{'
+            + 'touch-action:pan-y!important;}'
             + '#rapportino-note-tendina:not(.sh-spen-note-fs-card){position:relative!important;}'
             + '#rapportino-note-tendina .cond-tendina-bar{'
             + 'position:relative!important;z-index:20!important;flex-shrink:0!important;'
@@ -1796,11 +1853,15 @@
             + 'width:100%;max-width:none;margin:0 0 8px;z-index:6;pointer-events:auto;}'
             + '#rapportino-note-tendina:not(.rapportino-note-tendina-collapsed) #sh-note-cmd{display:flex;}'
             + '.sh-note-cmd-btn{display:flex;flex-direction:row;align-items:center;justify-content:center;'
-            + 'gap:3px;min-width:48px;height:36px;padding:0 8px;border:0;border-radius:10px;'
-            + 'background:#334155;color:#fff;font-size:14px;font-weight:800;line-height:1;'
+            + 'gap:5px;min-width:48px;height:36px;padding:0 8px;border:0;border-radius:10px;'
+            + 'background:#334155;color:#fff;font-size:22px;font-weight:800;line-height:1;'
             + 'box-shadow:none;pointer-events:auto;-webkit-user-select:none;user-select:none;}'
-            + '.sh-note-cmd-btn.sh-note-cmd-arrow{min-width:52px;padding:0 8px;font-size:16px;background:#0f766e;}'
-            + '.sh-note-cmd-btn span{font-size:9px;font-weight:800;letter-spacing:.02em;text-transform:uppercase;}'
+            + '.sh-note-cmd-btn.sh-note-cmd-arrow{min-width:48px;padding:0;font-size:22px;background:#0f766e;}'
+            + '.sh-note-cmd-btn.sh-note-cmd-nl{min-width:72px;padding:0 10px;font-size:22px;}'
+            + '.sh-note-cmd-return{font-size:11px;font-weight:800;letter-spacing:.02em;text-transform:none;}'
+            + '.sh-note-cmd-space{display:block;width:22px;height:5px;border-radius:999px;background:#fff;}'
+            + '.sh-note-cmd-bullet{display:block;width:18px;height:18px;border-radius:50%;'
+            + 'background:#fff;box-shadow:inset 0 -2px 0 rgba(0,0,0,.18);}'
             + '.sh-note-cmd-btn:active{filter:brightness(1.18);}'
             + '.dark .sh-note-cmd-btn{background:#1e293b;}'
             + '.dark .sh-note-cmd-btn.sh-note-cmd-arrow{background:#115e59;}';
@@ -2049,8 +2110,11 @@
                 if (!orig) next = rec;
                 else if (orig.indexOf(rec) !== -1) next = orig;
                 else next = orig + ((/\s$/).test(orig) ? '' : ' ') + rec;
+                if (!/\s$/.test(next)) next += ' ';
                 input.value = next;
-                try { input.setSelectionRange(next.length, next.length); } catch (e2) {}
+                window.__shNoteLastInsertAt = next.length;
+                applyNoteCaret(next.length, true);
+                holdNoteCaret(400);
                 try { input.dispatchEvent(new Event('input', { bubbles: true })); } catch (e3) {}
                 try {
                     if (typeof window.schedulePersistNoteScheda === 'function') window.schedulePersistNoteScheda();
@@ -2875,6 +2939,7 @@
             var pending = window.__shNoteCmdPending || '';
             window.__shNoteCmdPending = '';
             if (pending) {
+                if (noteCmdLocked()) return;
                 var cmdUp = '';
                 if (!cancelled) {
                     cmdUp = (ev ? noteCmdBtnAt(ev.clientX, ev.clientY) : '') || pending;
@@ -2912,11 +2977,71 @@
         document.addEventListener('click', pinNoteFieldEvt, true);
         document.addEventListener('input', function (ev) {
             if (!ev || !ev.target || ev.target.id !== 'inp-sec-note') return;
-            if (window.__shNoteCaretPinned) {
-                applyNoteCaret(noteCaretPos(), true);
+            var live = (typeof ev.target.selectionStart === 'number') ? ev.target.selectionStart : 0;
+            var want = (typeof window.__shNoteCaret === 'number') ? window.__shNoteCaret : live;
+            if (window.__shNoteLastInsertAt > 0 && live === 0 && want > 0) {
+                applyNoteCaret(want, true);
                 return;
             }
-            if (typeof ev.target.selectionStart === 'number') window.__shNoteCaret = ev.target.selectionStart;
+            if (window.__shNoteCaretPinned) {
+                applyNoteCaret(want, true);
+                return;
+            }
+            window.__shNoteCaret = live;
+        }, true);
+    }
+    if (!window.__shNoteCaretSnap173) {
+        window.__shNoteCaretSnap173 = true;
+        var snapCaretAfterWord = function () {
+            if (!window.__shNotePenWrite) return;
+            if (Date.now() < (window.__shNoteCmdLock || 0)) return;
+            if (Date.now() > (window.__shNoteSnapUntil || 0)) return;
+            var ta = document.getElementById('inp-sec-note');
+            if (!ta || !notesTendinaOpen()) return;
+            var v = String(ta.value || '');
+            if (!v) return;
+            var pos = (typeof ta.selectionStart === 'number') ? ta.selectionStart : 0;
+            var want = pos;
+            while (want < v.length && !/\s/.test(v.charAt(want))) want++;
+            if (want < v.length && /\s/.test(v.charAt(want))) want += 1;
+            else if (want > 0 && want === v.length && !/\s$/.test(v)) {
+                ta.value = v + ' ';
+                want = v.length + 1;
+                v = ta.value;
+            }
+            if (pos === want) return;
+            if (pos === 0 || want > pos) {
+                applyNoteCaret(want, true);
+                window.__shNoteLastInsertAt = want;
+            }
+        };
+        document.addEventListener('selectionchange', snapCaretAfterWord);
+        document.addEventListener('compositionend', function (ev) {
+            if (!ev || !ev.target || ev.target.id !== 'inp-sec-note') return;
+            window.__shNoteSnapUntil = Date.now() + 1800;
+            var ta = ev.target;
+            var v = String(ta.value || '');
+            var pos = v.length;
+            var i = pos;
+            while (i > 0 && /\s/.test(v.charAt(i - 1))) i--;
+            while (i > 0 && !/\s/.test(v.charAt(i - 1))) i--;
+            var end = i;
+            while (end < v.length && !/\s/.test(v.charAt(end))) end++;
+            if (end < v.length && /\s/.test(v.charAt(end))) end += 1;
+            else if (end === v.length && v && !/\s$/.test(v)) {
+                ta.value = v + ' ';
+                end = v.length + 1;
+            }
+            window.__shNoteLastInsertAt = end;
+            applyNoteCaret(end, true);
+            holdNoteCaret(700);
+        }, true);
+        document.addEventListener('input', function (ev) {
+            if (!ev || !ev.target || ev.target.id !== 'inp-sec-note') return;
+            if (!window.__shNotePenWrite) return;
+            if (Date.now() < (window.__shNoteCmdLock || 0)) return;
+            window.__shNoteSnapUntil = Date.now() + 1800;
+            snapCaretAfterWord();
         }, true);
     }
     if (!window.__shNoteHwKeep80) {
@@ -2943,6 +3068,9 @@
             var css = document.createElement('style');
             css.id = 'sh-spen-noflicker-css';
             css.textContent = 'html.sh-android-tablet-boot .main-container input,html.sh-android-tablet-boot .main-container textarea{-webkit-tap-highlight-color:transparent;caret-color:transparent;}'
+                + 'html.sh-android-tablet-boot .main-container input:focus,html.sh-android-tablet-boot .main-container textarea:focus{caret-color:#0284c7!important;accent-color:transparent!important;-webkit-user-select:text!important;user-select:text!important;}'
+                + 'html.sh-android-tablet-boot .main-container input::selection,html.sh-android-tablet-boot .main-container textarea::selection{background:transparent!important;}'
+                + 'html.sh-android-tablet-boot body.sh-spen-writing .main-container input,html.sh-android-tablet-boot body.sh-spen-ink-open .main-container input,html.sh-android-tablet-boot body.sh-stylus-pen-active .main-container input{caret-color:transparent!important;}'
                 + 'html.sh-android-tablet-boot body.sh-spen-ink-open:not(.sh-spen-writing) .main-container{overflow:auto!important;overscroll-behavior:auto!important;}';
             (document.head || document.documentElement).appendChild(css);
         }
@@ -3061,17 +3189,39 @@
     };
     window.revealNoteSchedaOpening.__shV73 = true;
     try { prepareNoteTextField(); } catch (ePrep) {}
-    if (!window.__shNoteFingerKb74) {
-        window.__shNoteFingerKb74 = true;
+    if (!window.__shNoteFingerKb164) {
+        window.__shNoteFingerKb164 = true;
         window.__shLastNotePointer = '';
+        var noteTap = null;
         document.addEventListener('pointerdown', function (ev) {
             if (!ev) return;
             if (noteBarHit(ev.clientX, ev.clientY) || (ev.target && ev.target.closest && ev.target.closest('#rapportino-note-tendina'))) {
                 window.__shLastNotePointer = ev.pointerType || '';
             }
             if (ev.pointerType === 'pen') return;
-            if (!notesTendinaOpen() || notesFullscreenOn()) return;
+            if (!notesTendinaOpen() || notesFullscreenOn()) {
+                noteTap = null;
+                return;
+            }
+            var onNote = ev.target && ev.target.closest && ev.target.closest('#rapportino-note-tendina');
+            if (!onNote) {
+                noteTap = null;
+                return;
+            }
+            noteTap = { y: ev.clientY, moved: false };
+        }, true);
+        document.addEventListener('pointermove', function (ev) {
+            if (!noteTap || ev.pointerType === 'pen') return;
+            if (Math.abs(ev.clientY - noteTap.y) < 22) return;
+            noteTap.moved = true;
+        }, { capture: true, passive: true });
+        document.addEventListener('pointerup', function (ev) {
+            if (!noteTap || ev.pointerType === 'pen') return;
+            var tap = noteTap;
+            noteTap = null;
+            if (tap.moved) return;
             if (noteTextareaFromPoint(ev.clientX, ev.clientY) || (ev.target && ev.target.id === 'inp-sec-note')) {
+                window.__shNoteLockScroll = false;
                 prepareNoteFingerKeyboard();
             }
         }, true);
@@ -3086,7 +3236,9 @@
         document.addEventListener('click', swallowNativeNoteBar, true);
         document.addEventListener('touchend', swallowNativeNoteBar, true);
         if (window.visualViewport) {
+            var lastNoteKb = 0;
             var onNoteVv = function () {
+                if (window.__shNoteLockScroll) return;
                 if (!notesTendinaOpen()) {
                     dismissNoteKeyboard();
                     return;
@@ -3095,16 +3247,20 @@
                     setNoteSoftInput(false);
                     return;
                 }
+                var kb = keyboardOverlapPx();
+                var prev = (typeof window.__shNoteLastKb === 'number') ? window.__shNoteLastKb : lastNoteKb;
+                var tendina = document.getElementById('rapportino-note-tendina');
+                var alreadyPinned = !!(tendina && tendina.style.position === 'fixed');
+                if (alreadyPinned && Math.abs(kb - prev) < 24) return;
+                lastNoteKb = kb;
+                window.__shNoteLastKb = kb;
                 if (document.activeElement && document.activeElement.id === 'inp-sec-note' && window.__shLastNotePointer !== 'pen') {
                     pinNoteAboveKeyboard();
-                    revealNoteSmallIntoView();
                 } else {
                     unpinNoteFromKeyboard();
-                    revealNoteSmallIntoView();
                 }
             };
             window.visualViewport.addEventListener('resize', onNoteVv);
-            window.visualViewport.addEventListener('scroll', onNoteVv);
         }
     }
     if (!window.__shNoteFsPalm76) {
@@ -3854,7 +4010,8 @@
         setInterval(wrapOpenNumpad, 800);
     }
 
-    if (!window.__shKbLiftCards) {
+    if (!window.__shKbPadRestore157) {
+        window.__shKbPadRestore157 = true;
         window.__shKbLiftCards = true;
         var kbPinCard = null;
         var kbLiftGen = 0;
@@ -3868,34 +4025,44 @@
         }
         function isImePlantField(el) {
             if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA')) return false;
-            if (el.readOnly || el.disabled) return false;
+            if (el.getAttribute('data-sh-tap-ro') === '1') {
+                /* ignore temp readonly from old builds */
+            } else if (el.readOnly || el.disabled) return false;
             var typ = String(el.type || '').toLowerCase();
             if (typ === 'hidden' || typ === 'checkbox' || typ === 'radio' || typ === 'button' || typ === 'submit') return false;
             if (el.closest && el.closest('#numpad-modal, #management-modal, #settings-modal, #rapportino-note-tendina')) return false;
             if (el.id === 'inp-sec-note') return false;
-            if (el.getAttribute('data-aria-keyboard') === '1') return true;
-            if (el.closest && el.closest('#sec-scam, #sec-filtra, #sec-bluedown')) return true;
-            if (el.tagName === 'TEXTAREA') return true;
-            var im = String(el.getAttribute('inputmode') || '').toLowerCase();
-            if (im === 'none') return false;
-            if (im === 'text' || im === 'search' || im === 'email' || im === 'url') return true;
-            if (typ === 'text' || typ === 'search' || typ === 'email') return true;
-            return false;
+            if (!el.closest || !el.closest('.main-container')) return false;
+            return true;
         }
         function cardForImeField(el) {
             if (!el || !el.closest) return null;
-            return el.closest('[id^="rapportino-"][id$="-tendina"]')
+            return el.closest('.col-section')
+                || el.closest('[id^="rapportino-"][id$="-tendina"]')
                 || el.closest('.rapportino-custom-tendina')
-                || el.closest('.col-section')
                 || el.closest('.nott-stocc-panel, .nott-filtra-tendina, .nott-chem-tendina, .nott-stocc-tendina')
                 || el.closest('.row-block');
         }
+        function clampMainScroll() {
+            var mc = document.querySelector('.main-container');
+            if (mc) {
+                var max = Math.max(0, mc.scrollHeight - mc.clientHeight);
+                if (mc.scrollTop > max) mc.scrollTop = max;
+            }
+            var maxW = Math.max(0, (document.documentElement.scrollHeight || 0) - (window.innerHeight || 0));
+            if ((window.scrollY || 0) > maxW + 1) window.scrollTo(0, maxW);
+        }
         function clearKbScrollPad() {
             var mc = document.querySelector('.main-container');
-            if (!mc || mc.getAttribute('data-sh-kb-pad') !== '1') return;
-            mc.style.paddingBottom = '';
-            mc.style.scrollPaddingBottom = '';
-            mc.removeAttribute('data-sh-kb-pad');
+            if (mc) {
+                mc.style.paddingBottom = '';
+                mc.style.scrollPaddingBottom = '';
+                mc.removeAttribute('data-sh-kb-pad');
+            }
+            requestAnimationFrame(function () {
+                clampMainScroll();
+                requestAnimationFrame(clampMainScroll);
+            });
         }
         function unpinKbCard() {
             document.querySelectorAll('.sh-kb-pin-card').forEach(function (card) {
@@ -3931,20 +4098,23 @@
             } else {
                 clearKbScrollPad();
             }
-            var r = el.getBoundingClientRect();
-            var dockBottom = viewTop + viewH - 12;
-            var delta = r.bottom - dockBottom;
-            if (Math.abs(delta) < 1.5) return;
-            var node = el.parentElement;
-            while (node && node !== document.body) {
-                var oy = '';
-                try { oy = window.getComputedStyle(node).overflowY; } catch (eOy) {}
-                if ((node.scrollHeight - node.clientHeight) > 4 && (oy === 'auto' || oy === 'scroll')) {
-                    node.scrollTop += delta;
-                    return;
-                }
-                node = node.parentElement;
+            var frame = cardForImeField(el) || el;
+            var r = frame.getBoundingClientRect();
+            var fr = el.getBoundingClientRect();
+            var topPad = viewTop + 8;
+            var botPad = viewTop + viewH - 10;
+            var avail = botPad - topPad;
+            var fieldInView = fr.top >= viewTop - 6 && fr.bottom <= viewTop + viewH + 6;
+            var cardInView = r.top < botPad && r.bottom > topPad;
+            if (fieldInView && cardInView) return;
+            var delta = 0;
+            if (r.height <= avail + 2) {
+                if (r.top < topPad) delta = r.top - topPad;
+                else if (r.bottom > botPad) delta = r.bottom - botPad;
+            } else {
+                delta = r.top - topPad;
             }
+            if (Math.abs(delta) < 1.5) return;
             if (mc && mc.scrollHeight > mc.clientHeight + 4) mc.scrollTop += delta;
             else window.scrollBy(0, delta);
         }
@@ -3971,142 +4141,181 @@
             setTimeout(run, 220);
             setTimeout(run, 480);
         }
-        var TAP_SLOP = 16;
-        var fingerGuard = null;
+        var TAP_SLOP = 28;
+        var finger = null;
         function fieldFromEv(ev) {
             var t = ev && ev.target;
             if (!t) return null;
             if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA') return t;
             return t.closest ? t.closest('.main-container input, .main-container textarea') : null;
         }
-        function isGuardedField(el) {
-            if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA')) return false;
-            if (el.id === 'inp-sec-note') return false;
-            if (el.closest && el.closest('#numpad-modal, #rapportino-note-tendina')) return false;
-            if (!el.closest || !el.closest('.main-container')) return false;
-            var typ = String(el.type || '').toLowerCase();
-            if (typ === 'hidden' || typ === 'checkbox' || typ === 'radio' || typ === 'button') return false;
-            return true;
-        }
-        function scrollMark() {
-            var mc = document.querySelector('.main-container');
-            return mc ? mc.scrollTop : (window.scrollY || 0);
-        }
-        function armReadonly(el) {
-            if (!el || el.readOnly) return;
-            el.setAttribute('data-sh-tap-ro', '1');
-            el.setAttribute('readonly', 'readonly');
-        }
-        function disarmReadonly(el) {
-            if (!el || el.getAttribute('data-sh-tap-ro') !== '1') return;
-            el.removeAttribute('readonly');
-            el.removeAttribute('data-sh-tap-ro');
-        }
-        function endFingerGuard(isTap) {
-            var g = fingerGuard;
-            fingerGuard = null;
-            window.__shScrollNotTap = !isTap;
-            if (g && g.el) {
-                disarmReadonly(g.el);
-                if (isTap && isImePlantField(g.el)) {
-                    try { g.el.focus({ preventScroll: true }); } catch (eF) {
-                        try { g.el.focus(); } catch (eF2) {}
-                    }
-                    setNoteSoftInput(true);
-                    scheduleKbLift();
-                } else if (g.el === document.activeElement && !isTap) {
-                    try { g.el.blur(); } catch (eB) {}
+        function markMoved(x, y) {
+            if (!finger) return;
+            var dx = x - finger.x;
+            var dy = y - finger.y;
+            if ((dx * dx + dy * dy) >= (TAP_SLOP * TAP_SLOP) || Math.abs(dy) >= 18) {
+                finger.moved = true;
+                window.__shScrollNotTap = true;
+                if (finger.el && document.activeElement === finger.el) {
+                    try { finger.el.blur(); } catch (eB) {}
                 }
-            }
-            if (!isTap) {
-                setTimeout(function () { window.__shScrollNotTap = false; }, 280);
-            } else {
-                window.__shScrollNotTap = false;
             }
         }
         document.addEventListener('pointerdown', function (ev) {
             if (!ev || ev.pointerType === 'pen') return;
-            if (ev.pointerType && ev.pointerType !== 'touch' && ev.pointerType !== 'mouse') return;
             var el = fieldFromEv(ev);
-            if (!isGuardedField(el)) return;
-            fingerGuard = {
-                id: ev.pointerId,
-                el: el,
-                x: ev.clientX,
-                y: ev.clientY,
-                moved: false,
-                scroll0: scrollMark(),
-                already: document.activeElement === el
-            };
-            window.__shScrollNotTap = false;
-            if (!fingerGuard.already) armReadonly(el);
-        }, true);
-        var onFingerMove = function (ev) {
-            var g = fingerGuard;
-            if (!g || ev.pointerType === 'pen') return;
-            if (g.id != null && ev.pointerId != null && ev.pointerId !== g.id) return;
-            var dx = ev.clientX - g.x;
-            var dy = ev.clientY - g.y;
-            if ((dx * dx + dy * dy) > (TAP_SLOP * TAP_SLOP) || Math.abs(scrollMark() - g.scroll0) > 4) {
-                g.moved = true;
-                window.__shScrollNotTap = true;
-            }
-        };
-        document.addEventListener('pointermove', onFingerMove, true);
-        document.addEventListener('touchmove', function (ev) {
-            if (!fingerGuard || !ev.touches || !ev.touches[0]) return;
-            var t = ev.touches[0];
-            var dx = t.clientX - fingerGuard.x;
-            var dy = t.clientY - fingerGuard.y;
-            if ((dx * dx + dy * dy) > (TAP_SLOP * TAP_SLOP) || Math.abs(scrollMark() - fingerGuard.scroll0) > 4) {
-                fingerGuard.moved = true;
-                window.__shScrollNotTap = true;
-            }
-        }, { capture: true, passive: true });
-        document.addEventListener('pointerup', function (ev) {
-            if (!fingerGuard || ev.pointerType === 'pen') return;
-            if (fingerGuard.id != null && ev.pointerId != null && ev.pointerId !== fingerGuard.id) return;
-            var g = fingerGuard;
-            if (g.moved || Math.abs(scrollMark() - g.scroll0) > 4) {
-                endFingerGuard(false);
+            if (!isImePlantField(el)) {
+                finger = null;
                 return;
             }
-            endFingerGuard(true);
+            finger = { id: ev.pointerId, el: el, x: ev.clientX, y: ev.clientY, moved: false };
+            window.__shScrollNotTap = false;
         }, true);
-        document.addEventListener('pointercancel', function (ev) {
-            if (!fingerGuard) return;
-            endFingerGuard(false);
+        document.addEventListener('pointermove', function (ev) {
+            if (!finger || ev.pointerType === 'pen') return;
+            if (finger.id != null && ev.pointerId != null && ev.pointerId !== finger.id) return;
+            markMoved(ev.clientX, ev.clientY);
         }, true);
+        document.addEventListener('touchmove', function (ev) {
+            if (!finger || !ev.touches || !ev.touches[0]) return;
+            markMoved(ev.touches[0].clientX, ev.touches[0].clientY);
+        }, { capture: true, passive: true });
         document.addEventListener('focusin', function (e) {
             var el = e && e.target;
-            if (fingerGuard && !fingerGuard.moved && !fingerGuard.already && isGuardedField(el)) {
+            if (!isImePlantField(el)) return;
+            if (finger && finger.moved) {
                 try { el.blur(); } catch (eBl) {}
                 return;
             }
-            if (window.__shScrollNotTap && isGuardedField(el)) {
+            if (window.__shScrollNotTap && finger) {
                 try { el.blur(); } catch (eBl2) {}
                 return;
             }
-            if (!isImePlantField(el)) return;
+            if (!finger) {
+                setNoteSoftInput(true);
+                setTimeout(function () {
+                    if (document.activeElement === el) dockFieldToKeyboard(el);
+                }, 350);
+            }
+        }, true);
+        document.addEventListener('pointerup', function (ev) {
+            if (!finger || ev.pointerType === 'pen') return;
+            if (finger.id != null && ev.pointerId != null && ev.pointerId !== finger.id) return;
+            var g = finger;
+            finger = null;
+            if (g.moved) {
+                window.__shScrollNotTap = true;
+                try { if (g.el) g.el.blur(); } catch (eB2) {}
+                setTimeout(function () { window.__shScrollNotTap = false; }, 200);
+                return;
+            }
+            window.__shScrollNotTap = false;
+            if (g.el.getAttribute('inputmode') === 'none') g.el.setAttribute('inputmode', 'decimal');
+            try { g.el.focus(); } catch (eF) {}
+            try { g.el.style.caretColor = '#0284c7'; } catch (eC) {}
             setNoteSoftInput(true);
-            scheduleKbLift();
-        }, true);
-        document.addEventListener('focusout', function (e) {
-            if (!isImePlantField(e && e.target)) return;
             setTimeout(function () {
-                var ae = document.activeElement;
-                if (isImePlantField(ae) || (ae && ae.id === 'inp-sec-note')) return;
-                unpinKbCard();
-                if (!typingInOtherField()) setNoteSoftInput(false);
-            }, 80);
+                if (document.activeElement === g.el) dockFieldToKeyboard(g.el);
+            }, 350);
         }, true);
+        document.addEventListener('pointercancel', function () {
+            if (!finger) return;
+            if (finger.moved) {
+                try { finger.el.blur(); } catch (eB3) {}
+                window.__shScrollNotTap = true;
+                setTimeout(function () { window.__shScrollNotTap = false; }, 200);
+            }
+            finger = null;
+        }, true);
+        var syncPadOff = function () {
+            if (keyboardOverlapPx() >= 80) return;
+            clearKbScrollPad();
+        };
         if (window.visualViewport) {
-            var onKbVv = function () {
-                if (document.activeElement && document.activeElement.id === 'inp-sec-note') return;
-                pinKbCardAboveKeyboard();
-            };
-            window.visualViewport.addEventListener('resize', onKbVv);
-            window.visualViewport.addEventListener('scroll', onKbVv);
+            window.visualViewport.addEventListener('resize', syncPadOff);
+            window.visualViewport.addEventListener('scroll', syncPadOff);
+        }
+        window.addEventListener('focusout', function () {
+            setTimeout(syncPadOff, 120);
+            setTimeout(syncPadOff, 400);
+        }, true);
+        document.addEventListener('pointerdown', function (ev) {
+            if (!ev || ev.pointerType === 'pen') return;
+            var t = ev.target;
+            if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+            if (t && t.closest && t.closest('input, textarea')) return;
+            setTimeout(syncPadOff, 80);
+        }, true);
+    }
+
+    if (!window.__shNoteDismissOnScroll167) {
+        window.__shNoteDismissOnScroll167 = true;
+        var neutPageNoteScroll = function () {
+            window.scrollNoteSchedaIntoView = function () {};
+            window.revealNoteSchedaOpening = function () {};
+        };
+        neutPageNoteScroll();
+        setTimeout(neutPageNoteScroll, 400);
+        setTimeout(neutPageNoteScroll, 1600);
+        var noteKbShowing = function () {
+            var tendina = document.getElementById('rapportino-note-tendina');
+            if (tendina && tendina.style.position === 'fixed') return true;
+            var ae = document.activeElement;
+            if (ae && ae.id === 'inp-sec-note') return true;
+            return keyboardOverlapPx() >= 50;
+        };
+        var leaveNoteFrame = function () {
+            if (Date.now() < (window.__shNoteKbArmUntil || 0)) return;
+            if (!notesTendinaOpen() || notesFullscreenOn()) return;
+            if (!noteKbShowing()) return;
+            dismissNoteKeyboard();
+        };
+        var pageDrag = null;
+        document.addEventListener('pointerdown', function (ev) {
+            if (!ev || ev.pointerType === 'pen') return;
+            if (!notesTendinaOpen() || notesFullscreenOn() || !noteKbShowing()) {
+                pageDrag = null;
+                return;
+            }
+            var t = ev.target;
+            var inTa = !!(t && (t.id === 'inp-sec-note' || (t.closest && t.closest('#inp-sec-note'))));
+            var inNote = !!(t && t.closest && t.closest('#rapportino-note-tendina'));
+            if (!inNote && Date.now() >= (window.__shNoteKbArmUntil || 0)) {
+                leaveNoteFrame();
+                pageDrag = null;
+                return;
+            }
+            pageDrag = { y: ev.clientY, inTa: inTa };
+        }, true);
+        document.addEventListener('pointermove', function (ev) {
+            if (!pageDrag || ev.pointerType === 'pen') return;
+            if (pageDrag.inTa) return;
+            if (Math.abs(ev.clientY - pageDrag.y) < 20) return;
+            pageDrag = null;
+            leaveNoteFrame();
+        }, { capture: true, passive: true });
+        document.addEventListener('pointerup', function () { pageDrag = null; }, true);
+        document.addEventListener('pointercancel', function () { pageDrag = null; }, true);
+        var onAwayScroll = function () {
+            if (Date.now() < (window.__shNoteKbArmUntil || 0)) return;
+            var mc = document.querySelector('.main-container');
+            var top = mc ? mc.scrollTop : (window.scrollY || 0);
+            var base = window.__shNoteMcAtOpen;
+            if (typeof base === 'number' && Math.abs(top - base) >= 24) {
+                leaveNoteFrame();
+                return;
+            }
+            if (window.visualViewport && typeof window.__shNoteVvTop === 'number') {
+                if (Math.abs((window.visualViewport.offsetTop || 0) - window.__shNoteVvTop) >= 28) {
+                    leaveNoteFrame();
+                }
+            }
+        };
+        var mcEl = document.querySelector('.main-container');
+        if (mcEl) mcEl.addEventListener('scroll', onAwayScroll, { passive: true });
+        window.addEventListener('scroll', onAwayScroll, { passive: true, capture: true });
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('scroll', onAwayScroll);
         }
     }
 })();

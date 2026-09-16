@@ -4319,110 +4319,44 @@
         }
     }
 
-    if (!window.__shApkUnlockUi177) {
-        window.__shApkUnlockUi177 = true;
-        var stPrev = document.getElementById('sh-apk-preview-unlock-css');
-        if (!stPrev) {
-            stPrev = document.createElement('style');
-            stPrev.id = 'sh-apk-preview-unlock-css';
-            (document.head || document.documentElement).appendChild(stPrev);
-        }
-        stPrev.textContent = '#preview-screen:not(.active){pointer-events:none!important;}'
-            + '#preview-screen.active{pointer-events:auto!important;}'
-            + '#digital-preview-container:not(.active){pointer-events:none!important;}';
-        var clearPreviewInline = function () {
-            var prev = document.getElementById('preview-screen');
-            if (!prev) return;
-            prev.style.removeProperty('display');
-            prev.style.removeProperty('pointer-events');
-            prev.style.removeProperty('visibility');
-            prev.style.removeProperty('z-index');
-            prev.style.removeProperty('opacity');
-        };
-        var unlockTabletScroll = function () {
-            var prev = document.getElementById('preview-screen');
-            var dig = document.getElementById('digital-preview-container');
-            if (prev && prev.classList.contains('active')) return;
-            if (dig && dig.classList.contains('active') && dig.style.display === 'flex') return;
+    /* Tablet: Gestione → Report lascia sh-modal-open (overflow:hidden) e dopo Torna non si scorre più. */
+    if (!window.__shApkModalScroll180) {
+        window.__shApkModalScroll180 = true;
+        var clearModalScrollLock = function () {
             try {
-                window.__shPenIsDown = false;
-                window.__shNoteLockScroll = false;
-                var ink = window.__shSpenInk;
-                if (ink) {
-                    ink.active = false;
-                    ink.current = null;
-                }
-                hideBox();
-                syncWriteLock(false);
-                var shield = document.getElementById('sh-post-long-press-shield');
-                if (shield) {
-                    shield.style.display = 'none';
-                    shield.style.pointerEvents = 'none';
-                }
-                window.__postLongPressShieldActive = false;
-                window.__postLongPressHoldUntilUp = false;
-                if (document.body) {
-                    document.body.classList.remove('sh-spen-ink-open', 'sh-spen-writing', 'sh-stylus-pen-active', 'sh-long-press-lock');
-                }
-                var mc = document.querySelector('.main-container');
-                if (mc) {
-                    mc.style.removeProperty('overflow');
-                    mc.style.touchAction = 'pan-y';
-                    if (!document.body || !document.body.classList.contains('sh-all-modules-sent')) {
-                        mc.style.pointerEvents = 'auto';
+                if (typeof window.__syncBodyModalOpenClass === 'function') {
+                    window.__syncBodyModalOpenClass();
+                } else {
+                    var anyOpen = !!document.querySelector('.modal-overlay.active');
+                    if (document.body) document.body.classList.toggle('sh-modal-open', anyOpen);
+                    document.documentElement.classList.toggle('sh-modal-open', anyOpen);
+                    if (!anyOpen) {
+                        document.documentElement.style.removeProperty('overflow');
+                        if (document.body) document.body.style.removeProperty('overflow');
                     }
                 }
-                if (prev && !prev.classList.contains('active')) {
-                    prev.style.setProperty('pointer-events', 'none', 'important');
-                }
-                if (typeof window.__unlockServiceHubUi === 'function') window.__unlockServiceHubUi();
-            } catch (eU) {}
+            } catch (eMs) {}
         };
-        window.__shUnlockTabletScroll = unlockTabletScroll;
-        var wrapFn = function (name, afterClose) {
-            var orig = window[name];
-            if (typeof orig !== 'function' || orig.__shUnlock177) return;
-            var wrapped = function () {
-                if (!afterClose) clearPreviewInline();
-                var ret;
-                try { ret = orig.apply(this, arguments); } catch (eW) {}
-                if (afterClose) {
-                    setTimeout(unlockTabletScroll, 0);
-                    setTimeout(unlockTabletScroll, 200);
-                } else {
-                    clearPreviewInline();
-                }
-                return ret;
+        var wrapOnce = function (name) {
+            var fn = window[name];
+            if (typeof fn !== 'function' || fn.__shApkModalScroll180) return false;
+            window[name] = function () {
+                var r = fn.apply(this, arguments);
+                clearModalScrollLock();
+                return r;
             };
-            wrapped.__shUnlock177 = true;
-            window[name] = wrapped;
+            window[name].__shApkModalScroll180 = true;
+            return true;
         };
-        var bindFns = function () {
-            wrapFn('openPreview', false);
-            wrapFn('openDigitalPreview', false);
-            wrapFn('closePreview', true);
-            wrapFn('closeDigitalPreview', true);
-        };
-        bindFns();
-        setTimeout(bindFns, 600);
-        setTimeout(bindFns, 2000);
-        document.addEventListener('click', function (ev) {
-            var t = ev && ev.target;
-            if (!t || !t.closest) return;
-            if (t.closest('#preview-back-btn')) {
-                setTimeout(unlockTabletScroll, 0);
-                setTimeout(unlockTabletScroll, 250);
+        var tries = 0;
+        var tick = setInterval(function () {
+            tries += 1;
+            var ok = wrapOnce('openPreview') & wrapOnce('closePreview');
+            if (ok || tries > 40) {
+                clearInterval(tick);
+                clearModalScrollLock();
             }
-        }, true);
-        setInterval(function () {
-            bindFns();
-            var prev = document.getElementById('preview-screen');
-            var prevOn = !!(prev && prev.classList.contains('active'));
-            if (prevOn) clearPreviewInline();
-            var dig = document.getElementById('digital-preview-container');
-            var digOn = !!(dig && dig.classList.contains('active') && dig.style.display !== 'none');
-            if (window.__shPrevOverlayOn && !prevOn && !digOn) unlockTabletScroll();
-            window.__shPrevOverlayOn = prevOn || digOn;
-        }, 400);
+        }, 250);
+        clearModalScrollLock();
     }
 })();

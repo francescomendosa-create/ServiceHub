@@ -1049,7 +1049,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.09.17-preview-mod-clear';
+        window.SERVICEHUB_BUILD = '2026.09.17-preview-mod-edit';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -21031,9 +21031,10 @@ window.updateStoricoButton = async function() {
                 'display:inline-block;width:100%;vertical-align:top;margin-bottom:6px;box-sizing:border-box;';
         };
 
-        window.reportPreviewPackedBlockShell = function (innerHtml, order) {
+        window.reportPreviewPackedBlockShell = function (innerHtml, order, id) {
             var ordAttr = (order != null) ? (' data-rp-order="' + order + '"') : '';
-            return '<div class="rp-page-block"' + ordAttr + ' style="width:100%;box-sizing:border-box;margin-bottom:3px;">' + innerHtml + '</div>';
+            var idAttr = id ? (' data-rp-id="' + String(id).replace(/"/g, '') + '"') : '';
+            return '<div class="rp-page-block"' + idAttr + ordAttr + ' style="width:100%;box-sizing:border-box;margin-bottom:3px;">' + innerHtml + '</div>';
         };
 
         window.estimateReportPreviewBlockHeight = function (meta) {
@@ -21054,10 +21055,10 @@ window.updateStoricoButton = async function() {
             if (!body) return '';
             var pf = window.scalePreviewFont(previewFontBase, -1);
             var titleHtml = title
-                ? ('<div style="font-size:' + pf + 'px;font-weight:650;text-transform:uppercase;color:#000;border-bottom:0.5px solid #000;padding-bottom:4px;margin-bottom:5px;letter-spacing:0.3px;">' + title + '</div>')
+                ? ('<div class="report-preview-card-title" style="font-size:' + pf + 'px;font-weight:650;text-transform:uppercase;color:#000;border-bottom:0.5px solid #000;padding-bottom:4px;margin-bottom:5px;letter-spacing:0.3px;">' + title + '</div>')
                 : '';
-            return '<div style="' + window.reportPreviewModuleShellStyle(Object.assign({ inPackedLayout: true }, opts)) + '">' +
-                titleHtml + '<div style="display:flex;flex-direction:column;">' + body + '</div></div>';
+            return '<div class="report-preview-card" style="' + window.reportPreviewModuleShellStyle(Object.assign({ inPackedLayout: true }, opts)) + '">' +
+                titleHtml + '<div class="report-preview-card-body" style="display:flex;flex-direction:column;">' + body + '</div></div>';
         };
 
         window.chooseReportPreviewColumnCount = function (nBlocks) {
@@ -21081,41 +21082,98 @@ window.updateStoricoButton = async function() {
             var autoCols = window.chooseReportPreviewColumnCount(blocks.length);
             colCount = Math.max(1, Number(colCount) || autoCols);
             gap = gap || '12px';
+            var byId = {};
+            blocks.forEach(function (b) {
+                if (b && b.id != null) byId[String(b.id)] = b;
+            });
+            var layout = window.__previewModLayout;
+            var explicitCols = layout && Array.isArray(layout.columns) && layout.columns.length
+                ? layout.columns
+                : null;
+
+            function shellFor(b, orderIdx) {
+                return window.reportPreviewPackedBlockShell(b.html, orderIdx, b.id);
+            }
+
+            if (explicitCols) {
+                colCount = Math.max(1, explicitCols.length);
+                var used = {};
+                var colParts = explicitCols.map(function () { return []; });
+                var orderIdx = 0;
+                explicitCols.forEach(function (ids, ci) {
+                    (ids || []).forEach(function (id) {
+                        var b = byId[String(id)];
+                        if (!b || used[String(id)]) return;
+                        used[String(id)] = true;
+                        b.__rpOrder = orderIdx++;
+                        colParts[ci].push(b);
+                    });
+                });
+                blocks.forEach(function (b) {
+                    if (!b || used[String(b.id)]) return;
+                    var minIdx = 0;
+                    var ci;
+                    for (ci = 1; ci < colParts.length; ci++) {
+                        if (colParts[ci].length < colParts[minIdx].length) minIdx = ci;
+                    }
+                    b.__rpOrder = orderIdx++;
+                    colParts[minIdx].push(b);
+                    used[String(b.id)] = true;
+                });
+                var packAttrs = ' data-rp-pack="1" data-rp-cols="' + colCount + '" data-rp-gap="' + gap + '"';
+                if (colCount <= 1) {
+                    var single = '<div' + packAttrs + ' style="width:100%;box-sizing:border-box;">';
+                    colParts[0].forEach(function (b) {
+                        single += shellFor(b, b.__rpOrder);
+                    });
+                    single += '</div>';
+                    return single;
+                }
+                var outEx = '<div' + packAttrs + ' style="' + window.reportPreviewPackedColumnsStyle(colCount, gap) + '">';
+                colParts.forEach(function (parts) {
+                    outEx += '<div class="rp-pack-col" style="' + window.reportPreviewPackedColumnStyle() + '">';
+                    parts.forEach(function (b) {
+                        outEx += shellFor(b, b.__rpOrder);
+                    });
+                    outEx += '</div>';
+                });
+                outEx += '</div>';
+                return outEx;
+            }
+
             var sorted = blocks.slice().sort(function (a, b) {
                 if (a.order !== b.order) return a.order - b.order;
                 return String(a.id || '').localeCompare(String(b.id || ''));
             });
-            // Indice d'ordine di lettura: serve alla ri-paginazione per-pagina (applyPreviewA4Pagination)
-            // per ricostruire l'ordine corretto dei moduli quando si crea una seconda pagina.
             sorted.forEach(function (b, i) { b.__rpOrder = i; });
-            var packAttrs = ' data-rp-pack="1" data-rp-cols="' + colCount + '" data-rp-gap="' + gap + '"';
+            var packAttrs2 = ' data-rp-pack="1" data-rp-cols="' + colCount + '" data-rp-gap="' + gap + '"';
 
             if (colCount <= 1) {
-                var single = '<div' + packAttrs + ' style="width:100%;box-sizing:border-box;">';
+                var single2 = '<div' + packAttrs2 + ' style="width:100%;box-sizing:border-box;">';
                 sorted.forEach(function (b) {
-                    single += window.reportPreviewPackedBlockShell(b.html, b.__rpOrder);
+                    single2 += shellFor(b, b.__rpOrder);
                 });
-                single += '</div>';
-                return single;
+                single2 += '</div>';
+                return single2;
             }
             var cols = [];
-            var ci;
-            for (ci = 0; ci < colCount; ci++) cols.push({ h: 0, parts: [] });
+            var ci2;
+            for (ci2 = 0; ci2 < colCount; ci2++) cols.push({ h: 0, parts: [] });
             sorted.forEach(function (block) {
                 var est = block.estHeight != null ? block.estHeight
                     : window.estimateReportPreviewBlockHeight(block.meta || {});
                 var minIdx = 0;
-                for (ci = 1; ci < colCount; ci++) {
-                    if (cols[ci].h < cols[minIdx].h) minIdx = ci;
+                for (ci2 = 1; ci2 < colCount; ci2++) {
+                    if (cols[ci2].h < cols[minIdx].h) minIdx = ci2;
                 }
-                cols[minIdx].parts.push({ html: block.html, order: block.__rpOrder });
+                cols[minIdx].parts.push(block);
                 cols[minIdx].h += est;
             });
-            var out = '<div' + packAttrs + ' style="' + window.reportPreviewPackedColumnsStyle(colCount, gap) + '">';
+            var out = '<div' + packAttrs2 + ' style="' + window.reportPreviewPackedColumnsStyle(colCount, gap) + '">';
             cols.forEach(function (col) {
-                out += '<div style="' + window.reportPreviewPackedColumnStyle() + '">';
-                col.parts.forEach(function (part) {
-                    out += window.reportPreviewPackedBlockShell(part.html, part.order);
+                out += '<div class="rp-pack-col" style="' + window.reportPreviewPackedColumnStyle() + '">';
+                col.parts.forEach(function (b) {
+                    out += shellFor(b, b.__rpOrder);
                 });
                 out += '</div>';
             });
@@ -26739,6 +26797,15 @@ window.updateStoricoButton = async function() {
             var b3 = document.getElementById('preview-mod-cols-3');
             if (b2) b2.classList.toggle('is-active', cols === 2);
             if (b3) b3.classList.toggle('is-active', cols === 3);
+            var editOn = !!window.__previewModEditActive;
+            var editBtn = document.getElementById('preview-mod-edit-toggle');
+            if (editBtn) {
+                editBtn.textContent = editOn ? 'Disattiva' : 'Attiva';
+                editBtn.classList.toggle('is-on', editOn);
+                editBtn.setAttribute('aria-pressed', editOn ? 'true' : 'false');
+            }
+            var editStatus = document.getElementById('preview-mod-edit-status');
+            if (editStatus) editStatus.textContent = editOn ? 'attiva' : 'disattivata';
         };
 
         window.openPreviewModPanel = function () {
@@ -26762,11 +26829,279 @@ window.updateStoricoButton = async function() {
             if (cols !== 2 && cols !== 3) return;
             window.__previewModCols = cols;
             window.__previewViewMode = 'report';
+            /* Ribilancia layout salvato sul nuovo numero di colonne. */
+            if (window.__previewModLayout && Array.isArray(window.__previewModLayout.columns)) {
+                var flat = [];
+                window.__previewModLayout.columns.forEach(function (c) {
+                    (c || []).forEach(function (id) { if (id != null) flat.push(String(id)); });
+                });
+                var next = [];
+                var i;
+                for (i = 0; i < cols; i++) next.push([]);
+                flat.forEach(function (id, idx) { next[idx % cols].push(id); });
+                window.__previewModLayout = { columns: next };
+            }
             if (typeof window.syncPreviewModPanelUi === 'function') window.syncPreviewModPanelUi();
             if (typeof window.resetPreviewSheetZoom === 'function') window.resetPreviewSheetZoom();
             var screen = document.getElementById('preview-screen');
             if (screen && screen.classList.contains('active') && typeof buildPreview === 'function') {
                 buildPreview();
+            }
+        };
+
+        window.__previewModEditActive = false;
+        window.__previewModOrient = window.__previewModOrient || {};
+        window.__previewModSelectedId = null;
+
+        window.togglePreviewModEdit = function () {
+            window.setPreviewModEditActive(!window.__previewModEditActive);
+        };
+
+        window.setPreviewModEditActive = function (on) {
+            window.__previewModEditActive = !!on;
+            if (!window.__previewModEditActive) {
+                window.__previewModSelectedId = null;
+                window.__previewModDragging = false;
+            }
+            if (typeof window.syncPreviewModPanelUi === 'function') window.syncPreviewModPanelUi();
+            if (window.__previewModEditActive) {
+                if (typeof window.closePreviewModPanel === 'function') window.closePreviewModPanel();
+                if (typeof window.capturePreviewModLayoutFromDom === 'function') {
+                    window.capturePreviewModLayoutFromDom();
+                }
+            }
+            if (typeof window.applyPreviewModEditUi === 'function') window.applyPreviewModEditUi();
+        };
+
+        window.capturePreviewModLayoutFromDom = function () {
+            var sheet = document.getElementById('preview-sheet');
+            if (!sheet) return null;
+            var host = sheet.querySelector('[data-rp-pack]');
+            if (!host) return null;
+            var columns = [];
+            var pages = host.querySelectorAll(':scope > .rp-page');
+            if (pages.length) {
+                Array.prototype.forEach.call(pages, function (page) {
+                    var grid = page.querySelector(':scope > div');
+                    if (!grid) return;
+                    var colEls = Array.prototype.slice.call(grid.children);
+                    if (!columns.length) {
+                        colEls.forEach(function () { columns.push([]); });
+                    }
+                    colEls.forEach(function (colEl, ci) {
+                        if (ci >= columns.length) return;
+                        Array.prototype.forEach.call(colEl.querySelectorAll(':scope > .rp-page-block'), function (b) {
+                            var id = b.getAttribute('data-rp-id');
+                            if (id) columns[ci].push(id);
+                        });
+                    });
+                });
+            } else {
+                var directCols = host.querySelectorAll(':scope > .rp-pack-col');
+                if (directCols.length) {
+                    Array.prototype.forEach.call(directCols, function (colEl) {
+                        var ids = [];
+                        Array.prototype.forEach.call(colEl.querySelectorAll(':scope > .rp-page-block'), function (b) {
+                            var id = b.getAttribute('data-rp-id');
+                            if (id) ids.push(id);
+                        });
+                        columns.push(ids);
+                    });
+                } else {
+                    var only = [];
+                    Array.prototype.forEach.call(host.querySelectorAll('.rp-page-block'), function (b) {
+                        var id = b.getAttribute('data-rp-id');
+                        if (id) only.push(id);
+                    });
+                    if (only.length) columns = [only];
+                }
+            }
+            if (!columns.length) return null;
+            window.__previewModLayout = { columns: columns };
+            return window.__previewModLayout;
+        };
+
+        window.applyPreviewModOrientClasses = function (root) {
+            root = root || document.getElementById('preview-sheet');
+            if (!root) return;
+            var orient = window.__previewModOrient || {};
+            var sel = window.__previewModSelectedId;
+            Array.prototype.forEach.call(root.querySelectorAll('.rp-page-block'), function (el) {
+                var id = el.getAttribute('data-rp-id');
+                el.classList.toggle('rp-orient-horizontal', !!(id && orient[id] === 'h'));
+                el.classList.toggle('rp-mod-selected', !!(id && sel && id === sel));
+            });
+        };
+
+        window.applyPreviewModEditUi = function () {
+            var sheet = document.getElementById('preview-sheet');
+            var screen = document.getElementById('preview-screen');
+            var on = !!window.__previewModEditActive;
+            if (!on) window.__previewModSelectedId = null;
+            if (sheet) sheet.classList.toggle('preview-mod-edit', on);
+            if (screen) screen.classList.toggle('preview-mod-edit-on', on);
+            if (typeof window.applyPreviewModOrientClasses === 'function') {
+                window.applyPreviewModOrientClasses(sheet);
+            }
+            if (typeof window.wirePreviewModCardInteractions === 'function') {
+                window.wirePreviewModCardInteractions();
+            }
+        };
+
+        window.__previewModPointer = null;
+
+        window.wirePreviewModCardInteractions = function () {
+            var sheet = document.getElementById('preview-sheet');
+            if (!sheet) return;
+            if (!sheet.__rpModWired) {
+                sheet.__rpModWired = true;
+                sheet.addEventListener('pointerdown', window.__onPreviewModPointerDown, true);
+                sheet.addEventListener('pointermove', window.__onPreviewModPointerMove, true);
+                sheet.addEventListener('pointerup', window.__onPreviewModPointerUp, true);
+                sheet.addEventListener('pointercancel', window.__onPreviewModPointerUp, true);
+            }
+        };
+
+        window.__clearPreviewModDropGap = function () {
+            var sheet = document.getElementById('preview-sheet');
+            if (!sheet) return;
+            Array.prototype.forEach.call(sheet.querySelectorAll('.rp-mod-drop-gap'), function (el) {
+                if (el.parentNode) el.parentNode.removeChild(el);
+            });
+        };
+
+        window.__findPreviewModDropTarget = function (clientX, clientY, dragEl) {
+            var sheet = document.getElementById('preview-sheet');
+            if (!sheet) return null;
+            var cols = Array.prototype.slice.call(sheet.querySelectorAll('.rp-pack-col'));
+            if (!cols.length) {
+                var host = sheet.querySelector('[data-rp-pack]');
+                if (host) cols = [host];
+            }
+            if (!cols.length) return null;
+            var bestCol = null;
+            var bestDist = Infinity;
+            cols.forEach(function (col) {
+                var r = col.getBoundingClientRect();
+                if (!(r.width > 2 && r.height >= 0)) return;
+                var cx = Math.min(Math.max(clientX, r.left), r.right);
+                var cy = Math.min(Math.max(clientY, r.top), r.bottom);
+                var dx = clientX - cx;
+                var dy = clientY - cy;
+                var d = dx * dx + dy * dy;
+                if (d < bestDist) {
+                    bestDist = d;
+                    bestCol = col;
+                }
+            });
+            if (!bestCol) return null;
+            var cards = Array.prototype.filter.call(bestCol.querySelectorAll(':scope > .rp-page-block'), function (el) {
+                return el !== dragEl;
+            });
+            var insertBefore = null;
+            var i;
+            for (i = 0; i < cards.length; i++) {
+                var br = cards[i].getBoundingClientRect();
+                var mid = br.top + br.height / 2;
+                if (clientY < mid) {
+                    insertBefore = cards[i];
+                    break;
+                }
+            }
+            return { col: bestCol, before: insertBefore };
+        };
+
+        window.__placePreviewModDropGap = function (target) {
+            window.__clearPreviewModDropGap();
+            if (!target || !target.col) return;
+            var gap = document.createElement('div');
+            gap.className = 'rp-mod-drop-gap';
+            if (target.before && target.before.parentNode === target.col) {
+                target.col.insertBefore(gap, target.before);
+            } else {
+                target.col.appendChild(gap);
+            }
+        };
+
+        window.__onPreviewModPointerDown = function (ev) {
+            if (!window.__previewModEditActive) return;
+            if (ev.button != null && ev.button !== 0) return;
+            var card = ev.target && ev.target.closest ? ev.target.closest('.rp-page-block') : null;
+            if (!card || !card.getAttribute('data-rp-id')) return;
+            if (ev.target.closest && ev.target.closest('.preview-font-scale-controls')) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            try { card.setPointerCapture(ev.pointerId); } catch (_) {}
+            window.__previewModPointer = {
+                id: card.getAttribute('data-rp-id'),
+                el: card,
+                pointerId: ev.pointerId,
+                startX: ev.clientX,
+                startY: ev.clientY,
+                moved: false,
+                dragging: false
+            };
+            window.__previewModSelectedId = window.__previewModPointer.id;
+            if (typeof window.applyPreviewModOrientClasses === 'function') {
+                window.applyPreviewModOrientClasses();
+            }
+        };
+
+        window.__onPreviewModPointerMove = function (ev) {
+            var st = window.__previewModPointer;
+            if (!st || !window.__previewModEditActive) return;
+            if (st.pointerId != null && ev.pointerId !== st.pointerId) return;
+            var dx = ev.clientX - st.startX;
+            var dy = ev.clientY - st.startY;
+            if (!st.dragging && (dx * dx + dy * dy) > 64) {
+                st.dragging = true;
+                st.moved = true;
+                window.__previewModDragging = true;
+                if (st.el) st.el.classList.add('rp-mod-dragging');
+            }
+            if (!st.dragging) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            var target = window.__findPreviewModDropTarget(ev.clientX, ev.clientY, st.el);
+            window.__placePreviewModDropGap(target);
+            st.drop = target;
+        };
+
+        window.__onPreviewModPointerUp = function (ev) {
+            var st = window.__previewModPointer;
+            if (!st) return;
+            if (st.pointerId != null && ev.pointerId != null && ev.pointerId !== st.pointerId) return;
+            window.__previewModPointer = null;
+            try { if (st.el) st.el.releasePointerCapture(st.pointerId); } catch (_) {}
+            window.__clearPreviewModDropGap();
+            if (st.el) st.el.classList.remove('rp-mod-dragging');
+            window.__previewModDragging = false;
+
+            if (st.dragging && st.drop && st.drop.col && st.el) {
+                var col = st.drop.col;
+                if (st.drop.before && st.drop.before.parentNode === col) {
+                    col.insertBefore(st.el, st.drop.before);
+                } else {
+                    col.appendChild(st.el);
+                }
+                if (typeof window.capturePreviewModLayoutFromDom === 'function') {
+                    window.capturePreviewModLayoutFromDom();
+                }
+                if (typeof buildPreview === 'function') buildPreview();
+                return;
+            }
+
+            /* Tap: seleziona e alterna verticale ↔ orizzontale. */
+            if (!st.moved && st.id) {
+                window.__previewModSelectedId = st.id;
+                var orient = window.__previewModOrient || (window.__previewModOrient = {});
+                orient[st.id] = orient[st.id] === 'h' ? 'v' : 'h';
+                if (typeof window.applyPreviewModOrientClasses === 'function') {
+                    window.applyPreviewModOrientClasses();
+                }
+                if (typeof window.__layoutPreviewA4 === 'function') {
+                    window.__layoutPreviewA4();
+                }
             }
         };
 
@@ -35987,6 +36322,7 @@ window.updateStoricoButton = async function() {
                 gridEl.setAttribute('style', colsStyle);
                 cols.forEach(function (col) {
                     var colEl = document.createElement('div');
+                    colEl.className = 'rp-pack-col';
                     colEl.setAttribute('style', colStyle);
                     col.items.forEach(function (el) {
                         el.style.marginTop = '';
@@ -36079,6 +36415,7 @@ window.updateStoricoButton = async function() {
         /** Applica paginazione (schede intere per pagina) e poi ridisegna la guida A4. */
         window.__layoutPreviewA4 = function () {
             if (window.__a4LayoutBusy) return;
+            if (window.__previewModDragging) return;
             window.__a4LayoutBusy = true;
             try {
                 var t = typeof window.getPreviewBorderTightenFromZoom === 'function'
@@ -36099,6 +36436,10 @@ window.updateStoricoButton = async function() {
                     if (typeof window.fitReportPreviewOverflow === 'function') window.fitReportPreviewOverflow();
                 }
                 window.renderPreviewA4Guide();
+                if (window.__previewModEditActive && typeof window.capturePreviewModLayoutFromDom === 'function') {
+                    window.capturePreviewModLayoutFromDom();
+                }
+                if (typeof window.applyPreviewModEditUi === 'function') window.applyPreviewModEditUi();
             } catch (layoutErr) {
                 console.error('__layoutPreviewA4', layoutErr);
             } finally {
@@ -36117,9 +36458,11 @@ window.updateStoricoButton = async function() {
             // stessi (guida), evitando qualsiasi loop.
             if (!window.__a4GuideObserver && typeof MutationObserver !== 'undefined') {
                 window.__a4GuideObserver = new MutationObserver(function () {
+                    if (window.__previewModDragging) return;
                     if (window.__a4GuideRaf) return;
                     window.__a4GuideRaf = requestAnimationFrame(function () {
                         window.__a4GuideRaf = null;
+                        if (window.__previewModDragging) return;
                         window.__layoutPreviewA4();
                         if (window.__a4GuideObserver) window.__a4GuideObserver.takeRecords();
                     });
@@ -36171,6 +36514,11 @@ window.updateStoricoButton = async function() {
             previewScreen.classList.add('active');
             window.__previewViewMode = 'report';
             window.__previewModCols = null;
+            window.__previewModLayout = null;
+            window.__previewModOrient = {};
+            window.__previewModSelectedId = null;
+            window.__previewModEditActive = false;
+            window.__previewModDragging = false;
             if (typeof window.closePreviewModPanel === 'function') window.closePreviewModPanel();
             if (typeof window.syncPreviewViewModeUi === 'function') window.syncPreviewViewModeUi();
             if (typeof window.resetPreviewSheetZoom === 'function') window.resetPreviewSheetZoom();
@@ -36283,10 +36631,19 @@ window.updateStoricoButton = async function() {
             if (document.body) document.body.classList.remove('sh-preview-open');
             if (typeof window.closePreviewModPanel === 'function') window.closePreviewModPanel();
             window.__previewModCols = null;
+            window.__previewModLayout = null;
+            window.__previewModOrient = {};
+            window.__previewModSelectedId = null;
+            window.__previewModEditActive = false;
+            window.__previewModDragging = false;
             window.__previewViewMode = 'report';
             if (typeof window.resetPreviewSheetZoom === 'function') window.resetPreviewSheetZoom();
             if (typeof window.resetPreviewFontScale === 'function') window.resetPreviewFontScale();
             document.getElementById('preview-screen').classList.remove('active');
+            var sheet = document.getElementById('preview-sheet');
+            if (sheet) sheet.classList.remove('preview-mod-edit');
+            var screen = document.getElementById('preview-screen');
+            if (screen) screen.classList.remove('preview-mod-edit-on');
             if (typeof window.__syncBodyModalOpenClass === 'function') {
                 try { window.__syncBodyModalOpenClass(); } catch (_) {}
             } else if (document.body) {
@@ -36641,6 +36998,7 @@ window.updateStoricoButton = async function() {
             }
 
             function handleDoubleActivate() {
+                if (window.__previewModEditActive) return;
                 window.togglePreviewSheetZoom();
             }
 
@@ -46725,6 +47083,54 @@ window.convertToHtml = async () => {
             text-shadow: 0 1px 2px rgba(15, 23, 42, 0.35);
         }
         .preview-mod-col-btn:active { transform: scale(0.97); }
+        .preview-mod-edit-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 10px 8px;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.18);
+            border: 1px solid rgba(15, 23, 42, 0.14);
+        }
+        .preview-mod-edit-label {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            min-width: 0;
+        }
+        .preview-mod-edit-name {
+            font-weight: 900;
+            font-size: 12px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: rgba(15, 23, 42, 0.92);
+        }
+        .preview-mod-edit-status {
+            font-weight: 700;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: rgba(15, 23, 42, 0.62);
+        }
+        .preview-mod-edit-toggle {
+            border: 1px solid rgba(15, 23, 42, 0.2);
+            background: rgba(255, 255, 255, 0.34);
+            color: #0f172a;
+            font-weight: 900;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-radius: 10px;
+            padding: 10px 14px;
+            outline: none;
+            flex-shrink: 0;
+        }
+        .preview-mod-edit-toggle.is-on {
+            background: rgba(16, 185, 129, 0.72);
+            border-color: rgba(5, 150, 105, 0.85);
+            color: #fff;
+        }
         .preview-mod-close-btn {
             border: 1px solid rgba(15, 23, 42, 0.16);
             background: rgba(255, 255, 255, 0.22);
@@ -46736,6 +47142,63 @@ window.convertToHtml = async () => {
             border-radius: 10px;
             padding: 10px 12px;
             outline: none;
+        }
+        #preview-sheet.preview-mod-edit .rp-page-block {
+            cursor: grab;
+            touch-action: none;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        #preview-sheet.preview-mod-edit .rp-page-block.rp-mod-dragging {
+            cursor: grabbing;
+            opacity: 0.4;
+        }
+        #preview-sheet.preview-mod-edit .rp-page-block.rp-mod-selected {
+            outline: 2px solid #4f46e5;
+            outline-offset: 2px;
+            background: rgba(79, 70, 229, 0.07);
+            border-radius: 4px;
+        }
+        #preview-sheet.preview-mod-edit .rp-mod-drop-gap {
+            height: 10px;
+            margin: 3px 0;
+            border-radius: 4px;
+            background: rgba(79, 70, 229, 0.45);
+            flex-shrink: 0;
+        }
+        #preview-sheet.preview-mod-edit .rp-page-block.rp-orient-horizontal .report-preview-card-body {
+            display: flex !important;
+            flex-direction: row !important;
+            flex-wrap: nowrap !important;
+            align-items: baseline !important;
+            gap: 0.55em !important;
+            overflow-x: auto !important;
+            width: 100% !important;
+        }
+        #preview-sheet.preview-mod-edit .rp-page-block.rp-orient-horizontal .report-preview-row,
+        #preview-sheet.preview-mod-edit .rp-page-block.rp-orient-horizontal .stocc-report-preview-row,
+        #preview-sheet.preview-mod-edit .rp-page-block.rp-orient-horizontal .report-preview-row--sed-assetto,
+        #preview-sheet.preview-mod-edit .rp-page-block.rp-orient-horizontal .report-preview-osmosi-assetto {
+            display: inline-flex !important;
+            flex: 0 0 auto !important;
+            width: auto !important;
+            max-width: none !important;
+            border-bottom: none !important;
+            padding-top: 1px !important;
+            padding-bottom: 1px !important;
+            white-space: nowrap !important;
+        }
+        /* Anche schede senza .report-preview-card-body: corpo subito sotto il titolo. */
+        #preview-sheet.preview-mod-edit .rp-page-block.rp-orient-horizontal > .report-preview-card > div:not(.report-preview-card-title) {
+            display: flex !important;
+            flex-direction: row !important;
+            flex-wrap: nowrap !important;
+            align-items: baseline !important;
+            gap: 0.55em !important;
+            overflow-x: auto !important;
+        }
+        #preview-screen.preview-mod-edit-on .preview-toolbar {
+            box-shadow: inset 0 -2px 0 #10b981;
         }
         body.sh-preview-open #sh-post-long-press-shield,
         body.sh-preview-open #sh-spen-ink-host {
@@ -50640,6 +51103,13 @@ window.convertToHtml = async () => {
                 <div class="preview-mod-panel-actions">
                     <button type="button" id="preview-mod-cols-2" class="preview-mod-col-btn" onclick="window.setPreviewModColumns(2)">2 colonne</button>
                     <button type="button" id="preview-mod-cols-3" class="preview-mod-col-btn" onclick="window.setPreviewModColumns(3)">3 colonne</button>
+                </div>
+                <div class="preview-mod-edit-row">
+                    <div class="preview-mod-edit-label">
+                        <span class="preview-mod-edit-name">MOD</span>
+                        <span id="preview-mod-edit-status" class="preview-mod-edit-status">disattivata</span>
+                    </div>
+                    <button type="button" id="preview-mod-edit-toggle" class="preview-mod-edit-toggle" aria-pressed="false" onclick="window.togglePreviewModEdit()">Attiva</button>
                 </div>
                 <button type="button" class="preview-mod-close-btn" onclick="window.closePreviewModPanel()">Chiudi</button>
             </div>

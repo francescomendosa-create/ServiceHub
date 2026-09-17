@@ -1049,7 +1049,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.09.17-preview-mod-dropfix';
+        window.SERVICEHUB_BUILD = '2026.09.17-preview-mod-note';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -21031,10 +21031,12 @@ window.updateStoricoButton = async function() {
                 'display:inline-block;width:100%;vertical-align:top;margin-bottom:6px;box-sizing:border-box;';
         };
 
-        window.reportPreviewPackedBlockShell = function (innerHtml, order, id) {
+        window.reportPreviewPackedBlockShell = function (innerHtml, order, id, extraClass) {
             var ordAttr = (order != null) ? (' data-rp-order="' + order + '"') : '';
             var idAttr = id ? (' data-rp-id="' + String(id).replace(/"/g, '') + '"') : '';
-            return '<div class="rp-page-block"' + idAttr + ordAttr + ' style="width:100%;box-sizing:border-box;margin-bottom:3px;">' + innerHtml + '</div>';
+            var cls = 'rp-page-block';
+            if (extraClass) cls += ' ' + String(extraClass);
+            return '<div class="' + cls + '"' + idAttr + ordAttr + ' style="width:100%;box-sizing:border-box;margin-bottom:3px;">' + innerHtml + '</div>';
         };
 
         window.estimateReportPreviewBlockHeight = function (meta) {
@@ -26925,8 +26927,53 @@ window.updateStoricoButton = async function() {
                 }
             }
             if (!columns.length) return null;
+            /* Escludi schede in modalità nota (sotto i moduli). */
+            var orient = window.__previewModOrient || {};
+            columns = columns.map(function (col) {
+                return (col || []).filter(function (id) { return orient[String(id)] !== 'h'; });
+            });
             window.__previewModLayout = { columns: columns };
             return window.__previewModLayout;
+        };
+
+        window.splitReportPreviewModBlocks = function (blocks) {
+            var orient = window.__previewModOrient || {};
+            var order = window.__previewModNotesOrder || [];
+            var columnBlocks = [];
+            var noteMap = {};
+            (blocks || []).forEach(function (b) {
+                if (!b) return;
+                var id = String(b.id);
+                if (orient[id] === 'h') noteMap[id] = b;
+                else columnBlocks.push(b);
+            });
+            var noteBlocks = [];
+            order.forEach(function (id) {
+                id = String(id);
+                if (noteMap[id]) {
+                    noteBlocks.push(noteMap[id]);
+                    delete noteMap[id];
+                }
+            });
+            Object.keys(noteMap).forEach(function (id) {
+                noteBlocks.push(noteMap[id]);
+            });
+            return { columnBlocks: columnBlocks, noteBlocks: noteBlocks };
+        };
+
+        window.buildPreviewModNotesZoneHtml = function (noteBlocks) {
+            if (!noteBlocks || !noteBlocks.length) return '';
+            var html = '<div id="rp-mod-notes-zone" class="rp-mod-notes-zone">';
+            noteBlocks.forEach(function (b, i) {
+                html += window.reportPreviewPackedBlockShell(
+                    b.html,
+                    'n' + i,
+                    b.id,
+                    'rp-mod-note rp-orient-horizontal'
+                );
+            });
+            html += '</div>';
+            return html;
         };
 
         window.applyPreviewModOrientClasses = function (root) {
@@ -26936,22 +26983,23 @@ window.updateStoricoButton = async function() {
             var sel = window.__previewModSelectedId;
             Array.prototype.forEach.call(root.querySelectorAll('.rp-page-block'), function (el) {
                 var id = el.getAttribute('data-rp-id');
-                var isH = !!(id && orient[id] === 'h');
-                el.classList.toggle('rp-orient-horizontal', isH);
+                var isNote = !!(id && orient[id] === 'h');
+                el.classList.toggle('rp-orient-horizontal', isNote);
+                el.classList.toggle('rp-mod-note', isNote);
                 el.classList.toggle('rp-mod-selected', !!(id && sel && id === sel));
                 if (typeof window.__markPreviewModHorizontalBodies === 'function') {
-                    window.__markPreviewModHorizontalBodies(el, isH);
+                    window.__markPreviewModHorizontalBodies(el, isNote);
                 }
             });
         };
 
-        /** Marca i contenitori delle misure così CSS può metterle tutte in una riga. */
-        window.__markPreviewModHorizontalBodies = function (block, isH) {
+        /** Marca i contenitori delle misure per la riga unica stile nota. */
+        window.__markPreviewModHorizontalBodies = function (block, isNote) {
             if (!block) return;
             Array.prototype.forEach.call(block.querySelectorAll('.rp-mod-h-body, .rp-mod-h-wrap'), function (n) {
                 n.classList.remove('rp-mod-h-body', 'rp-mod-h-wrap');
             });
-            if (!isH) return;
+            if (!isNote) return;
             var bodies = block.querySelectorAll('.report-preview-card-body, .stocc-report-preview-rows');
             if (bodies.length) {
                 Array.prototype.forEach.call(bodies, function (n) { n.classList.add('rp-mod-h-body'); });
@@ -26966,15 +27014,40 @@ window.updateStoricoButton = async function() {
                 ? cardOrId
                 : (cardOrId && cardOrId.getAttribute ? cardOrId.getAttribute('data-rp-id') : null);
             if (!id) return;
+            id = String(id);
             window.__previewModSelectedId = id;
             var orient = window.__previewModOrient || (window.__previewModOrient = {});
-            orient[id] = orient[id] === 'h' ? 'v' : 'h';
-            if (typeof window.applyPreviewModOrientClasses === 'function') {
-                window.applyPreviewModOrientClasses();
+            var notesOrder = window.__previewModNotesOrder || (window.__previewModNotesOrder = []);
+            var goingNote = orient[id] !== 'h';
+            orient[id] = goingNote ? 'h' : 'v';
+
+            if (goingNote) {
+                if (window.__previewModLayout && Array.isArray(window.__previewModLayout.columns)) {
+                    window.__previewModLayout.columns.forEach(function (col) {
+                        var ix = col.indexOf(id);
+                        if (ix >= 0) col.splice(ix, 1);
+                    });
+                }
+                if (notesOrder.indexOf(id) < 0) notesOrder.push(id);
+            } else {
+                var ni = notesOrder.indexOf(id);
+                if (ni >= 0) notesOrder.splice(ni, 1);
+                if (window.__previewModLayout && Array.isArray(window.__previewModLayout.columns) &&
+                    window.__previewModLayout.columns.length) {
+                    var cols = window.__previewModLayout.columns;
+                    var minIdx = 0;
+                    var c;
+                    for (c = 1; c < cols.length; c++) {
+                        if (cols[c].length < cols[minIdx].length) minIdx = c;
+                    }
+                    if (cols[minIdx].indexOf(id) < 0) cols[minIdx].push(id);
+                }
             }
-            if (typeof window.__layoutPreviewA4 === 'function') {
-                window.__layoutPreviewA4();
+
+            if (typeof window.resetPreviewSheetZoom === 'function') {
+                try { window.resetPreviewSheetZoom(); } catch (_) {}
             }
+            if (typeof buildPreview === 'function') buildPreview();
         };
 
         window.applyPreviewModEditUi = function () {
@@ -36671,6 +36744,7 @@ window.updateStoricoButton = async function() {
             window.__previewModCols = null;
             window.__previewModLayout = null;
             window.__previewModOrient = {};
+            window.__previewModNotesOrder = [];
             window.__previewModSelectedId = null;
             window.__previewModEditActive = false;
             window.__previewModDragging = false;
@@ -36788,6 +36862,7 @@ window.updateStoricoButton = async function() {
             window.__previewModCols = null;
             window.__previewModLayout = null;
             window.__previewModOrient = {};
+            window.__previewModNotesOrder = [];
             window.__previewModSelectedId = null;
             window.__previewModEditActive = false;
             window.__previewModDragging = false;
@@ -40595,10 +40670,17 @@ if (hiddenModules.length === 0) {
     });
 
     if (!isNotesMode) {
+        var splitMod = typeof window.splitReportPreviewModBlocks === 'function'
+            ? window.splitReportPreviewModBlocks(reportBlocks)
+            : { columnBlocks: reportBlocks, noteBlocks: [] };
+        var packBlocks = splitMod.columnBlocks || reportBlocks;
         colCount = window.chooseReportPreviewColumnCount
-            ? window.chooseReportPreviewColumnCount(reportBlocks.length)
-            : (reportBlocks.length <= 1 ? 1 : (reportBlocks.length <= 2 ? 2 : (reportBlocks.length <= 5 && reportBlocks.length !== 3 ? 2 : 3)));
-        html += window.packReportPreviewBlocksHtml(reportBlocks, colCount, previewGap);
+            ? window.chooseReportPreviewColumnCount(packBlocks.length)
+            : (packBlocks.length <= 1 ? 1 : (packBlocks.length <= 2 ? 2 : (packBlocks.length <= 5 && packBlocks.length !== 3 ? 2 : 3)));
+        html += window.packReportPreviewBlocksHtml(packBlocks, colCount, previewGap);
+        if (splitMod.noteBlocks && splitMod.noteBlocks.length && typeof window.buildPreviewModNotesZoneHtml === 'function') {
+            html += window.buildPreviewModNotesZoneHtml(splitMod.noteBlocks);
+        }
     } else {
         html += '</div>';
     }
@@ -47328,10 +47410,37 @@ window.convertToHtml = async () => {
             background: rgba(79, 70, 229, 0.45);
             flex-shrink: 0;
         }
-        /* Orientamento orizzontale: titolo sopra, tutte le misure in una sola riga. */
-        #preview-sheet .rp-page-block.rp-orient-horizontal {
-            overflow: visible;
+        /* Scheda staccata = nota a tutta larghezza sotto i moduli. */
+        #preview-sheet .rp-mod-notes-zone {
+            width: 100%;
+            box-sizing: border-box;
+            clear: both;
+            margin-top: 14px;
+            padding-top: 8px;
+            border-top: 1px solid rgba(15, 23, 42, 0.18);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
         }
+        #preview-sheet .rp-page-block.rp-mod-note,
+        #preview-sheet .rp-page-block.rp-orient-horizontal {
+            width: 100% !important;
+            max-width: 100% !important;
+            clear: both;
+            overflow: visible;
+            margin-bottom: 8px !important;
+            padding: 6px 2px 8px;
+            box-sizing: border-box;
+        }
+        #preview-sheet .rp-page-block.rp-mod-note .report-preview-card-title,
+        #preview-sheet .rp-page-block.rp-orient-horizontal .report-preview-card-title {
+            flex: 0 0 100% !important;
+            width: 100% !important;
+            margin-bottom: 6px !important;
+        }
+        #preview-sheet .rp-page-block.rp-mod-note .report-preview-card-body,
+        #preview-sheet .rp-page-block.rp-mod-note .stocc-report-preview-rows,
+        #preview-sheet .rp-page-block.rp-mod-note .rp-mod-h-body,
         #preview-sheet .rp-page-block.rp-orient-horizontal .report-preview-card-body,
         #preview-sheet .rp-page-block.rp-orient-horizontal .stocc-report-preview-rows,
         #preview-sheet .rp-page-block.rp-orient-horizontal .rp-mod-h-body {
@@ -47339,33 +47448,43 @@ window.convertToHtml = async () => {
             flex-direction: row !important;
             flex-wrap: nowrap !important;
             align-items: baseline !important;
-            gap: 0.55em !important;
+            justify-content: flex-start !important;
+            gap: 1.1em !important;
             overflow-x: auto !important;
             width: 100% !important;
             max-width: 100% !important;
         }
+        #preview-sheet .rp-page-block.rp-mod-note .rp-mod-h-wrap,
         #preview-sheet .rp-page-block.rp-orient-horizontal .rp-mod-h-wrap {
             display: flex !important;
             flex-direction: row !important;
             flex-wrap: wrap !important;
             align-items: baseline !important;
-            column-gap: 0.55em !important;
-            row-gap: 2px !important;
+            column-gap: 1.1em !important;
+            row-gap: 4px !important;
             width: 100% !important;
         }
+        #preview-sheet .rp-page-block.rp-mod-note .rp-mod-h-wrap > :first-child:not(.report-preview-row):not(.stocc-report-preview-row):not(.report-preview-row--sed-assetto):not(.report-preview-osmosi-assetto),
         #preview-sheet .rp-page-block.rp-orient-horizontal .rp-mod-h-wrap > :first-child:not(.report-preview-row):not(.stocc-report-preview-row):not(.report-preview-row--sed-assetto):not(.report-preview-osmosi-assetto) {
             flex: 0 0 100% !important;
             width: 100% !important;
             max-width: 100% !important;
+            margin-bottom: 4px !important;
         }
+        #preview-sheet .rp-page-block.rp-mod-note div[style*="flex-direction: column"],
+        #preview-sheet .rp-page-block.rp-mod-note div[style*="flex-direction:column"],
         #preview-sheet .rp-page-block.rp-orient-horizontal div[style*="flex-direction: column"],
         #preview-sheet .rp-page-block.rp-orient-horizontal div[style*="flex-direction:column"] {
             flex-direction: row !important;
             flex-wrap: nowrap !important;
             align-items: baseline !important;
-            gap: 0.55em !important;
+            gap: 1.1em !important;
             overflow-x: auto !important;
         }
+        #preview-sheet .rp-page-block.rp-mod-note .report-preview-row,
+        #preview-sheet .rp-page-block.rp-mod-note .stocc-report-preview-row,
+        #preview-sheet .rp-page-block.rp-mod-note .report-preview-row--sed-assetto,
+        #preview-sheet .rp-page-block.rp-mod-note .report-preview-osmosi-assetto,
         #preview-sheet .rp-page-block.rp-orient-horizontal .report-preview-row,
         #preview-sheet .rp-page-block.rp-orient-horizontal .stocc-report-preview-row,
         #preview-sheet .rp-page-block.rp-orient-horizontal .report-preview-row--sed-assetto,
@@ -47376,14 +47495,12 @@ window.convertToHtml = async () => {
             width: auto !important;
             max-width: none !important;
             border-bottom: none !important;
-            padding-top: 1px !important;
-            padding-bottom: 1px !important;
+            padding-top: 2px !important;
+            padding-bottom: 2px !important;
+            margin: 0 !important;
             white-space: nowrap !important;
         }
-        #preview-sheet .rp-page-block.rp-orient-horizontal .report-preview-card-title {
-            flex: 0 0 100% !important;
-            width: 100% !important;
-        }
+        #preview-sheet .rp-page-block.rp-mod-note > .report-preview-card,
         #preview-sheet .rp-page-block.rp-orient-horizontal > .report-preview-card {
             display: flex !important;
             flex-direction: column !important;

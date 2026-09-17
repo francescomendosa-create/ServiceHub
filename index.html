@@ -1049,7 +1049,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.09.17-tank-status-scale-selected';
+        window.SERVICEHUB_BUILD = '2026.09.17-tank-status-confirm-fast';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -15601,10 +15601,14 @@ window.updateStoricoButton = async function() {
         };
 
         /* Ridisegna i quadratini stato serbatoio (A/D/P) da window.tankStatuses.
-           Senza questo, al riavvio gli stati risultavano salvati ma invisibili nella UI. */
-        window.repaintTankStatusSquares = function() {
+           Senza questo, al riavvio gli stati risultavano salvati ma invisibili nella UI.
+           onlyTankId: aggiorna solo quel serbatoio (conferma popup su iPhone). */
+        window.repaintTankStatusSquares = function(onlyTankId) {
             const statuses = (window.tankStatuses && typeof window.tankStatuses === 'object' && !Array.isArray(window.tankStatuses)) ? window.tankStatuses : {};
-            document.querySelectorAll('.tank-status-single').forEach(function (tankElement) {
+            var sel = onlyTankId
+                ? '.tank-status-single[data-tank="' + String(onlyTankId).replace(/"/g, '') + '"]'
+                : '.tank-status-single';
+            document.querySelectorAll(sel).forEach(function (tankElement) {
                 const tankId = tankElement.getAttribute('data-tank');
                 if (!tankId) return;
                 tankElement.classList.remove('accumulo', 'drenaggio', 'parallelo');
@@ -44736,7 +44740,40 @@ window.convertToHtml = async () => {
             window.__ensureTankStatusesObject();
             if (!statusArr || !statusArr.length) delete window.tankStatuses[tankId];
             else window.tankStatuses[tankId] = window.__serializeTankStatuses(statusArr);
-            if (typeof window.repaintTankStatusSquares === 'function') window.repaintTankStatusSquares();
+            if (typeof window.repaintTankStatusSquares === 'function') window.repaintTankStatusSquares(tankId);
+        };
+        window.__scheduleTankStatusPersist = function () {
+            var isPhone = !!(document.body && document.body.classList.contains('sh-device-phone'));
+            if (window.__tankStatusPersistTimer) clearTimeout(window.__tankStatusPersistTimer);
+            if (window.__tankStatusPushTimer) clearTimeout(window.__tankStatusPushTimer);
+            /* Su iPhone: prima libera i tap, poi salva, poi push Digital (pesante). */
+            var saveMs = isPhone ? 450 : 160;
+            var pushMs = isPhone ? 1400 : 320;
+            window.__tankStatusPersistTimer = setTimeout(function () {
+                window.__tankStatusPersistTimer = null;
+                void (async function () {
+                    try {
+                        if (typeof window.saveData === 'function') await window.saveData(true);
+                    } catch (_) {}
+                })();
+            }, saveMs);
+            window.__tankStatusPushTimer = setTimeout(function () {
+                window.__tankStatusPushTimer = null;
+                var runPush = function () {
+                    void (async function () {
+                        try {
+                            if (typeof window.__pushDigitalRemoteImmediate === 'function') {
+                                await window.__pushDigitalRemoteImmediate();
+                            }
+                        } catch (_) {}
+                    })();
+                };
+                if (typeof requestIdleCallback === 'function') {
+                    requestIdleCallback(function () { runPush(); }, { timeout: 2000 });
+                } else {
+                    runPush();
+                }
+            }, pushMs);
         };
         window.__setTankStatusOptionSelected = function (btn, selected) {
             if (!btn) return;
@@ -44774,7 +44811,25 @@ window.convertToHtml = async () => {
             const modal = document.getElementById('tank-status-modal');
             if (!modal) return;
             var isPhone = !!(document.body && document.body.classList.contains('sh-device-phone'));
-            var closeMs = isPhone ? 120 : (window.__AMB_ANIM_MS || 160);
+            if (isPhone) {
+                /* Chiusura immediata: niente animazione che blocca i tap successivi. */
+                modal.classList.remove('active', 'exit-right');
+                if (typeof window.__syncBodyModalOpenClass === 'function') {
+                    window.__syncBodyModalOpenClass();
+                }
+                if (comingFromNumpad && savedInput && savedLabel) {
+                    comingFromNumpad = false;
+                    const savedLabelElement = savedLabel.querySelector('.cell-label-main, .amb-label, .bd-label');
+                    if (savedLabelElement) {
+                        setTimeout(function () {
+                            window.openNumpad(savedLabelElement);
+                            setTimeout(function () { window.updateTankButton(); }, 50);
+                        }, 40);
+                    }
+                }
+                return;
+            }
+            var closeMs = window.__AMB_ANIM_MS || 160;
             modal.classList.add('exit-right');
             setTimeout(function () {
                 modal.classList.remove('active', 'exit-right');
@@ -44802,20 +44857,9 @@ window.convertToHtml = async () => {
             }
             window.__applyTankStatusToMemoryAndUI(window.currentTank, next);
             window.__tankPopupBaseline = next.length ? window.__serializeTankStatuses(next) : null;
-            /* Save/push dopo la chiusura: evita rebuild Digital sotto il modal su iPhone. */
-            var deferMs = (document.body && document.body.classList.contains('sh-device-phone'))
-                ? 180
-                : ((window.__AMB_ANIM_MS || 160) + 40);
-            setTimeout(function () {
-                void (async function () {
-                    try {
-                        if (typeof window.saveData === 'function') await window.saveData(true);
-                        if (typeof window.__pushDigitalRemoteImmediate === 'function') {
-                            await window.__pushDigitalRemoteImmediate();
-                        }
-                    } catch (_) {}
-                })();
-            }, deferMs);
+            if (typeof window.__scheduleTankStatusPersist === 'function') {
+                window.__scheduleTankStatusPersist();
+            }
         };
         window.__cancelTankPopupDraft = function (closeModal) {
             if (!window.currentTank) {
@@ -44923,18 +44967,35 @@ window.convertToHtml = async () => {
             }
         };
 
-        // Conferma: applica bozza a memoria + interfaccia, poi chiude
+        // Conferma: chiude subito, aggiorna UI leggera, sync cloud in background
         window.confirmTankStatus = function() {
             if (!window.currentTank) return;
+            var isPhone = !!(document.body && document.body.classList.contains('sh-device-phone'));
+            if (isPhone) {
+                var modal = document.getElementById('tank-status-modal');
+                if (modal) modal.classList.remove('active', 'exit-right');
+                if (typeof window.__syncBodyModalOpenClass === 'function') {
+                    window.__syncBodyModalOpenClass();
+                }
+            }
             window.__commitTankPopupDraft();
             window.currentTank = null;
             window.__tankPopupBaseline = null;
             window.selectedTankStatuses = [];
             window.__resetTankPopupButtons();
-            window.__closeTankStatusModalAnimated();
-            if (typeof window.refreshTankDetailStatusRow === 'function') {
-                window.refreshTankDetailStatusRow();
+            if (!isPhone) {
+                window.__closeTankStatusModalAnimated();
+                if (typeof window.refreshTankDetailStatusRow === 'function') {
+                    window.refreshTankDetailStatusRow();
+                }
+                return;
             }
+            /* Phone: modal gia chiuso; detail refresh e sync restano in coda. */
+            setTimeout(function () {
+                if (typeof window.refreshTankDetailStatusRow === 'function') {
+                    window.refreshTankDetailStatusRow();
+                }
+            }, 0);
         };
 
         // X / annulla: ripristina stato salvato, interfaccia sempre allineata

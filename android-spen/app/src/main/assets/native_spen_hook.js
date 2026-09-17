@@ -4359,4 +4359,196 @@
         }, 250);
         clearModalScrollLock();
     }
+
+    /* APK: Invia report → Intent Android (navigator.share non funziona in WebView). */
+    if (!window.__shApkShareReport181) {
+        window.__shApkShareReport181 = true;
+        window.shareReportViaAndroidApk = function (dataUrlOrB64, fileName, mimeType, title) {
+            var bridge = window.ServiceHubAndroidSpen;
+            if (!bridge || typeof bridge.shareBegin !== 'function'
+                || typeof bridge.shareChunk !== 'function'
+                || typeof bridge.shareEnd !== 'function') {
+                return false;
+            }
+            try {
+                var raw = String(dataUrlOrB64 || '');
+                var comma = raw.indexOf(',');
+                if (raw.indexOf('data:') === 0 && comma >= 0) raw = raw.slice(comma + 1);
+                if (!raw) return false;
+                bridge.shareBegin(fileName || 'Report_Stabile.jpg');
+                var chunk = 240000;
+                for (var i = 0; i < raw.length; i += chunk) {
+                    bridge.shareChunk(raw.slice(i, i + chunk));
+                }
+                bridge.shareEnd(mimeType || 'image/jpeg', title || 'Report Stabile');
+                return true;
+            } catch (eShare) {
+                return false;
+            }
+        };
+        var wrapShare = function () {
+            if (typeof window.sharePreview !== 'function' || window.sharePreview.__shApkShare181) return false;
+            var prev = window.sharePreview;
+            window.sharePreview = async function () {
+                var bridge = window.ServiceHubAndroidSpen;
+                if (!bridge || typeof bridge.shareBegin !== 'function') {
+                    return prev.apply(this, arguments);
+                }
+                var shareBtn = document.getElementById('share-btn-text');
+                var originalBtnHtml = shareBtn ? shareBtn.innerHTML : '';
+                var previewSheet = document.getElementById('preview-sheet');
+                try {
+                    if (shareBtn) shareBtn.innerText = 'ELABORAZIONE...';
+                    if (typeof window.resetPreviewSheetZoom === 'function') window.resetPreviewSheetZoom();
+                    if (typeof window.fitReportPreviewOverflow === 'function') window.fitReportPreviewOverflow();
+                    await new Promise(function (r) {
+                        requestAnimationFrame(function () { requestAnimationFrame(r); });
+                    });
+                    if (typeof window.freezeReportPreviewForCapture === 'function') {
+                        window.freezeReportPreviewForCapture(previewSheet);
+                    }
+                    await new Promise(function (r) {
+                        requestAnimationFrame(function () { requestAnimationFrame(r); });
+                    });
+                    if (typeof html2canvas !== 'function') {
+                        return prev.apply(this, arguments);
+                    }
+                    var canvas = await html2canvas(previewSheet, {
+                        scale: 2,
+                        useCORS: true,
+                        backgroundColor: '#ffffff',
+                        letterRendering: true,
+                        logging: false,
+                        width: previewSheet.scrollWidth,
+                        height: previewSheet.scrollHeight,
+                        windowWidth: Math.max(previewSheet.scrollWidth, previewSheet.clientWidth),
+                        windowHeight: Math.max(previewSheet.scrollHeight, previewSheet.clientHeight),
+                        ignoreElements: function (el) {
+                            return el && el.classList && el.classList.contains('preview-a4-guide');
+                        }
+                    });
+                    var dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+                    var filePrefix = (typeof window.isPreviewNotesMode === 'function' && window.isPreviewNotesMode())
+                        ? 'Nota' : 'Report';
+                    var fileName = filePrefix + '_Stabile_' + Date.now() + '.jpg';
+                    var shareTitle = filePrefix + ' Stabile 2026';
+                    var ok = window.shareReportViaAndroidApk(dataUrl, fileName, 'image/jpeg', shareTitle);
+                    if (!ok) return prev.apply(this, arguments);
+                    if (shareBtn) shareBtn.innerHTML = originalBtnHtml;
+                    if (previewSheet) previewSheet.classList.remove('preview-print-exact');
+                    return;
+                } catch (eWrap) {
+                    if (shareBtn) {
+                        shareBtn.innerText = 'ERRORE';
+                        setTimeout(function () { shareBtn.innerHTML = originalBtnHtml; }, 2000);
+                    }
+                    if (previewSheet) previewSheet.classList.remove('preview-print-exact');
+                    return prev.apply(this, arguments);
+                }
+            };
+            window.sharePreview.__shApkShare181 = true;
+            return true;
+        };
+        var shareTries = 0;
+        var shareTimer = setInterval(function () {
+            shareTries += 1;
+            if (wrapShare() || shareTries > 40) clearInterval(shareTimer);
+        }, 250);
+        wrapShare();
+    }
+
+    /* S Pen: stesso drag del numpad del dito (titolo/maniglia), non sul display. */
+    if (!window.__shApkNumpadPenDrag182) {
+        window.__shApkNumpadPenDrag182 = true;
+        var penDrag = {
+            pending: false,
+            active: false,
+            startX: 0,
+            startY: 0,
+            origX: 0,
+            origY: 0,
+            pointerId: null
+        };
+        var NO_PEN_DRAG = '#numpad-close-btn, #numpad-tank-btn, #numpad-settings-btn,'
+            + ' #numpad-display-scale-btn, #numpad-alarm-reset-btn,'
+            + ' .numpad-btn, .numpad-enter-btn, .numpad-nav-btn, .numpad-alarm-row,'
+            + ' .numpad-display-bezel, #numpad-display';
+        var canPenDrag = function (ev) {
+            if (!ev || ev.pointerType !== 'pen') return false;
+            if (typeof window.isNumpadDraggable === 'function' && !window.isNumpadDraggable()) return false;
+            var panel = document.getElementById('numpad-modal-panel');
+            if (!panel || !panel.classList || !document.getElementById('numpad-modal')
+                || !document.getElementById('numpad-modal').classList.contains('active')) return false;
+            var t = ev.target;
+            if (t && t.nodeType !== 1) t = t.parentElement;
+            if (!t || !panel.contains(t)) return false;
+            if (t.closest && t.closest(NO_PEN_DRAG)) return false;
+            var grid = panel.querySelector('.numpad-grid');
+            if (grid) {
+                var firstKey = grid.querySelector('.numpad-btn, .numpad-enter-btn, .numpad-nav-btn');
+                var keysTop = firstKey
+                    ? firstKey.getBoundingClientRect().top
+                    : grid.getBoundingClientRect().top;
+                if (ev.clientY < keysTop) return true;
+            }
+            return !!(t.closest && t.closest('#numpad-drag-handle, #numpad-value-panel, #numpad-alarm-panel'));
+        };
+        var endPenDrag = function () {
+            penDrag.pending = false;
+            if (!penDrag.active) return;
+            penDrag.active = false;
+            var handle = document.getElementById('numpad-drag-handle');
+            var panel = document.getElementById('numpad-modal-panel');
+            if (handle) handle.classList.remove('numpad-drag-handle--active');
+            if (panel) {
+                panel.classList.remove('numpad-modal-panel--dragging');
+                try { panel.releasePointerCapture(penDrag.pointerId); } catch (eR) {}
+            }
+            penDrag.pointerId = null;
+        };
+        document.addEventListener('pointerdown', function (ev) {
+            if (!canPenDrag(ev)) return;
+            if (window.__shNumpadInkWriting) return;
+            penDrag.pending = true;
+            penDrag.active = false;
+            penDrag.startX = ev.clientX;
+            penDrag.startY = ev.clientY;
+            penDrag.origX = (window.__numpadDragPos && window.__numpadDragPos.x) || 0;
+            penDrag.origY = (window.__numpadDragPos && window.__numpadDragPos.y) || 0;
+            penDrag.pointerId = ev.pointerId;
+            window.__numpadDidDrag = false;
+            var panel = document.getElementById('numpad-modal-panel');
+            if (panel && ev.pointerId != null) {
+                try { panel.setPointerCapture(ev.pointerId); } catch (eC) {}
+            }
+        }, true);
+        document.addEventListener('pointermove', function (ev) {
+            if (!penDrag.pending && !penDrag.active) return;
+            if (ev.pointerType !== 'pen') return;
+            if (penDrag.pointerId != null && ev.pointerId !== penDrag.pointerId) return;
+            if (penDrag.pending && !penDrag.active) {
+                var dx = ev.clientX - penDrag.startX;
+                var dy = ev.clientY - penDrag.startY;
+                if (Math.hypot(dx, dy) < 10) return;
+                penDrag.active = true;
+                penDrag.pending = false;
+                window.__numpadDidDrag = true;
+                var handle = document.getElementById('numpad-drag-handle');
+                var panel = document.getElementById('numpad-modal-panel');
+                if (handle) handle.classList.add('numpad-drag-handle--active');
+                if (panel) panel.classList.add('numpad-modal-panel--dragging');
+            }
+            if (!penDrag.active) return;
+            if (ev.cancelable) ev.preventDefault();
+            window.__numpadDragPos = {
+                x: penDrag.origX + (ev.clientX - penDrag.startX),
+                y: penDrag.origY + (ev.clientY - penDrag.startY)
+            };
+            if (typeof window.applyNumpadPanelTransform === 'function') {
+                window.applyNumpadPanelTransform();
+            }
+        }, { capture: true, passive: false });
+        document.addEventListener('pointerup', endPenDrag, true);
+        document.addEventListener('pointercancel', endPenDrag, true);
+    }
 })();

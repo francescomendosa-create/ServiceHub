@@ -1049,7 +1049,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.09.17-fix-update-boot';
+        window.SERVICEHUB_BUILD = '2026.09.17-preview-zoom-proportional';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -11542,8 +11542,7 @@ window.updateStoricoButton = async function() {
                 return true;
             };
 
-            // Tutto il capo libero (titolo + display) sposta il numpad col dito.
-            // Solo i tasti veri, X, ... e le righe allarme restano cliccabili.
+            // Titolo + zona libera: sposta il numpad con dito o S Pen (sul display la penna scrive).
             const NO_DRAG_SEL = '#numpad-close-btn, #numpad-tank-btn, #numpad-settings-btn,'
                 + ' #numpad-display-scale-btn, #numpad-alarm-reset-btn,'
                 + ' .numpad-btn, .numpad-enter-btn, .numpad-nav-btn, .numpad-alarm-row';
@@ -11556,9 +11555,14 @@ window.updateStoricoButton = async function() {
 
             const canStartNumpadDrag = function (e) {
                 if (!e) return false;
-                if (e.pointerType === 'pen') return false;
                 if (e.pointerType === 'mouse' && e.button !== 0) return false;
                 const t = eventEl(e);
+                /* S Pen: stesso spostamento del dito sul titolo/maniglia; sul display resta la scrittura. */
+                if (e.pointerType === 'pen') {
+                    if (t && t.closest && t.closest('.numpad-display-bezel, #numpad-display, #numpad-display-scale-btn')) {
+                        return false;
+                    }
+                }
                 if (t && t.closest && t.closest(NO_DRAG_SEL)) return false;
                 const grid = panel.querySelector('.numpad-grid');
                 if (grid) {
@@ -11566,7 +11570,13 @@ window.updateStoricoButton = async function() {
                     const keysTop = firstKey
                         ? firstKey.getBoundingClientRect().top
                         : grid.getBoundingClientRect().top;
-                    if (e.clientY < keysTop) return true;
+                    if (e.clientY < keysTop) {
+                        if (e.pointerType === 'pen' && t && t.closest
+                            && t.closest('.numpad-display-bezel, #numpad-display')) {
+                            return false;
+                        }
+                        return true;
+                    }
                 }
                 if (t && t.closest && t.closest('#numpad-drag-handle, #numpad-value-panel, #numpad-alarm-panel')) {
                     return true;
@@ -21052,20 +21062,12 @@ window.updateStoricoButton = async function() {
 
         window.chooseReportPreviewColumnCount = function (nBlocks) {
             var n = Number(nBlocks) || 0;
-            var scale = typeof window.getPreviewFontScale === 'function' ? window.getPreviewFontScale() : 1;
-            if (!Number.isFinite(scale) || scale <= 0) scale = 1;
-            var forced = Number(window.__previewForceMaxCols);
-            var maxCols = 3;
-            if (Number.isFinite(forced) && forced >= 1) maxCols = Math.max(1, Math.min(3, forced));
-            else if (scale >= 1.3) maxCols = 1;
-            else if (scale >= 1.12) maxCols = 2;
-            var want = 1;
-            if (n <= 1) want = 1;
-            else if (n === 2) want = 2;
-            else if (n === 3) want = 3;
-            else if (n === 4 || n === 5) want = 2;
-            else want = 3;
-            return Math.min(want, maxCols);
+            /* Colonne fisse dal contenuto: lo zoom (+) non deve cambiare il layout. */
+            if (n <= 1) return 1;
+            if (n === 2) return 2;
+            if (n === 3) return 3;
+            if (n === 4 || n === 5) return 2;
+            return 3;
         };
 
         window.packReportPreviewBlocksHtml = function (blocks, colCount, gap) {
@@ -21236,30 +21238,12 @@ window.updateStoricoButton = async function() {
             return n;
         };
 
-        /** Se lo zoom riempie troppo le colonne, passa a 2 (poi 1) e ricostruisce il report. */
-        window.__tryReduceReportPreviewColumns = function (root) {
-            root = root || document.getElementById('capture-content') || document.getElementById('preview-sheet');
-            if (!root) return false;
-            if (window.__previewColsReduceLock) return false;
-            var host = root.querySelector('[data-rp-pack]');
-            if (!host) return false;
-            var cols = Math.max(1, parseInt(host.getAttribute('data-rp-cols'), 10) || 1);
-            if (cols <= 1) return false;
-            var overflows = window.__countReportPreviewOverflows(root);
-            if (overflows < 2) return false;
-            window.__previewForceMaxCols = cols <= 2 ? 1 : 2;
-            window.__previewColsReduceLock = true;
-            try {
-                if (typeof buildPreview === 'function') buildPreview();
-                return true;
-            } catch (_) {
-                return false;
-            } finally {
-                setTimeout(function () { window.__previewColsReduceLock = false; }, 80);
-            }
+        /** Disabilitato: lo zoom (+) non deve passare a 2/1 colonne né alterare le proporzioni. */
+        window.__tryReduceReportPreviewColumns = function () {
+            return false;
         };
 
-        /** Rileva sovrapposizioni dopo lo zoom: prima meno colonne, poi shrink proporzionale. */
+        /** Solo wrap layout (osmosi/SED). Mai rimpicciolire font né cambiare colonne: lo zoom (+) resta proporzionale. */
         window.fitReportPreviewOverflow = function (root) {
             root = root || document.getElementById('capture-content') || document.getElementById('preview-sheet');
             if (!root) return;
@@ -21267,94 +21251,30 @@ window.updateStoricoButton = async function() {
             if (typeof window.alignReportPreviewCebColumns === 'function') {
                 window.alignReportPreviewCebColumns(root);
             }
-            if (typeof window.__tryReduceReportPreviewColumns === 'function'
-                && window.__tryReduceReportPreviewColumns(root)) {
-                return;
-            }
-            var minFs = Number(window.PREVIEW_STATUS_MIN_PX);
-            if (!Number.isFinite(minFs) || minFs < 5) minFs = 6.5;
-            var guard = 0;
             var overflows = window.reportPreviewRowOverflows;
-            var statusDidShrink = false;
-            while (guard++ < 18) {
-                var changed = false;
-                var osmRows = root.querySelectorAll('.report-preview-osmosi-assetto');
-                var oiOsm;
-                for (oiOsm = 0; oiOsm < osmRows.length; oiOsm++) {
-                    var osm = osmRows[oiOsm];
-                    var osmOv = overflows(osm);
-                    if (!osmOv) {
-                        var cardOsm = osm.closest('.rp-page-block');
-                        var colOsm = osm.querySelector('.report-preview-osmosi-col--assetto');
-                        if (cardOsm && colOsm && colOsm.getBoundingClientRect().right > cardOsm.getBoundingClientRect().right + 1.5) {
-                            osmOv = true;
-                        }
-                    }
-                    if (!osmOv) continue;
-                    if (!osm.classList.contains('is-assetto-stack')) {
-                        osm.classList.add('is-assetto-stack');
-                        changed = true;
+            var osmRows = root.querySelectorAll('.report-preview-osmosi-assetto');
+            var oiOsm;
+            for (oiOsm = 0; oiOsm < osmRows.length; oiOsm++) {
+                var osm = osmRows[oiOsm];
+                var osmOv = overflows(osm);
+                if (!osmOv) {
+                    var cardOsm = osm.closest('.rp-page-block');
+                    var colOsm = osm.querySelector('.report-preview-osmosi-col--assetto');
+                    if (cardOsm && colOsm && colOsm.getBoundingClientRect().right > cardOsm.getBoundingClientRect().right + 1.5) {
+                        osmOv = true;
                     }
                 }
-                var sedRows = root.querySelectorAll('.report-preview-row--sed-assetto');
-                var si;
-                for (si = 0; si < sedRows.length; si++) {
-                    var sed = sedRows[si];
-                    if (!overflows(sed)) continue;
-                    if (!sed.classList.contains('is-portata-wrap')) {
-                        sed.classList.add('is-portata-wrap');
-                        changed = true;
-                        continue;
-                    }
-                    if (window.shrinkReportPreviewRowPair(sed, minFs)) changed = true;
+                if (osmOv && !osm.classList.contains('is-assetto-stack')) {
+                    osm.classList.add('is-assetto-stack');
                 }
-                var cards = root.querySelectorAll('.rp-page-block');
-                var ci;
-                var didStatusThisPass = false;
-                for (ci = 0; ci < cards.length; ci++) {
-                    var statusRows = cards[ci].querySelectorAll('.report-preview-row--status');
-                    if (!statusRows.length) continue;
-                    var anyOv = false;
-                    var sr;
-                    for (sr = 0; sr < statusRows.length; sr++) {
-                        if (overflows(statusRows[sr])) { anyOv = true; break; }
-                    }
-                    if (!anyOv) continue;
-                    if (statusDidShrink) continue;
-                    for (sr = 0; sr < statusRows.length; sr++) {
-                        if (window.shrinkReportPreviewRowPair(statusRows[sr], minFs)) changed = true;
-                    }
-                    didStatusThisPass = true;
+            }
+            var sedRows = root.querySelectorAll('.report-preview-row--sed-assetto');
+            var si;
+            for (si = 0; si < sedRows.length; si++) {
+                var sed = sedRows[si];
+                if (overflows(sed) && !sed.classList.contains('is-portata-wrap')) {
+                    sed.classList.add('is-portata-wrap');
                 }
-                if (didStatusThisPass) statusDidShrink = true;
-                var tankRows = root.querySelectorAll('.report-preview-row--tank-val, .stocc-report-preview-row');
-                if (tankRows.length) {
-                    var tv;
-                    var tankOv = false;
-                    for (tv = 0; tv < tankRows.length; tv++) {
-                        if (overflows(tankRows[tv])) { tankOv = true; break; }
-                    }
-                    if (tankOv) {
-                        for (tv = 0; tv < tankRows.length; tv++) {
-                            if (window.shrinkReportPreviewRowPair(tankRows[tv], minFs)) changed = true;
-                        }
-                    }
-                }
-                var other = root.querySelectorAll('.report-preview-row:not(.report-preview-row--status):not(.report-preview-row--sed-assetto):not(.report-preview-row--tank-val)');
-                var oi;
-                for (oi = 0; oi < other.length; oi++) {
-                    var row = other[oi];
-                    if (!overflows(row)) continue;
-                    var v = row.querySelector('.report-preview-val');
-                    if (!v) continue;
-                    if (v.style.whiteSpace !== 'normal') {
-                        v.style.whiteSpace = 'normal';
-                        changed = true;
-                        continue;
-                    }
-                    if (window.shrinkReportPreviewRowPair(row, minFs)) changed = true;
-                }
-                if (!changed) break;
             }
             window.alignReportPreviewMeasureColumns(root);
             if (typeof window.alignReportPreviewCebColumns === 'function') {
@@ -36476,10 +36396,11 @@ window.updateStoricoButton = async function() {
             window.PREVIEW_FONT_SCALE_STEP = 0.06;
             window.PREVIEW_FONT_SCALE_MIN = 0.72;
             window.PREVIEW_FONT_SCALE_MAX = 8;
-            window.PREVIEW_TITLE_FONT_SCALE_CAP = 1;
-            window.PREVIEW_STATUS_FONT_SCALE_CAP = 1.08;
+            /* Titolo come il resto: scala intera con (+), senza bloccare le proporzioni. */
+            window.PREVIEW_TITLE_FONT_SCALE_CAP = 8;
+            window.PREVIEW_STATUS_FONT_SCALE_CAP = 8;
             window.PREVIEW_STATUS_MIN_PX = 6.5;
-            window.PREVIEW_NOTE_FONT_SCALE_CAP = 1 + window.PREVIEW_FONT_SCALE_STEP;
+            window.PREVIEW_NOTE_FONT_SCALE_CAP = 8;
             window.__previewFontScale = 1;
 
             window.getPreviewFontScale = function () {
@@ -36513,21 +36434,20 @@ window.updateStoricoButton = async function() {
                 return Math.max(1, Math.round((base + (delta || 0)) * s * 10) / 10);
             };
 
-            /** Valori misurati: poco più grandi della sigla; il salto non cresce con lo zoom. */
+            /** Valori misurati: poco più grandi della sigla; bump scala con lo zoom (proporzioni fisse). */
             window.PREVIEW_MEASURE_BUMP_PX = 0.7;
             window.scalePreviewMeasureFont = function (unscaledBase, delta) {
                 var labelFs = window.scalePreviewFont(unscaledBase, (delta || 0) - 1);
                 var bump = Number(window.PREVIEW_MEASURE_BUMP_PX);
                 if (!Number.isFinite(bump) || bump < 0) bump = 0.7;
-                return Math.round((labelFs + bump) * 10) / 10;
+                var s = window.getPreviewFontScale();
+                if (!Number.isFinite(s) || s <= 0) s = 1;
+                return Math.round((labelFs + bump * s) * 10) / 10;
             };
 
-            /** MARCIA/FERMO / Accumulo: stessa scala della sigla (proporzionale allo zoom). */
+            /** MARCIA/FERMO / Accumulo: stessa scala delle misure (proporzionale allo zoom). */
             window.scalePreviewStatusFont = function (unscaledBase, delta) {
-                var labelFs = window.scalePreviewFont(unscaledBase, (delta || 0) - 1);
-                var bump = Number(window.PREVIEW_MEASURE_BUMP_PX);
-                if (!Number.isFinite(bump) || bump < 0) bump = 0.7;
-                return Math.round((labelFs + bump) * 10) / 10;
+                return window.scalePreviewMeasureFont(unscaledBase, delta);
             };
 
             /** Titolo intestazione report: scala con zoom fino al cap, poi resta fisso (una riga). */
@@ -36568,11 +36488,7 @@ window.updateStoricoButton = async function() {
                     Math.min(window.PREVIEW_FONT_SCALE_MAX, +next.toFixed(3))
                 );
                 window.__previewFontScale = next;
-                if (direction < 0) window.__previewForceMaxCols = null;
-                else if (next >= 1.12 && (!window.__previewForceMaxCols || window.__previewForceMaxCols > 2)) {
-                    window.__previewForceMaxCols = 2;
-                }
-                if (next >= 1.3) window.__previewForceMaxCols = 1;
+                window.__previewForceMaxCols = null;
                 window.updatePreviewFontScaleButtons();
                 var screen = document.getElementById('preview-screen');
                 if (screen && screen.classList.contains('active') && typeof buildPreview === 'function') {
@@ -40220,6 +40136,32 @@ if (hiddenModules.length === 0) {
             }
         };
 
+        /** APK tablet: WebView non supporta navigator.share con file → Intent nativo. */
+        window.shareReportViaAndroidApk = function (dataUrlOrB64, fileName, mimeType, title) {
+            var bridge = window.ServiceHubAndroidSpen;
+            if (!bridge || typeof bridge.shareBegin !== 'function'
+                || typeof bridge.shareChunk !== 'function'
+                || typeof bridge.shareEnd !== 'function') {
+                return false;
+            }
+            try {
+                var raw = String(dataUrlOrB64 || '');
+                var comma = raw.indexOf(',');
+                if (raw.indexOf('data:') === 0 && comma >= 0) raw = raw.slice(comma + 1);
+                if (!raw) return false;
+                bridge.shareBegin(fileName || 'Report_Stabile.jpg');
+                var chunk = 240000;
+                for (var i = 0; i < raw.length; i += chunk) {
+                    bridge.shareChunk(raw.slice(i, i + chunk));
+                }
+                bridge.shareEnd(mimeType || 'image/jpeg', title || 'Report Stabile');
+                return true;
+            } catch (e) {
+                console.warn('[ServiceHub] shareReportViaAndroidApk', e);
+                return false;
+            }
+        };
+
         window.downloadReportShareBlob = function (blob, fileName) {
             var url = URL.createObjectURL(blob);
             var a = document.createElement('a');
@@ -40331,7 +40273,10 @@ if (hiddenModules.length === 0) {
                 const file = new File([blob], filePrefix + '_Stabile_' + Date.now() + '.jpg', { type: 'image/jpeg' });
                 const shareTitle = filePrefix + ' Stabile 2026';
 
-                if (window.canShareReportFile(file)) {
+                if (typeof window.shareReportViaAndroidApk === 'function'
+                    && window.shareReportViaAndroidApk(dataUrl, file.name, 'image/jpeg', shareTitle)) {
+                    // Intent nativo APK (Gmail, Drive, WhatsApp, …)
+                } else if (window.canShareReportFile(file)) {
                     try {
                         await navigator.share({ title: shareTitle, files: [file] });
                     } catch (shareError) {

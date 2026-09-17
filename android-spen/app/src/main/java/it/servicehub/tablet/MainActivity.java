@@ -71,7 +71,7 @@ public class MainActivity extends AppCompatActivity {
                 view.postDelayed(() -> injectOcrBoot(view), 2400);
             }
         });
-        webView.addJavascriptInterface(new SpenBridge(webView, ink, () -> hubChrome.startDirectOcr()), "ServiceHubAndroidSpen");
+        webView.addJavascriptInterface(new SpenBridge(this, webView, ink, () -> hubChrome.startDirectOcr()), "ServiceHubAndroidSpen");
     }
 
     private void injectHook(WebView view) {

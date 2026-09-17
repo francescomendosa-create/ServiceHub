@@ -2,6 +2,8 @@ package it.servicehub.tablet;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -12,7 +14,11 @@ import android.view.inputmethod.InputMethodManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 
+import androidx.core.content.FileProvider;
+
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -34,6 +40,7 @@ public final class SpenBridge {
     private static final String HUB_ORIGIN = "https://francescomendosa-create.github.io";
     private static final String HUB_UA =
             "Mozilla/5.0 (Linux; Android 14; SM-X730) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
+    private final Activity activity;
     private final WebView webView;
     private final InkRecognizer ink;
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -41,17 +48,108 @@ public final class SpenBridge {
     private final Runnable startOcrCamera;
     private final Map<String, StringBuilder> geminiBuf = new ConcurrentHashMap<>();
     private final Map<String, String> geminiUrl = new ConcurrentHashMap<>();
+    private final StringBuilder shareB64 = new StringBuilder();
+    private String shareFileName = "Report_Stabile.jpg";
     volatile String lastGeminiRaw = "";
 
-    SpenBridge(WebView webView, InkRecognizer ink, Runnable startOcrCamera) {
+    SpenBridge(Activity activity, WebView webView, InkRecognizer ink, Runnable startOcrCamera) {
+        this.activity = activity;
         this.webView = webView;
         this.ink = ink;
         this.startOcrCamera = startOcrCamera;
     }
 
+    private Activity hostActivity() {
+        if (activity != null && !activity.isFinishing()) return activity;
+        Context ctx = webView != null ? webView.getContext() : null;
+        int guard = 0;
+        while (ctx != null && guard++ < 8) {
+            if (ctx instanceof Activity) return (Activity) ctx;
+            if (ctx instanceof android.content.ContextWrapper) {
+                ctx = ((android.content.ContextWrapper) ctx).getBaseContext();
+                continue;
+            }
+            break;
+        }
+        return null;
+    }
+
     @JavascriptInterface
     public boolean isNative() {
         return true;
+    }
+
+    /** Condivisione report: WebView non ha navigator.share con file. */
+    @JavascriptInterface
+    public synchronized void shareBegin(String fileName) {
+        shareB64.setLength(0);
+        if (fileName != null && !fileName.trim().isEmpty()) {
+            shareFileName = fileName.trim().replaceAll("[\\\\/:*?\"<>|]", "_");
+        } else {
+            shareFileName = "Report_Stabile.jpg";
+        }
+        Log.i(TAG, "shareBegin name=" + shareFileName);
+    }
+
+    @JavascriptInterface
+    public synchronized void shareChunk(String chunk) {
+        if (chunk == null || chunk.isEmpty()) return;
+        shareB64.append(chunk);
+    }
+
+    @JavascriptInterface
+    public synchronized void shareEnd(String mimeType, String title) {
+        final String b64 = shareB64.toString();
+        shareB64.setLength(0);
+        final String name = shareFileName;
+        final String mime = (mimeType == null || mimeType.trim().isEmpty())
+                ? "image/jpeg" : mimeType.trim();
+        final String shareTitle = (title == null || title.trim().isEmpty())
+                ? "Report Stabile" : title.trim();
+        Log.i(TAG, "shareEnd chars=" + b64.length() + " mime=" + mime);
+        main.post(() -> openShareChooser(b64, name, mime, shareTitle));
+    }
+
+    private void openShareChooser(String b64, String fileName, String mime, String title) {
+        try {
+            Activity act = hostActivity();
+            if (act == null) {
+                Log.w(TAG, "share: Activity non trovata ctx=" + (webView != null ? webView.getContext() : null));
+                return;
+            }
+            String raw = b64 == null ? "" : b64.trim();
+            int comma = raw.indexOf(',');
+            if (raw.startsWith("data:") && comma > 0) raw = raw.substring(comma + 1);
+            if (raw.isEmpty()) {
+                Log.w(TAG, "shareEnd vuoto");
+                return;
+            }
+            byte[] bytes = Base64.decode(raw, Base64.DEFAULT);
+            File dir = new File(act.getCacheDir(), "share");
+            if (!dir.exists() && !dir.mkdirs()) {
+                Log.w(TAG, "share mkdir fail");
+                return;
+            }
+            File out = new File(dir, fileName);
+            try (FileOutputStream fos = new FileOutputStream(out, false)) {
+                fos.write(bytes);
+                fos.flush();
+            }
+            Uri uri = FileProvider.getUriForFile(act, act.getPackageName() + ".fileprovider", out);
+            Intent send = new Intent(Intent.ACTION_SEND);
+            send.setType(mime);
+            send.putExtra(Intent.EXTRA_STREAM, uri);
+            send.putExtra(Intent.EXTRA_SUBJECT, title);
+            send.putExtra(Intent.EXTRA_TITLE, title);
+            send.setClipData(android.content.ClipData.newUri(act.getContentResolver(), title, uri));
+            send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            Intent chooser = Intent.createChooser(send, title);
+            chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            act.startActivity(chooser);
+            Log.i(TAG, "share chooser aperto bytes=" + bytes.length);
+        } catch (Exception e) {
+            Log.w(TAG, "shareEnd", e);
+        }
     }
 
     @JavascriptInterface

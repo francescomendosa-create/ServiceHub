@@ -1049,7 +1049,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.09.17-preview-mod-dbltap';
+        window.SERVICEHUB_BUILD = '2026.09.17-preview-mod-dropfix';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -21130,8 +21130,8 @@ window.updateStoricoButton = async function() {
                     return single;
                 }
                 var outEx = '<div' + packAttrs + ' style="' + window.reportPreviewPackedColumnsStyle(colCount, gap) + '">';
-                colParts.forEach(function (parts) {
-                    outEx += '<div class="rp-pack-col" style="' + window.reportPreviewPackedColumnStyle() + '">';
+                colParts.forEach(function (parts, colIdx) {
+                    outEx += '<div class="rp-pack-col" data-rp-col="' + colIdx + '" style="' + window.reportPreviewPackedColumnStyle() + '">';
                     parts.forEach(function (b) {
                         outEx += shellFor(b, b.__rpOrder);
                     });
@@ -21170,8 +21170,8 @@ window.updateStoricoButton = async function() {
                 cols[minIdx].h += est;
             });
             var out = '<div' + packAttrs2 + ' style="' + window.reportPreviewPackedColumnsStyle(colCount, gap) + '">';
-            cols.forEach(function (col) {
-                out += '<div class="rp-pack-col" style="' + window.reportPreviewPackedColumnStyle() + '">';
+            cols.forEach(function (col, colIdx) {
+                out += '<div class="rp-pack-col" data-rp-col="' + colIdx + '" style="' + window.reportPreviewPackedColumnStyle() + '">';
                 col.parts.forEach(function (b) {
                     out += shellFor(b, b.__rpOrder);
                 });
@@ -26895,10 +26895,12 @@ window.updateStoricoButton = async function() {
                         colEls.forEach(function () { columns.push([]); });
                     }
                     colEls.forEach(function (colEl, ci) {
-                        if (ci >= columns.length) return;
+                        var colIdx = parseInt(colEl.getAttribute('data-rp-col'), 10);
+                        if (!Number.isFinite(colIdx) || colIdx < 0) colIdx = ci;
+                        while (columns.length <= colIdx) columns.push([]);
                         Array.prototype.forEach.call(colEl.querySelectorAll(':scope > .rp-page-block'), function (b) {
                             var id = b.getAttribute('data-rp-id');
-                            if (id) columns[ci].push(id);
+                            if (id && columns[colIdx].indexOf(id) < 0) columns[colIdx].push(id);
                         });
                     });
                 });
@@ -27035,24 +27037,49 @@ window.updateStoricoButton = async function() {
                 if (host) cols = [host];
             }
             if (!cols.length) return null;
-            var bestCol = null;
-            var bestDist = Infinity;
+            /* Preferisci la colonna il cui rettangolo contiene il punto; altrimenti la più vicina in X. */
+            var containing = [];
             cols.forEach(function (col) {
                 var r = col.getBoundingClientRect();
-                if (!(r.width > 2 && r.height >= 0)) return;
-                var cx = Math.min(Math.max(clientX, r.left), r.right);
-                var cy = Math.min(Math.max(clientY, r.top), r.bottom);
-                var dx = clientX - cx;
-                var dy = clientY - cy;
-                var d = dx * dx + dy * dy;
-                if (d < bestDist) {
-                    bestDist = d;
-                    bestCol = col;
+                if (clientX >= r.left - 2 && clientX <= r.right + 2 &&
+                    clientY >= r.top - 8 && clientY <= r.bottom + 8) {
+                    containing.push(col);
                 }
             });
+            var bestCol = null;
+            if (containing.length === 1) {
+                bestCol = containing[0];
+            } else if (containing.length > 1) {
+                var bestY = Infinity;
+                containing.forEach(function (col) {
+                    var r = col.getBoundingClientRect();
+                    var cy = Math.min(Math.max(clientY, r.top), r.bottom);
+                    var d = Math.abs(clientY - cy);
+                    if (d < bestY) {
+                        bestY = d;
+                        bestCol = col;
+                    }
+                });
+            } else {
+                var bestDist = Infinity;
+                cols.forEach(function (col) {
+                    var r = col.getBoundingClientRect();
+                    if (!(r.width > 2)) return;
+                    var midX = (r.left + r.right) / 2;
+                    var dx = clientX - midX;
+                    var dy = 0;
+                    if (clientY < r.top) dy = r.top - clientY;
+                    else if (clientY > r.bottom) dy = clientY - r.bottom;
+                    var d = dx * dx + dy * dy * 0.25;
+                    if (d < bestDist) {
+                        bestDist = d;
+                        bestCol = col;
+                    }
+                });
+            }
             if (!bestCol) return null;
             var cards = Array.prototype.filter.call(bestCol.querySelectorAll(':scope > .rp-page-block'), function (el) {
-                return el !== dragEl;
+                return el !== dragEl && !el.classList.contains('rp-mod-drop-gap');
             });
             var insertBefore = null;
             var i;
@@ -27141,10 +27168,15 @@ window.updateStoricoButton = async function() {
                 } else {
                     col.appendChild(st.el);
                 }
+                /* Salva layout dal punto di rilascio e ripagina SENZA rimescolare le colonne. */
                 if (typeof window.capturePreviewModLayoutFromDom === 'function') {
                     window.capturePreviewModLayoutFromDom();
                 }
-                if (typeof buildPreview === 'function') buildPreview();
+                if (typeof window.__layoutPreviewA4 === 'function') {
+                    window.__layoutPreviewA4();
+                } else if (typeof window.applyPreviewModEditUi === 'function') {
+                    window.applyPreviewModEditUi();
+                }
                 return;
             }
 
@@ -36277,80 +36309,139 @@ window.updateStoricoButton = async function() {
             var blocks = Array.prototype.slice.call(host.querySelectorAll('.rp-page-block'));
             if (!blocks.length) return;
 
-            // Ordine di lettura originale dei moduli.
-            blocks.sort(function (a, b) {
-                return (parseInt(a.getAttribute('data-rp-order'), 10) || 0) -
-                    (parseInt(b.getAttribute('data-rp-order'), 10) || 0);
-            });
-
-            // Altezza reale di ogni scheda (larghezza colonna costante fra le pagine → misura valida).
             var tighten = Number(window.__previewBorderTighten);
             if (!Number.isFinite(tighten)) tighten = 0;
             var GAP_V = 6 - 2 * Math.max(0, Math.min(1, tighten));
-            var measured = blocks.map(function (el) {
-                return { el: el, h: el.getBoundingClientRect().height + GAP_V };
-            });
-
-            // La prima pagina ha in alto lo spazio dell'intestazione del report. Per dare alla
-            // seconda pagina (e successive) lo STESSO margine di inizio, si applica un padding-top
-            // pari all'offset dell'intestazione: così lo spazio utile per pagina è identico ovunque.
             var hostOffset = host.getBoundingClientRect().top - container.getBoundingClientRect().top;
             if (!(hostOffset >= 0)) hostOffset = 0;
             var footerEl = container.querySelector('.report-preview-footer');
             var footerH = footerEl ? (footerEl.getBoundingClientRect().height + 2) : 0;
             var contentBudget = pagePx - hostOffset - footerH;
-            var budget = function () { return contentBudget; };
+            var b = contentBudget;
 
-            // Impacchettamento per-pagina: riempie le colonne della pagina corrente, poi passa
-            // alla pagina successiva ricominciando dalla colonna di sinistra.
             var pages = [];
-            var mkPage = function () {
-                var cols = [];
-                for (var i = 0; i < colCount; i++) cols.push({ h: 0, items: [] });
-                pages.push(cols);
-                return cols;
-            };
-            var shortest = function (cols) {
-                var idx = 0;
-                for (var i = 1; i < cols.length; i++) if (cols[i].h < cols[idx].h) idx = i;
-                return idx;
-            };
-            // Riempimento massimo per pagina: per ogni pagina si prova a inserire OGNI scheda rimasta
-            // (in ordine) nella colonna più bassa che la contiene; le schede che non entrano vengono
-            // rimandate alla pagina successiva, ma si continua a riempire la pagina corrente con quelle
-            // che ci stanno. Così la prima pagina contiene tutti i moduli che intelligentemente entrano.
-            var b = budget();
-            var remaining = measured.slice();
-            var guard = 0;
-            while (remaining.length && guard++ < 2000) {
-                var cur = mkPage();
-                var deferred = [];
-                var placed = 0;
-                remaining.forEach(function (m) {
-                    var idx = -1, best = Infinity;
-                    for (var i = 0; i < colCount; i++) {
-                        if (cur[i].h + m.h <= b && cur[i].h < best) { best = cur[i].h; idx = i; }
-                    }
-                    if (idx >= 0) {
-                        cur[idx].items.push(m.el);
-                        cur[idx].h += m.h;
-                        placed++;
-                    } else {
-                        deferred.push(m);
-                    }
+            var layout = window.__previewModLayout;
+            var explicit = layout && Array.isArray(layout.columns) && layout.columns.length >= 1;
+
+            if (explicit) {
+                /* Layout MOD: ogni scheda resta nella colonna scelta dall'operatore. */
+                colCount = Math.max(1, layout.columns.length);
+                host.setAttribute('data-rp-cols', String(colCount));
+                var byId = {};
+                blocks.forEach(function (el) {
+                    var id = el.getAttribute('data-rp-id');
+                    if (id) byId[String(id)] = el;
                 });
-                if (placed === 0) {
-                    // Nessuna scheda entra (tutte più alte del budget): ne metto una da sola per avanzare.
-                    var m0 = deferred.shift();
-                    if (!m0) break;
-                    var s0 = shortest(cur);
-                    cur[s0].items.push(m0.el);
-                    cur[s0].h += m0.h;
+                var used = {};
+                var colStacks = layout.columns.map(function (ids) {
+                    var stack = [];
+                    (ids || []).forEach(function (id) {
+                        var el = byId[String(id)];
+                        if (!el || used[String(id)]) return;
+                        used[String(id)] = true;
+                        stack.push({
+                            el: el,
+                            h: el.getBoundingClientRect().height + GAP_V,
+                            id: String(id)
+                        });
+                    });
+                    return stack;
+                });
+                blocks.forEach(function (el) {
+                    var id = el.getAttribute('data-rp-id');
+                    if (!id || used[String(id)]) return;
+                    var minIdx = 0;
+                    var ci;
+                    for (ci = 1; ci < colStacks.length; ci++) {
+                        if (colStacks[ci].length < colStacks[minIdx].length) minIdx = ci;
+                    }
+                    used[String(id)] = true;
+                    colStacks[minIdx].push({
+                        el: el,
+                        h: el.getBoundingClientRect().height + GAP_V,
+                        id: String(id)
+                    });
+                });
+                var remaining = colStacks.map(function (stack) { return stack.slice(); });
+                var guard = 0;
+                while (remaining.some(function (r) { return r.length > 0; }) && guard++ < 2000) {
+                    var cur = [];
+                    var i;
+                    for (i = 0; i < colCount; i++) cur.push({ h: 0, items: [] });
+                    var placed = 0;
+                    for (i = 0; i < colCount; i++) {
+                        while (remaining[i].length) {
+                            var m = remaining[i][0];
+                            if (cur[i].items.length && cur[i].h + m.h > b) break;
+                            remaining[i].shift();
+                            cur[i].items.push(m.el);
+                            cur[i].h += m.h;
+                            placed++;
+                            if (cur[i].h > b) break;
+                        }
+                    }
+                    if (!placed) {
+                        for (i = 0; i < colCount; i++) {
+                            if (!remaining[i].length) continue;
+                            var m0 = remaining[i].shift();
+                            cur[i].items.push(m0.el);
+                            cur[i].h += m0.h;
+                            placed++;
+                            break;
+                        }
+                    }
+                    if (!placed) break;
+                    pages.push(cur);
                 }
-                remaining = deferred;
+            } else {
+                blocks.sort(function (a, bOrd) {
+                    return (parseInt(a.getAttribute('data-rp-order'), 10) || 0) -
+                        (parseInt(bOrd.getAttribute('data-rp-order'), 10) || 0);
+                });
+                var measured = blocks.map(function (el) {
+                    return { el: el, h: el.getBoundingClientRect().height + GAP_V };
+                });
+                var mkPage = function () {
+                    var cols = [];
+                    for (var i = 0; i < colCount; i++) cols.push({ h: 0, items: [] });
+                    pages.push(cols);
+                    return cols;
+                };
+                var shortest = function (cols) {
+                    var idx = 0;
+                    for (var i = 1; i < cols.length; i++) if (cols[i].h < cols[idx].h) idx = i;
+                    return idx;
+                };
+                var remainingFlat = measured.slice();
+                var guard2 = 0;
+                while (remainingFlat.length && guard2++ < 2000) {
+                    var cur2 = mkPage();
+                    var deferred = [];
+                    var placed2 = 0;
+                    remainingFlat.forEach(function (m) {
+                        var idx = -1, best = Infinity;
+                        for (var i = 0; i < colCount; i++) {
+                            if (cur2[i].h + m.h <= b && cur2[i].h < best) { best = cur2[i].h; idx = i; }
+                        }
+                        if (idx >= 0) {
+                            cur2[idx].items.push(m.el);
+                            cur2[idx].h += m.h;
+                            placed2++;
+                        } else {
+                            deferred.push(m);
+                        }
+                    });
+                    if (placed2 === 0) {
+                        var mForce = deferred.shift();
+                        if (!mForce) break;
+                        var s0 = shortest(cur2);
+                        cur2[s0].items.push(mForce.el);
+                        cur2[s0].h += mForce.h;
+                    }
+                    remainingFlat = deferred;
+                }
             }
 
-            // Ricostruisce il DOM: host diventa uno stack di pagine, ognuna con la sua griglia.
             var colsStyle = window.reportPreviewPackedColumnsStyle(colCount, gap);
             var colStyle = window.reportPreviewPackedColumnStyle();
             var headerSrc = container.querySelector('.report-preview-header');
@@ -36363,7 +36454,6 @@ window.updateStoricoButton = async function() {
                 var minHVal = (pi === 0) ? contentBudget : pagePx;
                 var minH = (pi < lastPi) ? ('min-height:' + Math.round(minHVal) + 'px;') : '';
                 var pageCss = 'width:100%;box-sizing:border-box;' + minH;
-                // Pagine dopo la prima: riserva lo stesso spazio dell'intestazione e la ridisegna lì.
                 if (pi > 0) {
                     pageCss += 'position:relative;padding-top:' + Math.round(hostOffset) + 'px;';
                 }
@@ -36387,9 +36477,10 @@ window.updateStoricoButton = async function() {
 
                 var gridEl = document.createElement('div');
                 gridEl.setAttribute('style', colsStyle);
-                cols.forEach(function (col) {
+                cols.forEach(function (col, colIdx) {
                     var colEl = document.createElement('div');
                     colEl.className = 'rp-pack-col';
+                    colEl.setAttribute('data-rp-col', String(colIdx));
                     colEl.setAttribute('style', colStyle);
                     col.items.forEach(function (el) {
                         el.style.marginTop = '';
@@ -36401,10 +36492,10 @@ window.updateStoricoButton = async function() {
                 frag.appendChild(pageEl);
             });
             host.setAttribute('style', 'width:100%;box-sizing:border-box;');
+            host.setAttribute('data-rp-cols', String(colCount));
             host.innerHTML = '';
             host.appendChild(frag);
 
-            // Piè di pagina: se il report va oltre la prima pagina, aggiungi "PAGINA N" accanto a GENERATO ALLE.
             var footerPage = container.querySelector('.report-preview-footer-page');
             if (footerPage) {
                 footerPage.textContent = pages.length > 1 ? (' · PAGINA ' + pages.length) : '';
@@ -36503,9 +36594,6 @@ window.updateStoricoButton = async function() {
                     if (typeof window.fitReportPreviewOverflow === 'function') window.fitReportPreviewOverflow();
                 }
                 window.renderPreviewA4Guide();
-                if (window.__previewModEditActive && typeof window.capturePreviewModLayoutFromDom === 'function') {
-                    window.capturePreviewModLayoutFromDom();
-                }
                 if (typeof window.applyPreviewModEditUi === 'function') window.applyPreviewModEditUi();
             } catch (layoutErr) {
                 console.error('__layoutPreviewA4', layoutErr);

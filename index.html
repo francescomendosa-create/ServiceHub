@@ -1049,7 +1049,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.09.17-sf3-marcia-same-size';
+        window.SERVICEHUB_BUILD = '2026.09.17-tank-status-iphone-smooth';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -44820,34 +44820,61 @@ window.convertToHtml = async () => {
             else window.tankStatuses[tankId] = window.__serializeTankStatuses(statusArr);
             if (typeof window.repaintTankStatusSquares === 'function') window.repaintTankStatusSquares(tankId);
         };
-        window.__scheduleTankStatusPersist = function () {
+        window.__scheduleTankStatusPersist = function (opts) {
+            opts = opts || {};
             var isPhone = !!(document.body && document.body.classList.contains('sh-device-phone'));
             if (window.__tankStatusPersistTimer) clearTimeout(window.__tankStatusPersistTimer);
             if (window.__tankStatusPushTimer) clearTimeout(window.__tankStatusPushTimer);
-            /* Su iPhone: prima libera i tap, poi salva, poi push Digital (pesante). */
-            var saveMs = isPhone ? 450 : 160;
-            var pushMs = isPhone ? 1400 : 320;
-            window.__tankStatusPersistTimer = setTimeout(function () {
-                window.__tankStatusPersistTimer = null;
-                void (async function () {
-                    try {
-                        if (typeof window.saveData === 'function') await window.saveData(true);
-                    } catch (_) {}
-                })();
-            }, saveMs);
+            /* Su iPhone: salva dopo i tap; push Digital solo a popup chiuso e senza overlap. */
+            var saveMs = isPhone ? (opts.fromSwitch ? 900 : 600) : 160;
+            var pushMs = isPhone ? (opts.fromSwitch ? 2400 : 1800) : 320;
+            if (!opts.pushOnly) {
+                window.__tankStatusPersistTimer = setTimeout(function () {
+                    window.__tankStatusPersistTimer = null;
+                    void (async function () {
+                        try {
+                            if (typeof window.saveData === 'function') await window.saveData(true);
+                        } catch (_) {}
+                    })();
+                }, saveMs);
+            }
             window.__tankStatusPushTimer = setTimeout(function () {
                 window.__tankStatusPushTimer = null;
+                if (isPhone) {
+                    var modal = document.getElementById('tank-status-modal');
+                    if (modal && modal.classList.contains('active')) {
+                        /* Utente ancora nel popup: riprova dopo, non bloccare i tap. */
+                        window.__scheduleTankStatusPersist({ pushOnly: true, fromSwitch: true });
+                        return;
+                    }
+                }
+                if (window.__tankStatusPushInFlight) {
+                    window.__tankStatusPushPending = true;
+                    return;
+                }
                 var runPush = function () {
+                    if (window.__tankStatusPushInFlight) {
+                        window.__tankStatusPushPending = true;
+                        return;
+                    }
+                    window.__tankStatusPushInFlight = true;
                     void (async function () {
                         try {
                             if (typeof window.__pushDigitalRemoteImmediate === 'function') {
                                 await window.__pushDigitalRemoteImmediate();
                             }
                         } catch (_) {}
+                        finally {
+                            window.__tankStatusPushInFlight = false;
+                            if (window.__tankStatusPushPending) {
+                                window.__tankStatusPushPending = false;
+                                window.__scheduleTankStatusPersist({ pushOnly: true });
+                            }
+                        }
                     })();
                 };
                 if (typeof requestIdleCallback === 'function') {
-                    requestIdleCallback(function () { runPush(); }, { timeout: 2000 });
+                    requestIdleCallback(function () { runPush(); }, { timeout: 2500 });
                 } else {
                     runPush();
                 }
@@ -44867,16 +44894,15 @@ window.convertToHtml = async () => {
                 const btn = document.getElementById('status-' + status);
                 if (!btn) return;
                 window.__setTankStatusOptionSelected(btn, false);
-                if (status === 'accumulo') btn.className = 'tank-status-option bg-red-600 text-white font-black py-3 rounded-xl uppercase border-2 border-red-700 transition-all';
-                else if (status === 'drenaggio') btn.className = 'tank-status-option bg-green-600 text-white font-black py-3 rounded-xl uppercase border-2 border-green-700 transition-all';
-                else btn.className = 'tank-status-option bg-blue-600 text-white font-black py-3 rounded-xl uppercase border-2 border-blue-700 transition-all';
             });
-            const confirmBtn = document.querySelector('button[onclick="window.confirmTankStatus()"]');
+            const confirmBtn = document.getElementById('tank-status-confirm-btn')
+                || document.querySelector('button[onclick="window.confirmTankStatus()"]');
             if (confirmBtn) {
-                confirmBtn.style.animation = '';
+                confirmBtn.style.animation = 'none';
                 confirmBtn.style.backgroundColor = '';
                 confirmBtn.style.borderColor = '';
                 confirmBtn.style.boxShadow = '';
+                confirmBtn.classList.remove('tank-confirm-pending');
             }
         };
         window.__highlightTankPopupButtons = function (statuses) {
@@ -44926,7 +44952,7 @@ window.convertToHtml = async () => {
                 }
             }, closeMs);
         };
-        window.__commitTankPopupDraft = function () {
+        window.__commitTankPopupDraft = function (opts) {
             if (!window.currentTank) return;
             const beforeArr = window.__parseTankStatusString(window.__tankPopupBaseline);
             const next = (window.selectedTankStatuses || []).slice();
@@ -44936,7 +44962,7 @@ window.convertToHtml = async () => {
             window.__applyTankStatusToMemoryAndUI(window.currentTank, next);
             window.__tankPopupBaseline = next.length ? window.__serializeTankStatuses(next) : null;
             if (typeof window.__scheduleTankStatusPersist === 'function') {
-                window.__scheduleTankStatusPersist();
+                window.__scheduleTankStatusPersist(opts || {});
             }
         };
         window.__cancelTankPopupDraft = function (closeModal) {
@@ -44956,16 +44982,17 @@ window.convertToHtml = async () => {
                 window.__closeTankStatusModalAnimated();
             }
         };
-        window.__commitTankPopupDraftIfChanged = function () {
+        window.__commitTankPopupDraftIfChanged = function (opts) {
             const base = window.__parseTankStatusString(window.__tankPopupBaseline);
             const cur = window.selectedTankStatuses || [];
             if (window.__tankStatusArraysEqual(base, cur)) return;
-            window.__commitTankPopupDraft();
+            window.__commitTankPopupDraft(opts || {});
         };
 
         window.openTankStatusPopup = function(tankId) {
             if (window.currentTank && window.currentTank !== tankId) {
-                window.__commitTankPopupDraftIfChanged();
+                /* Cambio serbatoio: commit leggero + sync ritardata (niente push sotto il popup). */
+                window.__commitTankPopupDraftIfChanged({ fromSwitch: true });
             }
             window.currentTank = tankId;
             window.__tankPopupBaseline = (window.tankStatuses && window.tankStatuses[tankId]) ? String(window.tankStatuses[tankId]) : null;
@@ -45005,7 +45032,8 @@ window.convertToHtml = async () => {
         window.toggleTankStatus = function(status) {
             if (window.toggleTankStatusLocked) return;
             window.toggleTankStatusLocked = true;
-            setTimeout(function () { window.toggleTankStatusLocked = false; }, 200);
+            var isPhone = !!(document.body && document.body.classList.contains('sh-device-phone'));
+            setTimeout(function () { window.toggleTankStatusLocked = false; }, isPhone ? 90 : 200);
 
             const normalized = window.__normalizeTankStatusLabel(status);
             if (!normalized) return;
@@ -45013,7 +45041,6 @@ window.convertToHtml = async () => {
 
             const btn = document.getElementById('status-' + normalized.toLowerCase());
             const index = window.selectedTankStatuses.indexOf(normalized);
-            const wasEmpty = window.selectedTankStatuses.length === 0;
 
             if (index > -1) {
                 if (btn) window.__setTankStatusOptionSelected(btn, false);
@@ -45025,23 +45052,30 @@ window.convertToHtml = async () => {
 
             const base = window.__parseTankStatusString(window.__tankPopupBaseline);
             const changed = !window.__tankStatusArraysEqual(base, window.selectedTankStatuses);
-            const confirmBtn = document.querySelector('button[onclick="window.confirmTankStatus()"]');
+            const confirmBtn = document.getElementById('tank-status-confirm-btn')
+                || document.querySelector('button[onclick="window.confirmTankStatus()"]');
             if (confirmBtn) {
                 if (changed) {
-                    confirmBtn.style.animation = '';
-                    void confirmBtn.offsetWidth;
-                    confirmBtn.style.animation = 'tankPulse 1.8s ease-in-out infinite';
+                    /* iPhone: niente tankPulse infinito (costa GPU e crea lag a catena). */
+                    if (isPhone) {
+                        confirmBtn.style.animation = 'none';
+                        confirmBtn.classList.add('tank-confirm-pending');
+                    } else {
+                        confirmBtn.style.animation = '';
+                        void confirmBtn.offsetWidth;
+                        confirmBtn.style.animation = 'tankPulse 1.8s ease-in-out infinite';
+                        confirmBtn.classList.remove('tank-confirm-pending');
+                    }
                     confirmBtn.style.backgroundColor = '#fbbf24';
                     confirmBtn.style.borderColor = '#f59e0b';
                     confirmBtn.style.boxShadow = '0 0 10px rgba(251, 191, 36, 0.45)';
                 } else {
-                    confirmBtn.style.animation = '';
+                    confirmBtn.style.animation = 'none';
                     confirmBtn.style.backgroundColor = '';
                     confirmBtn.style.borderColor = '';
                     confirmBtn.style.boxShadow = '';
+                    confirmBtn.classList.remove('tank-confirm-pending');
                 }
-            } else if (wasEmpty && window.selectedTankStatuses.length === 0) {
-                // no-op
             }
         };
 
@@ -45091,16 +45125,22 @@ window.convertToHtml = async () => {
             }
             window.__applyTankStatusToMemoryAndUI(window.currentTank, []);
             window.__tankPopupBaseline = null;
-            window.saveData();
+            if (typeof window.__scheduleTankStatusPersist === 'function') {
+                window.__scheduleTankStatusPersist({ fromSwitch: true });
+            } else if (typeof window.saveData === 'function') {
+                window.saveData();
+            }
             if (typeof window.refreshTankDetailStatusRow === 'function') {
                 window.refreshTankDetailStatusRow();
             }
-            const confirmBtn = document.querySelector('button[onclick="window.confirmTankStatus()"]');
+            const confirmBtn = document.getElementById('tank-status-confirm-btn')
+                || document.querySelector('button[onclick="window.confirmTankStatus()"]');
             if (confirmBtn) {
-                confirmBtn.style.animation = '';
+                confirmBtn.style.animation = 'none';
                 confirmBtn.style.backgroundColor = '';
                 confirmBtn.style.borderColor = '';
                 confirmBtn.style.boxShadow = '';
+                confirmBtn.classList.remove('tank-confirm-pending');
             }
         };
 
@@ -46967,6 +47007,21 @@ window.convertToHtml = async () => {
         .tank-status-single.parallelo { background-color: #2563eb; color: white; border-color: #1d4ed8; }
         #tank-status-modal .tank-status-option { transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.15s ease; }
         #tank-status-modal .tank-status-option.is-selected { transform: scale(1.06); filter: brightness(1.06); }
+        /* iPhone: meno lavoro GPU su selezione / conferma (evita lag a catena). */
+        body.sh-device-phone #tank-status-modal .tank-status-option {
+            transition: box-shadow 0.12s ease !important;
+        }
+        body.sh-device-phone #tank-status-modal .tank-status-option.is-selected {
+            transform: scale(1.04) !important;
+        }
+        body.sh-device-phone #tank-status-confirm-btn {
+            animation: none !important;
+        }
+        body.sh-device-phone #tank-status-confirm-btn.tank-confirm-pending {
+            background-color: #fbbf24 !important;
+            border-color: #f59e0b !important;
+            box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.55) !important;
+        }
         #tank-status-modal #status-accumulo.is-selected { box-shadow: 0 0 0 2px rgba(255,255,255,0.85), 0 0 0 5px rgba(220,38,38,0.42); }
         #tank-status-modal #status-drenaggio.is-selected { box-shadow: 0 0 0 2px rgba(255,255,255,0.85), 0 0 0 5px rgba(22,163,74,0.42); }
         #tank-status-modal #status-parallelo.is-selected { box-shadow: 0 0 0 2px rgba(255,255,255,0.85), 0 0 0 5px rgba(37,99,235,0.42); }
@@ -51235,7 +51290,7 @@ window.convertToHtml = async () => {
                 <button onclick="window.toggleTankStatus('Accumulo')" id="status-accumulo" class="tank-status-option bg-red-600 text-white font-black py-3 rounded-xl uppercase border-2 border-red-700 transition-all">Accumulo</button>
                 <button onclick="window.toggleTankStatus('Drenaggio')" id="status-drenaggio" class="tank-status-option bg-green-600 text-white font-black py-3 rounded-xl uppercase border-2 border-green-700 transition-all">Drenaggio</button>
                 <button onclick="window.toggleTankStatus('Parallelo')" id="status-parallelo" class="tank-status-option bg-blue-600 text-white font-black py-3 rounded-xl uppercase border-2 border-blue-700 transition-all">Parallelo</button>
-                <button onclick="window.confirmTankStatus()" class="bg-yellow-500 text-white font-black py-3 rounded-xl uppercase border-b-4 border-yellow-600 transition-all">✓ CONFERMA</button>
+                <button type="button" id="tank-status-confirm-btn" onclick="window.confirmTankStatus()" class="bg-yellow-500 text-white font-black py-3 rounded-xl uppercase border-b-4 border-yellow-600 transition-all">✓ CONFERMA</button>
             </div>
         </div>
     </div>

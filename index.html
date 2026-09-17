@@ -1049,7 +1049,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.09.17-tank-status-iphone-smooth';
+        window.SERVICEHUB_BUILD = '2026.09.17-numpad-iphone-smooth';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -12038,9 +12038,10 @@ window.updateStoricoButton = async function() {
             window.__numpadNavSideQueue = window.__numpadNavSideQueue || [];
             window.__numpadNavSideQueue.push({ npt: npt, origin: origin });
             clearTimeout(window.__numpadNavSideTimer);
+            var isPhone = !!(document.body && document.body.classList.contains('sh-device-phone'));
             window.__numpadNavSideTimer = setTimeout(function () {
                 window.__flushNumpadNavSideEffects();
-            }, 140);
+            }, isPhone ? 220 : 140);
         };
 
         window.commitNumpadFieldValue = function (opts) {
@@ -12079,7 +12080,9 @@ window.updateStoricoButton = async function() {
                 display.value = npt.value;
             }
 
-            if (opts.forNavigate) {
+            var isPhone = !!(document.body && document.body.classList.contains('sh-device-phone'));
+            /* iPhone / navigazione: valore subito in UI, effetti pesanti dopo (niente “ricarica” sotto il numpad). */
+            if (opts.forNavigate || isPhone || opts.deferHeavy) {
                 try { npt.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
                 window.__scheduleNumpadNavSideEffects(npt, originRaw);
                 return;
@@ -12098,7 +12101,11 @@ window.updateStoricoButton = async function() {
             if (typeof window.recordTankLevelInputTimestamp === 'function') {
                 window.recordTankLevelInputTimestamp(npt, { prevValue: window.__numpadLivePreviewOrigin });
             }
-            if (typeof window.saveData === 'function') window.saveData();
+            if (typeof window.__schedulePlantCloudSave === 'function') {
+                window.__schedulePlantCloudSave(true);
+            } else if (typeof window.saveData === 'function') {
+                void window.saveData(true);
+            }
         };
 
         window.getNumpadLabelText = function (labelEl) {
@@ -12546,14 +12553,22 @@ window.updateStoricoButton = async function() {
             }
             if (!window.populateNumpadForLabel(labelEl, explicitInput)) return;
             if (!numpadModal) return;
+            var isPhone = !!(document.body && document.body.classList.contains('sh-device-phone'));
+            if (isPhone && typeof window.__markPlantUiBusy === 'function') {
+                window.__markPlantUiBusy(180);
+            }
             if (typeof window.initNumpadTitleDetailShortcut === 'function') window.initNumpadTitleDetailShortcut();
             if (typeof window.initNumpadPanelHandlers === 'function') window.initNumpadPanelHandlers();
             if (typeof window.initNumpadDrag === 'function') window.initNumpadDrag();
             if (typeof window.resetNumpadPanelPosition === 'function') window.resetNumpadPanelPosition();
             if (typeof window.applyNumpadDisplayScale === 'function') window.applyNumpadDisplayScale();
             /* Apertura immediata (niente doppio rAF / delay 50ms). */
+            numpadModal.classList.remove('numpad-modal--instant-close');
             numpadModal.classList.add('active');
-            if (typeof window.applyDesktopNumpadStyles === 'function') {
+            if (typeof window.__syncBodyModalOpenClass === 'function') {
+                window.__syncBodyModalOpenClass();
+            }
+            if (!isPhone && typeof window.applyDesktopNumpadStyles === 'function') {
                 try { window.applyDesktopNumpadStyles(); } catch (_) {}
             }
             if (typeof window.lockAriaImeForNumpad === 'function'
@@ -12566,7 +12581,13 @@ window.updateStoricoButton = async function() {
 
         window.closeNumpad = (opts) => {
             opts = opts || {};
-            if (typeof window.__flushNumpadNavSideEffects === 'function'
+            var isPhone = !!(document.body && document.body.classList.contains('sh-device-phone'));
+            if (isPhone) opts.instant = true;
+            if (isPhone && typeof window.__markPlantUiBusy === 'function') {
+                window.__markPlantUiBusy(220);
+            }
+            /* Su iPhone non flushare sync sotto il numpad ancora aperto: lascia il timer. */
+            if (!isPhone && typeof window.__flushNumpadNavSideEffects === 'function'
                 && window.__numpadNavSideQueue && window.__numpadNavSideQueue.length) {
                 clearTimeout(window.__numpadNavSideTimer);
                 window.__flushNumpadNavSideEffects();
@@ -12589,7 +12610,7 @@ window.updateStoricoButton = async function() {
                     cmpOrigin = window.formatStoccaggioLevelValue(originVal);
                 }
                 if (cmpDisplay !== cmpOrigin && typeof window.commitNumpadFieldValue === 'function') {
-                    window.commitNumpadFieldValue();
+                    window.commitNumpadFieldValue({ deferHeavy: isPhone });
                     window.__numpadCommitted = true;
                 }
             }
@@ -12610,13 +12631,16 @@ window.updateStoricoButton = async function() {
             if (numpadModalEl) {
                 if (opts.instant) numpadModalEl.classList.add('numpad-modal--instant-close');
                 numpadModalEl.classList.remove('active');
+                if (typeof window.__syncBodyModalOpenClass === 'function') {
+                    window.__syncBodyModalOpenClass();
+                }
                 if (opts.instant) {
-                    void (numpadPanelEl || numpadModalEl).offsetWidth;
-                    numpadModalEl.classList.remove('numpad-modal--instant-close');
                     if (typeof window.resetNumpadPanelPosition === 'function') window.resetNumpadPanelPosition();
+                    /* Evita void offsetWidth forzato (reflow costoso su iPhone). */
+                    requestAnimationFrame(function () {
+                        numpadModalEl.classList.remove('numpad-modal--instant-close');
+                    });
                 } else {
-                    // Reset posizione solo a fine fade: se lo fai subito lo snap del transform
-                    // durante l'opacity produce un flash / "illuminazione doppia".
                     clearTimeout(window.__numpadResetPosTimer);
                     window.__numpadResetPosTimer = setTimeout(function () {
                         window.__numpadResetPosTimer = null;
@@ -47739,6 +47763,20 @@ window.convertToHtml = async () => {
             backdrop-filter: none !important;
             -webkit-backdrop-filter: none !important;
             pointer-events: none !important;
+        }
+        /* iPhone: niente blur GPU (faceva “ricaricare” l’interfaccia sotto). */
+        body.sh-device-phone #numpad-modal.modal-overlay,
+        body.sh-device-phone #numpad-modal.modal-overlay.active {
+            background: rgba(15, 23, 42, 0.45) !important;
+            backdrop-filter: none !important;
+            -webkit-backdrop-filter: none !important;
+            transition: background 0.08s ease, visibility 0s !important;
+        }
+        body.sh-device-phone #numpad-modal #numpad-modal-panel.modal-content-centered {
+            transition: opacity 0.08s ease !important;
+        }
+        body.sh-device-phone #numpad-modal.active #numpad-modal-panel.modal-content-centered:not(.numpad-modal-panel--user-pos) {
+            transform: translate(0, 0) scale(var(--numpad-ui-scale)) !important;
         }
         body:not(.sh-device-phone) #numpad-modal.active #numpad-modal-panel {
             pointer-events: auto !important;

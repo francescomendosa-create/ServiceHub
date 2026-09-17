@@ -12004,12 +12004,54 @@ window.updateStoricoButton = async function() {
             }, 80);
         };
 
-        window.commitNumpadFieldValue = function () {
+        window.__flushNumpadNavSideEffects = function () {
+            var queue = window.__numpadNavSideQueue || [];
+            window.__numpadNavSideQueue = [];
+            window.__numpadNavSideTimer = null;
+            var seen = {};
+            queue.forEach(function (item) {
+                if (!item || !item.npt || !item.npt.id || seen[item.npt.id]) return;
+                seen[item.npt.id] = true;
+                var npt = item.npt;
+                try {
+                    if (typeof window.refreshAlarmVisualForField === 'function') window.refreshAlarmVisualForField(npt, true);
+                    if (typeof window.updateTankLevelArrowForInput === 'function') window.updateTankLevelArrowForInput(npt);
+                    if (typeof window.recordTankLevelInputTimestamp === 'function') {
+                        window.recordTankLevelInputTimestamp(npt, { prevValue: item.origin });
+                    }
+                    if (typeof window.isStoccaggioNumpadTarget === 'function' && window.isStoccaggioNumpadTarget(npt)) {
+                        if (typeof window.refreshStoccaggioInternoTons === 'function') window.refreshStoccaggioInternoTons(npt.id);
+                        if (typeof window.__mirrorAcquaSharedToStoccaggio === 'function') window.__mirrorAcquaSharedToStoccaggio(npt);
+                        if (typeof window.persistNotturnoStoccaggioToRapportino === 'function') {
+                            window.persistNotturnoStoccaggioToRapportino();
+                        }
+                    }
+                } catch (_) {}
+            });
+            if (typeof window.saveData === 'function') {
+                try { void window.saveData(true); } catch (_) {}
+            }
+        };
+
+        window.__scheduleNumpadNavSideEffects = function (npt, origin) {
+            if (!npt) return;
+            window.__numpadNavSideQueue = window.__numpadNavSideQueue || [];
+            window.__numpadNavSideQueue.push({ npt: npt, origin: origin });
+            clearTimeout(window.__numpadNavSideTimer);
+            window.__numpadNavSideTimer = setTimeout(function () {
+                window.__flushNumpadNavSideEffects();
+            }, 140);
+        };
+
+        window.commitNumpadFieldValue = function (opts) {
+            opts = opts || {};
             if (!currentNumpadTarget || window.__numpadView !== 'value' || window.currentAnalisiPopupInput) return;
             const display = document.getElementById('numpad-display');
             if (!display) return;
             const val = display.value;
             const npt = currentNumpadTarget;
+            const originRaw = window.__numpadLivePreviewOrigin != null
+                ? String(window.__numpadLivePreviewOrigin) : '';
             let outVal = val;
             if (typeof window.isStoccaggioNumpadTarget === 'function'
                 && window.isStoccaggioNumpadTarget(npt)
@@ -12019,12 +12061,31 @@ window.updateStoricoButton = async function() {
             if (typeof window.applyIntegerOnlyTankValue === 'function') {
                 outVal = window.applyIntegerOnlyTankValue(npt.id, outVal);
             }
+            var cmpOut = String(outVal == null ? '' : outVal).replace(/[^\d.,]/g, '');
+            var cmpOrigin = String(originRaw).replace(/[^\d.,]/g, '');
+            if (typeof window.isStoccaggioNumpadTarget === 'function'
+                && window.isStoccaggioNumpadTarget(npt)
+                && typeof window.formatStoccaggioLevelValue === 'function') {
+                cmpOrigin = window.formatStoccaggioLevelValue(cmpOrigin);
+            }
+            /* Navigazione frecce: se non hai cambiato il valore, non fare nulla. */
+            if (opts.forNavigate && cmpOut === cmpOrigin) return;
+
             if (npt.id === 'vwt-notes' && outVal !== '') npt.value = outVal + ' mc';
             else npt.value = outVal;
             if (typeof window.__touchPlantFieldEdit === 'function') window.__touchPlantFieldEdit(npt);
             if (typeof window.isStoccaggioNumpadTarget === 'function' && window.isStoccaggioNumpadTarget(npt)) {
                 if (typeof window.normalizeStoccaggioInputEl === 'function') window.normalizeStoccaggioInputEl(npt);
                 display.value = npt.value;
+            }
+
+            if (opts.forNavigate) {
+                try { npt.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
+                window.__scheduleNumpadNavSideEffects(npt, originRaw);
+                return;
+            }
+
+            if (typeof window.isStoccaggioNumpadTarget === 'function' && window.isStoccaggioNumpadTarget(npt)) {
                 if (typeof window.refreshStoccaggioInternoTons === 'function') window.refreshStoccaggioInternoTons(npt.id);
                 if (typeof window.__mirrorAcquaSharedToStoccaggio === 'function') window.__mirrorAcquaSharedToStoccaggio(npt);
                 if (typeof window.persistNotturnoStoccaggioToRapportino === 'function') {
@@ -12450,7 +12511,7 @@ window.updateStoricoButton = async function() {
             if (typeof window.refreshNumpadAlarmVisual === 'function') window.refreshNumpadAlarmVisual();
             if (typeof window.syncNumpadTankTrendArrow === 'function') window.syncNumpadTankTrendArrow(input);
             if (typeof window.syncNumpadTitleDetailShortcut === 'function') window.syncNumpadTitleDetailShortcut(input);
-            setTimeout(() => { if (typeof window.updateTankButton === 'function') window.updateTankButton(); }, 100);
+            if (typeof window.updateTankButton === 'function') window.updateTankButton();
             return true;
         };
 
@@ -12458,7 +12519,10 @@ window.updateStoricoButton = async function() {
             const numpadModal = document.getElementById('numpad-modal');
             if (!numpadModal || !numpadModal.classList.contains('active')) return false;
             if (!window.populateNumpadForLabel(labelEl, explicitInput)) return false;
-            if (typeof window.applyNumpadPanelTransform === 'function') window.applyNumpadPanelTransform();
+            if (window.__numpadDragPos && (window.__numpadDragPos.x || window.__numpadDragPos.y)
+                && typeof window.applyNumpadPanelTransform === 'function') {
+                window.applyNumpadPanelTransform();
+            }
             return true;
         };
 
@@ -12502,6 +12566,11 @@ window.updateStoricoButton = async function() {
 
         window.closeNumpad = (opts) => {
             opts = opts || {};
+            if (typeof window.__flushNumpadNavSideEffects === 'function'
+                && window.__numpadNavSideQueue && window.__numpadNavSideQueue.length) {
+                clearTimeout(window.__numpadNavSideTimer);
+                window.__flushNumpadNavSideEffects();
+            }
             if (window.__numpadView === 'alarm' && typeof window.flushNumpadAlarmPersist === 'function') {
                 void window.flushNumpadAlarmPersist({ silent: true });
             }
@@ -12570,7 +12639,9 @@ window.updateStoricoButton = async function() {
             const nextRow = nextInput.closest('tr') || nextInput.closest('.amb-row') || nextInput.closest('.bd-input-row');
             const nextLabel = nextRow ? nextRow.querySelector('.cell-label-main, .amb-label, .bd-label') : null;
             if (!nextLabel || typeof window.switchNumpadField !== 'function') return false;
-            if (typeof window.commitNumpadFieldValue === 'function') window.commitNumpadFieldValue();
+            if (typeof window.commitNumpadFieldValue === 'function') {
+                window.commitNumpadFieldValue({ forNavigate: true });
+            }
             window.__numpadCommitted = true;
             return window.switchNumpadField(nextLabel, nextInput);
         };
@@ -12592,7 +12663,6 @@ window.updateStoricoButton = async function() {
             let nextRow;
             if (direction === 'next') {
                 nextRow = currentRow.nextElementSibling;
-                // Se non c'è nextRow, prova a trovare il prossimo elemento cliccabile
                 if (!nextRow) {
                     const parent = currentRow.parentElement;
                     const allRows = Array.from(parent.children);
@@ -12603,7 +12673,6 @@ window.updateStoricoButton = async function() {
                 }
             } else if (direction === 'prev') {
                 nextRow = currentRow.previousElementSibling;
-                // Se non c'è previousElementSibling, prova a trovare il precedente elemento cliccabile
                 if (!nextRow) {
                     const parent = currentRow.parentElement;
                     const allRows = Array.from(parent.children);
@@ -12617,7 +12686,9 @@ window.updateStoricoButton = async function() {
             if (nextRow) {
                 const nextLabel = nextRow.querySelector('.cell-label-main, .amb-label, .bd-label');
                 if (nextLabel) {
-                    if (typeof window.commitNumpadFieldValue === 'function') window.commitNumpadFieldValue();
+                    if (typeof window.commitNumpadFieldValue === 'function') {
+                        window.commitNumpadFieldValue({ forNavigate: true });
+                    }
                     window.__numpadCommitted = true;
                     if (typeof window.switchNumpadField === 'function') window.switchNumpadField(nextLabel);
                 }

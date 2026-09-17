@@ -31,6 +31,9 @@ final class InkRecognizer {
     private DigitalInkRecognizer recognizer;
     private DigitalInkRecognitionModel model;
     private volatile boolean ready;
+    private DigitalInkRecognizer textRecognizer;
+    private DigitalInkRecognitionModel textModel;
+    private volatile boolean textReady;
 
     Task<Void> ensureReady() {
         if (ready && recognizer != null) {
@@ -81,6 +84,70 @@ final class InkRecognizer {
         }
         if (last != null) throw last;
         throw new IllegalStateException("modello ink non disponibile");
+    }
+
+    Task<Void> ensureTextReady() {
+        if (textReady && textRecognizer != null) {
+            return Tasks.forResult(null);
+        }
+        return Tasks.call(io, () -> {
+            prepareTextLocked();
+            return null;
+        });
+    }
+
+    private void prepareTextLocked() throws Exception {
+        DigitalInkRecognitionModelIdentifier id = pickTextModelId();
+        textModel = DigitalInkRecognitionModel.builder(id).build();
+        RemoteModelManager mgr = RemoteModelManager.getInstance();
+        Boolean downloaded = Tasks.await(mgr.isModelDownloaded(textModel));
+        if (downloaded == null || !downloaded) {
+            Log.i(TAG, "download modello ink testo");
+            Tasks.await(mgr.download(textModel, new DownloadConditions.Builder().build()));
+        }
+        if (textRecognizer != null) {
+            try {
+                textRecognizer.close();
+            } catch (Exception ignored) {
+            }
+        }
+        DigitalInkRecognizerOptions.Builder opt = DigitalInkRecognizerOptions.builder(textModel);
+        try {
+            opt.setMaxResultCount(8);
+        } catch (Throwable ignored) {
+        }
+        textRecognizer = DigitalInkRecognition.getClient(opt.build());
+        textReady = true;
+        Log.i(TAG, "ink testo pronto");
+    }
+
+    private static DigitalInkRecognitionModelIdentifier pickTextModelId() throws Exception {
+        Exception last = null;
+        String[] tags = {"it-IT", "it", "en-US", "en"};
+        for (String tag : tags) {
+            try {
+                DigitalInkRecognitionModelIdentifier id =
+                        DigitalInkRecognitionModelIdentifier.fromLanguageTag(tag);
+                if (id != null) return id;
+            } catch (Exception e) {
+                last = e;
+            }
+        }
+        if (last != null) throw last;
+        throw new IllegalStateException("modello ink testo non disponibile");
+    }
+
+    Task<String> recognizeTextJson(String strokesJson) {
+        return ensureTextReady().continueWithTask(task -> {
+            if (!task.isSuccessful()) {
+                Log.e(TAG, "ink testo non pronto", task.getException());
+                textReady = false;
+                return Tasks.forException(task.getException() != null
+                        ? task.getException()
+                        : new IllegalStateException("ink testo non pronto"));
+            }
+            return Tasks.call(io, () -> recognizeTextBlocking(strokesJson));
+        });
     }
 
     Task<String> recognizeJson(String strokesJson) {
@@ -163,33 +230,110 @@ final class InkRecognizer {
         return picked;
     }
 
+    private String recognizeTextBlocking(String strokesJson) throws Exception {
+        Ink.Builder ink = buildInkFromJson(strokesJson);
+        if (ink == null) return "";
+        RecognitionResult result;
+        try {
+            result = Tasks.await(textRecognizer.recognize(ink.build()));
+        } catch (Exception first) {
+            Log.w(TAG, "recognize testo fallito, ritento download", first);
+            textReady = false;
+            try {
+                Tasks.await(RemoteModelManager.getInstance().deleteDownloadedModel(textModel));
+            } catch (Exception ignored) {
+            }
+            prepareTextLocked();
+            result = Tasks.await(textRecognizer.recognize(ink.build()));
+        }
+        if (result.getCandidates() == null || result.getCandidates().isEmpty()) {
+            Log.i(TAG, "nessun candidato testo");
+            return "";
+        }
+        for (int i = 0; i < result.getCandidates().size(); i++) {
+            String raw = result.getCandidates().get(i).getText();
+            if (raw == null) continue;
+            raw = raw.replace('\n', ' ').replace('\r', ' ').trim();
+            if (raw.isEmpty() || isArrowGarbage(raw)) continue;
+            Log.i(TAG, "testo riconosciuto=" + raw);
+            return raw;
+        }
+        return "";
+    }
+
+    private static Ink.Builder buildInkFromJson(String strokesJson) throws Exception {
+        JSONArray strokes = new JSONArray(strokesJson);
+        float minx = Float.MAX_VALUE, miny = Float.MAX_VALUE, maxx = -Float.MAX_VALUE, maxy = -Float.MAX_VALUE;
+        int added = 0;
+        for (int s = 0; s < strokes.length(); s++) {
+            JSONArray pts = strokes.getJSONArray(s);
+            for (int i = 0; i < pts.length(); i++) {
+                JSONObject p = pts.getJSONObject(i);
+                float x = (float) p.optDouble("x", 0);
+                float y = (float) p.optDouble("y", 0);
+                if (x < minx) minx = x;
+                if (y < miny) miny = y;
+                if (x > maxx) maxx = x;
+                if (y > maxy) maxy = y;
+                added++;
+            }
+        }
+        if (added == 0) return null;
+        float rawH = Math.max(8f, maxy - miny);
+        float rawW = Math.max(8f, maxx - minx);
+        float scale = Math.min(4f, Math.max(1f, 220f / rawH));
+        if (rawW * scale < 60f) scale = Math.max(scale, 60f / rawW);
+        Ink.Builder ink = Ink.builder();
+        long lastT = -1;
+        for (int s = 0; s < strokes.length(); s++) {
+            JSONArray pts = strokes.getJSONArray(s);
+            if (pts.length() < 1) continue;
+            Ink.Stroke.Builder stroke = Ink.Stroke.builder();
+            for (int i = 0; i < pts.length(); i++) {
+                JSONObject p = pts.getJSONObject(i);
+                float x = ((float) p.optDouble("x", 0) - minx) * scale + 24f;
+                float y = ((float) p.optDouble("y", 0) - miny) * scale + 24f;
+                long t = p.has("t") ? (long) p.optDouble("t", i * 16L) : i * 16L;
+                if (t <= lastT) t = lastT + 8;
+                lastT = t;
+                stroke.addPoint(Ink.Point.create(x, y, t));
+            }
+            ink.addStroke(stroke.build());
+        }
+        return ink;
+    }
+
+    private static boolean isArrowGarbage(String raw) {
+        if (raw == null || raw.isEmpty()) return true;
+        for (int i = 0; i < raw.length(); ) {
+            int cp = raw.codePointAt(i);
+            i += Character.charCount(cp);
+            if ((cp >= 0x2190 && cp <= 0x21FF)
+                    || (cp >= 0x27F0 && cp <= 0x27FF)
+                    || (cp >= 0x2900 && cp <= 0x297F)
+                    || (cp >= 0x2B00 && cp <= 0x2BFF)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static String pickBestNumber(RecognitionResult result) {
-        String best = "";
-        int bestDigits = 0;
-        boolean bestClean = false;
+        String firstClean = "";
+        java.util.LinkedHashSet<String> nums = new java.util.LinkedHashSet<>();
         for (int i = 0; i < result.getCandidates().size(); i++) {
             String raw = result.getCandidates().get(i).getText();
             if (isSymbolGarbage(raw)) continue;
             String n = normalizeNumber(raw);
             if (n.isEmpty()) continue;
+            nums.add(n);
             boolean clean = raw.matches("[0-9OolI|sSbB.,\\s]+");
-            int d = 0;
-            for (int c = 0; c < n.length(); c++) {
-                if (n.charAt(c) >= '0' && n.charAt(c) <= '9') d++;
-            }
-            if (d == 0) continue;
-            if (!bestClean && clean) {
-                best = n;
-                bestDigits = d;
-                bestClean = true;
-                continue;
-            }
-            if (bestClean && !clean) continue;
-            if (d > bestDigits || (d == bestDigits && n.length() > best.length())) {
-                best = n;
-                bestDigits = d;
-            }
-            if (bestDigits >= 1 && i >= 8) break;
+            if (firstClean.isEmpty() && clean) firstClean = n;
+        }
+        if (nums.isEmpty()) return "";
+        String best = firstClean.isEmpty() ? nums.iterator().next() : firstClean;
+        for (String n : nums) {
+            if (n.length() > best.length() && n.startsWith(best)) best = n;
         }
         return best;
     }

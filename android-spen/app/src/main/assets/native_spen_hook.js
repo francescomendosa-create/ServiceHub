@@ -3878,6 +3878,75 @@
         window.__shSpenOnPenUp.__shV122 = true;
     }
 
+    /* S Pen sulle sigle: solo scroll (come etichette verticali). Il dito apre il numpad. */
+    if (typeof window.__shSpenOnPenDown === 'function' && !window.__shSpenOnPenDown.__shV184) {
+        var downPrev184 = window.__shSpenOnPenDown;
+        window.__shSpenOnPenDown = function (ev) {
+            var hit = ev ? elementFromPen(ev.clientX, ev.clientY) : null;
+            if (!hit && ev && ev.target) hit = ev.target;
+            if (ev && !isForegroundOverlayOpen() && !overlayFromEl(hit)
+                && !noteTextareaFromEl(hit) && !(ev && noteTextareaFromPoint(ev.clientX, ev.clientY))
+                && !isAmbPopupTrigger(hit) && !isAmbModalEl(hit)
+                && !plantButtonFromEl(hit) && !vertLabelFromEl(hit) && !horizBarFromEl(hit)
+                && !(ev && noteBarHit(ev.clientX, ev.clientY))) {
+                var lab = labelFromEl(hit);
+                if (!lab && hit && hit.closest) lab = hit.closest(SIGLA_SEL);
+                if (lab && !isAmbPopupTrigger(lab) && !vertLabelFromEl(lab) && !horizBarFromEl(lab)) {
+                    hideBox();
+                    try { leaveNotesForPlant(); } catch (e) {}
+                    penUiTap = null;
+                    clearPenChrome();
+                    penChrome = {
+                        kind: 'sigla',
+                        x: ev.clientX,
+                        y: ev.clientY,
+                        lastY: ev.clientY,
+                        moved: false,
+                        el: lab
+                    };
+                    if (ev.cancelable) {
+                        try { ev.preventDefault(); } catch (e2) {}
+                    }
+                    return;
+                }
+            }
+            return downPrev184.apply(this, arguments);
+        };
+        window.__shSpenOnPenDown.__shV184 = true;
+    }
+
+    if (typeof window.__shSpenOnPenMove === 'function' && !window.__shSpenOnPenMove.__shV184) {
+        var movePrev184 = window.__shSpenOnPenMove;
+        window.__shSpenOnPenMove = function (ev) {
+            if (penChrome && penChrome.kind === 'sigla' && ev) {
+                var dx = (ev.clientX || 0) - penChrome.x;
+                var dy = (ev.clientY || 0) - penChrome.y;
+                if ((dx * dx + dy * dy) > 900) penChrome.moved = true;
+                scrollMainBy(penChrome.lastY - ev.clientY);
+                penChrome.lastY = ev.clientY;
+                if (ev.cancelable) {
+                    try { ev.preventDefault(); } catch (e) {}
+                }
+                return;
+            }
+            return movePrev184.apply(this, arguments);
+        };
+        window.__shSpenOnPenMove.__shV184 = true;
+    }
+
+    if (typeof window.__shSpenOnPenUp === 'function' && !window.__shSpenOnPenUp.__shV184) {
+        var upPrev184 = window.__shSpenOnPenUp;
+        window.__shSpenOnPenUp = function (ev, cancelled) {
+            if (penChrome && penChrome.kind === 'sigla') {
+                clearPenChrome();
+                /* Nessun tap → numpad: solo pennino = scroll. */
+                return;
+            }
+            return upPrev184.apply(this, arguments);
+        };
+        window.__shSpenOnPenUp.__shV184 = true;
+    }
+
     // Mentre il pennino scrive sul display, il dito o il palmo non devono muovere nulla sotto.
     if (!window.__shNumpadInkTouchLock) {
         window.__shNumpadInkTouchLock = true;

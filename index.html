@@ -1049,7 +1049,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.09.17-preview-mod-solid';
+        window.SERVICEHUB_BUILD = '2026.09.17-preview-mod-dbltap';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -26862,6 +26862,12 @@ window.updateStoricoButton = async function() {
             if (!window.__previewModEditActive) {
                 window.__previewModSelectedId = null;
                 window.__previewModDragging = false;
+                window.__previewModLastTap = null;
+            } else {
+                /* Con MOD attiva lo zoom foglio è disabilitato. */
+                if (typeof window.resetPreviewSheetZoom === 'function') {
+                    try { window.resetPreviewSheetZoom(); } catch (_) {}
+                }
             }
             if (typeof window.syncPreviewModPanelUi === 'function') window.syncPreviewModPanelUi();
             if (window.__previewModEditActive) {
@@ -26928,9 +26934,45 @@ window.updateStoricoButton = async function() {
             var sel = window.__previewModSelectedId;
             Array.prototype.forEach.call(root.querySelectorAll('.rp-page-block'), function (el) {
                 var id = el.getAttribute('data-rp-id');
-                el.classList.toggle('rp-orient-horizontal', !!(id && orient[id] === 'h'));
+                var isH = !!(id && orient[id] === 'h');
+                el.classList.toggle('rp-orient-horizontal', isH);
                 el.classList.toggle('rp-mod-selected', !!(id && sel && id === sel));
+                if (typeof window.__markPreviewModHorizontalBodies === 'function') {
+                    window.__markPreviewModHorizontalBodies(el, isH);
+                }
             });
+        };
+
+        /** Marca i contenitori delle misure così CSS può metterle tutte in una riga. */
+        window.__markPreviewModHorizontalBodies = function (block, isH) {
+            if (!block) return;
+            Array.prototype.forEach.call(block.querySelectorAll('.rp-mod-h-body, .rp-mod-h-wrap'), function (n) {
+                n.classList.remove('rp-mod-h-body', 'rp-mod-h-wrap');
+            });
+            if (!isH) return;
+            var bodies = block.querySelectorAll('.report-preview-card-body, .stocc-report-preview-rows');
+            if (bodies.length) {
+                Array.prototype.forEach.call(bodies, function (n) { n.classList.add('rp-mod-h-body'); });
+                return;
+            }
+            var wrap = block.firstElementChild;
+            if (wrap) wrap.classList.add('rp-mod-h-wrap');
+        };
+
+        window.__togglePreviewModCardOrient = function (cardOrId) {
+            var id = typeof cardOrId === 'string'
+                ? cardOrId
+                : (cardOrId && cardOrId.getAttribute ? cardOrId.getAttribute('data-rp-id') : null);
+            if (!id) return;
+            window.__previewModSelectedId = id;
+            var orient = window.__previewModOrient || (window.__previewModOrient = {});
+            orient[id] = orient[id] === 'h' ? 'v' : 'h';
+            if (typeof window.applyPreviewModOrientClasses === 'function') {
+                window.applyPreviewModOrientClasses();
+            }
+            if (typeof window.__layoutPreviewA4 === 'function') {
+                window.__layoutPreviewA4();
+            }
         };
 
         window.applyPreviewModEditUi = function () {
@@ -26949,6 +26991,7 @@ window.updateStoricoButton = async function() {
         };
 
         window.__previewModPointer = null;
+        window.__previewModLastTap = null;
 
         window.wirePreviewModCardInteractions = function () {
             var sheet = document.getElementById('preview-sheet');
@@ -26959,6 +27002,19 @@ window.updateStoricoButton = async function() {
                 sheet.addEventListener('pointermove', window.__onPreviewModPointerMove, true);
                 sheet.addEventListener('pointerup', window.__onPreviewModPointerUp, true);
                 sheet.addEventListener('pointercancel', window.__onPreviewModPointerUp, true);
+                sheet.addEventListener('dblclick', window.__onPreviewModDblClick, true);
+            }
+        };
+
+        window.__onPreviewModDblClick = function (ev) {
+            if (!window.__previewModEditActive) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
+            var card = ev.target && ev.target.closest ? ev.target.closest('.rp-page-block') : null;
+            if (!card || !card.getAttribute('data-rp-id')) return;
+            if (typeof window.__togglePreviewModCardOrient === 'function') {
+                window.__togglePreviewModCardOrient(card);
             }
         };
 
@@ -27036,6 +27092,7 @@ window.updateStoricoButton = async function() {
                 id: card.getAttribute('data-rp-id'),
                 el: card,
                 pointerId: ev.pointerId,
+                pointerType: ev.pointerType || 'touch',
                 startX: ev.clientX,
                 startY: ev.clientY,
                 moved: false,
@@ -27091,16 +27148,26 @@ window.updateStoricoButton = async function() {
                 return;
             }
 
-            /* Tap: seleziona e alterna verticale ↔ orizzontale. */
+            /* Tap singolo = solo selezione.
+             * Doppio tap touch = orizzontale; su mouse/pen lo fa dblclick (evita doppio toggle). */
             if (!st.moved && st.id) {
                 window.__previewModSelectedId = st.id;
-                var orient = window.__previewModOrient || (window.__previewModOrient = {});
-                orient[st.id] = orient[st.id] === 'h' ? 'v' : 'h';
                 if (typeof window.applyPreviewModOrientClasses === 'function') {
                     window.applyPreviewModOrientClasses();
                 }
-                if (typeof window.__layoutPreviewA4 === 'function') {
-                    window.__layoutPreviewA4();
+                if (st.pointerType === 'mouse' || st.pointerType === 'pen') return;
+                var now = Date.now();
+                var last = window.__previewModLastTap;
+                var isDouble = !!(last && last.id === st.id &&
+                    (now - last.ms) > 0 && (now - last.ms) < 380 &&
+                    Math.abs(st.startX - last.x) < 40 && Math.abs(st.startY - last.y) < 40);
+                if (isDouble) {
+                    window.__previewModLastTap = null;
+                    if (typeof window.__togglePreviewModCardOrient === 'function') {
+                        window.__togglePreviewModCardOrient(st.id);
+                    }
+                } else {
+                    window.__previewModLastTap = { id: st.id, ms: now, x: st.startX, y: st.startY };
                 }
             }
         };
@@ -36908,11 +36975,13 @@ window.updateStoricoButton = async function() {
         })();
 
             window.togglePreviewSheetZoom = function () {
+                if (window.__previewModEditActive) return;
                 if (state.zoomActive) setZoomMode(false, true);
                 else setZoomMode(true, false);
             };
 
             function onWheel(ev) {
+                if (window.__previewModEditActive) return;
                 if (!state.zoomActive) return;
                 ev.preventDefault();
                 var factor = ev.deltaY < 0 ? 1.1 : 0.9;
@@ -36920,6 +36989,7 @@ window.updateStoricoButton = async function() {
             }
 
             function onPointerDown(ev) {
+                if (window.__previewModEditActive) return;
                 if (!state.zoomActive) return;
                 if (ev.pointerType === 'touch') return;
                 if (ev.button !== 0) return;
@@ -37003,11 +37073,19 @@ window.updateStoricoButton = async function() {
             }
 
             function onSheetDblClick(ev) {
+                if (window.__previewModEditActive) {
+                    ev.preventDefault();
+                    return;
+                }
                 ev.preventDefault();
                 handleDoubleActivate();
             }
 
             function onSheetTouchEnd(ev) {
+                if (window.__previewModEditActive) {
+                    state.lastTapMs = 0;
+                    return;
+                }
                 if (ev.touches.length > 0) return;
                 var t = ev.changedTouches[0];
                 if (!t) return;
@@ -47162,8 +47240,13 @@ window.convertToHtml = async () => {
             background: rgba(79, 70, 229, 0.45);
             flex-shrink: 0;
         }
-        /* Orientamento orizzontale resta anche a MOD disattivata (solo edit off). */
-        #preview-sheet .rp-page-block.rp-orient-horizontal .report-preview-card-body {
+        /* Orientamento orizzontale: titolo sopra, tutte le misure in una sola riga. */
+        #preview-sheet .rp-page-block.rp-orient-horizontal {
+            overflow: visible;
+        }
+        #preview-sheet .rp-page-block.rp-orient-horizontal .report-preview-card-body,
+        #preview-sheet .rp-page-block.rp-orient-horizontal .stocc-report-preview-rows,
+        #preview-sheet .rp-page-block.rp-orient-horizontal .rp-mod-h-body {
             display: flex !important;
             flex-direction: row !important;
             flex-wrap: nowrap !important;
@@ -47171,6 +47254,29 @@ window.convertToHtml = async () => {
             gap: 0.55em !important;
             overflow-x: auto !important;
             width: 100% !important;
+            max-width: 100% !important;
+        }
+        #preview-sheet .rp-page-block.rp-orient-horizontal .rp-mod-h-wrap {
+            display: flex !important;
+            flex-direction: row !important;
+            flex-wrap: wrap !important;
+            align-items: baseline !important;
+            column-gap: 0.55em !important;
+            row-gap: 2px !important;
+            width: 100% !important;
+        }
+        #preview-sheet .rp-page-block.rp-orient-horizontal .rp-mod-h-wrap > :first-child:not(.report-preview-row):not(.stocc-report-preview-row):not(.report-preview-row--sed-assetto):not(.report-preview-osmosi-assetto) {
+            flex: 0 0 100% !important;
+            width: 100% !important;
+            max-width: 100% !important;
+        }
+        #preview-sheet .rp-page-block.rp-orient-horizontal div[style*="flex-direction: column"],
+        #preview-sheet .rp-page-block.rp-orient-horizontal div[style*="flex-direction:column"] {
+            flex-direction: row !important;
+            flex-wrap: nowrap !important;
+            align-items: baseline !important;
+            gap: 0.55em !important;
+            overflow-x: auto !important;
         }
         #preview-sheet .rp-page-block.rp-orient-horizontal .report-preview-row,
         #preview-sheet .rp-page-block.rp-orient-horizontal .stocc-report-preview-row,
@@ -47178,6 +47284,7 @@ window.convertToHtml = async () => {
         #preview-sheet .rp-page-block.rp-orient-horizontal .report-preview-osmosi-assetto {
             display: inline-flex !important;
             flex: 0 0 auto !important;
+            flex-direction: row !important;
             width: auto !important;
             max-width: none !important;
             border-bottom: none !important;
@@ -47185,13 +47292,14 @@ window.convertToHtml = async () => {
             padding-bottom: 1px !important;
             white-space: nowrap !important;
         }
-        #preview-sheet .rp-page-block.rp-orient-horizontal > .report-preview-card > div:not(.report-preview-card-title) {
+        #preview-sheet .rp-page-block.rp-orient-horizontal .report-preview-card-title {
+            flex: 0 0 100% !important;
+            width: 100% !important;
+        }
+        #preview-sheet .rp-page-block.rp-orient-horizontal > .report-preview-card {
             display: flex !important;
-            flex-direction: row !important;
-            flex-wrap: nowrap !important;
-            align-items: baseline !important;
-            gap: 0.55em !important;
-            overflow-x: auto !important;
+            flex-direction: column !important;
+            width: 100% !important;
         }
         #preview-screen.preview-mod-edit-on .preview-toolbar {
             box-shadow: inset 0 -2px 0 #10b981;

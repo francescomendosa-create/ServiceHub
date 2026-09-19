@@ -714,6 +714,162 @@
         }
     };
 
+    function ensureDocxPreviewLibs() {
+        function ensureCss(href) {
+            if (document.querySelector('link[data-sh-lib="' + href + '"]')) return;
+            var l = document.createElement('link');
+            l.rel = 'stylesheet';
+            l.href = href;
+            l.setAttribute('data-sh-lib', href);
+            document.head.appendChild(l);
+        }
+        ensureCss('https://cdn.jsdelivr.net/npm/docx-preview@0.3.3/dist/docx-preview.css');
+        return Promise.all([
+            loadScriptOnce('https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js', function () {
+                return !!window.JSZip;
+            }),
+            loadScriptOnce('https://cdn.jsdelivr.net/npm/docx-preview@0.3.3/dist/docx-preview.min.js', function () {
+                return !!(window.docx && typeof window.docx.renderAsync === 'function');
+            })
+        ]).then(function () {
+            if (!(window.docx && window.docx.renderAsync)) throw new Error('Anteprima Word non disponibile');
+            return true;
+        });
+    }
+
+    function revokeWordPreviewUrl() {
+        if (window.__wordRappPreviewUrl) {
+            try { URL.revokeObjectURL(window.__wordRappPreviewUrl); } catch (_) {}
+            window.__wordRappPreviewUrl = null;
+        }
+    }
+
+    window.__releaseWordRapportinoPreview = function () {
+        revokeWordPreviewUrl();
+    };
+
+    async function renderPreviewIntoHost(host, meta, buffer) {
+        var ext = (meta.ext || fileExt(meta.fileName) || '').toLowerCase();
+        var mime = meta.mime || mimeFor(meta.fileName);
+        host.innerHTML = '';
+        revokeWordPreviewUrl();
+
+        if (ext === 'pdf') {
+            var pdfBlob = new Blob([buffer], { type: 'application/pdf' });
+            var pdfUrl = URL.createObjectURL(pdfBlob);
+            window.__wordRappPreviewUrl = pdfUrl;
+            host.innerHTML =
+                '<iframe class="word-rapp-preview-frame" title="Anteprima PDF" src="' + pdfUrl + '#toolbar=1"></iframe>' +
+                '<p class="word-rapp-preview-fallback">Se non vedi il PDF, <a href="' + pdfUrl + '" target="_blank" rel="noopener">aprilo a schermo intero</a>.</p>';
+            return;
+        }
+
+        if (ext === 'docx' || ext === 'docm') {
+            await ensureDocxPreviewLibs();
+            var wrap = document.createElement('div');
+            wrap.className = 'word-rapp-docx-host';
+            host.appendChild(wrap);
+            await window.docx.renderAsync(buffer, wrap, null, {
+                className: 'word-rapp-docx',
+                inWrapper: true,
+                ignoreWidth: false,
+                ignoreHeight: false,
+                breakPages: true,
+                renderHeaders: true,
+                renderFooters: true,
+                useBase64URL: true
+            });
+            return;
+        }
+
+        if (ext === 'xlsx' || ext === 'xlsm' || ext === 'xls') {
+            await ensureXlsxLib();
+            var wb = window.XLSX.read(buffer, { type: 'array', cellStyles: true });
+            var sheetBar = document.createElement('div');
+            sheetBar.className = 'word-rapp-xlsx-tabs';
+            var tableHost = document.createElement('div');
+            tableHost.className = 'word-rapp-xlsx-table-host';
+            host.appendChild(sheetBar);
+            host.appendChild(tableHost);
+            function showSheet(name) {
+                Array.prototype.forEach.call(sheetBar.querySelectorAll('button'), function (b) {
+                    b.classList.toggle('active', b.getAttribute('data-sheet') === name);
+                });
+                var sheet = wb.Sheets[name];
+                tableHost.innerHTML = window.XLSX.utils.sheet_to_html(sheet, { editable: false });
+                var table = tableHost.querySelector('table');
+                if (table) table.className = 'word-rapp-xlsx-table';
+            }
+            (wb.SheetNames || []).forEach(function (name, idx) {
+                var btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'word-rapp-xlsx-tab' + (idx === 0 ? ' active' : '');
+                btn.setAttribute('data-sheet', name);
+                btn.textContent = name;
+                btn.onclick = function () { showSheet(name); };
+                sheetBar.appendChild(btn);
+            });
+            if (wb.SheetNames && wb.SheetNames[0]) showSheet(wb.SheetNames[0]);
+            return;
+        }
+
+        if (ext === 'csv' || ext === 'tsv' || ext === 'txt' || ext === 'rtf' || ext === 'json' || ext === 'xml') {
+            var text = new TextDecoder('utf-8').decode(buffer);
+            var pre = document.createElement('pre');
+            pre.className = 'word-rapp-text-preview';
+            pre.textContent = text;
+            host.appendChild(pre);
+            return;
+        }
+
+        if (/^(png|jpe?g|gif|webp|bmp)$/i.test(ext)) {
+            var imgBlob = new Blob([buffer], { type: mime || 'image/' + ext });
+            var imgUrl = URL.createObjectURL(imgBlob);
+            window.__wordRappPreviewUrl = imgUrl;
+            var img = document.createElement('img');
+            img.className = 'word-rapp-img-preview';
+            img.src = imgUrl;
+            img.alt = meta.fileName || 'Anteprima';
+            host.appendChild(img);
+            return;
+        }
+
+        // Formati legacy (.doc, .xls, .ppt, odt…): scarica / apri blob
+        var blob = new Blob([buffer], { type: mime || 'application/octet-stream' });
+        var url = URL.createObjectURL(blob);
+        window.__wordRappPreviewUrl = url;
+        host.innerHTML =
+            '<div class="word-rapp-preview-unsupported">' +
+            '<p>Anteprima diretta non disponibile per <b>.' + escapeHtml(ext || '?') + '</b> su questo dispositivo.</p>' +
+            '<p>Puoi comunque aprire o scaricare il file originale.</p>' +
+            '<a class="letture-share-btn" href="' + url + '" download="' + escapeHtml(meta.fileName || ('file.' + ext)) + '">Scarica file originale</a>' +
+            '</div>';
+    }
+
+    window.renderWordRapportinoPreview = async function (id) {
+        var host = document.getElementById('word-rapp-preview-host');
+        var status = document.getElementById('word-rapp-preview-status');
+        if (!host) return;
+        var meta = window.getWordRapportinoMeta(id);
+        if (!meta) {
+            host.innerHTML = '<p class="word-rapp-preview-status">Documento non trovato.</p>';
+            return;
+        }
+        if (status) status.textContent = 'Apertura file originale…';
+        host.innerHTML = '<p class="word-rapp-preview-status">Caricamento anteprima…</p>';
+        try {
+            var rec = await idbGet(id);
+            if (!rec || !rec.buffer) throw new Error('File non in memoria su questo dispositivo. Attendi il sync (LED verde) o ricarica.');
+            await renderPreviewIntoHost(host, meta, rec.buffer);
+            if (status) status.textContent = 'File originale · sola visualizzazione';
+        } catch (err) {
+            console.warn('[ServiceHub] preview:', err);
+            host.innerHTML = '<p class="word-rapp-preview-status word-rapp-preview-err">' +
+                escapeHtml((err && err.message) || 'Anteprima non riuscita') + '</p>';
+            if (status) status.textContent = 'Anteprima non disponibile';
+        }
+    };
+
     window.openWordRapportinoPanel = function (id) {
         var meta = window.getWordRapportinoMeta(id);
         if (!meta) return;
@@ -734,16 +890,18 @@
             var ext = (meta.ext || fileExt(meta.fileName) || '').toLowerCase();
             var canFill = !!FILLABLE_EXT[ext];
             var fillHint = canFill
-                ? 'Una sola volta nel file ufficiale, dove devono comparire i livelli, metti la sigla tra doppie graffe — es. <code>{{TK9201}}</code>, <code>{{TK9000}}</code>, <code>{{DATA}}</code>. Poi ogni stampa prende in automatico i valori attuali dall’interfaccia: layout uguale all’originale, solo i numeri cambiano.'
-                : 'Questo formato viene esportato identico all’originale. Per riempire i livelli in automatico usa preferibilmente .docx o .xlsx con segnaposto tipo <code>{{TK9201}}</code>.';
+                ? 'Per la stampa compilata: nel file metti <code>{{TK9201}}</code> ecc. dove servono i livelli. Qui sotto vedi il <b>file originale</b> senza Word/Excel.'
+                : 'Qui sotto vedi il file originale (se il formato lo permette).';
             body.innerHTML =
-                '<div class="word-rapp-panel">' +
-                '<p class="word-rapp-panel-lead">Questo <b>è</b> il documento ufficiale che hai caricato. La stampa finale è lo stesso file, con i livelli/serbatoi presi dall’interfaccia.</p>' +
+                '<div class="word-rapp-panel word-rapp-panel--viewer">' +
                 '<p class="word-rapp-panel-file">' + escapeHtml(meta.fileName || '') + '</p>' +
+                '<p id="word-rapp-preview-status" class="word-rapp-preview-status">Apertura…</p>' +
+                '<div id="word-rapp-preview-host" class="word-rapp-preview-host"></div>' +
                 '<p class="word-rapp-panel-hint">' + fillHint + '</p>' +
                 '<div class="word-rapp-actions">' +
                 '<button type="button" class="letture-share-btn" id="word-rapp-replace-btn">Sostituisci file / rinomina</button>' +
                 '<button type="button" class="letture-share-btn" id="word-rapp-placeholders-btn">Sigle disponibili</button>' +
+                '<button type="button" class="letture-share-btn" id="word-rapp-reload-preview-btn">Ricarica anteprima</button>' +
                 '</div>' +
                 '<pre class="word-rapp-placeholders" id="word-rapp-placeholders-box" style="display:none">' +
                 escapeHtml(helpKeys.join('\n')) +
@@ -759,6 +917,9 @@
                     box.style.display = box.style.display === 'none' ? 'block' : 'none';
                 };
             }
+            var reload = document.getElementById('word-rapp-reload-preview-btn');
+            if (reload) reload.onclick = function () { void window.renderWordRapportinoPreview(id); };
+            void window.renderWordRapportinoPreview(id);
         }
         modal.classList.add('active');
     };

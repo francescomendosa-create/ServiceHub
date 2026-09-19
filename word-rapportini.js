@@ -1,6 +1,6 @@
 /**
- * ServiceHub — Rapportini Word (.docx) caricati dall'utente.
- * Template identico al file originale; i segnaposto {{chiave}} si riempiono dai dati impianto.
+ * ServiceHub — Rapportini da file di lavoro (Word, Excel, PDF, …).
+ * Il file resta identico all'originale; dove possibile i {{segnaposto}} si riempiono dai dati impianto.
  */
 (function (window) {
     'use strict';
@@ -9,6 +9,61 @@
     var IDB_NAME = 'servicehub_word_rapportini_v1';
     var IDB_STORE = 'templates';
     var DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    var XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    var PDF_MIME = 'application/pdf';
+    var MAX_BYTES = 20 * 1024 * 1024;
+
+    /** Estensioni ammesse (file di lavoro). */
+    var WORK_EXT_RE = /\.(docx?|docm|xlsx?|xlsm|xlsb|pdf|odt|ods|odp|csv|txt|rtf|pptx?|pptm|ppsx?|pages|numbers|key|tsv|xml|json)$/i;
+    var BLOCKED_EXT_RE = /\.(exe|msi|bat|cmd|ps1|scr|js|mjs|html?|htm|php|sh|dll|com|vbs|wsf|apk|dmg)$/i;
+    var FILLABLE_EXT = { docx: 1, docm: 1, xlsx: 1, xlsm: 1, csv: 1, tsv: 1, txt: 1, rtf: 1, pdf: 1, json: 1, xml: 1 };
+
+    var MIME_BY_EXT = {
+        docx: DOCX_MIME,
+        docm: 'application/vnd.ms-word.document.macroEnabled.12',
+        doc: 'application/msword',
+        xlsx: XLSX_MIME,
+        xlsm: 'application/vnd.ms-excel.sheet.macroEnabled.12',
+        xls: 'application/vnd.ms-excel',
+        xlsb: 'application/vnd.ms-excel.sheet.binary.macroEnabled.12',
+        pdf: PDF_MIME,
+        csv: 'text/csv',
+        tsv: 'text/tab-separated-values',
+        txt: 'text/plain',
+        rtf: 'application/rtf',
+        odt: 'application/vnd.oasis.opendocument.text',
+        ods: 'application/vnd.oasis.opendocument.spreadsheet',
+        odp: 'application/vnd.oasis.opendocument.presentation',
+        pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        ppt: 'application/vnd.ms-powerpoint',
+        json: 'application/json',
+        xml: 'application/xml'
+    };
+
+    function fileExt(name) {
+        var m = String(name || '').toLowerCase().match(/\.([a-z0-9]+)$/);
+        return m ? m[1] : '';
+    }
+
+    function mimeFor(name, fallback) {
+        var ext = fileExt(name);
+        return MIME_BY_EXT[ext] || fallback || 'application/octet-stream';
+    }
+
+    function isAllowedWorkFile(file) {
+        var name = String((file && file.name) || '');
+        var lower = name.toLowerCase();
+        if (BLOCKED_EXT_RE.test(lower)) return false;
+        if (WORK_EXT_RE.test(lower)) return true;
+        var t = String((file && file.type) || '').toLowerCase();
+        if (!t) return !!lower; // nome senza estensione: accetta, classificato come generico
+        if (/^(application|text)\//.test(t) && t.indexOf('javascript') < 0 && t.indexOf('html') < 0) return true;
+        if (t.indexOf('pdf') >= 0 || t.indexOf('sheet') >= 0 || t.indexOf('excel') >= 0 ||
+            t.indexOf('word') >= 0 || t.indexOf('officedocument') >= 0 || t.indexOf('opendocument') >= 0) {
+            return true;
+        }
+        return false;
+    }
 
     function toast(msg, isErr) {
         if (typeof window.__serviceHubFlashToast === 'function') {
@@ -109,44 +164,145 @@
         });
     }
 
-    function ensureDocxLibs() {
+    function loadScriptOnce(src, check) {
         return new Promise(function (resolve, reject) {
-            if (window.PizZip && (window.docxtemplater || window.Docxtemplater)) {
+            if (check()) {
                 resolve(true);
                 return;
             }
-            var pending = 2;
-            var failed = false;
-            function done() {
-                pending -= 1;
-                if (pending > 0) return;
-                if (failed || !window.PizZip || !(window.docxtemplater || window.Docxtemplater)) {
-                    reject(new Error('Librerie Word non caricate'));
-                } else {
-                    resolve(true);
-                }
+            var existing = document.querySelector('script[data-sh-lib="' + src + '"]');
+            if (existing) {
+                existing.addEventListener('load', function () { resolve(true); });
+                existing.addEventListener('error', function () { reject(new Error('Caricamento libreria fallito')); });
+                return;
             }
-            function load(src, check) {
-                if (check()) {
-                    done();
-                    return;
-                }
-                var s = document.createElement('script');
-                s.src = src;
-                s.async = true;
-                s.onload = done;
-                s.onerror = function () { failed = true; done(); };
-                document.head.appendChild(s);
-            }
-            load('https://cdn.jsdelivr.net/npm/pizzip@3.2.0/dist/pizzip.js', function () { return !!window.PizZip; });
-            load('https://cdn.jsdelivr.net/npm/docxtemplater@3.55.9/build/docxtemplater.js', function () {
+            var s = document.createElement('script');
+            s.src = src;
+            s.async = true;
+            s.setAttribute('data-sh-lib', src);
+            s.onload = function () { resolve(true); };
+            s.onerror = function () { reject(new Error('Caricamento libreria fallito')); };
+            document.head.appendChild(s);
+        });
+    }
+
+    function ensureDocxLibs() {
+        return Promise.all([
+            loadScriptOnce('https://cdn.jsdelivr.net/npm/pizzip@3.2.0/dist/pizzip.js', function () { return !!window.PizZip; }),
+            loadScriptOnce('https://cdn.jsdelivr.net/npm/docxtemplater@3.55.9/build/docxtemplater.js', function () {
                 return !!(window.docxtemplater || window.Docxtemplater);
-            });
+            })
+        ]).then(function () {
+            if (!window.PizZip || !(window.docxtemplater || window.Docxtemplater)) {
+                throw new Error('Librerie Word non caricate');
+            }
+            return true;
+        });
+    }
+
+    function ensureXlsxLib() {
+        return loadScriptOnce('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js', function () {
+            return !!(window.XLSX && window.XLSX.read);
+        }).then(function () {
+            if (!(window.XLSX && window.XLSX.read)) throw new Error('Libreria Excel non caricata');
+            return true;
         });
     }
 
     function getDocxtemplaterCtor() {
         return window.docxtemplater || window.Docxtemplater;
+    }
+
+    function replacePlaceholdersInText(text, data) {
+        if (text == null) return text;
+        var s = String(text);
+        if (s.indexOf('{{') < 0) return s;
+        return s.replace(/\{\{\s*([^{}]+?)\s*\}\}/g, function (_, rawKey) {
+            var key = String(rawKey || '').trim();
+            if (!key) return '';
+            if (data[key] != null) return String(data[key]);
+            var compact = key.replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
+            if (compact && data[compact] != null) return String(data[compact]);
+            var up = key.toUpperCase();
+            if (data[up] != null) return String(data[up]);
+            return '';
+        });
+    }
+
+    function datedOutName(baseName, ext) {
+        var dateStr = (typeof window.formatLetturaDateIt === 'function'
+            ? window.formatLetturaDateIt(new Date())
+            : new Date().toLocaleDateString('it-IT')).replace(/\//g, '-');
+        var safeName = String(baseName || 'Rapportino').replace(/[\\/:*?"<>|]+/g, ' ').trim();
+        return safeName + ' ' + dateStr + '.' + ext;
+    }
+
+    async function fillDocxBuffer(buffer, data) {
+        await ensureDocxLibs();
+        var zip = new window.PizZip(buffer);
+        var Docx = getDocxtemplaterCtor();
+        var doc = new Docx(zip, {
+            paragraphLoop: true,
+            linebreaks: true,
+            delimiters: { start: '{{', end: '}}' },
+            nullGetter: function () { return ''; }
+        });
+        try {
+            doc.render(data);
+        } catch (err) {
+            console.warn('[ServiceHub] docxtemplater:', err && err.message);
+            throw new Error('Controlla i segnaposto nel Word (es. {{DATA}}, {{SG9400A}}).');
+        }
+        return doc.getZip().generate({
+            type: 'arraybuffer',
+            mimeType: DOCX_MIME,
+            compression: 'DEFLATE'
+        });
+    }
+
+    async function fillXlsxBuffer(buffer, data) {
+        await ensureXlsxLib();
+        var wb = window.XLSX.read(buffer, { type: 'array', cellStyles: true, bookVBA: true });
+        (wb.SheetNames || []).forEach(function (sheetName) {
+            var sheet = wb.Sheets[sheetName];
+            if (!sheet) return;
+            Object.keys(sheet).forEach(function (addr) {
+                if (!addr || addr.charAt(0) === '!') return;
+                var cell = sheet[addr];
+                if (!cell || cell.v == null) return;
+                if (typeof cell.v === 'string' && cell.v.indexOf('{{') >= 0) {
+                    cell.v = replacePlaceholdersInText(cell.v, data);
+                    cell.t = 's';
+                    delete cell.w;
+                }
+            });
+        });
+        return window.XLSX.write(wb, { type: 'array', bookType: 'xlsx', cellStyles: true });
+    }
+
+    function fillTextBuffer(buffer, data) {
+        var decoder = new TextDecoder('utf-8');
+        var text = decoder.decode(buffer);
+        var out = replacePlaceholdersInText(text, data);
+        return new TextEncoder().encode(out).buffer;
+    }
+
+    /** PDF: sostituzione testuale dei {{tag}} se presenti come testo semplice nel file. */
+    function fillPdfBuffer(buffer, data) {
+        var bytes = new Uint8Array(buffer);
+        var bin = '';
+        for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        if (bin.indexOf('{{') < 0) return buffer;
+        var keys = Object.keys(data || {}).sort(function (a, b) { return b.length - a.length; });
+        keys.forEach(function (key) {
+            var token = '{{' + key + '}}';
+            if (bin.indexOf(token) < 0) return;
+            var val = String(data[key] == null ? '' : data[key]).replace(/[^\x20-\x7E]/g, '?');
+            bin = bin.split(token).join(val);
+        });
+        var out = new Uint8Array(bin.length);
+        for (var j = 0; j < bin.length; j++) out[j] = bin.charCodeAt(j) & 0xff;
+        return out.buffer;
     }
 
     function putVal(map, key, val) {
@@ -287,15 +443,16 @@
         var name = String(opts.name || '').trim();
         var file = opts.file;
         if (!name) throw new Error('Inserisci un nome');
-        if (!file) throw new Error('Seleziona un file Word (.docx)');
-        var lower = String(file.name || '').toLowerCase();
-        if (lower && !/\.docx$/i.test(lower) && file.type && file.type.indexOf('wordprocessingml') < 0) {
-            throw new Error('Serve un file .docx (Word)');
+        if (!file) throw new Error('Seleziona un file di lavoro');
+        if (!isAllowedWorkFile(file)) {
+            throw new Error('Formato non ammesso. Usa Word, Excel, PDF, OpenDocument, CSV, testo, PowerPoint, …');
         }
         var buf = await fileToArrayBuffer(file);
         if (!buf || !buf.byteLength) throw new Error('File vuoto');
-        if (buf.byteLength > 12 * 1024 * 1024) throw new Error('File troppo grande (max 12 MB)');
+        if (buf.byteLength > MAX_BYTES) throw new Error('File troppo grande (max 20 MB)');
 
+        var ext = fileExt(file.name) || 'bin';
+        var mime = mimeFor(file.name, file.type || 'application/octet-stream');
         var role = opts.role || '';
         var list = loadMeta();
         if (role) {
@@ -309,13 +466,16 @@
         var meta = {
             id: id,
             name: name,
-            fileName: file.name || (name + '.docx'),
+            fileName: file.name || (name + '.' + ext),
+            ext: ext,
+            mime: mime,
             size: buf.byteLength,
+            fillable: !!FILLABLE_EXT[ext],
             role: role || (existing && existing.role) || '',
             createdAt: (existing && existing.createdAt) || now,
             updatedAt: now
         };
-        await idbPut({ id: id, buffer: buf, fileName: meta.fileName, mime: DOCX_MIME });
+        await idbPut({ id: id, buffer: buf, fileName: meta.fileName, mime: mime, ext: ext });
         if (existing) {
             list = list.map(function (x) { return x.id === id ? meta : x; });
         } else {
@@ -332,47 +492,44 @@
     };
 
     window.fillWordRapportinoTemplate = async function (id, dataOverride) {
-        await ensureDocxLibs();
         var rec = await idbGet(id);
-        if (!rec || !rec.buffer) throw new Error('Template Word non trovato');
-        var data = dataOverride || window.buildWordRapportinoDataMap() || {};
-        var zip = new window.PizZip(rec.buffer);
-        var Docx = getDocxtemplaterCtor();
-        var doc = new Docx(zip, {
-            paragraphLoop: true,
-            linebreaks: true,
-            delimiters: { start: '{{', end: '}}' },
-            nullGetter: function () { return ''; }
-        });
-        try {
-            doc.render(data);
-        } catch (err) {
-            // Tag spezzati in Word: riprova dopo merge run, altrimenti esporta comunque il file
-            console.warn('[ServiceHub] docxtemplater:', err && err.message);
-            try {
-                doc = new Docx(zip, {
-                    paragraphLoop: true,
-                    linebreaks: true,
-                    delimiters: { start: '{{', end: '}}' },
-                    nullGetter: function () { return ''; }
-                });
-                doc.render(data);
-            } catch (err2) {
-                throw new Error('Controlla i segnaposto nel Word (es. {{DATA}}, {{SG9400A}}). ' +
-                    (err2 && err2.message ? err2.message : ''));
-            }
-        }
-        var out = doc.getZip().generate({
-            type: 'blob',
-            mimeType: DOCX_MIME,
-            compression: 'DEFLATE'
-        });
+        if (!rec || !rec.buffer) throw new Error('File rapportino non trovato');
         var meta = window.getWordRapportinoMeta(id) || {};
-        var dateStr = (typeof window.formatLetturaDateIt === 'function'
-            ? window.formatLetturaDateIt(new Date())
-            : new Date().toLocaleDateString('it-IT')).replace(/\//g, '-');
-        var safeName = String(meta.name || 'Rapportino').replace(/[\\/:*?"<>|]+/g, ' ').trim();
-        return new File([out], safeName + ' ' + dateStr + '.docx', { type: DOCX_MIME });
+        var ext = (meta.ext || rec.ext || fileExt(meta.fileName || rec.fileName) || 'bin').toLowerCase();
+        var mime = meta.mime || rec.mime || mimeFor(meta.fileName || rec.fileName);
+        var data = dataOverride || window.buildWordRapportinoDataMap() || {};
+        var outBuf = rec.buffer;
+        var outExt = ext;
+        var outMime = mime;
+        var filled = false;
+
+        if (ext === 'docx' || ext === 'docm') {
+            outBuf = await fillDocxBuffer(rec.buffer, data);
+            outExt = 'docx';
+            outMime = DOCX_MIME;
+            filled = true;
+        } else if (ext === 'xlsx' || ext === 'xlsm') {
+            outBuf = await fillXlsxBuffer(rec.buffer, data);
+            outExt = 'xlsx';
+            outMime = XLSX_MIME;
+            filled = true;
+        } else if (ext === 'csv' || ext === 'tsv' || ext === 'txt' || ext === 'rtf' || ext === 'json' || ext === 'xml') {
+            outBuf = fillTextBuffer(rec.buffer, data);
+            filled = true;
+        } else if (ext === 'pdf') {
+            outBuf = fillPdfBuffer(rec.buffer, data);
+            outMime = PDF_MIME;
+            filled = true;
+        } else {
+            // .doc / .xls / .ppt / odt / … : file identico, senza merge automatico
+            filled = false;
+        }
+
+        var fileName = datedOutName(meta.name || 'Rapportino', outExt);
+        var file = new File([outBuf], fileName, { type: outMime });
+        file.__shFilled = filled;
+        file.__shExt = outExt;
+        return file;
     };
 
     window.buildSituazioneGiornalieraWordFileFromTemplate = async function () {
@@ -386,7 +543,7 @@
         if (!host) return;
         var list = window.listWordRapportini();
         if (!list.length) {
-            host.innerHTML = '<p class="word-rapp-empty">Nessun rapportino Word caricato. Usa «Aggiungi rapportino» e carica il file .docx ufficiale.</p>';
+            host.innerHTML = '<p class="word-rapp-empty">Nessun file caricato. Usa «Aggiungi rapportino» e carica Word, Excel, PDF o altro file di lavoro ufficiale.</p>';
             return;
         }
         host.innerHTML = list.map(function (m) {
@@ -394,9 +551,12 @@
                 ? '<span class="word-rapp-badge">Situazione giornaliera</span>'
                 : '';
             var sizeKb = m.size ? Math.max(1, Math.round(m.size / 1024)) + ' KB' : '';
+            var extLabel = (m.ext || fileExt(m.fileName) || '').toUpperCase();
             return '<div class="word-rapp-item" data-id="' + m.id + '">' +
                 '<button type="button" class="word-rapp-open" data-action="open" data-id="' + m.id + '">' +
-                '<span class="word-rapp-name">' + escapeHtml(m.name) + '</span>' +
+                '<span class="word-rapp-name">' + escapeHtml(m.name) +
+                (extLabel ? ' <span class="word-rapp-ext">' + escapeHtml(extLabel) + '</span>' : '') +
+                '</span>' +
                 roleBadge +
                 '<span class="word-rapp-meta">' + escapeHtml(m.fileName || '') + (sizeKb ? ' · ' + sizeKb : '') + '</span>' +
                 '</button>' +
@@ -447,12 +607,12 @@
         var existing = editId ? window.getWordRapportinoMeta(editId) : null;
         if (nameInp) nameInp.value = existing ? existing.name : '';
         if (roleChk) roleChk.checked = !!(existing && existing.role === 'situazione-giornaliera');
-        if (title) title.textContent = existing ? 'Sostituisci / rinomina rapportino' : 'Aggiungi rapportino Word';
+        if (title) title.textContent = existing ? 'Sostituisci / rinomina rapportino' : 'Aggiungi rapportino';
         var fileHint = document.getElementById('word-rapp-file-hint');
         if (fileHint) {
             fileHint.textContent = existing
-                ? 'Lascia vuoto per tenere il file attuale, oppure carica un nuovo .docx.'
-                : 'Carica il file Word ufficiale (.docx). Il layout resta identico all’originale.';
+                ? 'Lascia vuoto per tenere il file attuale, oppure carica un nuovo file (Word, Excel, PDF, …).'
+                : 'Carica il file ufficiale: Word, Excel, PDF, OpenDocument, CSV, PowerPoint, testo… Layout identico all’originale.';
         }
         modal.classList.add('active');
         setTimeout(function () { if (nameInp) nameInp.focus(); }, 50);
@@ -477,7 +637,7 @@
             else toast(msg, true);
         }
         if (!name) { showErr('Inserisci il nome del rapportino.'); return; }
-        if (!editId && !file) { showErr('Seleziona il file Word (.docx).'); return; }
+        if (!editId && !file) { showErr('Seleziona un file di lavoro.'); return; }
         try {
             if (editId && !file) {
                 var list = loadMeta();
@@ -502,7 +662,7 @@
             }
             window.closeAggiungiWordRapportinoModal();
             window.renderWordRapportiniList();
-            toast('Rapportino Word salvato.');
+            toast('Rapportino salvato.');
         } catch (e) {
             showErr((e && e.message) || 'Salvataggio fallito');
         }
@@ -521,17 +681,22 @@
         var titleEl = document.getElementById('letture-doc-toolbar-title');
         if (titleEl) titleEl.textContent = meta.name;
         var shareBtn = document.querySelector('#letture-doc-modal .letture-share-btn--main');
-        if (shareBtn) shareBtn.textContent = 'Genera Word compilato';
+        if (shareBtn) shareBtn.textContent = 'Genera file compilato';
         var body = document.getElementById('letture-doc-body');
         if (body) {
             var helpKeys = (window.listWordRapportiniPlaceholdersHelp() || []).slice(0, 40);
+            var ext = (meta.ext || fileExt(meta.fileName) || '').toLowerCase();
+            var canFill = !!FILLABLE_EXT[ext];
+            var fillHint = canFill
+                ? 'Nei file Word/Excel/PDF/CSV/testo puoi mettere segnaposto come <code>{{DATA}}</code>, <code>{{SG9400A}}</code>, <code>{{TK9201}}</code>. Poi premi «Genera file compilato».'
+                : 'Questo formato viene condiviso <b>identico all’originale</b> (senza merge automatico dei segnaposto). Per l’autocompilazione preferisci .docx, .xlsx, .pdf o .csv.';
             body.innerHTML =
                 '<div class="word-rapp-panel">' +
-                '<p class="word-rapp-panel-lead">Questo rapportino usa il <b>file Word originale</b> che hai caricato. Layout e grafica restano identici.</p>' +
+                '<p class="word-rapp-panel-lead">Questo rapportino usa il <b>file originale</b> che hai caricato. Layout e grafica restano identici.</p>' +
                 '<p class="word-rapp-panel-file">' + escapeHtml(meta.fileName || '') +
                 (meta.role === 'situazione-giornaliera' ? ' · collegato a Situazione giornaliera' : '') +
                 '</p>' +
-                '<p class="word-rapp-panel-hint">Nel documento Word metti i segnaposto dove servono i valori, ad esempio <code>{{DATA}}</code>, <code>{{SG9400A}}</code>, <code>{{inp-a-prod}}</code>, <code>{{TK9201}}</code>. Poi premi «Genera Word compilato».</p>' +
+                '<p class="word-rapp-panel-hint">' + fillHint + '</p>' +
                 '<div class="word-rapp-actions">' +
                 '<button type="button" class="letture-share-btn" id="word-rapp-replace-btn">Sostituisci file / rinomina</button>' +
                 '<button type="button" class="letture-share-btn" id="word-rapp-placeholders-btn">Mostra segnaposto</button>' +
@@ -578,11 +743,15 @@
                 a.click();
                 setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
             }
-            toast('Word compilato scaricato (.docx). Apri con Word: layout identico all’originale.');
+            if (file.__shFilled) {
+                toast('File compilato scaricato. Layout identico all’originale.');
+            } else {
+                toast('File originale scaricato (formato senza autocompilazione automatica).');
+            }
             return true;
         } catch (err) {
             console.warn('[ServiceHub] share word:', err);
-            toast((err && err.message) || 'Generazione Word fallita', true);
+            toast((err && err.message) || 'Generazione file fallita', true);
             return false;
         }
     };

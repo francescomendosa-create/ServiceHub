@@ -517,9 +517,11 @@
 
     function fillXlsxSheetByLabels(sheet, data) {
         if (!sheet || !window.XLSX) return;
+        var range = window.XLSX.utils.decode_range(sheet['!ref'] || 'A1');
         var rows = window.XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
         rows.forEach(function (row, rIdx) {
             if (!row || !row.length) return;
+            var absR = range.s.r + rIdx;
             var label = String(row[0] == null ? '' : row[0]).trim();
             if (!label) return;
             // Evita intestazioni generiche
@@ -533,9 +535,10 @@
             var mainFilled = false;
             var maxC = Math.max(row.length, 6);
             for (var c = 1; c < maxC; c++) {
+                var absC = range.s.c + c;
                 var cellStr = String(row[c] == null ? '' : row[c]).trim();
                 if (/^cond/i.test(cellStr)) {
-                    if (condVal) setSheetCellValue(sheet, rIdx, c + 1, condVal);
+                    if (condVal) setSheetCellValue(sheet, absR, absC + 1, condVal);
                     continue;
                 }
                 if (mainFilled) continue;
@@ -543,13 +546,13 @@
                     // valore nella cella successiva se vuota
                     var next = String(row[c + 1] == null ? '' : row[c + 1]).trim();
                     if (!next && mainVal) {
-                        setSheetCellValue(sheet, rIdx, c + 1, mainVal);
+                        setSheetCellValue(sheet, absR, absC + 1, mainVal);
                         mainFilled = true;
                     }
                     continue;
                 }
                 if (cellStr === '' && mainVal) {
-                    setSheetCellValue(sheet, rIdx, c, mainVal);
+                    setSheetCellValue(sheet, absR, absC, mainVal);
                     mainFilled = true;
                 }
             }

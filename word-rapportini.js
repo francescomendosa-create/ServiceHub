@@ -166,24 +166,76 @@
 
     function loadScriptOnce(src, check) {
         return new Promise(function (resolve, reject) {
-            if (check()) {
+            function ok() {
+                try { return typeof check === 'function' ? !!check() : true; } catch (_) { return false; }
+            }
+            if (ok()) {
                 resolve(true);
                 return;
             }
             var existing = document.querySelector('script[data-sh-lib="' + src + '"]');
             if (existing) {
-                existing.addEventListener('load', function () { resolve(true); });
-                existing.addEventListener('error', function () { reject(new Error('Caricamento libreria fallito')); });
+                if (existing.getAttribute('data-sh-lib-error') === '1') {
+                    reject(new Error('Caricamento libreria fallito: ' + src));
+                    return;
+                }
+                // Se il tag c'è già ma load è già passato, senza poll si resta appesi per sempre
+                var tries = 0;
+                var timer = setInterval(function () {
+                    tries += 1;
+                    if (ok() || existing.getAttribute('data-sh-lib-ready') === '1') {
+                        clearInterval(timer);
+                        if (ok()) resolve(true);
+                        else reject(new Error('Libreria non disponibile dopo il caricamento'));
+                    } else if (existing.getAttribute('data-sh-lib-error') === '1' || tries > 120) {
+                        clearInterval(timer);
+                        reject(new Error(tries > 120 ? 'Timeout libreria' : 'Caricamento libreria fallito'));
+                    }
+                }, 50);
                 return;
             }
             var s = document.createElement('script');
             s.src = src;
             s.async = true;
             s.setAttribute('data-sh-lib', src);
-            s.onload = function () { resolve(true); };
-            s.onerror = function () { reject(new Error('Caricamento libreria fallito')); };
+            s.onload = function () {
+                s.setAttribute('data-sh-lib-ready', '1');
+                if (ok()) resolve(true);
+                else reject(new Error('Libreria non disponibile dopo il caricamento'));
+            };
+            s.onerror = function () {
+                s.setAttribute('data-sh-lib-error', '1');
+                reject(new Error('Caricamento libreria fallito: ' + src));
+            };
             document.head.appendChild(s);
         });
+    }
+
+    function loadScriptFromCdns(urls, check) {
+        var i = 0;
+        function next() {
+            if (i >= urls.length) {
+                return Promise.reject(new Error('Nessun CDN ha caricato la libreria'));
+            }
+            var url = urls[i++];
+            return loadScriptOnce(url, check).catch(function () {
+                return next();
+            });
+        }
+        return next();
+    }
+
+    function toArrayBuffer(buffer) {
+        if (!buffer) throw new Error('File vuoto');
+        if (buffer instanceof ArrayBuffer) return buffer;
+        if (ArrayBuffer.isView(buffer)) {
+            return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+        }
+        if (typeof Blob !== 'undefined' && buffer instanceof Blob) {
+            return buffer.arrayBuffer();
+        }
+        if (typeof buffer.arrayBuffer === 'function') return buffer.arrayBuffer();
+        throw new Error('Formato buffer non supportato');
     }
 
     function ensureDocxLibs() {
@@ -716,7 +768,10 @@
     };
 
     function ensureMammothLib() {
-        return loadScriptOnce('https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js', function () {
+        return loadScriptFromCdns([
+            'https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js',
+            'https://unpkg.com/mammoth@1.8.0/mammoth.browser.min.js'
+        ], function () {
             return !!(window.mammoth && window.mammoth.convertToHtml);
         }).then(function () {
             if (!(window.mammoth && window.mammoth.convertToHtml)) throw new Error('Lettura testo Word non disponibile');
@@ -734,14 +789,20 @@
             document.head.appendChild(l);
         }
         ensureCss('https://cdn.jsdelivr.net/npm/docx-preview@0.3.5/dist/docx-preview.css');
-        return Promise.all([
-            loadScriptOnce('https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js', function () {
-                return !!window.JSZip;
-            }),
-            loadScriptOnce('https://cdn.jsdelivr.net/npm/docx-preview@0.3.5/dist/docx-preview.min.js', function () {
+        // JSZip PRIMA di docx-preview (caricamento parallelo rompe l'anteprima)
+        return loadScriptFromCdns([
+            'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js',
+            'https://unpkg.com/jszip@3.10.1/dist/jszip.min.js'
+        ], function () {
+            return !!window.JSZip;
+        }).then(function () {
+            return loadScriptFromCdns([
+                'https://cdn.jsdelivr.net/npm/docx-preview@0.3.5/dist/docx-preview.min.js',
+                'https://unpkg.com/docx-preview@0.3.5/dist/docx-preview.min.js'
+            ], function () {
                 return !!(window.docx && typeof window.docx.renderAsync === 'function');
-            })
-        ]).then(function () {
+            });
+        }).then(function () {
             if (!(window.docx && window.docx.renderAsync)) throw new Error('Anteprima Word non disponibile');
             return true;
         });
@@ -796,10 +857,11 @@
 
     async function renderDocxLayoutPreview(host, buffer) {
         await ensureDocxPreviewLibs();
+        var ab = await toArrayBuffer(buffer);
         var wrap = document.createElement('div');
         wrap.className = 'word-rapp-docx-host';
         host.appendChild(wrap);
-        var blob = buffer instanceof Blob ? buffer : new Blob([buffer], { type: DOCX_MIME });
+        var blob = new Blob([ab], { type: DOCX_MIME });
         await window.docx.renderAsync(blob, wrap, null, {
             className: 'docx',
             inWrapper: true,
@@ -812,6 +874,9 @@
             useBase64URL: true,
             experimental: true
         });
+        if (!wrap.querySelector('section.docx, .docx-wrapper')) {
+            throw new Error('Layout Word vuoto');
+        }
         var runFit = function () { fitDocxPagesToHost(host, wrap); };
         requestAnimationFrame(function () {
             runFit();
@@ -829,11 +894,11 @@
 
     async function renderDocxTextPreview(host, buffer) {
         await ensureMammothLib();
-        var ab = buffer instanceof ArrayBuffer ? buffer : await buffer.arrayBuffer();
+        var ab = await toArrayBuffer(buffer);
         var result = await window.mammoth.convertToHtml({ arrayBuffer: ab });
         var box = document.createElement('div');
         box.className = 'word-rapp-mammoth-host';
-        box.innerHTML = result.value || '<p><em>Nessun testo estratto.</em></p>';
+        box.innerHTML = result.value || '<p><em>Nessun testo estratto dal file.</em></p>';
         host.appendChild(box);
         if (result.messages && result.messages.length) {
             console.info('[ServiceHub] mammoth:', result.messages);
@@ -843,16 +908,23 @@
     async function renderPreviewIntoHost(host, meta, buffer, mode) {
         var ext = (meta.ext || fileExt(meta.fileName) || '').toLowerCase();
         var mime = meta.mime || mimeFor(meta.fileName);
-        mode = mode || 'layout';
+        mode = mode || 'text';
         host.innerHTML = '';
         revokeWordPreviewUrl();
 
-        // Pulsante sempre utile: apri il binario originale in nuova scheda / download
+        var ab = await toArrayBuffer(buffer);
         var openBar = document.createElement('div');
         openBar.className = 'word-rapp-preview-toolbar';
-        var blob = new Blob([buffer], { type: mime || 'application/octet-stream' });
+        var blob = new Blob([ab], { type: mime || 'application/octet-stream' });
         var url = URL.createObjectURL(blob);
         window.__wordRappPreviewUrl = url;
+
+        function appendOpenLink(label) {
+            openBar.innerHTML =
+                (openBar.innerHTML || '') +
+                '<a class="word-rapp-preview-open" href="' + url + '" download="' +
+                escapeHtml(meta.fileName || ('file.' + (ext || 'bin'))) + '">' + (label || 'Scarica originale') + '</a>';
+        }
 
         if (ext === 'pdf') {
             host.appendChild(openBar);
@@ -881,17 +953,30 @@
             var body = document.createElement('div');
             body.className = 'word-rapp-preview-body';
             host.appendChild(body);
-            if (mode === 'text') {
-                await renderDocxTextPreview(body, buffer);
-            } else {
+            if (mode === 'layout') {
                 try {
-                    await renderDocxLayoutPreview(body, buffer);
+                    await renderDocxLayoutPreview(body, ab);
                 } catch (err) {
                     console.warn('[ServiceHub] layout docx fallito, uso testo:', err);
-                    body.innerHTML = '<p class="word-rapp-preview-err">Layout non renderizzato, mostro il testo leggibile.</p>';
-                    await renderDocxTextPreview(body, buffer);
+                    body.innerHTML = '<p class="word-rapp-preview-err">Layout non disponibile (' +
+                        escapeHtml((err && err.message) || 'errore') + '). Mostro il testo leggibile.</p>';
+                    await renderDocxTextPreview(body, ab);
                 }
+            } else {
+                await renderDocxTextPreview(body, ab);
             }
+            return;
+        }
+
+        if (ext === 'doc') {
+            host.appendChild(openBar);
+            appendOpenLink('Scarica file .doc');
+            var note = document.createElement('div');
+            note.className = 'word-rapp-preview-unsupported';
+            note.innerHTML =
+                '<p>Il formato <b>.doc</b> (Word vecchio) non si può anteprimare nel browser.</p>' +
+                '<p>Salvalo di nuovo come <b>.docx</b> e ricaricalo, oppure scarica e aprilo con Word.</p>';
+            host.appendChild(note);
             return;
         }
 
@@ -900,7 +985,7 @@
                 '<a class="word-rapp-preview-open" href="' + url + '" download="' + escapeHtml(meta.fileName || 'foglio.xlsx') + '">Scarica originale</a>';
             host.appendChild(openBar);
             await ensureXlsxLib();
-            var wb = window.XLSX.read(buffer, { type: 'array', cellStyles: true });
+            var wb = window.XLSX.read(ab, { type: 'array', cellStyles: true });
             var sheetBar = document.createElement('div');
             sheetBar.className = 'word-rapp-xlsx-tabs';
             var tableHost = document.createElement('div');
@@ -933,7 +1018,7 @@
             openBar.innerHTML =
                 '<a class="word-rapp-preview-open" href="' + url + '" download="' + escapeHtml(meta.fileName || ('file.' + ext)) + '">Scarica originale</a>';
             host.appendChild(openBar);
-            var text = new TextDecoder('utf-8').decode(buffer);
+            var text = new TextDecoder('utf-8').decode(ab);
             var pre = document.createElement('pre');
             pre.className = 'word-rapp-text-preview';
             pre.textContent = text;
@@ -970,21 +1055,35 @@
             host.innerHTML = '<p class="word-rapp-preview-status">Documento non trovato.</p>';
             return;
         }
-        if (status) status.textContent = 'Apertura file originale…';
+        mode = mode || 'text';
+        if (status) status.textContent = 'Apertura file…';
         host.innerHTML = '<p class="word-rapp-preview-status">Caricamento anteprima…</p>';
+        var done = false;
+        var watchdog = setTimeout(function () {
+            if (done) return;
+            if (status) status.textContent = 'Caricamento lento…';
+        }, 8000);
         try {
             var rec = await idbGet(id);
-            if (!rec || !rec.buffer) throw new Error('File non in memoria su questo dispositivo. Attendi il sync (LED verde) o ricarica.');
-            await renderPreviewIntoHost(host, meta, rec.buffer, mode || 'layout');
+            if (!rec || !rec.buffer) {
+                throw new Error('File non in memoria su questo dispositivo. Attendi il sync (LED verde) o ricarica il file.');
+            }
+            await renderPreviewIntoHost(host, meta, rec.buffer, mode);
+            done = true;
+            clearTimeout(watchdog);
             if (status) {
-                status.textContent = (mode === 'text')
-                    ? 'Testo estratto dal file originale'
-                    : 'Anteprima del file originale';
+                status.textContent = (mode === 'layout')
+                    ? 'Anteprima layout (file originale)'
+                    : 'Anteprima testo dal file originale';
             }
         } catch (err) {
+            done = true;
+            clearTimeout(watchdog);
             console.warn('[ServiceHub] preview:', err);
+            var msg = (err && err.message) || 'Anteprima non riuscita';
             host.innerHTML = '<p class="word-rapp-preview-status word-rapp-preview-err">' +
-                escapeHtml((err && err.message) || 'Anteprima non riuscita') + '</p>';
+                escapeHtml(msg) + '</p>' +
+                '<p class="word-rapp-preview-fallback">Prova «Ricarica anteprima» o «Testo leggibile». Se resta vuoto, scarica il file e aprilo con Word/Excel.</p>';
             if (status) status.textContent = 'Anteprima non disponibile';
         }
     };
@@ -1037,8 +1136,8 @@
                 };
             }
             var reload = document.getElementById('word-rapp-reload-preview-btn');
-            if (reload) reload.onclick = function () { void window.renderWordRapportinoPreview(id, 'layout'); };
-            void window.renderWordRapportinoPreview(id, 'layout');
+            if (reload) reload.onclick = function () { void window.renderWordRapportinoPreview(id, 'text'); };
+            void window.renderWordRapportinoPreview(id, 'text');
         }
         modal.classList.add('active');
         if (typeof window.__syncBodyModalOpenClass === 'function') window.__syncBodyModalOpenClass();

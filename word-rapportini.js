@@ -432,7 +432,7 @@
 
     async function fillXlsxBuffer(buffer, data) {
         await ensureXlsxLib();
-        var wb = window.XLSX.read(buffer, { type: 'array', cellStyles: true, bookVBA: true });
+        var wb = window.XLSX.read(buffer, { type: 'array' });
         (wb.SheetNames || []).forEach(function (sheetName) {
             var sheet = wb.Sheets[sheetName];
             if (!sheet) return;
@@ -450,7 +450,8 @@
             // 2) Riempimento per etichetta (TK9201 | mm | ___ | cond | ___)
             fillXlsxSheetByLabels(sheet, data);
         });
-        return window.XLSX.write(wb, { type: 'array', bookType: 'xlsx', cellStyles: true });
+        // cellStyles:true sulla build community corrompe le celle scritte
+        return window.XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
     }
 
     function normLabelKey(s) {
@@ -1314,7 +1315,7 @@
                 '<a class="word-rapp-preview-open" href="' + url + '" download="' + escapeHtml(meta.fileName || 'foglio.xlsx') + '">Scarica originale</a>';
             host.appendChild(openBar);
             await ensureXlsxLib();
-            var wb = window.XLSX.read(ab, { type: 'array', cellStyles: true });
+            var wb = window.XLSX.read(ab, { type: 'array' });
             var sheetBar = document.createElement('div');
             sheetBar.className = 'word-rapp-xlsx-tabs';
             var tableHost = document.createElement('div');

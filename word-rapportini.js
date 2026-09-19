@@ -238,13 +238,31 @@
         throw new Error('Formato buffer non supportato');
     }
 
+    function libUrl(name) {
+        try {
+            var scripts = document.getElementsByTagName('script');
+            for (var i = scripts.length - 1; i >= 0; i--) {
+                var src = scripts[i].src || '';
+                if (/word-rapportini\.js(\?|$)/i.test(src)) {
+                    return src.replace(/[^/]*$/, 'libs/' + name);
+                }
+            }
+        } catch (_) {}
+        return 'libs/' + name;
+    }
+
     function ensureDocxLibs() {
-        return Promise.all([
-            loadScriptOnce('https://cdn.jsdelivr.net/npm/pizzip@3.2.0/dist/pizzip.js', function () { return !!window.PizZip; }),
-            loadScriptOnce('https://cdn.jsdelivr.net/npm/docxtemplater@3.55.9/build/docxtemplater.js', function () {
+        return loadScriptFromCdns([
+            libUrl('pizzip.js'),
+            'https://cdn.jsdelivr.net/npm/pizzip@3.2.0/dist/pizzip.js'
+        ], function () { return !!window.PizZip; }).then(function () {
+            return loadScriptFromCdns([
+                libUrl('docxtemplater.js'),
+                'https://cdn.jsdelivr.net/npm/docxtemplater@3.55.9/build/docxtemplater.js'
+            ], function () {
                 return !!(window.docxtemplater || window.Docxtemplater);
-            })
-        ]).then(function () {
+            });
+        }).then(function () {
             if (!window.PizZip || !(window.docxtemplater || window.Docxtemplater)) {
                 throw new Error('Librerie Word non caricate');
             }
@@ -253,7 +271,10 @@
     }
 
     function ensureXlsxLib() {
-        return loadScriptOnce('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js', function () {
+        return loadScriptFromCdns([
+            libUrl('xlsx.full.min.js'),
+            'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
+        ], function () {
             return !!(window.XLSX && window.XLSX.read);
         }).then(function () {
             if (!(window.XLSX && window.XLSX.read)) throw new Error('Libreria Excel non caricata');
@@ -768,7 +789,9 @@
     };
 
     function ensureMammothLib() {
+        if (window.mammoth && window.mammoth.convertToHtml) return Promise.resolve(true);
         return loadScriptFromCdns([
+            libUrl('mammoth.browser.min.js'),
             'https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js',
             'https://unpkg.com/mammoth@1.8.0/mammoth.browser.min.js'
         ], function () {
@@ -788,15 +811,20 @@
             l.setAttribute('data-sh-lib', href);
             document.head.appendChild(l);
         }
-        ensureCss('https://cdn.jsdelivr.net/npm/docx-preview@0.3.5/dist/docx-preview.css');
-        // JSZip PRIMA di docx-preview (caricamento parallelo rompe l'anteprima)
+        ensureCss(libUrl('docx-preview.css'));
+        if (window.docx && typeof window.docx.renderAsync === 'function' && window.JSZip) {
+            return Promise.resolve(true);
+        }
+        // JSZip PRIMA di docx-preview
         return loadScriptFromCdns([
+            libUrl('jszip.min.js'),
             'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js',
             'https://unpkg.com/jszip@3.10.1/dist/jszip.min.js'
         ], function () {
             return !!window.JSZip;
         }).then(function () {
             return loadScriptFromCdns([
+                libUrl('docx-preview.min.js'),
                 'https://cdn.jsdelivr.net/npm/docx-preview@0.3.5/dist/docx-preview.min.js',
                 'https://unpkg.com/docx-preview@0.3.5/dist/docx-preview.min.js'
             ], function () {
@@ -806,6 +834,36 @@
             if (!(window.docx && window.docx.renderAsync)) throw new Error('Anteprima Word non disponibile');
             return true;
         });
+    }
+
+    /** Ultima spiaggia: estrai testo da word/document.xml senza mammoth/docx-preview */
+    async function renderDocxEmergencyText(host, buffer) {
+        await ensureDocxLibs();
+        var ab = await toArrayBuffer(buffer);
+        var zip = new window.PizZip(ab);
+        var entry = zip.file('word/document.xml');
+        if (!entry) throw new Error('ZIP Word senza document.xml');
+        var xml = entry.asText();
+        var text = String(xml || '')
+            .replace(/<\/w:p>/g, '\n')
+            .replace(/<w:tab\b[^>]*\/>/g, '\t')
+            .replace(/<w:br\b[^>]*\/>/g, '\n')
+            .replace(/<[^>]+>/g, '')
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"')
+            .replace(/&#(\d+);/g, function (_, n) { return String.fromCharCode(Number(n)); })
+            .replace(/[ \t]+\n/g, '\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+        var box = document.createElement('div');
+        box.className = 'word-rapp-mammoth-host';
+        var pre = document.createElement('pre');
+        pre.className = 'word-rapp-text-preview';
+        pre.textContent = text || '(Nessun testo trovato nel file Word)';
+        box.appendChild(pre);
+        host.appendChild(box);
     }
 
     function revokeWordPreviewUrl() {
@@ -893,15 +951,20 @@
     }
 
     async function renderDocxTextPreview(host, buffer) {
-        await ensureMammothLib();
-        var ab = await toArrayBuffer(buffer);
-        var result = await window.mammoth.convertToHtml({ arrayBuffer: ab });
-        var box = document.createElement('div');
-        box.className = 'word-rapp-mammoth-host';
-        box.innerHTML = result.value || '<p><em>Nessun testo estratto dal file.</em></p>';
-        host.appendChild(box);
-        if (result.messages && result.messages.length) {
-            console.info('[ServiceHub] mammoth:', result.messages);
+        try {
+            await ensureMammothLib();
+            var ab = await toArrayBuffer(buffer);
+            var result = await window.mammoth.convertToHtml({ arrayBuffer: ab });
+            var box = document.createElement('div');
+            box.className = 'word-rapp-mammoth-host';
+            box.innerHTML = result.value || '<p><em>Nessun testo estratto dal file.</em></p>';
+            host.appendChild(box);
+            if (result.messages && result.messages.length) {
+                console.info('[ServiceHub] mammoth:', result.messages);
+            }
+        } catch (err) {
+            console.warn('[ServiceHub] mammoth fallito, testo di emergenza:', err);
+            await renderDocxEmergencyText(host, buffer);
         }
     }
 
@@ -1081,9 +1144,26 @@
             clearTimeout(watchdog);
             console.warn('[ServiceHub] preview:', err);
             var msg = (err && err.message) || 'Anteprima non riuscita';
+            var extFail = (meta.ext || fileExt(meta.fileName) || '').toLowerCase();
+            try {
+                var rec2 = await idbGet(id);
+                if (rec2 && rec2.buffer && (extFail === 'docx' || extFail === 'docm')) {
+                    host.innerHTML = '';
+                    var note = document.createElement('p');
+                    note.className = 'word-rapp-preview-err';
+                    note.textContent = 'Anteprima avanzata fallita (' + msg + '). Mostro il testo grezzo dal file:';
+                    host.appendChild(note);
+                    await renderDocxEmergencyText(host, rec2.buffer);
+                    if (status) status.textContent = 'Anteprima di emergenza (testo dal Word)';
+                    return;
+                }
+            } catch (err2) {
+                console.warn('[ServiceHub] preview emergency:', err2);
+            }
             host.innerHTML = '<p class="word-rapp-preview-status word-rapp-preview-err">' +
                 escapeHtml(msg) + '</p>' +
-                '<p class="word-rapp-preview-fallback">Prova «Ricarica anteprima» o «Testo leggibile». Se resta vuoto, scarica il file e aprilo con Word/Excel.</p>';
+                '<p class="word-rapp-preview-fallback">File: <b>' + escapeHtml(meta.fileName || '') +
+                '</b> (.' + escapeHtml(extFail || '?') + '). Se è un .doc vecchio, salvalo come .docx e ricaricalo con «Sostituisci file».</p>';
             if (status) status.textContent = 'Anteprima non disponibile';
         }
     };
@@ -1108,13 +1188,15 @@
             var ext = (meta.ext || fileExt(meta.fileName) || '').toLowerCase();
             var canFill = !!FILLABLE_EXT[ext];
             var fillHint = canFill
-                ? 'Anteprima del file che hai caricato. Usa <b>Layout originale</b> o <b>Testo leggibile</b>. Per la stampa compilata metti <code>{{TK9201}}</code> ecc. nel Word.'
-                : 'Anteprima del file originale (se il formato lo permette).';
+                ? 'Qui sotto deve comparire il contenuto del file. Formato consigliato: <b>.docx</b> (in Word: File → Salva con nome → Documento Word). Per i livelli automatici metti <code>{{TK9201}}</code> nel testo.'
+                : 'Qui sotto l’anteprima del file (se il formato lo permette). Preferisci <b>.docx / .xlsx / .pdf</b>.';
             body.innerHTML =
                 '<div class="word-rapp-panel word-rapp-panel--viewer">' +
-                '<p class="word-rapp-panel-file">' + escapeHtml(meta.fileName || '') + '</p>' +
-                '<p id="word-rapp-preview-status" class="word-rapp-preview-status">Apertura…</p>' +
-                '<div id="word-rapp-preview-host" class="word-rapp-preview-host"></div>' +
+                '<p class="word-rapp-panel-file">File: <b>' + escapeHtml(meta.fileName || '') + '</b> · ' +
+                escapeHtml((ext || '?').toUpperCase()) + ' · ' +
+                (meta.size ? (Math.max(1, Math.round(meta.size / 1024)) + ' KB') : '?') + '</p>' +
+                '<p id="word-rapp-preview-status" class="word-rapp-preview-status">Apertura anteprima…</p>' +
+                '<div id="word-rapp-preview-host" class="word-rapp-preview-host" aria-live="polite"></div>' +
                 '<p class="word-rapp-panel-hint">' + fillHint + '</p>' +
                 '<div class="word-rapp-actions">' +
                 '<button type="button" class="letture-share-btn" id="word-rapp-replace-btn">Sostituisci file / rinomina</button>' +

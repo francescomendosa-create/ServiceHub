@@ -715,6 +715,15 @@
         }
     };
 
+    function ensureMammothLib() {
+        return loadScriptOnce('https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js', function () {
+            return !!(window.mammoth && window.mammoth.convertToHtml);
+        }).then(function () {
+            if (!(window.mammoth && window.mammoth.convertToHtml)) throw new Error('Lettura testo Word non disponibile');
+            return true;
+        });
+    }
+
     function ensureDocxPreviewLibs() {
         function ensureCss(href) {
             if (document.querySelector('link[data-sh-lib="' + href + '"]')) return;
@@ -724,12 +733,12 @@
             l.setAttribute('data-sh-lib', href);
             document.head.appendChild(l);
         }
-        ensureCss('https://cdn.jsdelivr.net/npm/docx-preview@0.3.3/dist/docx-preview.css');
+        ensureCss('https://cdn.jsdelivr.net/npm/docx-preview@0.3.5/dist/docx-preview.css');
         return Promise.all([
             loadScriptOnce('https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js', function () {
                 return !!window.JSZip;
             }),
-            loadScriptOnce('https://cdn.jsdelivr.net/npm/docx-preview@0.3.3/dist/docx-preview.min.js', function () {
+            loadScriptOnce('https://cdn.jsdelivr.net/npm/docx-preview@0.3.5/dist/docx-preview.min.js', function () {
                 return !!(window.docx && typeof window.docx.renderAsync === 'function');
             })
         ]).then(function () {
@@ -750,65 +759,146 @@
             revokeWordPreviewUrl();
             var host = document.getElementById('word-rapp-preview-host');
             if (host) host.innerHTML = '';
-            // Rimuovi style injectati da docx-preview che possono restare in head
             document.querySelectorAll('style[data-docx-preview], style.docx-preview-style').forEach(function (el) {
                 try { el.remove(); } catch (_) {}
             });
+            if (window.__wordRappPreviewResizeObs) {
+                try { window.__wordRappPreviewResizeObs.disconnect(); } catch (_) {}
+                window.__wordRappPreviewResizeObs = null;
+            }
         } catch (_) {}
     };
 
-    async function renderPreviewIntoHost(host, meta, buffer) {
+    function fitDocxPagesToHost(host, wrap) {
+        if (!host || !wrap) return;
+        var avail = Math.max(200, (host.clientWidth || 0) - 20);
+        var pages = wrap.querySelectorAll('section.docx');
+        pages.forEach(function (page) {
+            page.style.transform = 'none';
+            page.style.marginLeft = 'auto';
+            page.style.marginRight = 'auto';
+            var natural = page.scrollWidth || page.offsetWidth || 0;
+            if (!natural || natural <= avail + 8) {
+                page.style.transform = '';
+                page.style.width = '';
+                return;
+            }
+            var scale = Math.min(1, Math.max(0.35, avail / natural));
+            page.style.transformOrigin = 'top center';
+            page.style.transform = 'scale(' + scale.toFixed(4) + ')';
+            // Compensa lo spazio vuoto sotto dopo lo scale
+            var h = page.offsetHeight || 0;
+            if (h > 0) {
+                page.style.marginBottom = Math.round(h * (scale - 1)) + 'px';
+            }
+        });
+    }
+
+    async function renderDocxLayoutPreview(host, buffer) {
+        await ensureDocxPreviewLibs();
+        var wrap = document.createElement('div');
+        wrap.className = 'word-rapp-docx-host';
+        host.appendChild(wrap);
+        var blob = buffer instanceof Blob ? buffer : new Blob([buffer], { type: DOCX_MIME });
+        await window.docx.renderAsync(blob, wrap, null, {
+            className: 'docx',
+            inWrapper: true,
+            ignoreWidth: false,
+            ignoreHeight: false,
+            breakPages: true,
+            renderHeaders: true,
+            renderFooters: true,
+            renderFootnotes: true,
+            useBase64URL: true,
+            experimental: true
+        });
+        var runFit = function () { fitDocxPagesToHost(host, wrap); };
+        requestAnimationFrame(function () {
+            runFit();
+            setTimeout(runFit, 80);
+            setTimeout(runFit, 300);
+        });
+        if (window.ResizeObserver) {
+            try {
+                if (window.__wordRappPreviewResizeObs) window.__wordRappPreviewResizeObs.disconnect();
+                window.__wordRappPreviewResizeObs = new ResizeObserver(function () { runFit(); });
+                window.__wordRappPreviewResizeObs.observe(host);
+            } catch (_) {}
+        }
+    }
+
+    async function renderDocxTextPreview(host, buffer) {
+        await ensureMammothLib();
+        var ab = buffer instanceof ArrayBuffer ? buffer : await buffer.arrayBuffer();
+        var result = await window.mammoth.convertToHtml({ arrayBuffer: ab });
+        var box = document.createElement('div');
+        box.className = 'word-rapp-mammoth-host';
+        box.innerHTML = result.value || '<p><em>Nessun testo estratto.</em></p>';
+        host.appendChild(box);
+        if (result.messages && result.messages.length) {
+            console.info('[ServiceHub] mammoth:', result.messages);
+        }
+    }
+
+    async function renderPreviewIntoHost(host, meta, buffer, mode) {
         var ext = (meta.ext || fileExt(meta.fileName) || '').toLowerCase();
         var mime = meta.mime || mimeFor(meta.fileName);
+        mode = mode || 'layout';
         host.innerHTML = '';
         revokeWordPreviewUrl();
 
+        // Pulsante sempre utile: apri il binario originale in nuova scheda / download
+        var openBar = document.createElement('div');
+        openBar.className = 'word-rapp-preview-toolbar';
+        var blob = new Blob([buffer], { type: mime || 'application/octet-stream' });
+        var url = URL.createObjectURL(blob);
+        window.__wordRappPreviewUrl = url;
+
         if (ext === 'pdf') {
-            var pdfBlob = new Blob([buffer], { type: 'application/pdf' });
-            var pdfUrl = URL.createObjectURL(pdfBlob);
-            window.__wordRappPreviewUrl = pdfUrl;
-            host.innerHTML =
-                '<iframe class="word-rapp-preview-frame" title="Anteprima PDF" src="' + pdfUrl + '#toolbar=1"></iframe>' +
-                '<p class="word-rapp-preview-fallback">Se non vedi il PDF, <a href="' + pdfUrl + '" target="_blank" rel="noopener">aprilo a schermo intero</a>.</p>';
+            host.appendChild(openBar);
+            openBar.innerHTML =
+                '<a class="word-rapp-preview-open" href="' + url + '" target="_blank" rel="noopener">Apri PDF a schermo intero</a>';
+            var frame = document.createElement('iframe');
+            frame.className = 'word-rapp-preview-frame';
+            frame.title = 'Anteprima PDF';
+            frame.src = url + '#view=FitH';
+            host.appendChild(frame);
             return;
         }
 
         if (ext === 'docx' || ext === 'docm') {
-            await ensureDocxPreviewLibs();
-            var wrap = document.createElement('div');
-            wrap.className = 'word-rapp-docx-host';
-            host.appendChild(wrap);
-            await window.docx.renderAsync(buffer, wrap, null, {
-                className: 'docx',
-                inWrapper: true,
-                ignoreWidth: true,
-                ignoreHeight: false,
-                breakPages: true,
-                renderHeaders: true,
-                renderFooters: true,
-                useBase64URL: true,
-                experimental: true
+            openBar.innerHTML =
+                '<button type="button" class="word-rapp-preview-tab' + (mode === 'layout' ? ' active' : '') + '" data-mode="layout">Layout originale</button>' +
+                '<button type="button" class="word-rapp-preview-tab' + (mode === 'text' ? ' active' : '') + '" data-mode="text">Testo leggibile</button>' +
+                '<a class="word-rapp-preview-open" href="' + url + '" download="' + escapeHtml(meta.fileName || 'documento.docx') + '">Scarica originale</a>';
+            host.appendChild(openBar);
+            openBar.querySelectorAll('[data-mode]').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    var m = btn.getAttribute('data-mode');
+                    void window.renderWordRapportinoPreview(meta.id, m);
+                });
             });
-            // Adatta larghezza al contenitore (desktop senza Word)
-            requestAnimationFrame(function () {
+            var body = document.createElement('div');
+            body.className = 'word-rapp-preview-body';
+            host.appendChild(body);
+            if (mode === 'text') {
+                await renderDocxTextPreview(body, buffer);
+            } else {
                 try {
-                    var sections = wrap.querySelectorAll('section.docx');
-                    var hostW = host.clientWidth || wrap.clientWidth || 800;
-                    sections.forEach(function (sec) {
-                        var sw = sec.scrollWidth || sec.offsetWidth || 0;
-                        if (sw > hostW + 20) {
-                            var scale = Math.max(0.45, (hostW - 24) / sw);
-                            sec.style.transformOrigin = 'top left';
-                            sec.style.transform = 'scale(' + scale.toFixed(3) + ')';
-                            sec.style.marginBottom = Math.round((sec.offsetHeight || 0) * (scale - 1)) + 'px';
-                        }
-                    });
-                } catch (_) {}
-            });
+                    await renderDocxLayoutPreview(body, buffer);
+                } catch (err) {
+                    console.warn('[ServiceHub] layout docx fallito, uso testo:', err);
+                    body.innerHTML = '<p class="word-rapp-preview-err">Layout non renderizzato, mostro il testo leggibile.</p>';
+                    await renderDocxTextPreview(body, buffer);
+                }
+            }
             return;
         }
 
         if (ext === 'xlsx' || ext === 'xlsm' || ext === 'xls') {
+            openBar.innerHTML =
+                '<a class="word-rapp-preview-open" href="' + url + '" download="' + escapeHtml(meta.fileName || 'foglio.xlsx') + '">Scarica originale</a>';
+            host.appendChild(openBar);
             await ensureXlsxLib();
             var wb = window.XLSX.read(buffer, { type: 'array', cellStyles: true });
             var sheetBar = document.createElement('div');
@@ -840,6 +930,9 @@
         }
 
         if (ext === 'csv' || ext === 'tsv' || ext === 'txt' || ext === 'rtf' || ext === 'json' || ext === 'xml') {
+            openBar.innerHTML =
+                '<a class="word-rapp-preview-open" href="' + url + '" download="' + escapeHtml(meta.fileName || ('file.' + ext)) + '">Scarica originale</a>';
+            host.appendChild(openBar);
             var text = new TextDecoder('utf-8').decode(buffer);
             var pre = document.createElement('pre');
             pre.className = 'word-rapp-text-preview';
@@ -849,30 +942,26 @@
         }
 
         if (/^(png|jpe?g|gif|webp|bmp)$/i.test(ext)) {
-            var imgBlob = new Blob([buffer], { type: mime || 'image/' + ext });
-            var imgUrl = URL.createObjectURL(imgBlob);
-            window.__wordRappPreviewUrl = imgUrl;
+            openBar.innerHTML =
+                '<a class="word-rapp-preview-open" href="' + url + '" target="_blank" rel="noopener">Apri immagine</a>';
+            host.appendChild(openBar);
             var img = document.createElement('img');
             img.className = 'word-rapp-img-preview';
-            img.src = imgUrl;
+            img.src = url;
             img.alt = meta.fileName || 'Anteprima';
             host.appendChild(img);
             return;
         }
 
-        // Formati legacy (.doc, .xls, .ppt, odt…): scarica / apri blob
-        var blob = new Blob([buffer], { type: mime || 'application/octet-stream' });
-        var url = URL.createObjectURL(blob);
-        window.__wordRappPreviewUrl = url;
         host.innerHTML =
             '<div class="word-rapp-preview-unsupported">' +
-            '<p>Anteprima diretta non disponibile per <b>.' + escapeHtml(ext || '?') + '</b> su questo dispositivo.</p>' +
-            '<p>Puoi comunque aprire o scaricare il file originale.</p>' +
+            '<p>Anteprima diretta non disponibile per <b>.' + escapeHtml(ext || '?') + '</b>.</p>' +
+            '<p>Puoi scaricare e aprire il file originale.</p>' +
             '<a class="letture-share-btn" href="' + url + '" download="' + escapeHtml(meta.fileName || ('file.' + ext)) + '">Scarica file originale</a>' +
             '</div>';
     }
 
-    window.renderWordRapportinoPreview = async function (id) {
+    window.renderWordRapportinoPreview = async function (id, mode) {
         var host = document.getElementById('word-rapp-preview-host');
         var status = document.getElementById('word-rapp-preview-status');
         if (!host) return;
@@ -886,8 +975,12 @@
         try {
             var rec = await idbGet(id);
             if (!rec || !rec.buffer) throw new Error('File non in memoria su questo dispositivo. Attendi il sync (LED verde) o ricarica.');
-            await renderPreviewIntoHost(host, meta, rec.buffer);
-            if (status) status.textContent = 'File originale · sola visualizzazione';
+            await renderPreviewIntoHost(host, meta, rec.buffer, mode || 'layout');
+            if (status) {
+                status.textContent = (mode === 'text')
+                    ? 'Testo estratto dal file originale'
+                    : 'Anteprima del file originale';
+            }
         } catch (err) {
             console.warn('[ServiceHub] preview:', err);
             host.innerHTML = '<p class="word-rapp-preview-status word-rapp-preview-err">' +
@@ -916,8 +1009,8 @@
             var ext = (meta.ext || fileExt(meta.fileName) || '').toLowerCase();
             var canFill = !!FILLABLE_EXT[ext];
             var fillHint = canFill
-                ? 'Per la stampa compilata: nel file metti <code>{{TK9201}}</code> ecc. dove servono i livelli. Qui sotto vedi il <b>file originale</b> senza Word/Excel.'
-                : 'Qui sotto vedi il file originale (se il formato lo permette).';
+                ? 'Anteprima del file che hai caricato. Usa <b>Layout originale</b> o <b>Testo leggibile</b>. Per la stampa compilata metti <code>{{TK9201}}</code> ecc. nel Word.'
+                : 'Anteprima del file originale (se il formato lo permette).';
             body.innerHTML =
                 '<div class="word-rapp-panel word-rapp-panel--viewer">' +
                 '<p class="word-rapp-panel-file">' + escapeHtml(meta.fileName || '') + '</p>' +
@@ -944,8 +1037,8 @@
                 };
             }
             var reload = document.getElementById('word-rapp-reload-preview-btn');
-            if (reload) reload.onclick = function () { void window.renderWordRapportinoPreview(id); };
-            void window.renderWordRapportinoPreview(id);
+            if (reload) reload.onclick = function () { void window.renderWordRapportinoPreview(id, 'layout'); };
+            void window.renderWordRapportinoPreview(id, 'layout');
         }
         modal.classList.add('active');
         if (typeof window.__syncBodyModalOpenClass === 'function') window.__syncBodyModalOpenClass();

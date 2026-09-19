@@ -413,6 +413,54 @@
             putVal(map, fieldId, v);
         });
 
+        // Tutti i serbatoi / livelli dall'interfaccia (stoccaggio + liste note)
+        function addPlantField(fieldId, label) {
+            if (!fieldId) return;
+            var v = '';
+            if (typeof window.readRapportinoPlantFieldValue === 'function') {
+                v = window.readRapportinoPlantFieldValue(fieldId) || '';
+            }
+            if (!v) {
+                var el = document.getElementById(fieldId);
+                if (el) v = String(el.value != null ? el.value : (el.textContent || '')).trim();
+            }
+            if (!v && typeof window.__readPlantBackupLocal === 'function') {
+                var bk = window.__readPlantBackupLocal();
+                if (bk && bk[fieldId] != null) v = String(bk[fieldId]).trim();
+            }
+            putVal(map, fieldId, v);
+            if (label) {
+                putVal(map, label, v);
+                putVal(map, String(label).replace(/\s+/g, ''), v);
+                putVal(map, String(label).replace(/\s+/g, '_'), v);
+            }
+            // es. inp-tk9201 → TK9201, tk9201
+            var short = String(fieldId).replace(/^inp-/i, '').replace(/^val-/i, '');
+            if (short) {
+                putVal(map, short, v);
+                putVal(map, short.toUpperCase(), v);
+            }
+        }
+
+        (window.LETTURE_STOCCAGGIO_CALDAIA_D_SERBATOI || []).forEach(function (row) {
+            if (row) addPlantField(row.fieldId, row.label);
+        });
+        (window.LETTURE_STOCCAGGIO_CALDAIA_D_CALDAIA || []).forEach(function (row) {
+            if (row) addPlantField(row.fieldId, row.label);
+        });
+        (window.STOCCAGGIO_INTERNO_TANKS || []).forEach(function (t) {
+            if (t) addPlantField(t.fieldId, t.label || t.name);
+        });
+        [
+            'inp-tk9000', 'inp-tk9201', 'inp-tk9204', 'inp-tk9205', 'inp-tk10000',
+            'inp-tk10601a', 'inp-tk10601b', 'inp-tk10602', 'inp-tk10602a', 'inp-tk10604',
+            'inp-tk10605', 'inp-tk10606a', 'inp-tk10606b', 'inp-tk10607', 'inp-tk10608',
+            'inp-s133', 'inp-s121', 'inp-s864', 'inp-s818', 'inp-s817', 'inp-s813', 'inp-s819',
+            'inp-a10605', 'inp-tk8066', 'inp-tk8063', 'inp-tk8092', 'inp-bacino-tk8092', 'inp-bacino-tk8093',
+            'inp-tk11039', 'inp-tk11038', 'inp-tk11037', 'inp-tk11019',
+            'inp-a-prod', 'inp-d-prod', 'cfil-produzione'
+        ].forEach(function (fid) { addPlantField(fid); });
+
         return map;
     };
 
@@ -433,9 +481,8 @@
         return loadMeta().find(function (x) { return x && x.id === id; }) || null;
     };
 
-    window.getWordRapportinoForRole = function (role) {
-        if (!role) return null;
-        return loadMeta().find(function (x) { return x && x.role === role; }) || null;
+    window.getWordRapportinoForRole = function () {
+        return null;
     };
 
     window.saveWordRapportinoFromFile = async function (opts) {
@@ -443,7 +490,7 @@
         var name = String(opts.name || '').trim();
         var file = opts.file;
         if (!name) throw new Error('Inserisci un nome');
-        if (!file) throw new Error('Seleziona un file di lavoro');
+        if (!file) throw new Error('Seleziona un file ufficiale');
         if (!isAllowedWorkFile(file)) {
             throw new Error('Formato non ammesso. Usa Word, Excel, PDF, OpenDocument, CSV, testo, PowerPoint, …');
         }
@@ -453,13 +500,7 @@
 
         var ext = fileExt(file.name) || 'bin';
         var mime = mimeFor(file.name, file.type || 'application/octet-stream');
-        var role = opts.role || '';
         var list = loadMeta();
-        if (role) {
-            list.forEach(function (m) {
-                if (m && m.role === role) m.role = '';
-            });
-        }
         var id = opts.id || uid();
         var existing = list.find(function (x) { return x.id === id; });
         var now = Date.now();
@@ -471,7 +512,6 @@
             mime: mime,
             size: buf.byteLength,
             fillable: !!FILLABLE_EXT[ext],
-            role: role || (existing && existing.role) || '',
             createdAt: (existing && existing.createdAt) || now,
             updatedAt: now
         };
@@ -481,6 +521,13 @@
         } else {
             list.push(meta);
         }
+        // Pulisci eventuali vecchi flag "role" (non più usati)
+        list = list.map(function (m) {
+            if (!m) return m;
+            var copy = Object.assign({}, m);
+            delete copy.role;
+            return copy;
+        });
         saveMeta(list);
         return meta;
     };
@@ -533,9 +580,7 @@
     };
 
     window.buildSituazioneGiornalieraWordFileFromTemplate = async function () {
-        var meta = window.getWordRapportinoForRole('situazione-giornaliera');
-        if (!meta) return null;
-        return window.fillWordRapportinoTemplate(meta.id);
+        return null;
     };
 
     window.renderWordRapportiniList = function () {
@@ -543,13 +588,10 @@
         if (!host) return;
         var list = window.listWordRapportini();
         if (!list.length) {
-            host.innerHTML = '<p class="word-rapp-empty">Nessun file caricato. Usa «Aggiungi rapportino» e carica Word, Excel, PDF o altro file di lavoro ufficiale.</p>';
+            host.innerHTML = '<p class="word-rapp-empty">Nessun file ufficiale. Premi «Aggiungi rapportino», dagli un nome e carica il documento (Word/Excel/PDF…). Quello è il modello di stampa.</p>';
             return;
         }
         host.innerHTML = list.map(function (m) {
-            var roleBadge = m.role === 'situazione-giornaliera'
-                ? '<span class="word-rapp-badge">Situazione giornaliera</span>'
-                : '';
             var sizeKb = m.size ? Math.max(1, Math.round(m.size / 1024)) + ' KB' : '';
             var extLabel = (m.ext || fileExt(m.fileName) || '').toUpperCase();
             return '<div class="word-rapp-item" data-id="' + m.id + '">' +
@@ -557,7 +599,6 @@
                 '<span class="word-rapp-name">' + escapeHtml(m.name) +
                 (extLabel ? ' <span class="word-rapp-ext">' + escapeHtml(extLabel) + '</span>' : '') +
                 '</span>' +
-                roleBadge +
                 '<span class="word-rapp-meta">' + escapeHtml(m.fileName || '') + (sizeKb ? ' · ' + sizeKb : '') + '</span>' +
                 '</button>' +
                 '<button type="button" class="word-rapp-del" data-action="delete" data-id="' + m.id + '" aria-label="Elimina">✕</button>' +
@@ -598,7 +639,6 @@
         if (!modal) return;
         var nameInp = document.getElementById('word-rapp-name');
         var fileInp = document.getElementById('word-rapp-file');
-        var roleChk = document.getElementById('word-rapp-role-sg');
         var title = document.getElementById('word-rapp-add-title');
         var err = document.getElementById('word-rapp-add-error');
         if (err) { err.style.display = 'none'; err.textContent = ''; }
@@ -606,13 +646,12 @@
         modal.dataset.editId = editId || '';
         var existing = editId ? window.getWordRapportinoMeta(editId) : null;
         if (nameInp) nameInp.value = existing ? existing.name : '';
-        if (roleChk) roleChk.checked = !!(existing && existing.role === 'situazione-giornaliera');
         if (title) title.textContent = existing ? 'Sostituisci / rinomina rapportino' : 'Aggiungi rapportino';
         var fileHint = document.getElementById('word-rapp-file-hint');
         if (fileHint) {
             fileHint.textContent = existing
-                ? 'Lascia vuoto per tenere il file attuale, oppure carica un nuovo file (Word, Excel, PDF, …).'
-                : 'Carica il file ufficiale: Word, Excel, PDF, OpenDocument, CSV, PowerPoint, testo… Layout identico all’originale.';
+                ? 'Lascia vuoto per tenere il file attuale, oppure carica il nuovo file ufficiale.'
+                : 'Il file che carichi è il documento ufficiale. In stampa resta uguale: ci mettiamo solo i valori dall’interfaccia.';
         }
         modal.classList.add('active');
         setTimeout(function () { if (nameInp) nameInp.focus(); }, 50);
@@ -627,7 +666,6 @@
         var modal = document.getElementById('word-rapportino-add-modal');
         var nameInp = document.getElementById('word-rapp-name');
         var fileInp = document.getElementById('word-rapp-file');
-        var roleChk = document.getElementById('word-rapp-role-sg');
         var err = document.getElementById('word-rapp-add-error');
         var editId = modal && modal.dataset.editId;
         var name = nameInp ? String(nameInp.value || '').trim() : '';
@@ -637,32 +675,26 @@
             else toast(msg, true);
         }
         if (!name) { showErr('Inserisci il nome del rapportino.'); return; }
-        if (!editId && !file) { showErr('Seleziona un file di lavoro.'); return; }
+        if (!editId && !file) { showErr('Seleziona il file ufficiale.'); return; }
         try {
             if (editId && !file) {
-                var list = loadMeta();
-                var role = roleChk && roleChk.checked ? 'situazione-giornaliera' : '';
-                if (role) {
-                    list.forEach(function (m) {
-                        if (m && m.role === role && m.id !== editId) m.role = '';
-                    });
-                }
-                list = list.map(function (m) {
+                var list = loadMeta().map(function (m) {
                     if (!m || m.id !== editId) return m;
-                    return Object.assign({}, m, { name: name, role: role, updatedAt: Date.now() });
+                    var copy = Object.assign({}, m, { name: name, updatedAt: Date.now() });
+                    delete copy.role;
+                    return copy;
                 });
                 saveMeta(list);
             } else {
                 await window.saveWordRapportinoFromFile({
                     id: editId || undefined,
                     name: name,
-                    file: file,
-                    role: roleChk && roleChk.checked ? 'situazione-giornaliera' : ''
+                    file: file
                 });
             }
             window.closeAggiungiWordRapportinoModal();
             window.renderWordRapportiniList();
-            toast('Rapportino salvato.');
+            toast('Documento ufficiale salvato.');
         } catch (e) {
             showErr((e && e.message) || 'Salvataggio fallito');
         }
@@ -681,29 +713,27 @@
         var titleEl = document.getElementById('letture-doc-toolbar-title');
         if (titleEl) titleEl.textContent = meta.name;
         var shareBtn = document.querySelector('#letture-doc-modal .letture-share-btn--main');
-        if (shareBtn) shareBtn.textContent = 'Genera file compilato';
+        if (shareBtn) shareBtn.textContent = 'Stampa / Esporta compilato';
         var body = document.getElementById('letture-doc-body');
         if (body) {
-            var helpKeys = (window.listWordRapportiniPlaceholdersHelp() || []).slice(0, 40);
+            var helpKeys = (window.listWordRapportiniPlaceholdersHelp() || []).slice(0, 48);
             var ext = (meta.ext || fileExt(meta.fileName) || '').toLowerCase();
             var canFill = !!FILLABLE_EXT[ext];
             var fillHint = canFill
-                ? 'Nei file Word/Excel/PDF/CSV/testo puoi mettere segnaposto come <code>{{DATA}}</code>, <code>{{SG9400A}}</code>, <code>{{TK9201}}</code>. Poi premi «Genera file compilato».'
-                : 'Questo formato viene condiviso <b>identico all’originale</b> (senza merge automatico dei segnaposto). Per l’autocompilazione preferisci .docx, .xlsx, .pdf o .csv.';
+                ? 'Una sola volta nel file ufficiale, dove devono comparire i livelli, metti la sigla tra doppie graffe — es. <code>{{TK9201}}</code>, <code>{{TK9000}}</code>, <code>{{DATA}}</code>. Poi ogni stampa prende in automatico i valori attuali dall’interfaccia: layout uguale all’originale, solo i numeri cambiano.'
+                : 'Questo formato viene esportato identico all’originale. Per riempire i livelli in automatico usa preferibilmente .docx o .xlsx con segnaposto tipo <code>{{TK9201}}</code>.';
             body.innerHTML =
                 '<div class="word-rapp-panel">' +
-                '<p class="word-rapp-panel-lead">Questo rapportino usa il <b>file originale</b> che hai caricato. Layout e grafica restano identici.</p>' +
-                '<p class="word-rapp-panel-file">' + escapeHtml(meta.fileName || '') +
-                (meta.role === 'situazione-giornaliera' ? ' · collegato a Situazione giornaliera' : '') +
-                '</p>' +
+                '<p class="word-rapp-panel-lead">Questo <b>è</b> il documento ufficiale che hai caricato. La stampa finale è lo stesso file, con i livelli/serbatoi presi dall’interfaccia.</p>' +
+                '<p class="word-rapp-panel-file">' + escapeHtml(meta.fileName || '') + '</p>' +
                 '<p class="word-rapp-panel-hint">' + fillHint + '</p>' +
                 '<div class="word-rapp-actions">' +
                 '<button type="button" class="letture-share-btn" id="word-rapp-replace-btn">Sostituisci file / rinomina</button>' +
-                '<button type="button" class="letture-share-btn" id="word-rapp-placeholders-btn">Mostra segnaposto</button>' +
+                '<button type="button" class="letture-share-btn" id="word-rapp-placeholders-btn">Sigle disponibili</button>' +
                 '</div>' +
                 '<pre class="word-rapp-placeholders" id="word-rapp-placeholders-box" style="display:none">' +
                 escapeHtml(helpKeys.join('\n')) +
-                (helpKeys.length >= 40 ? '\n…' : '') +
+                (helpKeys.length >= 48 ? '\n…' : '') +
                 '</pre>' +
                 '</div>';
             var rep = document.getElementById('word-rapp-replace-btn');
@@ -744,9 +774,9 @@
                 setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
             }
             if (file.__shFilled) {
-                toast('File compilato scaricato. Layout identico all’originale.');
+                toast('File ufficiale compilato: stesso layout, valori presi dall’interfaccia. Aprilo e stampa.');
             } else {
-                toast('File originale scaricato (formato senza autocompilazione automatica).');
+                toast('File ufficiale esportato (formato senza riempimento automatico dei livelli).');
             }
             return true;
         } catch (err) {

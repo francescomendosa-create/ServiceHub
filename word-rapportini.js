@@ -671,6 +671,7 @@
     window.closeAggiungiWordRapportinoModal = function () {
         var modal = document.getElementById('word-rapportino-add-modal');
         if (modal) modal.classList.remove('active');
+        if (typeof window.__syncBodyModalOpenClass === 'function') window.__syncBodyModalOpenClass();
     };
 
     window.confirmAggiungiWordRapportino = async function () {
@@ -745,7 +746,15 @@
     }
 
     window.__releaseWordRapportinoPreview = function () {
-        revokeWordPreviewUrl();
+        try {
+            revokeWordPreviewUrl();
+            var host = document.getElementById('word-rapp-preview-host');
+            if (host) host.innerHTML = '';
+            // Rimuovi style injectati da docx-preview che possono restare in head
+            document.querySelectorAll('style[data-docx-preview], style.docx-preview-style').forEach(function (el) {
+                try { el.remove(); } catch (_) {}
+            });
+        } catch (_) {}
     };
 
     async function renderPreviewIntoHost(host, meta, buffer) {
@@ -770,14 +779,31 @@
             wrap.className = 'word-rapp-docx-host';
             host.appendChild(wrap);
             await window.docx.renderAsync(buffer, wrap, null, {
-                className: 'word-rapp-docx',
+                className: 'docx',
                 inWrapper: true,
-                ignoreWidth: false,
+                ignoreWidth: true,
                 ignoreHeight: false,
                 breakPages: true,
                 renderHeaders: true,
                 renderFooters: true,
-                useBase64URL: true
+                useBase64URL: true,
+                experimental: true
+            });
+            // Adatta larghezza al contenitore (desktop senza Word)
+            requestAnimationFrame(function () {
+                try {
+                    var sections = wrap.querySelectorAll('section.docx');
+                    var hostW = host.clientWidth || wrap.clientWidth || 800;
+                    sections.forEach(function (sec) {
+                        var sw = sec.scrollWidth || sec.offsetWidth || 0;
+                        if (sw > hostW + 20) {
+                            var scale = Math.max(0.45, (hostW - 24) / sw);
+                            sec.style.transformOrigin = 'top left';
+                            sec.style.transform = 'scale(' + scale.toFixed(3) + ')';
+                            sec.style.marginBottom = Math.round((sec.offsetHeight || 0) * (scale - 1)) + 'px';
+                        }
+                    });
+                } catch (_) {}
             });
             return;
         }
@@ -922,6 +948,7 @@
             void window.renderWordRapportinoPreview(id);
         }
         modal.classList.add('active');
+        if (typeof window.__syncBodyModalOpenClass === 'function') window.__syncBodyModalOpenClass();
     };
 
     window.shareWordRapportinoDoc = async function (id) {

@@ -6,12 +6,14 @@
     'use strict';
 
     var META_KEY = 'servicehub_word_rapportini_meta_v1';
+    var DELETED_KEY = 'servicehub_word_rapportini_deleted_v1';
     var IDB_NAME = 'servicehub_word_rapportini_v1';
     var IDB_STORE = 'templates';
     var DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
     var XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
     var PDF_MIME = 'application/pdf';
     var MAX_BYTES = 20 * 1024 * 1024;
+    var DELETE_TOMBSTONE_MS = 30 * 24 * 60 * 60 * 1000; // 30 giorni: non ripristinare da cloud
 
     /** Estensioni ammesse (file di lavoro). */
     var WORK_EXT_RE = /\.(docx?|docm|xlsx?|xlsm|xlsb|pdf|odt|ods|odp|csv|txt|rtf|pptx?|pptm|ppsx?|pages|numbers|key|tsv|xml|json)$/i;
@@ -94,6 +96,50 @@
             console.warn('[ServiceHub] word meta save:', err && err.message);
             toast('Spazio insufficiente per salvare l\'elenco rapportini.', true);
         }
+    }
+
+    function loadDeletedMap() {
+        try {
+            var raw = localStorage.getItem(DELETED_KEY);
+            var obj = raw ? JSON.parse(raw) : {};
+            if (!obj || typeof obj !== 'object') return {};
+            var now = Date.now();
+            var cleaned = {};
+            Object.keys(obj).forEach(function (id) {
+                var ts = Number(obj[id]) || 0;
+                if (ts && (now - ts) < DELETE_TOMBSTONE_MS) cleaned[id] = ts;
+            });
+            return cleaned;
+        } catch (_) {
+            return {};
+        }
+    }
+
+    function saveDeletedMap(map) {
+        try {
+            localStorage.setItem(DELETED_KEY, JSON.stringify(map || {}));
+        } catch (_) {}
+    }
+
+    function markWordRapportinoDeleted(id) {
+        if (!id) return;
+        var map = loadDeletedMap();
+        map[id] = Date.now();
+        saveDeletedMap(map);
+    }
+
+    function unmarkWordRapportinoDeleted(id) {
+        if (!id) return;
+        var map = loadDeletedMap();
+        if (map[id]) {
+            delete map[id];
+            saveDeletedMap(map);
+        }
+    }
+
+    function isWordRapportinoDeleted(id) {
+        if (!id) return false;
+        return !!loadDeletedMap()[id];
     }
 
     function openIdb() {
@@ -653,6 +699,7 @@
             return copy;
         });
         saveMeta(list);
+        unmarkWordRapportinoDeleted(meta.id);
         if (typeof window.__pushWordRapportinoToCloud === 'function') {
             void window.__pushWordRapportinoToCloud(meta.id).catch(function (err) {
                 console.warn('[ServiceHub] sync rapportino cloud:', err && err.message);
@@ -664,13 +711,21 @@
 
     window.deleteWordRapportino = async function (id) {
         if (!id) return;
-        await idbDelete(id);
+        // Tombstone: il sync cloud non deve ripristinare questo id
+        markWordRapportinoDeleted(id);
+        try { await idbDelete(id); } catch (_) {}
         saveMeta(loadMeta().filter(function (x) { return x && x.id !== id; }));
+        window.renderWordRapportiniList();
         if (typeof window.__deleteWordRapportinoFromCloud === 'function') {
-            void window.__deleteWordRapportinoFromCloud(id).catch(function (err) {
+            try {
+                await window.__deleteWordRapportinoFromCloud(id);
+            } catch (err) {
                 console.warn('[ServiceHub] delete rapportino cloud:', err && err.message);
-            });
+                toast('Eliminato qui. Su cloud potrebbe restare: ' + ((err && err.message) || 'errore'), true);
+                return;
+            }
         }
+        toast('Documento eliminato (anche dal sync).');
     };
 
     window.fillWordRapportinoTemplate = async function (id, dataOverride) {
@@ -753,7 +808,6 @@
                 if (!confirm('Eliminare il rapportino «' + meta.name + '»?')) return;
                 window.deleteWordRapportino(id).then(function () {
                     window.renderWordRapportiniList();
-                    toast('Rapportino eliminato.');
                 }).catch(function (err) {
                     toast((err && err.message) || 'Eliminazione fallita', true);
                 });
@@ -1428,6 +1482,7 @@
     window.__pushWordRapportinoToCloud = async function (id) {
         var api = __wrCloud;
         if (!api || !api.db || !api.userUid || !id) return;
+        if (isWordRapportinoDeleted(id)) return;
         if (window.__firestoreQuotaBlocked) return;
         if (__wrPushBusy[id]) return;
         __wrPushBusy[id] = true;
@@ -1435,6 +1490,7 @@
             var meta = window.getWordRapportinoMeta(id);
             var rec = await idbGet(id);
             if (!meta || !rec || !rec.buffer) return;
+            if (isWordRapportinoDeleted(id)) return;
             var b64 = arrayBufferToBase64(rec.buffer);
             var chunks = splitBase64(b64);
             var fileRef = api.doc(api.db, 'artifacts', api.appId, 'sharedDial', 'wordRapportini', 'files', id);
@@ -1475,25 +1531,35 @@
         }
     };
 
-    window.__deleteWordRapportinoFromCloud = async function (id) {
+    window.__deleteWordRapportinoFromCloud = async function (id, opts) {
         var api = __wrCloud;
         if (!api || !api.db || !api.userUid || !id) return;
+        opts = opts || {};
+        markWordRapportinoDeleted(id);
+        var fileRef = api.doc(api.db, 'artifacts', api.appId, 'sharedDial', 'wordRapportini', 'files', id);
+        var chunksCol = api.collection(api.db, 'artifacts', api.appId, 'sharedDial', 'wordRapportini', 'files', id, 'chunks');
         try {
-            var fileRef = api.doc(api.db, 'artifacts', api.appId, 'sharedDial', 'wordRapportini', 'files', id);
-            var chunksCol = api.collection(api.db, 'artifacts', api.appId, 'sharedDial', 'wordRapportini', 'files', id, 'chunks');
             var snap = await api.getDocs(chunksCol);
             var dels = [];
             snap.forEach(function (d) { dels.push(api.deleteDoc(d.ref)); });
-            await Promise.all(dels);
-            await api.deleteDoc(fileRef);
-            await writeCloudIndex(api, loadMeta());
-        } catch (err) {
-            console.warn('[ServiceHub] delete cloud rapportino:', err && err.message);
+            if (dels.length) await Promise.all(dels);
+        } catch (errChunks) {
+            console.warn('[ServiceHub] delete chunks:', errChunks && errChunks.message);
         }
+        try {
+            await api.deleteDoc(fileRef);
+        } catch (errFile) {
+            console.warn('[ServiceHub] delete file doc:', errFile && errFile.message);
+        }
+        if (opts.skipIndex) return;
+        var list = loadMeta().filter(function (x) { return x && x.id !== id; });
+        saveMeta(list);
+        await writeCloudIndex(api, list);
     };
 
     async function pullCloudFileToLocal(api, item) {
         if (!item || !item.id) return false;
+        if (isWordRapportinoDeleted(item.id)) return false;
         var local = window.getWordRapportinoMeta(item.id);
         if (local && Number(local.updatedAt || 0) >= Number(item.updatedAt || 0)) {
             var rec = await idbGet(item.id);
@@ -1548,48 +1614,79 @@
             var remoteItems = Array.isArray(data.items) ? data.items : [];
             var remoteIds = {};
             var changed = false;
+            var remoteHadDeleted = false;
+            var remoteClean = [];
+
             for (var i = 0; i < remoteItems.length; i++) {
                 var it = remoteItems[i];
                 if (!it || !it.id) continue;
+                if (isWordRapportinoDeleted(it.id)) {
+                    remoteHadDeleted = true;
+                    continue;
+                }
                 remoteIds[it.id] = true;
+                remoteClean.push(it);
                 try {
                     if (await pullCloudFileToLocal(api, it)) changed = true;
                 } catch (err) {
                     console.warn('[ServiceHub] pull rapportino', it.id, err && err.message);
                 }
             }
-            // Non cancellare locali se cloud index è vuoto al primo boot (evita wipe)
-            if (remoteItems.length > 0) {
-                var local = loadMeta();
-                var kept = [];
-                for (var j = 0; j < local.length; j++) {
-                    var m = local[j];
-                    if (!m || !m.id) continue;
-                    if (remoteIds[m.id]) {
-                        kept.push(m);
-                    } else {
-                        // Presente solo in locale: prova a pushare (questo dispositivo ha un file nuovo)
-                        changed = true;
-                        kept.push(m);
-                        void window.__pushWordRapportinoToCloud(m.id);
-                    }
+
+            var local = loadMeta();
+            var kept = [];
+            for (var j = 0; j < local.length; j++) {
+                var m = local[j];
+                if (!m || !m.id) continue;
+                if (isWordRapportinoDeleted(m.id)) {
+                    try { await idbDelete(m.id); } catch (_) {}
+                    changed = true;
+                    continue;
                 }
-                // Aggiorna meta locali con nomi/date remote più fresche
-                kept = kept.map(function (m) {
-                    var rem = remoteItems.find(function (r) { return r && r.id === m.id; });
-                    if (!rem) return m;
-                    if (Number(rem.updatedAt || 0) >= Number(m.updatedAt || 0)) {
-                        return Object.assign({}, m, {
-                            name: rem.name || m.name,
-                            fileName: rem.fileName || m.fileName,
-                            updatedAt: rem.updatedAt || m.updatedAt,
-                            chunkCount: rem.chunkCount || m.chunkCount
-                        });
-                    }
-                    return m;
-                });
-                saveMeta(kept);
+                if (remoteClean.length === 0) {
+                    // Cloud vuoto / solo tombstone: tieni i locali
+                    kept.push(m);
+                    continue;
+                }
+                if (remoteIds[m.id]) {
+                    kept.push(m);
+                } else {
+                    // Solo su questo dispositivo → pubblica
+                    kept.push(m);
+                    changed = true;
+                    void window.__pushWordRapportinoToCloud(m.id);
+                }
             }
+
+            kept = kept.map(function (m) {
+                var rem = remoteClean.find(function (r) { return r && r.id === m.id; });
+                if (!rem) return m;
+                if (Number(rem.updatedAt || 0) >= Number(m.updatedAt || 0)) {
+                    return Object.assign({}, m, {
+                        name: rem.name || m.name,
+                        fileName: rem.fileName || m.fileName,
+                        updatedAt: rem.updatedAt || m.updatedAt,
+                        chunkCount: rem.chunkCount || m.chunkCount
+                    });
+                }
+                return m;
+            }).filter(function (m) { return m && m.id && !isWordRapportinoDeleted(m.id); });
+
+            saveMeta(kept);
+
+            if (remoteHadDeleted) {
+                try {
+                    await writeCloudIndex(api, kept);
+                    for (var k = 0; k < remoteItems.length; k++) {
+                        var dead = remoteItems[k];
+                        if (dead && dead.id && isWordRapportinoDeleted(dead.id)) {
+                            void window.__deleteWordRapportinoFromCloud(dead.id, { skipIndex: true });
+                        }
+                    }
+                } catch (_) {}
+                changed = true;
+            }
+
             if (changed) window.renderWordRapportiniList();
         } finally {
             __wrApplyingCloud = false;

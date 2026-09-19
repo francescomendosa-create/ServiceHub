@@ -1049,7 +1049,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.09.17-numpad-iphone-smooth';
+        window.SERVICEHUB_BUILD = '2026.09.19-word-rapportini-upload';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -1992,6 +1992,7 @@ window.colorPreviewNumber = function(tankName, value) {
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.4/dist/tesseract.min.js"></script>
     <script src="letture-sasol-b64.js"></script>
+    <script src="word-rapportini.js"></script>
     
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
@@ -18763,6 +18764,10 @@ window.updateStoricoButton = async function() {
         };
 
         window.shareLetturaDoc = function () {
+            if (window.__letturaDocKind === 'word-template') {
+                window.shareWordRapportinoDoc && window.shareWordRapportinoDoc(window.__activeWordRapportinoId);
+                return;
+            }
             var dateStr = window.formatLetturaDateIt(new Date());
             var isNotturno = window.__letturaDocKind === 'notturno-giornaliero';
             var isSituazione = window.__letturaDocKind === 'situazione-giornaliera';
@@ -18798,6 +18803,36 @@ window.updateStoricoButton = async function() {
                 } else {
                     alert(downloadedMsg);
                 }
+            }
+
+            // Situazione giornaliera: se c'è un .docx ufficiale caricato, genera quello (layout identico).
+            if (isSituazione && typeof window.getWordRapportinoForRole === 'function'
+                && window.getWordRapportinoForRole('situazione-giornaliera')
+                && typeof window.buildSituazioneGiornalieraWordFileFromTemplate === 'function') {
+                window.buildSituazioneGiornalieraWordFileFromTemplate().then(function (docxFile) {
+                    if (!docxFile) {
+                        finishShare();
+                        try { window.__shareLetturaDocHtmlPath(); } catch (_) {}
+                        return;
+                    }
+                    downloadedMsg = 'Situazione giornaliera (.docx) — file Word ufficiale compilato con i dati.';
+                    if (window.canShareLetturaFile(docxFile)) {
+                        return navigator.share({ files: [docxFile], title: title }).catch(function (err) {
+                            if (err && err.name === 'AbortError') return;
+                            if (window.downloadLetturaShareFile(docxFile)) notifyDownloaded();
+                        }).finally(finishShare);
+                    }
+                    if (window.downloadLetturaShareFile(docxFile)) notifyDownloaded();
+                    finishShare();
+                }).catch(function (err) {
+                    console.warn('[ServiceHub] word situazione:', err && err.message);
+                    if (typeof window.__serviceHubFlashToast === 'function') {
+                        window.__serviceHubFlashToast((err && err.message) || 'Errore generazione Word. Uso anteprima HTML.', true);
+                    }
+                    finishShare();
+                    try { window.__shareLetturaDocHtmlPath(); } catch (_) {}
+                });
+                return;
             }
 
             try {
@@ -18868,13 +18903,28 @@ window.updateStoricoButton = async function() {
             finishShare();
         };
 
+        /** Percorso HTML legacy (usato se il template Word situazione fallisce). */
+        window.__shareLetturaDocHtmlPath = function () {
+            var prev = window.__letturaDocKind;
+            window.__letturaDocKind = 'situazione-giornaliera';
+            try {
+                var situazioneDocHtml = window.buildLetturaSituazioneGiornalieraShareDocument();
+                var file = window.buildLetturaSituazioneGiornalieraShareFile(situazioneDocHtml);
+                if (window.downloadLetturaShareFile(file) && typeof window.__serviceHubFlashToast === 'function') {
+                    window.__serviceHubFlashToast('Situazione giornaliera scaricata (.doc).', false);
+                }
+            } finally {
+                window.__letturaDocKind = prev;
+            }
+        };
+
         window.__letturaDocKind = window.__letturaDocKind || 'stoccaggio';
 
         window.setLetturaDocKind = function (kind) {
             window.__letturaDocKind = kind || 'stoccaggio';
             var titleEl = document.getElementById('letture-doc-toolbar-title');
             var sheet = document.querySelector('#letture-doc-modal .letture-doc-sheet');
-            if (titleEl) {
+            if (titleEl && kind !== 'word-template') {
                 titleEl.textContent = kind === 'notturno-giornaliero'
                     ? 'Nuovo rapportino notturno'
                     : (kind === 'situazione-giornaliera'
@@ -18884,10 +18934,15 @@ window.updateStoricoButton = async function() {
             if (sheet) {
                 sheet.classList.toggle('letture-doc-sheet--a3', kind === 'notturno-giornaliero');
                 sheet.classList.toggle('letture-doc-sheet--situazione', kind === 'situazione-giornaliera');
+                sheet.classList.toggle('letture-doc-sheet--word', kind === 'word-template');
             }
             var shareBtn = document.querySelector('#letture-doc-modal .letture-share-btn--main');
             if (shareBtn) {
-                shareBtn.textContent = 'Condividi / Stampa';
+                if (kind === 'word-template') {
+                    shareBtn.textContent = 'Genera Word compilato';
+                } else {
+                    shareBtn.textContent = 'Condividi / Stampa';
+                }
             }
         };
 
@@ -48411,6 +48466,28 @@ window.convertToHtml = async () => {
         #settings-modal { z-index: 10070; align-items: stretch; justify-content: stretch; overflow: hidden; flex-direction: column; }
         #letture-rapportini-modal { z-index: 10075; align-items: center; justify-content: center; }
         #letture-rapportini-modal.active { display: flex !important; background: rgba(0,0,0,0.55); }
+        #word-rapportino-add-modal { z-index: 10078; align-items: center; justify-content: center; }
+        #word-rapportino-add-modal.active { display: flex !important; background: rgba(0,0,0,0.55); }
+        .word-rapp-section { margin-top: 14px; padding-top: 12px; border-top: 2px solid rgba(99,102,241,0.25); }
+        .word-rapp-section-title { font-size: 10px; font-weight: 900; letter-spacing: 0.08em; text-transform: uppercase; color: #6366f1; margin-bottom: 8px; }
+        .word-rapp-empty { font-size: 11px; line-height: 1.35; color: #64748b; margin: 0 0 10px; }
+        .dark .word-rapp-empty { color: #94a3b8; }
+        .word-rapp-item { display: flex; gap: 8px; align-items: stretch; margin-bottom: 8px; }
+        .word-rapp-open { flex: 1; text-align: left; background: #f1f5f9; border: 2px solid #e2e8f0; border-radius: 16px; padding: 12px 14px; cursor: pointer; }
+        .dark .word-rapp-open { background: #1e293b; border-color: #334155; }
+        .word-rapp-name { display: block; font-weight: 900; text-transform: uppercase; font-size: 13px; color: #0f172a; }
+        .dark .word-rapp-name { color: #f8fafc; }
+        .word-rapp-meta { display: block; font-size: 10px; font-weight: 700; color: #64748b; margin-top: 4px; word-break: break-all; }
+        .word-rapp-badge { display: inline-block; margin-top: 6px; font-size: 9px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.04em; color: #b45309; background: #fef3c7; border-radius: 999px; padding: 2px 8px; }
+        .word-rapp-del { width: 44px; border: none; border-radius: 14px; background: #0f172a; color: #fff; font-weight: 900; cursor: pointer; }
+        .word-rapp-add-btn { width: 100%; margin-top: 4px; background: #4f46e5; color: #fff; font-weight: 900; text-transform: uppercase; font-size: 12px; padding: 14px; border-radius: 16px; border-bottom: 4px solid #312e81; }
+        .word-rapp-panel { padding: 16px 12px 24px; max-width: 640px; margin: 0 auto; }
+        .word-rapp-panel-lead { font-size: 14px; line-height: 1.45; margin: 0 0 10px; }
+        .word-rapp-panel-file { font-size: 12px; font-weight: 700; color: #475569; margin: 0 0 12px; word-break: break-all; }
+        .word-rapp-panel-hint { font-size: 12px; line-height: 1.45; color: #334155; margin: 0 0 14px; }
+        .word-rapp-panel-hint code { font-size: 11px; background: #e2e8f0; padding: 1px 5px; border-radius: 4px; }
+        .word-rapp-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+        .word-rapp-placeholders { font-size: 11px; background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 12px; overflow: auto; max-height: 240px; }
         #letture-doc-modal { z-index: 10080; align-items: stretch; justify-content: stretch; }
         #letture-doc-modal.active { display: flex !important; background: rgba(0,0,0,0.6); }
         .letture-doc-sheet { display: flex; flex-direction: column; width: 100%; max-width: 980px; max-height: 100vh; margin: 0 auto; background: #fff; color: #0f172a; border-radius: 16px 16px 0 0; overflow: hidden; }
@@ -52027,9 +52104,37 @@ window.convertToHtml = async () => {
             <button type="button" class="w-full text-left bg-slate-100 dark:bg-slate-800 hover:bg-emerald-50 dark:hover:bg-emerald-950 border-2 border-slate-200 dark:border-slate-700 rounded-2xl p-4 font-black uppercase text-sm active:scale-[0.99] transition-all mb-3" onclick="window.openLetturaNotturnoGiornaliero && window.openLetturaNotturnoGiornaliero()">
                 Nuovo rapportino notturno
             </button>
-            <button type="button" class="w-full text-left bg-slate-100 dark:bg-slate-800 hover:bg-amber-50 dark:hover:bg-amber-950 border-2 border-slate-200 dark:border-slate-700 rounded-2xl p-4 font-black uppercase text-sm active:scale-[0.99] transition-all" onclick="window.openLetturaSituazioneGiornaliera && window.openLetturaSituazioneGiornaliera()">
+            <button type="button" class="w-full text-left bg-slate-100 dark:bg-slate-800 hover:bg-amber-50 dark:hover:bg-amber-950 border-2 border-slate-200 dark:border-slate-700 rounded-2xl p-4 font-black uppercase text-sm active:scale-[0.99] transition-all mb-3" onclick="window.openLetturaSituazioneGiornaliera && window.openLetturaSituazioneGiornaliera()">
                 Situazione giornaliera
             </button>
+            <div class="word-rapp-section">
+                <p class="word-rapp-section-title">Rapportini Word (file originale)</p>
+                <div id="word-rapportini-list"></div>
+                <button type="button" class="word-rapp-add-btn active:scale-95 transition-all" onclick="window.openAggiungiWordRapportinoModal && window.openAggiungiWordRapportinoModal()">
+                    + Aggiungi rapportino
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div id="word-rapportino-add-modal" class="modal-overlay" onclick="if(event.target === this) window.closeAggiungiWordRapportinoModal && window.closeAggiungiWordRapportinoModal()">
+        <div class="modal-content-centered bg-white dark:bg-slate-900 text-slate-900 dark:text-white p-5 rounded-[24px] border-4 border-indigo-500 max-w-md w-[92%] shadow-2xl" onclick="event.stopPropagation()">
+            <div class="flex justify-between items-start gap-3 mb-3">
+                <h3 id="word-rapp-add-title" class="font-black uppercase text-lg tracking-tight">Aggiungi rapportino Word</h3>
+                <button type="button" class="bg-black text-white rounded-2xl w-10 h-10 font-black" onclick="window.closeAggiungiWordRapportinoModal && window.closeAggiungiWordRapportinoModal()" aria-label="Chiudi">X</button>
+            </div>
+            <p id="word-rapp-file-hint" class="text-[11px] text-slate-500 dark:text-slate-400 mb-3 leading-snug">Carica il file Word ufficiale (.docx). Il layout resta identico all’originale.</p>
+            <label class="block text-[10px] font-black uppercase tracking-widest text-indigo-500 mb-1" for="word-rapp-name">Nome</label>
+            <input type="text" id="word-rapp-name" class="w-full px-4 py-3 rounded-xl border-2 border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 font-bold text-base mb-3 outline-none focus:border-indigo-500" placeholder="es. Situazione giornaliera" autocomplete="off">
+            <label class="block text-[10px] font-black uppercase tracking-widest text-indigo-500 mb-1" for="word-rapp-file">File Word (.docx)</label>
+            <input type="file" id="word-rapp-file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" class="w-full text-sm mb-3 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-indigo-600 file:text-white file:font-bold">
+            <label class="flex items-start gap-3 mb-3 text-sm font-bold cursor-pointer">
+                <input type="checkbox" id="word-rapp-role-sg" class="mt-1 w-5 h-5 accent-amber-500">
+                <span>Usa come modello ufficiale di <b>Situazione giornaliera</b> (Condividi genera questo .docx)</span>
+            </label>
+            <p id="word-rapp-add-error" class="text-[11px] font-bold text-red-600 text-center mb-2" style="display:none;"></p>
+            <button type="button" class="w-full bg-emerald-600 text-white font-black py-4 rounded-xl uppercase border-b-4 border-emerald-900 active:scale-95 mb-2" onclick="window.confirmAggiungiWordRapportino && window.confirmAggiungiWordRapportino()">Salva</button>
+            <button type="button" class="w-full bg-slate-200 dark:bg-slate-700 font-black py-3 rounded-xl uppercase text-[10px] active:scale-95" onclick="window.closeAggiungiWordRapportinoModal && window.closeAggiungiWordRapportinoModal()">Annulla</button>
         </div>
     </div>
 

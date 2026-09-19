@@ -529,6 +529,12 @@
             return copy;
         });
         saveMeta(list);
+        if (typeof window.__pushWordRapportinoToCloud === 'function') {
+            void window.__pushWordRapportinoToCloud(meta.id).catch(function (err) {
+                console.warn('[ServiceHub] sync rapportino cloud:', err && err.message);
+                toast('Salvato qui. Sync altri dispositivi in corso o fallito: ' + ((err && err.message) || ''), true);
+            });
+        }
         return meta;
     };
 
@@ -536,6 +542,11 @@
         if (!id) return;
         await idbDelete(id);
         saveMeta(loadMeta().filter(function (x) { return x && x.id !== id; }));
+        if (typeof window.__deleteWordRapportinoFromCloud === 'function') {
+            void window.__deleteWordRapportinoFromCloud(id).catch(function (err) {
+                console.warn('[ServiceHub] delete rapportino cloud:', err && err.message);
+            });
+        }
     };
 
     window.fillWordRapportinoTemplate = async function (id, dataOverride) {
@@ -685,6 +696,9 @@
                     return copy;
                 });
                 saveMeta(list);
+                if (typeof window.__pushWordRapportinoToCloud === 'function') {
+                    void window.__pushWordRapportinoToCloud(editId);
+                }
             } else {
                 await window.saveWordRapportinoFromFile({
                     id: editId || undefined,
@@ -694,7 +708,7 @@
             }
             window.closeAggiungiWordRapportinoModal();
             window.renderWordRapportiniList();
-            toast('Documento ufficiale salvato.');
+            toast('Documento ufficiale salvato. Comparirà anche sugli altri dispositivi (LED verde).');
         } catch (e) {
             showErr((e && e.message) || 'Salvataggio fallito');
         }
@@ -784,6 +798,287 @@
             toast((err && err.message) || 'Generazione file fallita', true);
             return false;
         }
+    };
+
+    /* ——— Sync multi-dispositivo (Firestore) ——— */
+    var CLOUD_CHUNK_CHARS = 600000; // ~450KB binari → sotto il limite 1MB Firestore
+    var __wrCloud = null;
+    var __wrCloudUnsub = null;
+    var __wrApplyingCloud = false;
+    var __wrPushBusy = {};
+
+    function arrayBufferToBase64(buffer) {
+        var bytes = new Uint8Array(buffer);
+        var chunk = 0x8000;
+        var binary = '';
+        for (var i = 0; i < bytes.length; i += chunk) {
+            binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + chunk, bytes.length)));
+        }
+        return btoa(binary);
+    }
+
+    function base64ToArrayBuffer(b64) {
+        var binary = atob(String(b64 || ''));
+        var len = binary.length;
+        var bytes = new Uint8Array(len);
+        for (var i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+        return bytes.buffer;
+    }
+
+    function splitBase64(b64) {
+        var out = [];
+        for (var i = 0; i < b64.length; i += CLOUD_CHUNK_CHARS) {
+            out.push(b64.slice(i, i + CLOUD_CHUNK_CHARS));
+        }
+        return out.length ? out : [''];
+    }
+
+    function indexMetaSlim(list) {
+        return (list || []).map(function (m) {
+            return {
+                id: m.id,
+                name: m.name,
+                fileName: m.fileName,
+                ext: m.ext,
+                mime: m.mime,
+                size: m.size,
+                fillable: !!m.fillable,
+                createdAt: m.createdAt || 0,
+                updatedAt: m.updatedAt || 0,
+                chunkCount: m.chunkCount || 0
+            };
+        });
+    }
+
+    async function writeCloudIndex(api, list) {
+        var indexRef = api.doc(api.db, 'artifacts', api.appId, 'sharedDial', 'wordRapportini');
+        await api.setDoc(indexRef, {
+            items: indexMetaSlim(list),
+            updatedAt: new Date().toISOString(),
+            syncRevision: Date.now()
+        });
+    }
+
+    window.__pushWordRapportinoToCloud = async function (id) {
+        var api = __wrCloud;
+        if (!api || !api.db || !api.userUid || !id) return;
+        if (window.__firestoreQuotaBlocked) return;
+        if (__wrPushBusy[id]) return;
+        __wrPushBusy[id] = true;
+        try {
+            var meta = window.getWordRapportinoMeta(id);
+            var rec = await idbGet(id);
+            if (!meta || !rec || !rec.buffer) return;
+            var b64 = arrayBufferToBase64(rec.buffer);
+            var chunks = splitBase64(b64);
+            var fileRef = api.doc(api.db, 'artifacts', api.appId, 'sharedDial', 'wordRapportini', 'files', id);
+            await api.setDoc(fileRef, {
+                id: id,
+                name: meta.name,
+                fileName: meta.fileName,
+                ext: meta.ext,
+                mime: meta.mime,
+                size: meta.size,
+                fillable: !!meta.fillable,
+                createdAt: meta.createdAt || Date.now(),
+                updatedAt: meta.updatedAt || Date.now(),
+                chunkCount: chunks.length
+            });
+            for (var i = 0; i < chunks.length; i++) {
+                var chunkRef = api.doc(api.db, 'artifacts', api.appId, 'sharedDial', 'wordRapportini', 'files', id, 'chunks', String(i));
+                await api.setDoc(chunkRef, { i: i, d: chunks[i] });
+            }
+            // Rimuovi chunk orfani se il file è diventato più piccolo
+            var oldCount = Number(meta.chunkCount) || 0;
+            if (oldCount > chunks.length && api.getDocs && api.collection) {
+                for (var j = chunks.length; j < oldCount; j++) {
+                    try {
+                        await api.deleteDoc(api.doc(api.db, 'artifacts', api.appId, 'sharedDial', 'wordRapportini', 'files', id, 'chunks', String(j)));
+                    } catch (_) {}
+                }
+            }
+            meta.chunkCount = chunks.length;
+            var list = loadMeta().map(function (m) {
+                return m && m.id === id ? Object.assign({}, m, { chunkCount: chunks.length, updatedAt: meta.updatedAt }) : m;
+            });
+            saveMeta(list);
+            await writeCloudIndex(api, list);
+            console.info('[ServiceHub] rapportino sync OK:', meta.name, chunks.length + ' chunk');
+        } finally {
+            delete __wrPushBusy[id];
+        }
+    };
+
+    window.__deleteWordRapportinoFromCloud = async function (id) {
+        var api = __wrCloud;
+        if (!api || !api.db || !api.userUid || !id) return;
+        try {
+            var fileRef = api.doc(api.db, 'artifacts', api.appId, 'sharedDial', 'wordRapportini', 'files', id);
+            var chunksCol = api.collection(api.db, 'artifacts', api.appId, 'sharedDial', 'wordRapportini', 'files', id, 'chunks');
+            var snap = await api.getDocs(chunksCol);
+            var dels = [];
+            snap.forEach(function (d) { dels.push(api.deleteDoc(d.ref)); });
+            await Promise.all(dels);
+            await api.deleteDoc(fileRef);
+            await writeCloudIndex(api, loadMeta());
+        } catch (err) {
+            console.warn('[ServiceHub] delete cloud rapportino:', err && err.message);
+        }
+    };
+
+    async function pullCloudFileToLocal(api, item) {
+        if (!item || !item.id) return false;
+        var local = window.getWordRapportinoMeta(item.id);
+        if (local && Number(local.updatedAt || 0) >= Number(item.updatedAt || 0)) {
+            var rec = await idbGet(item.id);
+            if (rec && rec.buffer) return false;
+        }
+        var chunkCount = Number(item.chunkCount) || 0;
+        if (!chunkCount) {
+            var fileSnap = await api.getDoc(api.doc(api.db, 'artifacts', api.appId, 'sharedDial', 'wordRapportini', 'files', item.id));
+            if (!fileSnap.exists()) return false;
+            var fd = fileSnap.data() || {};
+            chunkCount = Number(fd.chunkCount) || 0;
+            item = Object.assign({}, item, fd);
+        }
+        if (!chunkCount) return false;
+        var parts = [];
+        for (var i = 0; i < chunkCount; i++) {
+            var cs = await api.getDoc(api.doc(api.db, 'artifacts', api.appId, 'sharedDial', 'wordRapportini', 'files', item.id, 'chunks', String(i)));
+            if (!cs.exists()) throw new Error('Chunk mancante ' + i);
+            parts.push(String((cs.data() || {}).d || ''));
+        }
+        var buffer = base64ToArrayBuffer(parts.join(''));
+        await idbPut({
+            id: item.id,
+            buffer: buffer,
+            fileName: item.fileName,
+            mime: item.mime,
+            ext: item.ext
+        });
+        var list = loadMeta().filter(function (m) { return m && m.id !== item.id; });
+        list.push({
+            id: item.id,
+            name: item.name,
+            fileName: item.fileName,
+            ext: item.ext,
+            mime: item.mime,
+            size: item.size || buffer.byteLength,
+            fillable: !!item.fillable,
+            createdAt: item.createdAt || Date.now(),
+            updatedAt: item.updatedAt || Date.now(),
+            chunkCount: chunkCount
+        });
+        saveMeta(list);
+        return true;
+    }
+
+    async function applyWordRapportiniCloudIndex(data) {
+        if (__wrApplyingCloud || !data) return;
+        var api = __wrCloud;
+        if (!api) return;
+        __wrApplyingCloud = true;
+        try {
+            var remoteItems = Array.isArray(data.items) ? data.items : [];
+            var remoteIds = {};
+            var changed = false;
+            for (var i = 0; i < remoteItems.length; i++) {
+                var it = remoteItems[i];
+                if (!it || !it.id) continue;
+                remoteIds[it.id] = true;
+                try {
+                    if (await pullCloudFileToLocal(api, it)) changed = true;
+                } catch (err) {
+                    console.warn('[ServiceHub] pull rapportino', it.id, err && err.message);
+                }
+            }
+            // Non cancellare locali se cloud index è vuoto al primo boot (evita wipe)
+            if (remoteItems.length > 0) {
+                var local = loadMeta();
+                var kept = [];
+                for (var j = 0; j < local.length; j++) {
+                    var m = local[j];
+                    if (!m || !m.id) continue;
+                    if (remoteIds[m.id]) {
+                        kept.push(m);
+                    } else {
+                        // Presente solo in locale: prova a pushare (questo dispositivo ha un file nuovo)
+                        changed = true;
+                        kept.push(m);
+                        void window.__pushWordRapportinoToCloud(m.id);
+                    }
+                }
+                // Aggiorna meta locali con nomi/date remote più fresche
+                kept = kept.map(function (m) {
+                    var rem = remoteItems.find(function (r) { return r && r.id === m.id; });
+                    if (!rem) return m;
+                    if (Number(rem.updatedAt || 0) >= Number(m.updatedAt || 0)) {
+                        return Object.assign({}, m, {
+                            name: rem.name || m.name,
+                            fileName: rem.fileName || m.fileName,
+                            updatedAt: rem.updatedAt || m.updatedAt,
+                            chunkCount: rem.chunkCount || m.chunkCount
+                        });
+                    }
+                    return m;
+                });
+                saveMeta(kept);
+            }
+            if (changed) window.renderWordRapportiniList();
+        } finally {
+            __wrApplyingCloud = false;
+        }
+    }
+
+    /** Chiamato da index.html dopo login Firebase. */
+    window.wireWordRapportiniCloudSync = function (api) {
+        if (!api || !api.db || !api.appId || !api.doc || !api.setDoc) {
+            console.warn('[ServiceHub] wireWordRapportiniCloudSync: api incompleta');
+            return;
+        }
+        __wrCloud = {
+            db: api.db,
+            appId: api.appId,
+            userUid: api.userUid || '',
+            doc: api.doc,
+            setDoc: api.setDoc,
+            getDoc: api.getDoc,
+            deleteDoc: api.deleteDoc,
+            onSnapshot: api.onSnapshot,
+            collection: api.collection,
+            getDocs: api.getDocs
+        };
+        if (__wrCloudUnsub) {
+            try { __wrCloudUnsub(); } catch (_) {}
+            __wrCloudUnsub = null;
+        }
+        var indexRef = api.doc(api.db, 'artifacts', api.appId, 'sharedDial', 'wordRapportini');
+        // Prima lettura + push di eventuali file solo-locali
+        api.getDoc(indexRef).then(function (snap) {
+            if (snap.exists()) {
+                return applyWordRapportiniCloudIndex(snap.data());
+            }
+            // Cloud vuoto: pubblica i file già presenti su questo dispositivo
+            var local = loadMeta();
+            if (!local.length) return null;
+            return Promise.all(local.map(function (m) {
+                return window.__pushWordRapportinoToCloud(m.id);
+            }));
+        }).catch(function (err) {
+            console.warn('[ServiceHub] wordRapportini getDoc:', err && err.message);
+        });
+
+        if (api.onSnapshot) {
+            __wrCloudUnsub = api.onSnapshot(indexRef, function (snapshot) {
+                var md = snapshot.metadata;
+                if (md && md.hasPendingWrites) return;
+                if (!snapshot.exists()) return;
+                void applyWordRapportiniCloudIndex(snapshot.data());
+            }, function (error) {
+                console.warn('[ServiceHub] wordRapportini snapshot:', error && error.message);
+            });
+        }
+        console.info('[ServiceHub] sync rapportini ufficiali attivo (multi-dispositivo)');
     };
 
     var _origOpenLetture = null;

@@ -238,6 +238,57 @@
         throw new Error('Formato buffer non supportato');
     }
 
+    /** Rileva il formato reale dal contenuto (molte app salvano HTML/ODT come .doc). */
+    function sniffFileKind(buffer, extHint) {
+        var ab;
+        try {
+            if (buffer instanceof ArrayBuffer) ab = buffer;
+            else if (ArrayBuffer.isView(buffer)) ab = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+            else return (extHint || '').toLowerCase() || 'bin';
+        } catch (_) {
+            return (extHint || '').toLowerCase() || 'bin';
+        }
+        var u8 = new Uint8Array(ab);
+        if (u8.length >= 4 && u8[0] === 0x50 && u8[1] === 0x4b) {
+            // ZIP: docx / xlsx / odt / …
+            try {
+                var head = '';
+                for (var i = 0; i < Math.min(u8.length, 2000); i++) head += String.fromCharCode(u8[i]);
+                if (/word\/document\.xml/i.test(head) || /\[Content_Types\]\.xml/i.test(head) && /wordprocessingml/i.test(head)) return 'docx';
+                if (/xl\/workbook\.xml/i.test(head) || /spreadsheetml/i.test(head)) return 'xlsx';
+                if (/mimetypeapplication\/vnd\.oasis\.opendocument\.text/i.test(head) || /content\.xml/i.test(head) && /opendocument/i.test(head)) return 'odt';
+            } catch (_) {}
+            var extZ = (extHint || '').toLowerCase();
+            if (extZ === 'docx' || extZ === 'docm' || extZ === 'xlsx' || extZ === 'xlsm' || extZ === 'odt' || extZ === 'ods') return extZ;
+            return 'docx';
+        }
+        if (u8.length >= 5 && u8[0] === 0x25 && u8[1] === 0x50 && u8[2] === 0x44 && u8[3] === 0x46) return 'pdf'; // %PDF
+        if (u8.length >= 4 && u8[0] === 0xd0 && u8[1] === 0xcf && u8[2] === 0x11 && u8[3] === 0xe0) {
+            // OLE Compound: vero .doc / .xls binario
+            var extOle = (extHint || '').toLowerCase();
+            return extOle === 'xls' || extOle === 'ppt' ? extOle : 'doc-ole';
+        }
+        // Testo / HTML mascherato da .doc (Word HTML, export ServiceHub, app terze)
+        try {
+            var probe = '';
+            var n = Math.min(u8.length, 512);
+            for (var j = 0; j < n; j++) {
+                var c = u8[j];
+                if (c === 0) break;
+                probe += String.fromCharCode(c);
+            }
+            var p = probe.replace(/^\uFEFF/, '').trim().toLowerCase();
+            if (p.indexOf('<!doctype html') === 0 || p.indexOf('<html') === 0 ||
+                p.indexOf('<head') === 0 || p.indexOf('xmlns:w="urn:schemas-microsoft-com:office:word"') >= 0 ||
+                p.indexOf('content="word.Document"'.toLowerCase()) >= 0) {
+                return 'html';
+            }
+            if (p.charAt(0) === '{' || p.charAt(0) === '[') return 'json';
+            if (p.charAt(0) === '<') return 'xml';
+        } catch (_) {}
+        return (extHint || '').toLowerCase() || 'bin';
+    }
+
     function libUrl(name) {
         try {
             var scripts = document.getElementsByTagName('script');
@@ -969,35 +1020,54 @@
     }
 
     async function renderPreviewIntoHost(host, meta, buffer, mode) {
-        var ext = (meta.ext || fileExt(meta.fileName) || '').toLowerCase();
+        var extHint = (meta.ext || fileExt(meta.fileName) || '').toLowerCase();
         var mime = meta.mime || mimeFor(meta.fileName);
         mode = mode || 'text';
         host.innerHTML = '';
         revokeWordPreviewUrl();
 
         var ab = await toArrayBuffer(buffer);
+        var ext = sniffFileKind(ab, extHint);
         var openBar = document.createElement('div');
         openBar.className = 'word-rapp-preview-toolbar';
-        var blob = new Blob([ab], { type: mime || 'application/octet-stream' });
+        // Per HTML-in-.doc usa text/html così iframe/browser lo mostrano
+        var previewMime = (ext === 'html') ? 'text/html;charset=utf-8' : (mime || 'application/octet-stream');
+        var blob = new Blob([ab], { type: previewMime });
         var url = URL.createObjectURL(blob);
         window.__wordRappPreviewUrl = url;
 
-        function appendOpenLink(label) {
+        function setDownloadBar(label) {
             openBar.innerHTML =
-                (openBar.innerHTML || '') +
                 '<a class="word-rapp-preview-open" href="' + url + '" download="' +
-                escapeHtml(meta.fileName || ('file.' + (ext || 'bin'))) + '">' + (label || 'Scarica originale') + '</a>';
+                escapeHtml(meta.fileName || ('file.' + (extHint || 'bin'))) + '">' + (label || 'Scarica originale') + '</a>';
+        }
+
+        // HTML salvato come .doc (ServiceHub / app terze) → anteprima iframe
+        if (ext === 'html') {
+            host.appendChild(openBar);
+            setDownloadBar('Scarica file originale');
+            var tip = document.createElement('p');
+            tip.className = 'word-rapp-preview-fallback';
+            tip.innerHTML = 'File riconosciuto come documento HTML (anche se si chiama .doc). Anteprima qui sotto — <b>non serve Word</b>.';
+            host.appendChild(tip);
+            var frame = document.createElement('iframe');
+            frame.className = 'word-rapp-preview-frame word-rapp-preview-frame--html';
+            frame.title = 'Anteprima documento';
+            frame.setAttribute('sandbox', 'allow-same-origin');
+            frame.src = url;
+            host.appendChild(frame);
+            return;
         }
 
         if (ext === 'pdf') {
             host.appendChild(openBar);
             openBar.innerHTML =
                 '<a class="word-rapp-preview-open" href="' + url + '" target="_blank" rel="noopener">Apri PDF a schermo intero</a>';
-            var frame = document.createElement('iframe');
-            frame.className = 'word-rapp-preview-frame';
-            frame.title = 'Anteprima PDF';
-            frame.src = url + '#view=FitH';
-            host.appendChild(frame);
+            var framePdf = document.createElement('iframe');
+            framePdf.className = 'word-rapp-preview-frame';
+            framePdf.title = 'Anteprima PDF';
+            framePdf.src = url + '#view=FitH';
+            host.appendChild(framePdf);
             return;
         }
 
@@ -1031,15 +1101,48 @@
             return;
         }
 
-        if (ext === 'doc') {
+        if (ext === 'doc-ole' || ext === 'doc') {
             host.appendChild(openBar);
-            appendOpenLink('Scarica file .doc');
+            setDownloadBar('Scarica file .doc');
             var note = document.createElement('div');
             note.className = 'word-rapp-preview-unsupported';
             note.innerHTML =
-                '<p>Il formato <b>.doc</b> (Word vecchio) non si può anteprimare nel browser.</p>' +
-                '<p>Salvalo di nuovo come <b>.docx</b> e ricaricalo, oppure scarica e aprilo con Word.</p>';
+                '<p>Questo è un <b>.doc binario</b> vecchio: nel browser non si apre.</p>' +
+                '<p>Dalla tua app (WPS, LibreOffice, Google Documenti…), senza Microsoft Word: <b>Esporta come PDF</b> oppure <b>Salva come .docx / .odt</b>, poi usa «Sostituisci file».</p>' +
+                '<p>Il file che hai già caricato resta salvato; non lo perdi.</p>';
             host.appendChild(note);
+            return;
+        }
+
+        if (ext === 'odt') {
+            host.appendChild(openBar);
+            setDownloadBar('Scarica originale');
+            try {
+                await ensureDocxLibs();
+                var zip = new window.PizZip(ab);
+                var entry = zip.file('content.xml');
+                if (!entry) throw new Error('ODT senza content.xml');
+                var xml = entry.asText();
+                var text = String(xml || '')
+                    .replace(/<\/text:p>/g, '\n')
+                    .replace(/<text:line-break\b[^>]*\/>/g, '\n')
+                    .replace(/<text:tab\b[^>]*\/>/g, '\t')
+                    .replace(/<[^>]+>/g, '')
+                    .replace(/&amp;/g, '&')
+                    .replace(/&lt;/g, '<')
+                    .replace(/&gt;/g, '>')
+                    .replace(/\n{3,}/g, '\n\n')
+                    .trim();
+                var pre = document.createElement('pre');
+                pre.className = 'word-rapp-text-preview';
+                pre.textContent = text || '(Nessun testo nel file OpenDocument)';
+                host.appendChild(pre);
+            } catch (errOd) {
+                var fail = document.createElement('div');
+                fail.className = 'word-rapp-preview-unsupported';
+                fail.innerHTML = '<p>Anteprima ODT non riuscita. Usa «Scarica originale».</p>';
+                host.appendChild(fail);
+            }
             return;
         }
 
@@ -1081,11 +1184,11 @@
             openBar.innerHTML =
                 '<a class="word-rapp-preview-open" href="' + url + '" download="' + escapeHtml(meta.fileName || ('file.' + ext)) + '">Scarica originale</a>';
             host.appendChild(openBar);
-            var text = new TextDecoder('utf-8').decode(ab);
-            var pre = document.createElement('pre');
-            pre.className = 'word-rapp-text-preview';
-            pre.textContent = text;
-            host.appendChild(pre);
+            var textPlain = new TextDecoder('utf-8').decode(ab);
+            var prePlain = document.createElement('pre');
+            prePlain.className = 'word-rapp-text-preview';
+            prePlain.textContent = textPlain;
+            host.appendChild(prePlain);
             return;
         }
 
@@ -1103,9 +1206,9 @@
 
         host.innerHTML =
             '<div class="word-rapp-preview-unsupported">' +
-            '<p>Anteprima diretta non disponibile per <b>.' + escapeHtml(ext || '?') + '</b>.</p>' +
-            '<p>Puoi scaricare e aprire il file originale.</p>' +
-            '<a class="letture-share-btn" href="' + url + '" download="' + escapeHtml(meta.fileName || ('file.' + ext)) + '">Scarica file originale</a>' +
+            '<p>Anteprima diretta non disponibile per <b>.' + escapeHtml(extHint || ext || '?') + '</b>.</p>' +
+            '<p>Puoi scaricare e aprire il file con la tua app.</p>' +
+            '<a class="letture-share-btn" href="' + url + '" download="' + escapeHtml(meta.fileName || ('file.' + (extHint || 'bin'))) + '">Scarica file originale</a>' +
             '</div>';
     }
 
@@ -1135,9 +1238,10 @@
             done = true;
             clearTimeout(watchdog);
             if (status) {
-                status.textContent = (mode === 'layout')
-                    ? 'Anteprima layout (file originale)'
-                    : 'Anteprima testo dal file originale';
+                var kind = sniffFileKind(rec.buffer, meta.ext || meta.fileName);
+                if (kind === 'html') status.textContent = 'Anteprima del file originale (documento HTML)';
+                else if (mode === 'layout') status.textContent = 'Anteprima layout (file originale)';
+                else status.textContent = 'Anteprima dal file originale';
             }
         } catch (err) {
             done = true;

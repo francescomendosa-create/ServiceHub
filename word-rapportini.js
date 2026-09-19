@@ -436,6 +436,7 @@
         (wb.SheetNames || []).forEach(function (sheetName) {
             var sheet = wb.Sheets[sheetName];
             if (!sheet) return;
+            // 1) Segnaposto {{…}}
             Object.keys(sheet).forEach(function (addr) {
                 if (!addr || addr.charAt(0) === '!') return;
                 var cell = sheet[addr];
@@ -446,8 +447,113 @@
                     delete cell.w;
                 }
             });
+            // 2) Riempimento per etichetta (TK9201 | mm | ___ | cond | ___)
+            fillXlsxSheetByLabels(sheet, data);
         });
         return window.XLSX.write(wb, { type: 'array', bookType: 'xlsx', cellStyles: true });
+    }
+
+    function normLabelKey(s) {
+        return String(s == null ? '' : s).toUpperCase().replace(/[^A-Z0-9]+/g, '');
+    }
+
+    function isUnitLikeCell(s) {
+        var t = String(s == null ? '' : s).trim();
+        if (!t) return false;
+        return /^(mm|t\/h|mc|mc\/h|ksmc\/h|nmc\/h|%|bar|ap\s*\(bar\)|bp\s*\(bar\)|µs\/cm|us\/cm|cond\.?\s*µs\/cm|val\.?\s*tal\s*quale|%\s*giorn\.?\s*prec\.?|giorn\.?|si\s*\/\s*no)$/i.test(t);
+    }
+
+    function lookupDataValue(data, label) {
+        if (!data || label == null || label === '') return '';
+        var raw = String(label).trim();
+        if (!raw) return '';
+        if (data[raw] != null && String(data[raw]).trim() !== '') return String(data[raw]).trim();
+        var up = raw.toUpperCase();
+        if (data[up] != null && String(data[up]).trim() !== '') return String(data[up]).trim();
+        var n = normLabelKey(raw);
+        if (!n) return '';
+        var keys = Object.keys(data);
+        for (var i = 0; i < keys.length; i++) {
+            var k = keys[i];
+            if (normLabelKey(k) === n && data[k] != null && String(data[k]).trim() !== '') {
+                return String(data[k]).trim();
+            }
+        }
+        // TK 9201 ↔ TK9201 ↔ inp-tk9201
+        if (/^INP/.test(n) || /^VAL/.test(n)) {
+            var short = n.replace(/^(INP|VAL)/, '');
+            for (var j = 0; j < keys.length; j++) {
+                if (normLabelKey(keys[j]) === short && data[keys[j]] != null && String(data[keys[j]]).trim() !== '') {
+                    return String(data[keys[j]]).trim();
+                }
+            }
+        }
+        return '';
+    }
+
+    function setSheetCellValue(sheet, rowIdx, colIdx, value) {
+        if (value == null || value === '') return;
+        var addr = window.XLSX.utils.encode_cell({ r: rowIdx, c: colIdx });
+        var existing = sheet[addr];
+        var num = typeof value === 'number' ? value : Number(String(value).replace(',', '.'));
+        if (!isNaN(num) && String(value).trim() !== '' && /^-?\d+([.,]\d+)?$/.test(String(value).trim())) {
+            sheet[addr] = Object.assign({}, existing || {}, { t: 'n', v: num });
+        } else {
+            sheet[addr] = Object.assign({}, existing || {}, { t: 's', v: String(value) });
+        }
+        if (sheet[addr].w != null) delete sheet[addr].w;
+        // Espandi range
+        if (!sheet['!ref']) {
+            sheet['!ref'] = addr;
+        } else {
+            var range = window.XLSX.utils.decode_range(sheet['!ref']);
+            if (rowIdx > range.e.r) range.e.r = rowIdx;
+            if (colIdx > range.e.c) range.e.c = colIdx;
+            if (rowIdx < range.s.r) range.s.r = rowIdx;
+            if (colIdx < range.s.c) range.s.c = colIdx;
+            sheet['!ref'] = window.XLSX.utils.encode_range(range);
+        }
+    }
+
+    function fillXlsxSheetByLabels(sheet, data) {
+        if (!sheet || !window.XLSX) return;
+        var rows = window.XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
+        rows.forEach(function (row, rIdx) {
+            if (!row || !row.length) return;
+            var label = String(row[0] == null ? '' : row[0]).trim();
+            if (!label) return;
+            // Evita intestazioni generiche
+            if (/^(sasol|situazione|giorno|eventi|composizione|cono|criticita)/i.test(label)) return;
+
+            var mainVal = lookupDataValue(data, label);
+            var condVal = lookupDataValue(data, label + '-cond') ||
+                lookupDataValue(data, label + '_cond') ||
+                lookupDataValue(data, label + ' COND');
+
+            var mainFilled = false;
+            var maxC = Math.max(row.length, 6);
+            for (var c = 1; c < maxC; c++) {
+                var cellStr = String(row[c] == null ? '' : row[c]).trim();
+                if (/^cond/i.test(cellStr)) {
+                    if (condVal) setSheetCellValue(sheet, rIdx, c + 1, condVal);
+                    continue;
+                }
+                if (mainFilled) continue;
+                if (isUnitLikeCell(cellStr)) {
+                    // valore nella cella successiva se vuota
+                    var next = String(row[c + 1] == null ? '' : row[c + 1]).trim();
+                    if (!next && mainVal) {
+                        setSheetCellValue(sheet, rIdx, c + 1, mainVal);
+                        mainFilled = true;
+                    }
+                    continue;
+                }
+                if (cellStr === '' && mainVal) {
+                    setSheetCellValue(sheet, rIdx, c, mainVal);
+                    mainFilled = true;
+                }
+            }
+        });
     }
 
     function fillTextBuffer(buffer, data) {
@@ -1266,7 +1372,9 @@
             '</div>';
     }
 
-    window.renderWordRapportinoPreview = async function (id, mode) {
+    window.renderWordRapportinoPreview = async function (id, mode, opts) {
+        opts = opts || {};
+        var useFilled = opts.filled !== false;
         var host = document.getElementById('word-rapp-preview-host');
         var status = document.getElementById('word-rapp-preview-status');
         if (!host) return;
@@ -1276,7 +1384,7 @@
             return;
         }
         mode = mode || 'text';
-        if (status) status.textContent = 'Apertura file…';
+        if (status) status.textContent = useFilled ? 'Aggiornamento dati dall’interfaccia…' : 'Apertura file…';
         host.innerHTML = '<p class="word-rapp-preview-status">Caricamento anteprima…</p>';
         var done = false;
         var watchdog = setTimeout(function () {
@@ -1288,14 +1396,31 @@
             if (!rec || !rec.buffer) {
                 throw new Error('File non in memoria su questo dispositivo. Attendi il sync (LED verde) o ricarica il file.');
             }
-            await renderPreviewIntoHost(host, meta, rec.buffer, mode);
+            var buffer = rec.buffer;
+            var usedFilled = false;
+            if (useFilled) {
+                try {
+                    var filledFile = await window.fillWordRapportinoTemplate(id);
+                    if (filledFile) {
+                        buffer = await fileToArrayBuffer(filledFile);
+                        usedFilled = true;
+                    }
+                } catch (fillErr) {
+                    console.warn('[ServiceHub] fill preview:', fillErr);
+                }
+            }
+            await renderPreviewIntoHost(host, meta, buffer, mode);
             done = true;
             clearTimeout(watchdog);
             if (status) {
-                var kind = sniffFileKind(rec.buffer, meta.ext || meta.fileName);
-                if (kind === 'html') status.textContent = 'Anteprima del file originale (documento HTML)';
-                else if (mode === 'layout') status.textContent = 'Anteprima layout (file originale)';
-                else status.textContent = 'Anteprima dal file originale';
+                if (usedFilled) {
+                    status.textContent = 'Anteprima con dati aggiornati dall’interfaccia';
+                } else {
+                    var kind = sniffFileKind(rec.buffer, meta.ext || meta.fileName);
+                    if (kind === 'html') status.textContent = 'Anteprima del file originale (documento HTML)';
+                    else if (mode === 'layout') status.textContent = 'Anteprima layout (file originale)';
+                    else status.textContent = 'Anteprima dal file originale';
+                }
             }
         } catch (err) {
             done = true;
@@ -1344,22 +1469,25 @@
         if (body) {
             var helpKeys = (window.listWordRapportiniPlaceholdersHelp() || []).slice(0, 48);
             var ext = (meta.ext || fileExt(meta.fileName) || '').toLowerCase();
-            var canFill = !!FILLABLE_EXT[ext];
+            var canFill = !!FILLABLE_EXT[ext] || ext === 'xlsx' || ext === 'xlsm' || ext === 'xls';
             var fillHint = canFill
-                ? 'Qui sotto deve comparire il contenuto del file. Formato consigliato: <b>.docx</b> (in Word: File → Salva con nome → Documento Word). Per i livelli automatici metti <code>{{TK9201}}</code> nel testo.'
-                : 'Qui sotto l’anteprima del file (se il formato lo permette). Preferisci <b>.docx / .xlsx / .pdf</b>.';
+                ? 'Premi <b>Aggiorna dati</b> per riempire il foglio con i livelli letti dall’interfaccia (senza modificare il file salvato).'
+                : 'Qui sotto l’anteprima del file (se il formato lo permette).';
             body.innerHTML =
                 '<div class="word-rapp-panel word-rapp-panel--viewer">' +
                 '<p class="word-rapp-panel-file">File: <b>' + escapeHtml(meta.fileName || '') + '</b> · ' +
                 escapeHtml((ext || '?').toUpperCase()) + ' · ' +
                 (meta.size ? (Math.max(1, Math.round(meta.size / 1024)) + ' KB') : '?') + '</p>' +
+                '<div class="word-rapp-actions word-rapp-actions--top">' +
+                '<button type="button" class="letture-share-btn letture-share-btn--main" id="word-rapp-refresh-data-btn">Aggiorna dati</button>' +
+                '<button type="button" class="letture-share-btn" id="word-rapp-reload-preview-btn">File grezzo</button>' +
+                '</div>' +
                 '<p id="word-rapp-preview-status" class="word-rapp-preview-status">Apertura anteprima…</p>' +
                 '<div id="word-rapp-preview-host" class="word-rapp-preview-host" aria-live="polite"></div>' +
                 '<p class="word-rapp-panel-hint">' + fillHint + '</p>' +
                 '<div class="word-rapp-actions">' +
                 '<button type="button" class="letture-share-btn" id="word-rapp-replace-btn">Sostituisci file / rinomina</button>' +
                 '<button type="button" class="letture-share-btn" id="word-rapp-placeholders-btn">Sigle disponibili</button>' +
-                '<button type="button" class="letture-share-btn" id="word-rapp-reload-preview-btn">Ricarica anteprima</button>' +
                 '</div>' +
                 '<pre class="word-rapp-placeholders" id="word-rapp-placeholders-box" style="display:none">' +
                 escapeHtml(helpKeys.join('\n')) +
@@ -1375,9 +1503,16 @@
                     box.style.display = box.style.display === 'none' ? 'block' : 'none';
                 };
             }
+            var refresh = document.getElementById('word-rapp-refresh-data-btn');
+            if (refresh) {
+                refresh.onclick = function () {
+                    toast('Aggiorno i dati dall’interfaccia…');
+                    void window.renderWordRapportinoPreview(id, 'text', { filled: true });
+                };
+            }
             var reload = document.getElementById('word-rapp-reload-preview-btn');
-            if (reload) reload.onclick = function () { void window.renderWordRapportinoPreview(id, 'text'); };
-            void window.renderWordRapportinoPreview(id, 'text');
+            if (reload) reload.onclick = function () { void window.renderWordRapportinoPreview(id, 'text', { filled: false }); };
+            void window.renderWordRapportinoPreview(id, 'text', { filled: true });
         }
         modal.classList.add('active');
         if (typeof window.__syncBodyModalOpenClass === 'function') window.__syncBodyModalOpenClass();

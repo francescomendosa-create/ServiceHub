@@ -1049,7 +1049,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.09.20-offline-boot-local-save';
+        window.SERVICEHUB_BUILD = '2026.09.20-led-offline-orange';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -5256,15 +5256,33 @@ window.colorPreviewNumber = function(tankName, value) {
             }
         };
 
-        const initAuth = async () => {
+        /** LED accanto a STABILE: arancione=offline, verde=online+auth, rosso=online senza cloud. */
+        window.__updateCloudStatusLed = function (opts) {
+            opts = opts || {};
             const led = document.getElementById('cloud-status-led');
+            if (!led) return;
+            const offline = opts.forceOffline === true
+                || (opts.forceOnline !== true && (window.__serviceHubOfflineMode === true || !navigator.onLine));
+            const authed = !!(typeof user !== 'undefined' && user && user.uid);
+            if (offline) {
+                window.__serviceHubOfflineMode = true;
+                led.className = 'w-2.5 h-2.5 rounded-full bg-orange-500 shadow-[0_0_10px_#f97316]';
+                led.title = 'Offline — dati salvati in locale';
+                return;
+            }
+            window.__serviceHubOfflineMode = false;
+            if (authed) {
+                led.className = 'w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_10px_#10b981]';
+                led.title = 'Online — connesso al cloud';
+            } else {
+                led.className = 'w-2.5 h-2.5 rounded-full bg-red-600 shadow-[0_0_10px_#dc2626]';
+                led.title = 'Online — cloud non connesso';
+            }
+        };
+
+        const initAuth = async () => {
             if (!auth || typeof signInAnonymously !== 'function') {
-                if (led) {
-                    led.className = navigator.onLine
-                        ? "w-2.5 h-2.5 rounded-full bg-slate-500 shadow-[0_0_8px_#64748b]"
-                        : "w-2.5 h-2.5 rounded-full bg-amber-500 shadow-[0_0_8px_#f59e0b]";
-                }
-                window.__serviceHubOfflineMode = !navigator.onLine;
+                window.__updateCloudStatusLed();
                 return;
             }
             try {
@@ -5273,14 +5291,11 @@ window.colorPreviewNumber = function(tankName, value) {
                 } else {
                     await signInAnonymously(auth);
                 }
-                window.__serviceHubOfflineMode = false;
+                if (navigator.onLine) window.__serviceHubOfflineMode = false;
+                window.__updateCloudStatusLed();
             } catch (error) {
                 window.__serviceHubOfflineMode = !navigator.onLine;
-                if (led) {
-                    led.className = window.__serviceHubOfflineMode
-                        ? "w-2.5 h-2.5 rounded-full bg-amber-500 shadow-[0_0_8px_#f59e0b]"
-                        : "w-2.5 h-2.5 rounded-full bg-red-600 shadow-[0_0_10px_#dc2626]";
-                }
+                window.__updateCloudStatusLed();
             }
         };
         window.__retryFirebaseAuth = initAuth;
@@ -5288,10 +5303,13 @@ window.colorPreviewNumber = function(tankName, value) {
         if (auth && typeof onAuthStateChanged === 'function') {
             onAuthStateChanged(auth, (u) => {
                 user = u;
-                const led = document.getElementById('cloud-status-led');
                 if (user && user.uid) {
-                    if(led) led.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_10px_#10b981]";
-                    window.__serviceHubOfflineMode = false;
+                    if (navigator.onLine) window.__serviceHubOfflineMode = false;
+                    window.__updateCloudStatusLed();
+                    if (!navigator.onLine) {
+                        /* Offline con sessione in cache: resta arancione, niente sync cloud. */
+                        return;
+                    }
                     syncWithCloud();
                     window.__hydrateDigitalShareKeyFromCloud();
                     window.initAlarmConfigListener();
@@ -5308,11 +5326,7 @@ window.colorPreviewNumber = function(tankName, value) {
                         }
                     }, 2000);
                 } else {
-                    if(led) {
-                        led.className = (!navigator.onLine)
-                            ? "w-2.5 h-2.5 rounded-full bg-amber-500 shadow-[0_0_8px_#f59e0b]"
-                            : "w-2.5 h-2.5 rounded-full bg-red-600 shadow-[0_0_10px_#dc2626]";
-                    }
+                    window.__updateCloudStatusLed();
                 }
             });
         }
@@ -11141,10 +11155,11 @@ window.updateStoricoButton = async function() {
             if (!navigator.onLine) {
                 window.__serviceHubOfflineMode = true;
                 window.__cloudPlantHydrated = true;
-                const ledOff = document.getElementById('cloud-status-led');
-                if (ledOff && !(user && user.uid)) {
-                    ledOff.className = "w-2.5 h-2.5 rounded-full bg-amber-500 shadow-[0_0_8px_#f59e0b]";
+                if (typeof window.__updateCloudStatusLed === 'function') {
+                    window.__updateCloudStatusLed({ forceOffline: true });
                 }
+            } else if (typeof window.__updateCloudStatusLed === 'function') {
+                window.__updateCloudStatusLed();
             }
             if (typeof window.__applyInstantLevelsToDOM === 'function') {
                 window.__applyInstantLevelsToDOM();
@@ -11259,8 +11274,15 @@ window.updateStoricoButton = async function() {
             });
             window.addEventListener('online', function () {
                 window.__serviceHubOfflineMode = false;
+                if (typeof window.__updateCloudStatusLed === 'function') {
+                    window.__updateCloudStatusLed({ forceOnline: true });
+                }
                 if (typeof window.__resumeCloudAfterOnline === 'function') {
-                    void window.__resumeCloudAfterOnline();
+                    void Promise.resolve(window.__resumeCloudAfterOnline()).then(function () {
+                        if (typeof window.__updateCloudStatusLed === 'function') {
+                            window.__updateCloudStatusLed({ forceOnline: true });
+                        }
+                    });
                 } else {
                     if (typeof window.__retryFirebaseAuth === 'function') void window.__retryFirebaseAuth();
                     if (typeof window.__flushPlantCloudSaveNow === 'function') {
@@ -11278,9 +11300,8 @@ window.updateStoricoButton = async function() {
             });
             window.addEventListener('offline', function () {
                 window.__serviceHubOfflineMode = true;
-                const led = document.getElementById('cloud-status-led');
-                if (led && !(user && user.uid)) {
-                    led.className = "w-2.5 h-2.5 rounded-full bg-amber-500 shadow-[0_0_8px_#f59e0b]";
+                if (typeof window.__updateCloudStatusLed === 'function') {
+                    window.__updateCloudStatusLed({ forceOffline: true });
                 }
                 if (typeof window.flushPlantBackupNow === 'function') {
                     try { window.flushPlantBackupNow(); } catch (_) {}
@@ -35616,6 +35637,9 @@ window.updateStoricoButton = async function() {
             if (user && user.uid && db && typeof syncWithCloud === 'function' && !__shUnsubPlant) {
                 try { syncWithCloud(); } catch (_) {}
             }
+            if (typeof window.__updateCloudStatusLed === 'function') {
+                window.__updateCloudStatusLed({ forceOnline: true });
+            }
         };
 
         /** Impostazioni: sync Firestore — tasto aggiornamento = scarica dal cloud (fonte di verità). */
@@ -51738,7 +51762,7 @@ window.convertToHtml = async () => {
     <div class="main-container">
         <div class="main-header">
             <div class="flex items-center gap-2">
-                <div id="cloud-status-led" class="w-2.5 h-2.5 rounded-full bg-slate-500 shadow-[0_0_8px_#64748b]" title="Verde = connesso al cloud. Rosso = non connesso."></div>
+                <div id="cloud-status-led" class="w-2.5 h-2.5 rounded-full bg-slate-500 shadow-[0_0_8px_#64748b]" title="Verde = online. Arancione = offline. Rosso = cloud non connesso."></div>
                 <span class="font-black italic text-[15px] tracking-tighter uppercase text-white cursor-pointer" onclick="showResetModal()">STABILE 2026</span>
                 <span id="device-tag" class="px-2 py-0.5 bg-emerald-500/30 text-emerald-300 rounded text-[8px] font-black">V4.5</span>
             </div>
@@ -52852,7 +52876,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=378')
+                navigator.serviceWorker.register('./sw.js?v=379')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();

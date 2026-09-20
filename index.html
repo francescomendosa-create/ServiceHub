@@ -1049,7 +1049,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.09.21-letture-share-desktop-sheet';
+        window.SERVICEHUB_BUILD = '2026.09.21-letture-share-jpeg-like-report';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -18931,6 +18931,86 @@ window.updateStoricoButton = async function() {
             return true;
         };
 
+        /**
+         * Come INVIA REPORT: su Windows navigator.share accetta JPEG, non .doc.
+         * Per questo il report funzionava e le letture no.
+         */
+        window.captureLetturaHtmlAsJpegFile = async function (htmlOrEl, fileName) {
+            if (typeof html2canvas !== 'function') throw new Error('html2canvas non disponibile');
+            var host = null;
+            var target = null;
+            var removeHost = false;
+            if (htmlOrEl && htmlOrEl.nodeType === 1) {
+                target = htmlOrEl;
+            } else {
+                var html = String(htmlOrEl || '');
+                var bodyHtml = html;
+                var m = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+                if (m) bodyHtml = m[1];
+                host = document.createElement('div');
+                host.id = 'sh-lettura-share-capture-host';
+                host.setAttribute('aria-hidden', 'true');
+                host.style.cssText = 'position:fixed;left:-14000px;top:0;width:794px;max-width:794px;background:#fff;color:#000;overflow:visible;z-index:-1;pointer-events:none;';
+                host.innerHTML = bodyHtml;
+                document.body.appendChild(host);
+                target = host.querySelector('#lettura-doc-print-root') || host.firstElementChild || host;
+                removeHost = true;
+            }
+            await new Promise(function (r) {
+                requestAnimationFrame(function () { requestAnimationFrame(r); });
+            });
+            try {
+                var canvas = await html2canvas(target, {
+                    scale: 2,
+                    useCORS: true,
+                    backgroundColor: '#ffffff',
+                    letterRendering: true,
+                    logging: false,
+                    width: Math.max(target.scrollWidth || 0, target.clientWidth || 0, 600),
+                    height: Math.max(target.scrollHeight || 0, target.clientHeight || 0, 400),
+                    windowWidth: Math.max(target.scrollWidth || 0, target.clientWidth || 0, 600),
+                    windowHeight: Math.max(target.scrollHeight || 0, target.clientHeight || 0, 400)
+                });
+                var dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+                var blob = await (await fetch(dataUrl)).blob();
+                var safe = String(fileName || 'Lettura_Stabile.jpg').replace(/[\\/:*?"<>|]+/g, '_');
+                if (!/\.jpe?g$/i.test(safe)) safe += '.jpg';
+                return new File([blob], safe, { type: 'image/jpeg' });
+            } finally {
+                if (removeHost && host && host.parentNode) host.parentNode.removeChild(host);
+            }
+        };
+
+        window.shareLetturaJpegLikeReport = async function (jpegFile, title) {
+            if (!jpegFile) return false;
+            var shareTitle = title || 'Lettura Stabile 2026';
+            if (typeof window.canShareReportFile === 'function'
+                ? window.canShareReportFile(jpegFile)
+                : window.canShareLetturaFile(jpegFile)) {
+                try {
+                    await navigator.share({ title: shareTitle, files: [jpegFile] });
+                    return true;
+                } catch (shareError) {
+                    if (shareError && shareError.name === 'AbortError') return true;
+                    console.warn('[ServiceHub] share lettura jpeg:', shareError && shareError.message);
+                }
+            } else if (typeof navigator.share === 'function') {
+                try {
+                    await navigator.share({ title: shareTitle, files: [jpegFile] });
+                    return true;
+                } catch (e2) {
+                    if (e2 && e2.name === 'AbortError') return true;
+                }
+            }
+            if (window.downloadLetturaShareFile(jpegFile)) {
+                if (typeof window.__serviceHubFlashToast === 'function') {
+                    window.__serviceHubFlashToast('Immagine scaricata. Condividila da Download (come il report).', false);
+                }
+                return true;
+            }
+            return false;
+        };
+
         window.__letturaDesktopShareCtx = null;
 
         window.closeLetturaDesktopShareSheet = function () {
@@ -18948,11 +19028,12 @@ window.updateStoricoButton = async function() {
                 title: title || file.name || 'Documento ServiceHub',
                 situazioneDocHtml: opts.situazioneDocHtml || null,
                 isNotturno: !!opts.isNotturno,
-                isSituazione: !!opts.isSituazione
+                isSituazione: !!opts.isSituazione,
+                jpegFile: opts.jpegFile || null
             };
             var modal = document.getElementById('letture-desktop-share-modal');
             var nameEl = document.getElementById('letture-desktop-share-filename');
-            if (nameEl) nameEl.textContent = file.name || '';
+            if (nameEl) nameEl.textContent = (opts.jpegFile && opts.jpegFile.name) || file.name || '';
             if (modal) modal.classList.add('active');
             return true;
         };
@@ -19025,7 +19106,7 @@ window.updateStoricoButton = async function() {
                 window.closeLetturaDesktopShareSheet();
                 return;
             }
-            var file = ctx.file;
+            var file = ctx.jpegFile || ctx.file;
             var title = ctx.title;
             var toast = function (msg, err) {
                 if (typeof window.__serviceHubFlashToast === 'function') {
@@ -19038,25 +19119,26 @@ window.updateStoricoButton = async function() {
                 return;
             }
             if (action === 'system') {
-                var ok = await window.tryLetturaSystemShare(file, title);
+                var shareFile = ctx.jpegFile || ctx.file;
+                var ok = await window.tryLetturaSystemShare(shareFile, title);
                 if (ok) {
                     window.closeLetturaDesktopShareSheet();
-                    toast('Condivisione Windows aperta.');
+                    toast('Condivisione aperta.');
                 } else {
-                    toast('Condivisione Windows non disponibile su questo browser. Usa Email o WhatsApp.', true);
+                    toast('Condivisione non disponibile. Prova Email o WhatsApp.', true);
                 }
                 return;
             }
             if (action === 'email') {
                 window.shareLetturaFileViaEmailDesktop(file, title);
                 window.closeLetturaDesktopShareSheet();
-                toast('Email aperta — allega il .doc da Download.');
+                toast('Email aperta — allega il file da Download.');
                 return;
             }
             if (action === 'whatsapp') {
                 window.shareLetturaFileViaWhatsAppDesktop(file, title);
                 window.closeLetturaDesktopShareSheet();
-                toast('WhatsApp — allega il .doc da Download alla chat.');
+                toast('WhatsApp — allega il file da Download.');
                 return;
             }
             if (action === 'download') {
@@ -19153,14 +19235,42 @@ window.updateStoricoButton = async function() {
                 || isDesktopPc
                 || (window.__shIsAndroidTablet && window.__shIsAndroidTablet());
 
-            /* Desktop Windows/PC: menu Email / WhatsApp / Condividi sistema / Stampa. */
-            if (isDesktopPc && file) {
-                window.openLetturaDesktopShareSheet(file, title, {
-                    situazioneDocHtml: situazioneDocHtml,
-                    isNotturno: isNotturno,
-                    isSituazione: isSituazione
-                });
-                finishShare();
+            /* Desktop PC: stesso metodo del report (JPEG + navigator.share). Il .doc non è condivisibile su Windows. */
+            if (isDesktopPc && typeof window.captureLetturaHtmlAsJpegFile === 'function') {
+                var jpgBase = (isSituazione ? 'Situazione_giornaliera_' : (isNotturno ? 'Rapportino_giornaliero_' : 'Letture_')) +
+                    String(dateStr || '').replace(/\//g, '-');
+                var captureSrc = situazioneDocHtml
+                    || document.getElementById('lettura-doc-print-root')
+                    || document.querySelector('#letture-doc-body .lettura-doc');
+                if (typeof window.__serviceHubFlashToast === 'function') {
+                    window.__serviceHubFlashToast('Preparazione come INVIA REPORT…', false);
+                }
+                void window.captureLetturaHtmlAsJpegFile(captureSrc, jpgBase + '.jpg')
+                    .then(function (jpegFile) {
+                        return window.shareLetturaJpegLikeReport(jpegFile, title).then(function (ok) {
+                            if (!ok && file) {
+                                window.openLetturaDesktopShareSheet(file, title, {
+                                    situazioneDocHtml: situazioneDocHtml,
+                                    isNotturno: isNotturno,
+                                    isSituazione: isSituazione,
+                                    jpegFile: jpegFile
+                                });
+                            }
+                        });
+                    })
+                    .catch(function (err) {
+                        console.warn('[ServiceHub] capture lettura jpeg:', err && err.message);
+                        if (file) {
+                            window.openLetturaDesktopShareSheet(file, title, {
+                                situazioneDocHtml: situazioneDocHtml,
+                                isNotturno: isNotturno,
+                                isSituazione: isSituazione
+                            });
+                        } else if (typeof window.__serviceHubFlashToast === 'function') {
+                            window.__serviceHubFlashToast('Impossibile creare l\'immagine da condividere.', true);
+                        }
+                    })
+                    .finally(finishShare);
                 return;
             }
 
@@ -53174,7 +53284,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=383')
+                navigator.serviceWorker.register('./sw.js?v=384')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();

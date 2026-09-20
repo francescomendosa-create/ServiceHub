@@ -2036,8 +2036,14 @@
                 var it = remoteItems[i];
                 if (!it || !it.id) continue;
                 if (isWordRapportinoDeleted(it.id)) {
-                    remoteHadDeleted = true;
-                    continue;
+                    /* Caricato di nuovo dopo l'eliminazione: vince l'upload più recente,
+                       altrimenti questo dispositivo lo ricancellerebbe anche dal cloud. */
+                    if (Number(it.updatedAt || 0) > Number(loadDeletedMap()[it.id] || 0)) {
+                        unmarkWordRapportinoDeleted(it.id);
+                    } else {
+                        remoteHadDeleted = true;
+                        continue;
+                    }
                 }
                 remoteIds[it.id] = true;
                 remoteClean.push(it);
@@ -2108,22 +2114,38 @@
         }
     }
 
+    /** Il sync può non essere ancora agganciato se il login Firebase sta partendo. */
+    function waitForCloudApi(maxMs) {
+        var deadline = Date.now() + (maxMs || 8000);
+        return new Promise(function (resolve) {
+            (function attempt() {
+                if (__wrCloud && __wrCloud.db && __wrCloud.userUid) return resolve(__wrCloud);
+                if (Date.now() > deadline) return resolve(null);
+                setTimeout(attempt, 400);
+            })();
+        });
+    }
+
     /** Forza il recupero dell'elenco dal server, ignorando la cache dell'SDK. */
     window.refreshWordRapportiniFromCloud = async function () {
         var btn = document.querySelector('.word-rapp-sync-btn');
-        var api = __wrCloud;
-        if (!api || !api.db || !api.userUid) {
-            toast('Cloud non connesso: serve la rete e il login (LED verde).', true);
-            return false;
-        }
         if (btn) { btn.disabled = true; btn.textContent = 'Controllo cloud…'; }
+        var lines = [];
         try {
+            var api = await waitForCloudApi(8000);
+            if (!api) {
+                alert('Cloud non collegato su questo dispositivo.\n\n' +
+                    'Serve rete e login Firebase (LED verde in alto). ' +
+                    'Aspetta che il LED diventi verde e riprova.');
+                return false;
+            }
             var indexRef = api.doc(api.db, 'artifacts', api.appId, 'sharedDial', 'wordRapportini');
             var snap = api.getDocFromServer
                 ? await api.getDocFromServer(indexRef)
                 : await api.getDoc(indexRef);
             if (!snap.exists()) {
-                toast('Nessun documento ufficiale sul cloud.', true);
+                alert('Sul cloud non c’è ancora nessun documento ufficiale.\n' +
+                    'Ricarica il file dal PC e controlla il messaggio di conferma.');
                 return false;
             }
             var items = (snap.data() || {}).items || [];
@@ -2131,26 +2153,51 @@
             var errors = 0;
             for (var i = 0; i < items.length; i++) {
                 var it = items[i];
-                if (!it || !it.id || isWordRapportinoDeleted(it.id)) continue;
+                if (!it || !it.id) continue;
+                var label = it.name || it.fileName || it.id;
+                if (isWordRapportinoDeleted(it.id)) {
+                    /* Ricaricato dal PC dopo l'eliminazione: la vecchia cancellazione non deve vincere. */
+                    if (Number(it.updatedAt || 0) > Number(loadDeletedMap()[it.id] || 0)) {
+                        unmarkWordRapportinoDeleted(it.id);
+                    } else {
+                        lines.push('· ' + label + ': eliminato su questo dispositivo');
+                        continue;
+                    }
+                }
                 try {
-                    if (await pullCloudFileToLocal(api, it, true)) pulled++;
+                    var got = await pullCloudFileToLocal(api, it, true);
+                    var rec = await idbGet(it.id);
+                    var hasBytes = !!(rec && rec.buffer);
+                    if (!hasBytes) {
+                        errors++;
+                        lines.push('· ' + label + ': scaricato ma non salvato (spazio del telefono?)');
+                    } else {
+                        if (got) pulled++;
+                        lines.push('· ' + label + ': OK');
+                    }
                 } catch (err) {
                     errors++;
-                    console.warn('[ServiceHub] refresh rapportino', it.id, err && err.message);
+                    lines.push('· ' + label + ': ERRORE ' + ((err && err.message) || 'sconosciuto'));
+                    console.warn('[ServiceHub] refresh rapportino', it.id, err);
                 }
             }
             window.renderWordRapportiniList();
-            if (errors) {
-                toast('Scaricati ' + pulled + ' file, ' + errors + ' non riusciti. Riprova.', true);
+            var localList = window.listWordRapportini();
+            if (errors || !localList.length) {
+                alert('Sul cloud: ' + items.length + ' documento/i\n' +
+                    (lines.length ? lines.join('\n') : '(nessuno)') +
+                    '\n\nIn elenco qui: ' + localList.length +
+                    (localList.length ? '\n' + localList.map(function (m) { return '· ' + m.name; }).join('\n') : ''));
             } else if (pulled) {
                 toast('Aggiornato: ' + pulled + ' file scaricati dal cloud.');
             } else {
-                toast('Già allineato: nessun file nuovo sul cloud.');
+                toast('Già allineato: ' + localList.length + ' documento/i in elenco.');
             }
             return true;
         } catch (err) {
             console.warn('[ServiceHub] refresh rapportini:', err);
-            toast('Aggiornamento fallito: ' + ((err && err.message) || 'errore rete'), true);
+            alert('Aggiornamento fallito: ' + ((err && err.message) || 'errore rete') +
+                (lines.length ? '\n\n' + lines.join('\n') : ''));
             return false;
         } finally {
             if (btn) { btn.disabled = false; btn.textContent = 'Aggiorna dal cloud'; }

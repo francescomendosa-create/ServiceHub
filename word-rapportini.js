@@ -2114,6 +2114,97 @@
         }
     }
 
+    /* ——— Lettura REST diretta: nessuna cache dell'SDK di mezzo ——— */
+
+    function fsVal(v) {
+        if (!v || typeof v !== 'object') return null;
+        if (v.stringValue !== undefined) return v.stringValue;
+        if (v.integerValue !== undefined) return Number(v.integerValue);
+        if (v.doubleValue !== undefined) return Number(v.doubleValue);
+        if (v.booleanValue !== undefined) return !!v.booleanValue;
+        if (v.arrayValue !== undefined) return (v.arrayValue.values || []).map(fsVal);
+        if (v.mapValue !== undefined) {
+            var out = {};
+            var f = v.mapValue.fields || {};
+            Object.keys(f).forEach(function (k) { out[k] = fsVal(f[k]); });
+            return out;
+        }
+        return null;
+    }
+
+    function restBaseUrl() {
+        var project = window.__SERVICEHUB_FIREBASE_PROJECT || '';
+        var appId = (__wrCloud && __wrCloud.appId) || window.__SERVICEHUB_APP_ID || '';
+        if (!project || !appId) return '';
+        return 'https://firestore.googleapis.com/v1/projects/' + encodeURIComponent(project) +
+            '/databases/(default)/documents/artifacts/' + encodeURIComponent(appId) +
+            '/sharedDial/wordRapportini';
+    }
+
+    async function restGetJson(url, token) {
+        var headers = { 'Cache-Control': 'no-cache' };
+        if (token) headers.Authorization = 'Bearer ' + token;
+        var res = await fetch(url, { method: 'GET', cache: 'no-store', headers: headers });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+    }
+
+    /** Elenco documenti letto dal server via REST. Restituisce null se non praticabile. */
+    async function fetchCloudIndexViaRest() {
+        var base = restBaseUrl();
+        if (!base || typeof fetch !== 'function') return null;
+        var token = typeof window.__shFirebaseIdToken === 'function'
+            ? await window.__shFirebaseIdToken()
+            : '';
+        var doc = await restGetJson(base + '?t=' + Date.now(), token);
+        var items = fsVal((doc.fields || {}).items) || [];
+        return Array.isArray(items) ? items : [];
+    }
+
+    /** Scarica i byte di un documento via REST e li salva in locale. */
+    async function pullCloudFileViaRest(item) {
+        var base = restBaseUrl();
+        if (!base) throw new Error('REST non disponibile');
+        var token = typeof window.__shFirebaseIdToken === 'function'
+            ? await window.__shFirebaseIdToken()
+            : '';
+        var chunkCount = Number(item.chunkCount) || 0;
+        if (!chunkCount) {
+            var fileDoc = await restGetJson(base + '/files/' + encodeURIComponent(item.id) + '?t=' + Date.now(), token);
+            var fd = {};
+            Object.keys((fileDoc.fields || {})).forEach(function (k) { fd[k] = fsVal(fileDoc.fields[k]); });
+            chunkCount = Number(fd.chunkCount) || 0;
+            item = Object.assign({}, item, fd);
+        }
+        if (!chunkCount) throw new Error('Nessun contenuto sul cloud');
+        var parts = [];
+        for (var i = 0; i < chunkCount; i++) {
+            var c = await restGetJson(base + '/files/' + encodeURIComponent(item.id) +
+                '/chunks/' + i + '?t=' + Date.now(), token);
+            parts.push(String(fsVal((c.fields || {}).d) || ''));
+        }
+        var buffer = base64ToArrayBuffer(parts.join(''));
+        var pulledSum = bufferChecksum(buffer);
+        if (item.sum && item.sum !== pulledSum) throw new Error('File alterato durante il sync');
+        await idbPut({ id: item.id, buffer: buffer, fileName: item.fileName, mime: item.mime, ext: item.ext });
+        var list = loadMeta().filter(function (m) { return m && m.id !== item.id; });
+        list.push({
+            id: item.id,
+            name: item.name,
+            fileName: item.fileName,
+            ext: item.ext,
+            mime: item.mime,
+            size: item.size || buffer.byteLength,
+            sum: item.sum || pulledSum,
+            fillable: !!item.fillable,
+            createdAt: item.createdAt || Date.now(),
+            updatedAt: item.updatedAt || Date.now(),
+            chunkCount: chunkCount
+        });
+        saveMeta(list);
+        return true;
+    }
+
     /** Il sync può non essere ancora agganciato se il login Firebase sta partendo. */
     function waitForCloudApi(maxMs) {
         var deadline = Date.now() + (maxMs || 8000);
@@ -2139,16 +2230,35 @@
                     'Aspetta che il LED diventi verde e riprova.');
                 return false;
             }
-            var indexRef = api.doc(api.db, 'artifacts', api.appId, 'sharedDial', 'wordRapportini');
-            var snap = api.getDocFromServer
-                ? await api.getDocFromServer(indexRef)
-                : await api.getDoc(indexRef);
-            if (!snap.exists()) {
-                alert('Sul cloud non c’è ancora nessun documento ufficiale.\n' +
-                    'Ricarica il file dal PC e controlla il messaggio di conferma.');
+            /* REST prima dell'SDK: l'SDK può servire una copia vecchia dalla sua cache locale. */
+            var items = null;
+            var via = 'REST';
+            try {
+                items = await fetchCloudIndexViaRest();
+            } catch (restErr) {
+                console.warn('[ServiceHub] indice via REST:', restErr && restErr.message);
+                lines.push('(lettura diretta non riuscita: ' + ((restErr && restErr.message) || '?') + ')');
+                items = null;
+            }
+            if (!items || !items.length) {
+                var indexRef = api.doc(api.db, 'artifacts', api.appId, 'sharedDial', 'wordRapportini');
+                var snap = api.getDocFromServer
+                    ? await api.getDocFromServer(indexRef)
+                    : await api.getDoc(indexRef);
+                var sdkItems = snap.exists() ? ((snap.data() || {}).items || []) : [];
+                if (sdkItems.length || !items) {
+                    items = sdkItems;
+                    via = 'SDK';
+                }
+            }
+            if (!items.length) {
+                alert('Sul cloud non risulta nessun documento ufficiale (lettura ' + via + ').\n\n' +
+                    'Progetto: ' + (window.__SERVICEHUB_FIREBASE_PROJECT || '?') +
+                    '\nGruppo: ' + (api.appId || '?') +
+                    '\nRete: ' + (navigator.onLine ? 'online' : 'offline') +
+                    (lines.length ? '\n\n' + lines.join('\n') : ''));
                 return false;
             }
-            var items = (snap.data() || {}).items || [];
             var pulled = 0;
             var errors = 0;
             for (var i = 0; i < items.length; i++) {
@@ -2165,7 +2275,13 @@
                     }
                 }
                 try {
-                    var got = await pullCloudFileToLocal(api, it, true);
+                    var got = false;
+                    try {
+                        got = await pullCloudFileViaRest(it);
+                    } catch (restPullErr) {
+                        console.warn('[ServiceHub] download REST', it.id, restPullErr && restPullErr.message);
+                        got = await pullCloudFileToLocal(api, it, true);
+                    }
                     var rec = await idbGet(it.id);
                     var hasBytes = !!(rec && rec.buffer);
                     if (!hasBytes) {
@@ -2184,7 +2300,7 @@
             window.renderWordRapportiniList();
             var localList = window.listWordRapportini();
             if (errors || !localList.length) {
-                alert('Sul cloud: ' + items.length + ' documento/i\n' +
+                alert('Sul cloud: ' + items.length + ' documento/i (lettura ' + via + ')\n' +
                     (lines.length ? lines.join('\n') : '(nessuno)') +
                     '\n\nIn elenco qui: ' + localList.length +
                     (localList.length ? '\n' + localList.map(function (m) { return '· ' + m.name; }).join('\n') : ''));

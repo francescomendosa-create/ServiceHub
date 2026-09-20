@@ -409,6 +409,19 @@
 
     async function fillDocxBuffer(buffer, data) {
         await ensureDocxLibs();
+        var zipProbe = new window.PizZip(buffer);
+        var hasPlaceholder = false;
+        Object.keys(zipProbe.files || {}).forEach(function (path) {
+            if (hasPlaceholder) return;
+            if (!/\.xml$/i.test(path) || !/^word\//i.test(path)) return;
+            try {
+                var txt = zipProbe.file(path).asText();
+                if (txt && txt.indexOf('{{') >= 0) hasPlaceholder = true;
+            } catch (_) {}
+        });
+        /* Nessun {{segnaposto}}: restituisci i byte ORIGINALI senza ri-zippare. */
+        if (!hasPlaceholder) return buffer;
+
         var zip = new window.PizZip(buffer);
         var Docx = getDocxtemplaterCtor();
         var doc = new Docx(zip, {
@@ -563,7 +576,9 @@
     function fillTextBuffer(buffer, data) {
         var decoder = new TextDecoder('utf-8');
         var text = decoder.decode(buffer);
+        if (text.indexOf('{{') < 0) return buffer; /* byte-identici all’upload */
         var out = replacePlaceholdersInText(text, data);
+        if (out === text) return buffer;
         return new TextEncoder().encode(out).buffer;
     }
 
@@ -854,21 +869,30 @@
             outBuf = await fillDocxBuffer(rec.buffer, data);
             outExt = 'docx';
             outMime = DOCX_MIME;
-            filled = true;
+            filled = outBuf !== rec.buffer;
         } else if (ext === 'xlsx' || ext === 'xlsm') {
             outBuf = await fillXlsxBuffer(rec.buffer, data);
             outExt = 'xlsx';
             outMime = XLSX_MIME;
-            filled = true;
+            filled = true; /* SheetJS riscrive sempre il workbook */
         } else if (ext === 'csv' || ext === 'tsv' || ext === 'txt' || ext === 'rtf' || ext === 'json' || ext === 'xml') {
             outBuf = fillTextBuffer(rec.buffer, data);
-            filled = true;
+            filled = outBuf !== rec.buffer;
         } else if (ext === 'pdf') {
             outBuf = fillPdfBuffer(rec.buffer, data);
             outMime = PDF_MIME;
-            filled = true;
+            filled = outBuf !== rec.buffer;
+        } else if (ext === 'doc') {
+            /* .doc binario OLE: byte identici. .doc che è HTML/testo: solo {{tag}}, stesso markup. */
+            var kind = sniffFileKind(rec.buffer, ext);
+            if (kind === 'html' || kind === 'text' || kind === 'rtf') {
+                outBuf = fillTextBuffer(rec.buffer, data);
+                filled = outBuf !== rec.buffer;
+            } else {
+                filled = false;
+            }
         } else {
-            // .doc / .xls / .ppt / odt / … : file identico, senza merge automatico
+            // .xls / .ppt / odt / … : file IDENTICO all’upload (nessuna riscrittura)
             filled = false;
         }
 
@@ -880,7 +904,46 @@
     };
 
     window.buildSituazioneGiornalieraWordFileFromTemplate = async function () {
-        return null;
+        var list = typeof window.listWordRapportini === 'function' ? window.listWordRapportini() : [];
+        if (!list || !list.length) return null;
+        var preferId = '';
+        try {
+            preferId = localStorage.getItem('servicehub_situazione_word_id') || '';
+        } catch (_) {}
+        var meta = null;
+        if (preferId) {
+            meta = list.find(function (m) { return m && m.id === preferId; }) || null;
+        }
+        if (!meta) {
+            meta = list.find(function (m) {
+                return m && (/situaz/i.test(m.name || '') || /situaz/i.test(m.fileName || ''));
+            }) || null;
+        }
+        if (!meta) {
+            meta = list.find(function (m) { return m && m.fillable; }) || list[0] || null;
+        }
+        if (!meta || !meta.id) return null;
+        if (typeof window.fillWordRapportinoTemplate !== 'function') return null;
+        var file = await window.fillWordRapportinoTemplate(meta.id);
+        if (file) {
+            file.__shFromOfficialTemplate = true;
+            file.__shTemplateId = meta.id;
+            file.__shTemplateName = meta.name || meta.fileName || '';
+        }
+        return file;
+    };
+
+    /** Verifica che il buffer in IndexedDB sia ancora i byte salvati (nessuna mutazione silenziosa). */
+    window.verifyWordRapportinoBufferIntegrity = async function (id) {
+        var meta = window.getWordRapportinoMeta(id);
+        var rec = await idbGet(id);
+        if (!meta || !rec || !rec.buffer) return { ok: false, reason: 'missing' };
+        var ab = await toArrayBuffer(rec.buffer);
+        var size = ab.byteLength || 0;
+        if (meta.size && size !== meta.size) {
+            return { ok: false, reason: 'size-mismatch', expected: meta.size, actual: size };
+        }
+        return { ok: true, size: size, ext: meta.ext || '', fileName: meta.fileName || '' };
     };
 
     window.renderWordRapportiniList = function () {
@@ -1526,8 +1589,15 @@
         id = id || window.__activeWordRapportinoId;
         if (!id) return false;
         try {
+            var integrity = typeof window.verifyWordRapportinoBufferIntegrity === 'function'
+                ? await window.verifyWordRapportinoBufferIntegrity(id)
+                : { ok: true };
+            if (integrity && integrity.ok === false && integrity.reason === 'size-mismatch') {
+                toast('Attenzione: dimensione file diversa dall’upload. Ricarica il documento ufficiale.', true);
+            }
             var file = await window.fillWordRapportinoTemplate(id);
             if (!file) return false;
+            /* Su iPhone/PC: solo condivisione/download del file binario ufficiale — mai stampa HTML. */
             if (typeof window.canShareLetturaFile === 'function' && window.canShareLetturaFile(file) && navigator.share) {
                 try {
                     await navigator.share({ files: [file], title: file.name });
@@ -1535,6 +1605,11 @@
                 } catch (err) {
                     if (err && err.name === 'AbortError') return true;
                 }
+            }
+            if (typeof window.isLetturaShareDesktopPc === 'function' && window.isLetturaShareDesktopPc()
+                && typeof window.openLetturaDesktopShareSheet === 'function') {
+                window.openLetturaDesktopShareSheet(file, file.name, {});
+                return true;
             }
             if (typeof window.downloadLetturaShareFile === 'function') {
                 window.downloadLetturaShareFile(file);
@@ -1547,9 +1622,9 @@
                 setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
             }
             if (file.__shFilled) {
-                toast('File ufficiale compilato: stesso layout, valori presi dall’interfaccia. Aprilo e stampa.');
+                toast('File ufficiale: stesso layout dell’originale, solo numeri aggiornati. Aprilo e stampa.');
             } else {
-                toast('File ufficiale esportato (formato senza riempimento automatico dei livelli).');
+                toast('File ufficiale originale esportato (byte identici all’upload).');
             }
             return true;
         } catch (err) {

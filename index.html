@@ -1999,7 +1999,7 @@ window.colorPreviewNumber = function(tankName, value) {
     <script src="libs/xlsx.full.min.js"></script>
     <script src="libs/pizzip.js"></script>
     <script src="libs/docxtemplater.js"></script>
-    <script src="word-rapportini.js?v=2026.09.19-xlsx-fill-rowfix"></script>
+    <script src="word-rapportini.js?v=2026.09.21-word-identical"></script>
     
     <script type="module">
         /* Firebase in parallelo: non bloccare il boot locale (evita schermata vuota → poi numeri). */
@@ -19147,6 +19147,12 @@ window.updateStoricoButton = async function() {
             }
             if (action === 'print') {
                 window.closeLetturaDesktopShareSheet();
+                /* File ufficiale Word: non stampare HTML ricostruito (layout diverso). */
+                if (file && file.__shFromOfficialTemplate) {
+                    window.downloadLetturaShareFile(file);
+                    toast('Apri il file scaricato in Word e stampa da lì — layout identico all’originale.');
+                    return;
+                }
                 if (ctx.isSituazione && typeof window.printLetturaSituazioneGiornaliera === 'function') {
                     window.printLetturaSituazioneGiornaliera(ctx.situazioneDocHtml);
                 } else if (ctx.isNotturno && typeof window.printLetturaNotturnoA3 === 'function') {
@@ -19160,9 +19166,11 @@ window.updateStoricoButton = async function() {
             }
         };
 
-        window.shareLetturaDoc = function () {
+        window.shareLetturaDoc = async function () {
             if (window.__letturaDocKind === 'word-template') {
-                window.shareWordRapportinoDoc && window.shareWordRapportinoDoc(window.__activeWordRapportinoId);
+                if (window.shareWordRapportinoDoc) {
+                    await window.shareWordRapportinoDoc(window.__activeWordRapportinoId);
+                }
                 return;
             }
             var dateStr = window.formatLetturaDateIt(new Date());
@@ -19176,11 +19184,12 @@ window.updateStoricoButton = async function() {
             var downloadedMsg = isNotturno
                 ? 'Rapportino A3 orizzontale scaricato (.doc). In Word: Layout → Orientamento orizzontale, formato A3.'
                 : (isSituazione
-                    ? 'Situazione giornaliera scaricata (.doc). Aprilo con Word e condividilo da lì.'
+                    ? 'File ufficiale situazione scaricato — stesso layout dell’upload. Aprilo in Word e stampa.'
                     : 'Documento scaricato. Aprilo con Word e condividilo da lì.');
             var printMsg = 'Anteprima stampa A3 orizzontale — in stampante scegli A3 e orientamento orizzontale (297×420 mm).';
             var situazioneDocHtml = null;
             var file = null;
+            var fromOfficialWord = false;
 
             window.__letturaShareInProgress = true;
             clearTimeout(window.__sgLiveRefreshTimer);
@@ -19204,8 +19213,22 @@ window.updateStoricoButton = async function() {
 
             try {
                 if (isSituazione) {
-                    situazioneDocHtml = window.buildLetturaSituazioneGiornalieraShareDocument();
-                    file = window.buildLetturaSituazioneGiornalieraShareFile(situazioneDocHtml);
+                    /* PRIORITÀ: file Word/Excel ufficiale caricato — mai HTML ricostruito. */
+                    if (typeof window.buildSituazioneGiornalieraWordFileFromTemplate === 'function') {
+                        try {
+                            file = await window.buildSituazioneGiornalieraWordFileFromTemplate();
+                        } catch (tplErr) {
+                            console.warn('[ServiceHub] template ufficiale situazione:', tplErr && tplErr.message);
+                            file = null;
+                        }
+                    }
+                    if (file) {
+                        fromOfficialWord = true;
+                        situazioneDocHtml = null; /* blocca stampa HTML su iPhone */
+                    } else {
+                        situazioneDocHtml = window.buildLetturaSituazioneGiornalieraShareDocument();
+                        file = window.buildLetturaSituazioneGiornalieraShareFile(situazioneDocHtml);
+                    }
                 } else if (isNotturno) {
                     if (typeof window.flushRapportinoNotturnoPreviewToSnapshot === 'function') {
                         window.flushRapportinoNotturnoPreviewToSnapshot({ batch: true });
@@ -19233,10 +19256,10 @@ window.updateStoricoButton = async function() {
                 || isDesktopPc
                 || (window.__shIsAndroidTablet && window.__shIsAndroidTablet());
 
-            /* Desktop PC: condivide sempre il .doc originale (mai convertito in immagine). */
+            /* Desktop PC: condivide sempre il file binario (ufficiale se presente). */
             if (isDesktopPc && file) {
                 window.openLetturaDesktopShareSheet(file, title, {
-                    situazioneDocHtml: situazioneDocHtml,
+                    situazioneDocHtml: fromOfficialWord ? null : situazioneDocHtml,
                     isNotturno: isNotturno,
                     isSituazione: isSituazione
                 });
@@ -19247,7 +19270,9 @@ window.updateStoricoButton = async function() {
             if (file && window.canShareLetturaFile(file)) {
                 return navigator.share({ files: [file], title: title }).catch(function (err) {
                     if (err && err.name === 'AbortError') return;
-                    if (isAppleTouch && situazioneDocHtml && typeof window.__printLetturaHtmlDocument === 'function'
+                    /* iPhone: con file ufficiale NON stampare HTML (layout diverso / senza quadratini). */
+                    if (!fromOfficialWord && isAppleTouch && situazioneDocHtml
+                        && typeof window.__printLetturaHtmlDocument === 'function'
                         && window.__printLetturaHtmlDocument(situazioneDocHtml)) {
                         return;
                     }
@@ -19265,7 +19290,9 @@ window.updateStoricoButton = async function() {
                 }
             }
 
-            if (isSituazione && !skipPopupPrint && typeof window.printLetturaSituazioneGiornaliera === 'function') {
+            /* Solo se NON c’è il Word ufficiale: stampa HTML in-app. */
+            if (!fromOfficialWord && isSituazione && !skipPopupPrint
+                && typeof window.printLetturaSituazioneGiornaliera === 'function') {
                 if (window.printLetturaSituazioneGiornaliera(situazioneDocHtml)) {
                     if (typeof window.__serviceHubFlashToast === 'function') {
                         window.__serviceHubFlashToast('Anteprima stampa situazione giornaliera — formato A4 verticale.', false, 'ok');
@@ -19275,7 +19302,8 @@ window.updateStoricoButton = async function() {
                 }
             }
 
-            if (isAppleTouch && situazioneDocHtml && typeof window.__printLetturaHtmlDocument === 'function'
+            if (!fromOfficialWord && isAppleTouch && situazioneDocHtml
+                && typeof window.__printLetturaHtmlDocument === 'function'
                 && window.__printLetturaHtmlDocument(situazioneDocHtml)) {
                 finishShare();
                 return;

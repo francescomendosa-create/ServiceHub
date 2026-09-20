@@ -1002,9 +1002,17 @@
         saveMeta(list);
         unmarkWordRapportinoDeleted(meta.id);
         if (typeof window.__pushWordRapportinoToCloud === 'function') {
-            void window.__pushWordRapportinoToCloud(meta.id).catch(function (err) {
+            void window.__pushWordRapportinoToCloud(meta.id).then(function (status) {
+                if (status === 'ok') {
+                    toast('Caricato e inviato agli altri dispositivi.');
+                } else if (status === 'offline') {
+                    toast('Salvato solo qui: cloud non connesso. Riprova con «Aggiorna dal cloud» quando c’è rete.', true);
+                } else if (status === 'quota') {
+                    toast('Salvato solo qui: quota Firestore superata.', true);
+                }
+            }).catch(function (err) {
                 console.warn('[ServiceHub] sync rapportino cloud:', err && err.message);
-                toast('Salvato qui. Sync altri dispositivi in corso o fallito: ' + ((err && err.message) || ''), true);
+                toast('Salvato qui, invio agli altri dispositivi fallito: ' + ((err && err.message) || ''), true);
             });
         }
         return meta;
@@ -1881,16 +1889,16 @@
 
     window.__pushWordRapportinoToCloud = async function (id) {
         var api = __wrCloud;
-        if (!api || !api.db || !api.userUid || !id) return;
-        if (isWordRapportinoDeleted(id)) return;
-        if (window.__firestoreQuotaBlocked) return;
-        if (__wrPushBusy[id]) return;
+        if (!api || !api.db || !api.userUid || !id) return 'offline';
+        if (isWordRapportinoDeleted(id)) return 'deleted';
+        if (window.__firestoreQuotaBlocked) return 'quota';
+        if (__wrPushBusy[id]) return 'busy';
         __wrPushBusy[id] = true;
         try {
             var meta = window.getWordRapportinoMeta(id);
             var rec = await idbGet(id);
-            if (!meta || !rec || !rec.buffer) return;
-            if (isWordRapportinoDeleted(id)) return;
+            if (!meta || !rec || !rec.buffer) return 'missing';
+            if (isWordRapportinoDeleted(id)) return 'deleted';
             var b64 = arrayBufferToBase64(rec.buffer);
             var chunks = splitBase64(b64);
             var fileRef = api.doc(api.db, 'artifacts', api.appId, 'sharedDial', 'wordRapportini', 'files', id);
@@ -1927,6 +1935,7 @@
             saveMeta(list);
             await writeCloudIndex(api, list);
             console.info('[ServiceHub] rapportino sync OK:', meta.name, chunks.length + ' chunk');
+            return 'ok';
         } finally {
             delete __wrPushBusy[id];
         }
@@ -1958,11 +1967,11 @@
         await writeCloudIndex(api, list);
     };
 
-    async function pullCloudFileToLocal(api, item) {
+    async function pullCloudFileToLocal(api, item, force) {
         if (!item || !item.id) return false;
         if (isWordRapportinoDeleted(item.id)) return false;
         var local = window.getWordRapportinoMeta(item.id);
-        if (local && Number(local.updatedAt || 0) >= Number(item.updatedAt || 0)) {
+        if (!force && local && Number(local.updatedAt || 0) >= Number(item.updatedAt || 0)) {
             var rec = await idbGet(item.id);
             if (rec && rec.buffer) return false;
         }
@@ -2099,6 +2108,55 @@
         }
     }
 
+    /** Forza il recupero dell'elenco dal server, ignorando la cache dell'SDK. */
+    window.refreshWordRapportiniFromCloud = async function () {
+        var btn = document.querySelector('.word-rapp-sync-btn');
+        var api = __wrCloud;
+        if (!api || !api.db || !api.userUid) {
+            toast('Cloud non connesso: serve la rete e il login (LED verde).', true);
+            return false;
+        }
+        if (btn) { btn.disabled = true; btn.textContent = 'Controllo cloud…'; }
+        try {
+            var indexRef = api.doc(api.db, 'artifacts', api.appId, 'sharedDial', 'wordRapportini');
+            var snap = api.getDocFromServer
+                ? await api.getDocFromServer(indexRef)
+                : await api.getDoc(indexRef);
+            if (!snap.exists()) {
+                toast('Nessun documento ufficiale sul cloud.', true);
+                return false;
+            }
+            var items = (snap.data() || {}).items || [];
+            var pulled = 0;
+            var errors = 0;
+            for (var i = 0; i < items.length; i++) {
+                var it = items[i];
+                if (!it || !it.id || isWordRapportinoDeleted(it.id)) continue;
+                try {
+                    if (await pullCloudFileToLocal(api, it, true)) pulled++;
+                } catch (err) {
+                    errors++;
+                    console.warn('[ServiceHub] refresh rapportino', it.id, err && err.message);
+                }
+            }
+            window.renderWordRapportiniList();
+            if (errors) {
+                toast('Scaricati ' + pulled + ' file, ' + errors + ' non riusciti. Riprova.', true);
+            } else if (pulled) {
+                toast('Aggiornato: ' + pulled + ' file scaricati dal cloud.');
+            } else {
+                toast('Già allineato: nessun file nuovo sul cloud.');
+            }
+            return true;
+        } catch (err) {
+            console.warn('[ServiceHub] refresh rapportini:', err);
+            toast('Aggiornamento fallito: ' + ((err && err.message) || 'errore rete'), true);
+            return false;
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = 'Aggiorna dal cloud'; }
+        }
+    };
+
     /** Chiamato da index.html dopo login Firebase. */
     window.wireWordRapportiniCloudSync = function (api) {
         if (!api || !api.db || !api.appId || !api.doc || !api.setDoc) {
@@ -2112,6 +2170,7 @@
             doc: api.doc,
             setDoc: api.setDoc,
             getDoc: api.getDoc,
+            getDocFromServer: api.getDocFromServer,
             deleteDoc: api.deleteDoc,
             onSnapshot: api.onSnapshot,
             collection: api.collection,

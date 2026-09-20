@@ -1049,7 +1049,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.09.20-analisi-clear-persist';
+        window.SERVICEHUB_BUILD = '2026.09.20-offline-boot-local-save';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -2002,9 +2002,39 @@ window.colorPreviewNumber = function(tankName, value) {
     <script src="word-rapportini.js?v=2026.09.19-xlsx-fill-rowfix"></script>
     
     <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, getDocFromServer, onSnapshot, collection, addDoc, query, getDocs, limit, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        /* Firebase via import dinamico: se la rete manca, l'app resta utilizzabile in locale. */
+        let initializeApp = null;
+        let getAuth = null, signInAnonymously = null, signInWithCustomToken = null, onAuthStateChanged = null;
+        let getFirestore = null, doc = null, setDoc = null, getDoc = null, getDocFromServer = null;
+        let onSnapshot = null, collection = null, addDoc = null, query = null, getDocs = null, limit = null, deleteDoc = null;
+        window.__SERVICEHUB_FIREBASE_SDK_READY = false;
+        try {
+            const [appMod, authMod, fsMod] = await Promise.all([
+                import('https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js'),
+                import('https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js'),
+                import('https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js')
+            ]);
+            initializeApp = appMod.initializeApp;
+            getAuth = authMod.getAuth;
+            signInAnonymously = authMod.signInAnonymously;
+            signInWithCustomToken = authMod.signInWithCustomToken;
+            onAuthStateChanged = authMod.onAuthStateChanged;
+            getFirestore = fsMod.getFirestore;
+            doc = fsMod.doc;
+            setDoc = fsMod.setDoc;
+            getDoc = fsMod.getDoc;
+            getDocFromServer = fsMod.getDocFromServer;
+            onSnapshot = fsMod.onSnapshot;
+            collection = fsMod.collection;
+            addDoc = fsMod.addDoc;
+            query = fsMod.query;
+            getDocs = fsMod.getDocs;
+            limit = fsMod.limit;
+            deleteDoc = fsMod.deleteDoc;
+            window.__SERVICEHUB_FIREBASE_SDK_READY = true;
+        } catch (sdkErr) {
+            console.warn('[ServiceHub] Firebase SDK non disponibile (offline o CDN). Modalità solo-locale.', sdkErr && sdkErr.message);
+        }
 
         // Configurazione Firebase del progetto ServiceHub (servicehub-18309)
         // Usata su GitHub Pages e ovunque non sia disponibile la config iniettata da Canvas.
@@ -2027,7 +2057,8 @@ window.colorPreviewNumber = function(tankName, value) {
                     if (injected && injected.apiKey) firebaseConfig = injected;
                 } catch (_) { /* config iniettata non valida, uso default */ }
             }
-            if (firebaseConfig && firebaseConfig.apiKey) {
+            if (window.__SERVICEHUB_FIREBASE_SDK_READY && typeof initializeApp === 'function'
+                && firebaseConfig && firebaseConfig.apiKey) {
                 app = initializeApp(firebaseConfig);
                 auth = getAuth(app);
                 db = getFirestore(app);
@@ -5227,8 +5258,13 @@ window.colorPreviewNumber = function(tankName, value) {
 
         const initAuth = async () => {
             const led = document.getElementById('cloud-status-led');
-            if (!auth) {
-                if(led) led.className = "w-2.5 h-2.5 rounded-full bg-slate-500 shadow-[0_0_8px_#64748b]";
+            if (!auth || typeof signInAnonymously !== 'function') {
+                if (led) {
+                    led.className = navigator.onLine
+                        ? "w-2.5 h-2.5 rounded-full bg-slate-500 shadow-[0_0_8px_#64748b]"
+                        : "w-2.5 h-2.5 rounded-full bg-amber-500 shadow-[0_0_8px_#f59e0b]";
+                }
+                window.__serviceHubOfflineMode = !navigator.onLine;
                 return;
             }
             try {
@@ -5237,17 +5273,25 @@ window.colorPreviewNumber = function(tankName, value) {
                 } else {
                     await signInAnonymously(auth);
                 }
+                window.__serviceHubOfflineMode = false;
             } catch (error) {
-                if(led) led.className = "w-2.5 h-2.5 rounded-full bg-red-600 shadow-[0_0_10px_#dc2626]";
+                window.__serviceHubOfflineMode = !navigator.onLine;
+                if (led) {
+                    led.className = window.__serviceHubOfflineMode
+                        ? "w-2.5 h-2.5 rounded-full bg-amber-500 shadow-[0_0_8px_#f59e0b]"
+                        : "w-2.5 h-2.5 rounded-full bg-red-600 shadow-[0_0_10px_#dc2626]";
+                }
             }
         };
+        window.__retryFirebaseAuth = initAuth;
 
-        if (auth) {
+        if (auth && typeof onAuthStateChanged === 'function') {
             onAuthStateChanged(auth, (u) => {
                 user = u;
                 const led = document.getElementById('cloud-status-led');
                 if (user && user.uid) {
-                    if(led) led.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_10px_#10b981]"; 
+                    if(led) led.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_10px_#10b981]";
+                    window.__serviceHubOfflineMode = false;
                     syncWithCloud();
                     window.__hydrateDigitalShareKeyFromCloud();
                     window.initAlarmConfigListener();
@@ -5264,7 +5308,11 @@ window.colorPreviewNumber = function(tankName, value) {
                         }
                     }, 2000);
                 } else {
-                    if(led) led.className = "w-2.5 h-2.5 rounded-full bg-red-600 shadow-[0_0_10px_#dc2626]";
+                    if(led) {
+                        led.className = (!navigator.onLine)
+                            ? "w-2.5 h-2.5 rounded-full bg-amber-500 shadow-[0_0_8px_#f59e0b]"
+                            : "w-2.5 h-2.5 rounded-full bg-red-600 shadow-[0_0_10px_#dc2626]";
+                    }
                 }
             });
         }
@@ -6205,6 +6253,7 @@ window.colorPreviewNumber = function(tankName, value) {
             const dataDoc = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
 
             const __wirePlantSnapshotListener = function () {
+                if (typeof onSnapshot !== 'function' || !db) return;
                 __shUnsubPlant = onSnapshot(
                     dataDoc,
                     (snapshot) => {
@@ -7056,7 +7105,9 @@ window.colorPreviewNumber = function(tankName, value) {
 
             try {
                 var plantRef = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
-                var serverSnap = await getDocFromServer(plantRef);
+                var serverSnap = typeof getDocFromServer === 'function'
+                    ? await getDocFromServer(plantRef)
+                    : await getDoc(plantRef);
                 if (!serverSnap.exists()) return;
                 var server = serverSnap.data();
                 var pushedAgain = false;
@@ -11086,6 +11137,15 @@ window.updateStoricoButton = async function() {
             if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
                 window.__applyPlantFromLocalStorageFallback();
             }
+            /* Offline: i dati locali sono già la fonte — marca hydrated così i salvataggi non restano in coda bloccata. */
+            if (!navigator.onLine) {
+                window.__serviceHubOfflineMode = true;
+                window.__cloudPlantHydrated = true;
+                const ledOff = document.getElementById('cloud-status-led');
+                if (ledOff && !(user && user.uid)) {
+                    ledOff.className = "w-2.5 h-2.5 rounded-full bg-amber-500 shadow-[0_0_8px_#f59e0b]";
+                }
+            }
             if (typeof window.__applyInstantLevelsToDOM === 'function') {
                 window.__applyInstantLevelsToDOM();
             }
@@ -11198,11 +11258,32 @@ window.updateStoricoButton = async function() {
                 }
             });
             window.addEventListener('online', function () {
-                if (typeof window.__pullAllCloudStateNow === 'function') {
-                    void window.__pullAllCloudStateNow();
+                window.__serviceHubOfflineMode = false;
+                if (typeof window.__resumeCloudAfterOnline === 'function') {
+                    void window.__resumeCloudAfterOnline();
+                } else {
+                    if (typeof window.__retryFirebaseAuth === 'function') void window.__retryFirebaseAuth();
+                    if (typeof window.__flushPlantCloudSaveNow === 'function') {
+                        void window.__flushPlantCloudSaveNow(true);
+                    } else if (typeof window.saveData === 'function') {
+                        void window.saveData(true);
+                    }
+                    if (typeof window.__pullAllCloudStateNow === 'function') {
+                        void window.__pullAllCloudStateNow();
+                    }
+                    if (typeof window.__flushPendingArchiveCloudUploads === 'function') {
+                        void window.__flushPendingArchiveCloudUploads();
+                    }
                 }
-                if (typeof window.__flushPendingArchiveCloudUploads === 'function') {
-                    void window.__flushPendingArchiveCloudUploads();
+            });
+            window.addEventListener('offline', function () {
+                window.__serviceHubOfflineMode = true;
+                const led = document.getElementById('cloud-status-led');
+                if (led && !(user && user.uid)) {
+                    led.className = "w-2.5 h-2.5 rounded-full bg-amber-500 shadow-[0_0_8px_#f59e0b]";
+                }
+                if (typeof window.flushPlantBackupNow === 'function') {
+                    try { window.flushPlantBackupNow(); } catch (_) {}
                 }
             });
 
@@ -35430,6 +35511,9 @@ window.updateStoricoButton = async function() {
                     d = window.__mergeOsmosiFieldsFromSources(d);
                 }
                 __applyRemotePlantPayload(d, { force: true });
+            } else if (!navigator.onLine) {
+                /* Nessun backup ma offline: sblocca comunque i salvataggi locali. */
+                window.__cloudPlantHydrated = true;
             }
         };
 
@@ -35494,6 +35578,46 @@ window.updateStoricoButton = async function() {
             return Promise.all([p1, p2]);
         };
 
+        /** Al ritorno rete: auth → push salvataggi locali → pull cloud. */
+        window.__resumeCloudAfterOnline = async function () {
+            window.__serviceHubOfflineMode = false;
+            try {
+                if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
+            } catch (_) {}
+            try {
+                if (typeof window.__retryFirebaseAuth === 'function') await window.__retryFirebaseAuth();
+            } catch (_) {}
+            __plantRetrySaveAfterAuth = true;
+            try {
+                if (user && user.uid && db && typeof window.__flushPlantCloudSaveNow === 'function') {
+                    await window.__flushPlantCloudSaveNow(true);
+                    __plantRetrySaveAfterAuth = false;
+                } else if (typeof window.saveData === 'function') {
+                    await window.saveData(true);
+                }
+            } catch (e) {
+                console.warn('[ServiceHub] flush dopo online:', e && e.message);
+            }
+            try {
+                if (typeof window.__flushPendingArchiveCloudUploads === 'function') {
+                    await window.__flushPendingArchiveCloudUploads();
+                }
+            } catch (_) {}
+            try {
+                if (typeof window.flushRapportiniPushToCloudNow === 'function') {
+                    await window.flushRapportiniPushToCloudNow();
+                }
+            } catch (_) {}
+            try {
+                if (typeof window.__pullAllCloudStateNow === 'function') {
+                    await window.__pullAllCloudStateNow();
+                }
+            } catch (_) {}
+            if (user && user.uid && db && typeof syncWithCloud === 'function' && !__shUnsubPlant) {
+                try { syncWithCloud(); } catch (_) {}
+            }
+        };
+
         /** Impostazioni: sync Firestore — tasto aggiornamento = scarica dal cloud (fonte di verità). */
         window.forceFirestoreSyncNow = async function () {
             const btn = document.getElementById('btn-force-firestore-sync');
@@ -35539,7 +35663,12 @@ window.updateStoricoButton = async function() {
                 const plantRef = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
                 const rapportiniRef = doc(db, 'artifacts', appId, 'sharedDial', 'rapportini');
                 const fetchFromServer = function (ref) {
-                    return getDocFromServer(ref).catch(function () { return getDoc(ref); });
+                    if (typeof getDocFromServer === 'function') {
+                        return getDocFromServer(ref).catch(function () {
+                            return typeof getDoc === 'function' ? getDoc(ref) : Promise.reject(new Error('no firestore'));
+                        });
+                    }
+                    return typeof getDoc === 'function' ? getDoc(ref) : Promise.reject(new Error('no firestore'));
                 };
 
                 const [plantSnap, rappSnap] = await Promise.all([
@@ -52722,7 +52851,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=272')
+                navigator.serviceWorker.register('./sw.js?v=378')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();

@@ -2303,27 +2303,69 @@
                 await downloadItem(it);
             }
 
-            /* Documenti presenti sul cloud ma eliminati qui: chiedi se ripristinarli. */
+            /* Documenti sul cloud ma eliminati qui: riscaricarli o toglierli anche dal cloud. */
             if (blocked.length) {
                 var names = blocked.map(function (b) { return '· ' + (b.name || b.fileName || b.id); }).join('\n');
-                if (confirm('Sul cloud ci sono documenti che risultano eliminati su questo dispositivo:\n\n' +
-                    names + '\n\nVuoi riscaricarli adesso?')) {
+                if (confirm('Questi documenti sono sul cloud ma risultano eliminati su questo dispositivo:\n\n' +
+                    names + '\n\nOK = riscaricali qui\nAnnulla = eliminali anche dal cloud')) {
                     for (var k = 0; k < blocked.length; k++) {
                         unmarkWordRapportinoDeleted(blocked[k].id);
                         await downloadItem(blocked[k]);
                     }
                 } else {
-                    blocked.forEach(function (b) {
-                        lines.push('· ' + (b.name || b.fileName || b.id) + ': lasciato eliminato qui');
-                    });
+                    for (var d = 0; d < blocked.length; d++) {
+                        var dead = blocked[d];
+                        var deadLabel = dead.name || dead.fileName || dead.id;
+                        try {
+                            await window.__deleteWordRapportinoFromCloud(dead.id);
+                            lines.push('· ' + deadLabel + ': eliminato anche dal cloud');
+                        } catch (delErr) {
+                            errors++;
+                            lines.push('· ' + deadLabel + ': eliminazione dal cloud fallita (' +
+                                ((delErr && delErr.message) || '?') + ')');
+                        }
+                    }
+                }
+            }
+
+            /* Documenti presenti solo su questo dispositivo: pubblicali. */
+            var cloudIds = {};
+            items.forEach(function (it) { if (it && it.id) cloudIds[it.id] = true; });
+            var uploaded = 0;
+            var pushLabels = {
+                offline: 'cloud non collegato',
+                quota: 'quota Firestore esaurita',
+                deleted: 'risulta eliminato qui',
+                missing: 'contenuto mancante in locale',
+                busy: 'invio già in corso'
+            };
+            var localBefore = window.listWordRapportini();
+            for (var j = 0; j < localBefore.length; j++) {
+                var lm = localBefore[j];
+                if (!lm || !lm.id || cloudIds[lm.id]) continue;
+                var lmLabel = lm.name || lm.fileName || lm.id;
+                try {
+                    var st = await window.__pushWordRapportinoToCloud(lm.id);
+                    if (st === 'ok') {
+                        uploaded++;
+                        lines.push('· ' + lmLabel + ': caricato sul cloud da qui');
+                    } else {
+                        errors++;
+                        lines.push('· ' + lmLabel + ': NON caricato sul cloud (' +
+                            (pushLabels[st] || st || 'motivo sconosciuto') + ')');
+                    }
+                } catch (pushErr) {
+                    errors++;
+                    lines.push('· ' + lmLabel + ': invio al cloud fallito (' +
+                        ((pushErr && pushErr.message) || '?') + ')');
                 }
             }
             window.renderWordRapportiniList();
             var localList = window.listWordRapportini();
-            if (errors || !localList.length) {
-                alert('Sul cloud: ' + items.length + ' documento/i (lettura ' + via + ')\n' +
+            if (errors || uploaded || !localList.length) {
+                alert('Sul cloud c’erano: ' + items.length + ' documento/i (lettura ' + via + ')\n' +
                     (lines.length ? lines.join('\n') : '(nessuno)') +
-                    '\n\nIn elenco qui: ' + localList.length +
+                    '\n\nIn elenco qui adesso: ' + localList.length +
                     (localList.length ? '\n' + localList.map(function (m) { return '· ' + m.name; }).join('\n') : ''));
             } else if (pulled) {
                 toast('Aggiornato: ' + pulled + ' file scaricati dal cloud.');

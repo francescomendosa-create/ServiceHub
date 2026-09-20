@@ -1049,7 +1049,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.09.21-letture-share-desktop-email';
+        window.SERVICEHUB_BUILD = '2026.09.21-letture-share-desktop-sheet';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -18911,7 +18911,7 @@ window.updateStoricoButton = async function() {
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
-            setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+            setTimeout(function () { URL.revokeObjectURL(url); }, 2500);
             return true;
         };
 
@@ -18924,31 +18924,160 @@ window.updateStoricoButton = async function() {
             }
         };
 
-        /** Desktop Windows/PC: scarica .doc e apre il client email di sistema (Outlook/Mail). */
-        window.shareLetturaFileViaEmailDesktop = function (file, title) {
-            if (!file) return false;
-            window.downloadLetturaShareFile(file);
-            var subj = title || file.name || 'Documento ServiceHub';
-            var body = 'Il file "' + (file.name || 'documento.doc') +
-                '" è stato scaricato nella cartella Download.\n\n' +
-                'Allegalo a questa email (Inserisci → File / Allega).';
-            try {
-                var a = document.createElement('a');
-                a.href = 'mailto:?subject=' + encodeURIComponent(subj) +
-                    '&body=' + encodeURIComponent(body);
-                a.style.display = 'none';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-            } catch (_) {}
-            return true;
-        };
-
         window.isLetturaShareDesktopPc = function () {
             if (window.__shIsAppleTouch && window.__shIsAppleTouch()) return false;
             if (window.__shIsAndroidTablet && window.__shIsAndroidTablet()) return false;
             if (typeof window.isServiceHubPhone === 'function' && window.isServiceHubPhone()) return false;
             return true;
+        };
+
+        window.__letturaDesktopShareCtx = null;
+
+        window.closeLetturaDesktopShareSheet = function () {
+            var modal = document.getElementById('letture-desktop-share-modal');
+            if (modal) modal.classList.remove('active');
+            window.__letturaDesktopShareCtx = null;
+            window.__letturaShareInProgress = false;
+        };
+
+        window.openLetturaDesktopShareSheet = function (file, title, opts) {
+            opts = opts || {};
+            if (!file) return false;
+            window.__letturaDesktopShareCtx = {
+                file: file,
+                title: title || file.name || 'Documento ServiceHub',
+                situazioneDocHtml: opts.situazioneDocHtml || null,
+                isNotturno: !!opts.isNotturno,
+                isSituazione: !!opts.isSituazione
+            };
+            var modal = document.getElementById('letture-desktop-share-modal');
+            var nameEl = document.getElementById('letture-desktop-share-filename');
+            if (nameEl) nameEl.textContent = file.name || '';
+            if (modal) modal.classList.add('active');
+            return true;
+        };
+
+        /** Prova il foglio Condividi di Windows (Edge/Chrome). */
+        window.tryLetturaSystemShare = async function (file, title) {
+            if (!file || typeof navigator.share !== 'function') return false;
+            var payload = { title: title || file.name, text: title || file.name, files: [file] };
+            try {
+                if (!navigator.canShare || navigator.canShare({ files: [file] })) {
+                    await navigator.share(payload);
+                    return true;
+                }
+            } catch (e) {
+                if (e && e.name === 'AbortError') return true;
+            }
+            try {
+                await navigator.share(payload);
+                return true;
+            } catch (e2) {
+                if (e2 && e2.name === 'AbortError') return true;
+            }
+            return false;
+        };
+
+        window.shareLetturaFileViaEmailDesktop = function (file, title) {
+            if (!file) return false;
+            var subj = title || file.name || 'Documento ServiceHub';
+            var body = 'Il file "' + (file.name || 'documento.doc') +
+                '" è nella cartella Download.\n\n' +
+                'Allegalo a questa email (Inserisci → File allegato).';
+            var mailto = 'mailto:?subject=' + encodeURIComponent(subj) +
+                '&body=' + encodeURIComponent(body);
+            /* mailto prima del download: stesso gesto utente, meno blocchi popup. */
+            try { window.location.href = mailto; } catch (_) {}
+            setTimeout(function () {
+                window.downloadLetturaShareFile(file);
+            }, 350);
+            return true;
+        };
+
+        window.shareLetturaFileViaWhatsAppDesktop = function (file, title) {
+            if (!file) return false;
+            window.downloadLetturaShareFile(file);
+            var msg = (title || 'Documento ServiceHub') +
+                '\n\nFile scaricato: ' + (file.name || 'documento.doc') +
+                '\nAllegalo da Download in questa chat.';
+            var waApp = 'whatsapp://send?text=' + encodeURIComponent(msg);
+            var waWeb = 'https://web.whatsapp.com/send?text=' + encodeURIComponent(msg);
+            setTimeout(function () {
+                var opened = false;
+                try {
+                    var w = window.open(waApp, '_blank');
+                    opened = !!(w && !w.closed);
+                } catch (_) {}
+                setTimeout(function () {
+                    if (!opened) {
+                        try { window.open(waWeb, '_blank', 'noopener'); } catch (_) {
+                            try { window.location.href = waWeb; } catch (__) {}
+                        }
+                    }
+                }, 600);
+            }, 200);
+            return true;
+        };
+
+        window.onLetturaDesktopShareAction = async function (action) {
+            var ctx = window.__letturaDesktopShareCtx;
+            if (!ctx || !ctx.file) {
+                window.closeLetturaDesktopShareSheet();
+                return;
+            }
+            var file = ctx.file;
+            var title = ctx.title;
+            var toast = function (msg, err) {
+                if (typeof window.__serviceHubFlashToast === 'function') {
+                    window.__serviceHubFlashToast(msg, !!err, err ? undefined : 'ok');
+                }
+            };
+
+            if (action === 'cancel') {
+                window.closeLetturaDesktopShareSheet();
+                return;
+            }
+            if (action === 'system') {
+                var ok = await window.tryLetturaSystemShare(file, title);
+                if (ok) {
+                    window.closeLetturaDesktopShareSheet();
+                    toast('Condivisione Windows aperta.');
+                } else {
+                    toast('Condivisione Windows non disponibile su questo browser. Usa Email o WhatsApp.', true);
+                }
+                return;
+            }
+            if (action === 'email') {
+                window.shareLetturaFileViaEmailDesktop(file, title);
+                window.closeLetturaDesktopShareSheet();
+                toast('Email aperta — allega il .doc da Download.');
+                return;
+            }
+            if (action === 'whatsapp') {
+                window.shareLetturaFileViaWhatsAppDesktop(file, title);
+                window.closeLetturaDesktopShareSheet();
+                toast('WhatsApp — allega il .doc da Download alla chat.');
+                return;
+            }
+            if (action === 'download') {
+                window.downloadLetturaShareFile(file);
+                window.closeLetturaDesktopShareSheet();
+                toast('File scaricato in Download.');
+                return;
+            }
+            if (action === 'print') {
+                window.closeLetturaDesktopShareSheet();
+                if (ctx.isSituazione && typeof window.printLetturaSituazioneGiornaliera === 'function') {
+                    window.printLetturaSituazioneGiornaliera(ctx.situazioneDocHtml);
+                } else if (ctx.isNotturno && typeof window.printLetturaNotturnoA3 === 'function') {
+                    window.printLetturaNotturnoA3();
+                } else if (ctx.situazioneDocHtml && typeof window.__printLetturaHtmlDocument === 'function') {
+                    window.__printLetturaHtmlDocument(ctx.situazioneDocHtml);
+                } else {
+                    toast('Stampa non disponibile per questo documento.', true);
+                }
+                return;
+            }
         };
 
         window.shareLetturaDoc = function () {
@@ -18969,11 +19098,6 @@ window.updateStoricoButton = async function() {
                 : (isSituazione
                     ? 'Situazione giornaliera scaricata (.doc). Aprilo con Word e condividilo da lì.'
                     : 'Documento scaricato. Aprilo con Word e condividilo da lì.');
-            var desktopEmailMsg = isSituazione
-                ? 'File scaricato e email aperta — allega il .doc dalla cartella Download.'
-                : (isNotturno
-                    ? 'Rapportino scaricato e email aperta — allega il .doc dalla cartella Download.'
-                    : 'Documento scaricato e email aperta — allega il file dalla cartella Download.');
             var printMsg = 'Anteprima stampa A3 orizzontale — in stampante scegli A3 e orientamento orizzontale (297×420 mm).';
             var situazioneDocHtml = null;
             var file = null;
@@ -18995,14 +19119,6 @@ window.updateStoricoButton = async function() {
                     window.__serviceHubFlashToast(downloadedMsg, false);
                 } else {
                     alert(downloadedMsg);
-                }
-            }
-
-            function notifyDesktopEmail() {
-                if (typeof window.__serviceHubFlashToast === 'function') {
-                    window.__serviceHubFlashToast(desktopEmailMsg, false, 'ok');
-                } else {
-                    alert(desktopEmailMsg);
                 }
             }
 
@@ -19033,32 +19149,30 @@ window.updateStoricoButton = async function() {
             var isAppleTouch = window.__shIsAppleTouch && window.__shIsAppleTouch();
             var isDesktopPc = typeof window.isLetturaShareDesktopPc === 'function'
                 && window.isLetturaShareDesktopPc();
-            /* Su desktop non aprire subito la stampa: bloccava la condivisione email Windows. */
             var skipPopupPrint = isAppleTouch
                 || isDesktopPc
                 || (window.__shIsAndroidTablet && window.__shIsAndroidTablet());
 
+            /* Desktop Windows/PC: menu Email / WhatsApp / Condividi sistema / Stampa. */
+            if (isDesktopPc && file) {
+                window.openLetturaDesktopShareSheet(file, title, {
+                    situazioneDocHtml: situazioneDocHtml,
+                    isNotturno: isNotturno,
+                    isSituazione: isSituazione
+                });
+                finishShare();
+                return;
+            }
+
             if (file && window.canShareLetturaFile(file)) {
                 return navigator.share({ files: [file], title: title }).catch(function (err) {
                     if (err && err.name === 'AbortError') return;
-                    if (isDesktopPc && typeof window.shareLetturaFileViaEmailDesktop === 'function'
-                        && window.shareLetturaFileViaEmailDesktop(file, title)) {
-                        notifyDesktopEmail();
-                        return;
-                    }
                     if (isAppleTouch && situazioneDocHtml && typeof window.__printLetturaHtmlDocument === 'function'
                         && window.__printLetturaHtmlDocument(situazioneDocHtml)) {
                         return;
                     }
                     if (window.downloadLetturaShareFile(file)) notifyDownloaded();
                 }).finally(finishShare);
-            }
-
-            if (isDesktopPc && file && typeof window.shareLetturaFileViaEmailDesktop === 'function'
-                && window.shareLetturaFileViaEmailDesktop(file, title)) {
-                notifyDesktopEmail();
-                finishShare();
-                return;
             }
 
             if (isNotturno && !skipPopupPrint && typeof window.printLetturaNotturnoA3 === 'function') {
@@ -52552,6 +52666,21 @@ window.convertToHtml = async () => {
         </div>
     </div>
 
+    <div id="letture-desktop-share-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="letture-desktop-share-title"
+         onclick="if(event.target===this) window.closeLetturaDesktopShareSheet && window.closeLetturaDesktopShareSheet()">
+        <div class="letture-desktop-share-card" onclick="event.stopPropagation()">
+            <h3 id="letture-desktop-share-title" class="letture-desktop-share-title">Condividi documento</h3>
+            <p id="letture-desktop-share-filename" class="letture-desktop-share-file"></p>
+            <button type="button" class="letture-desktop-share-btn letture-desktop-share-btn--system" onclick="window.onLetturaDesktopShareAction && window.onLetturaDesktopShareAction('system')">Condividi Windows…</button>
+            <button type="button" class="letture-desktop-share-btn letture-desktop-share-btn--email" onclick="window.onLetturaDesktopShareAction && window.onLetturaDesktopShareAction('email')">Email (Outlook / Mail)</button>
+            <button type="button" class="letture-desktop-share-btn letture-desktop-share-btn--wa" onclick="window.onLetturaDesktopShareAction && window.onLetturaDesktopShareAction('whatsapp')">WhatsApp</button>
+            <button type="button" class="letture-desktop-share-btn letture-desktop-share-btn--dl" onclick="window.onLetturaDesktopShareAction && window.onLetturaDesktopShareAction('download')">Solo scarica</button>
+            <button type="button" class="letture-desktop-share-btn letture-desktop-share-btn--print" onclick="window.onLetturaDesktopShareAction && window.onLetturaDesktopShareAction('print')">Stampa</button>
+            <button type="button" class="letture-desktop-share-btn letture-desktop-share-btn--cancel" onclick="window.onLetturaDesktopShareAction && window.onLetturaDesktopShareAction('cancel')">Annulla</button>
+            <p class="letture-desktop-share-hint">Su PC il file .doc va in Download: con Email/WhatsApp allegalo dalla cartella Download.</p>
+        </div>
+    </div>
+
     <!-- Prompt testo (nome scheda / sigla / rapportino) -->
     <div id="sh-text-prompt-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="sh-text-prompt-title">
         <div class="modal-content-centered bg-white dark:bg-slate-900 max-w-sm w-[92%]" onclick="event.stopPropagation()">
@@ -52986,7 +53115,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=382')
+                navigator.serviceWorker.register('./sw.js?v=383')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();

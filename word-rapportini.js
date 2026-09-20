@@ -2261,19 +2261,10 @@
             }
             var pulled = 0;
             var errors = 0;
-            for (var i = 0; i < items.length; i++) {
-                var it = items[i];
-                if (!it || !it.id) continue;
+            var blocked = [];
+
+            async function downloadItem(it) {
                 var label = it.name || it.fileName || it.id;
-                if (isWordRapportinoDeleted(it.id)) {
-                    /* Ricaricato dal PC dopo l'eliminazione: la vecchia cancellazione non deve vincere. */
-                    if (Number(it.updatedAt || 0) > Number(loadDeletedMap()[it.id] || 0)) {
-                        unmarkWordRapportinoDeleted(it.id);
-                    } else {
-                        lines.push('· ' + label + ': eliminato su questo dispositivo');
-                        continue;
-                    }
-                }
                 try {
                     var got = false;
                     try {
@@ -2283,18 +2274,48 @@
                         got = await pullCloudFileToLocal(api, it, true);
                     }
                     var rec = await idbGet(it.id);
-                    var hasBytes = !!(rec && rec.buffer);
-                    if (!hasBytes) {
+                    if (!(rec && rec.buffer)) {
                         errors++;
                         lines.push('· ' + label + ': scaricato ma non salvato (spazio del telefono?)');
-                    } else {
-                        if (got) pulled++;
-                        lines.push('· ' + label + ': OK');
+                        return;
                     }
+                    if (got) pulled++;
+                    lines.push('· ' + label + ': OK');
                 } catch (err) {
                     errors++;
                     lines.push('· ' + label + ': ERRORE ' + ((err && err.message) || 'sconosciuto'));
                     console.warn('[ServiceHub] refresh rapportino', it.id, err);
+                }
+            }
+
+            for (var i = 0; i < items.length; i++) {
+                var it = items[i];
+                if (!it || !it.id) continue;
+                if (isWordRapportinoDeleted(it.id)) {
+                    /* Ricaricato dal PC dopo l'eliminazione: la vecchia cancellazione non deve vincere. */
+                    if (Number(it.updatedAt || 0) > Number(loadDeletedMap()[it.id] || 0)) {
+                        unmarkWordRapportinoDeleted(it.id);
+                    } else {
+                        blocked.push(it);
+                        continue;
+                    }
+                }
+                await downloadItem(it);
+            }
+
+            /* Documenti presenti sul cloud ma eliminati qui: chiedi se ripristinarli. */
+            if (blocked.length) {
+                var names = blocked.map(function (b) { return '· ' + (b.name || b.fileName || b.id); }).join('\n');
+                if (confirm('Sul cloud ci sono documenti che risultano eliminati su questo dispositivo:\n\n' +
+                    names + '\n\nVuoi riscaricarli adesso?')) {
+                    for (var k = 0; k < blocked.length; k++) {
+                        unmarkWordRapportinoDeleted(blocked[k].id);
+                        await downloadItem(blocked[k]);
+                    }
+                } else {
+                    blocked.forEach(function (b) {
+                        lines.push('· ' + (b.name || b.fileName || b.id) + ': lasciato eliminato qui');
+                    });
                 }
             }
             window.renderWordRapportiniList();

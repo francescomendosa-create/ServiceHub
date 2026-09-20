@@ -1049,7 +1049,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.09.20-led-red-offline';
+        window.SERVICEHUB_BUILD = '2026.09.20-boot-local-first';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -2002,18 +2002,23 @@ window.colorPreviewNumber = function(tankName, value) {
     <script src="word-rapportini.js?v=2026.09.19-xlsx-fill-rowfix"></script>
     
     <script type="module">
-        /* Firebase via import dinamico: se la rete manca, l'app resta utilizzabile in locale. */
+        /* Firebase in parallelo: non bloccare il boot locale (evita schermata vuota → poi numeri). */
         let initializeApp = null;
         let getAuth = null, signInAnonymously = null, signInWithCustomToken = null, onAuthStateChanged = null;
         let getFirestore = null, doc = null, setDoc = null, getDoc = null, getDocFromServer = null;
         let onSnapshot = null, collection = null, addDoc = null, query = null, getDocs = null, limit = null, deleteDoc = null;
         window.__SERVICEHUB_FIREBASE_SDK_READY = false;
-        try {
-            const [appMod, authMod, fsMod] = await Promise.all([
-                import('https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js'),
-                import('https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js'),
-                import('https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js')
-            ]);
+        const __FIREBASE_SDK_URLS = {
+            app: 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js',
+            auth: 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js',
+            fs: 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js'
+        };
+        const __firebaseSdkPromise = Promise.all([
+            import(__FIREBASE_SDK_URLS.app),
+            import(__FIREBASE_SDK_URLS.auth),
+            import(__FIREBASE_SDK_URLS.fs)
+        ]).then(function (mods) {
+            const appMod = mods[0], authMod = mods[1], fsMod = mods[2];
             initializeApp = appMod.initializeApp;
             getAuth = authMod.getAuth;
             signInAnonymously = authMod.signInAnonymously;
@@ -2032,9 +2037,11 @@ window.colorPreviewNumber = function(tankName, value) {
             limit = fsMod.limit;
             deleteDoc = fsMod.deleteDoc;
             window.__SERVICEHUB_FIREBASE_SDK_READY = true;
-        } catch (sdkErr) {
+            return true;
+        }).catch(function (sdkErr) {
             console.warn('[ServiceHub] Firebase SDK non disponibile (offline o CDN). Modalità solo-locale.', sdkErr && sdkErr.message);
-        }
+            return false;
+        });
 
         // Configurazione Firebase del progetto ServiceHub (servicehub-18309)
         // Usata su GitHub Pages e ovunque non sia disponibile la config iniettata da Canvas.
@@ -2049,28 +2056,37 @@ window.colorPreviewNumber = function(tankName, value) {
 
         let app = null, auth = null, db = null;
         window.__SERVICEHUB_FIREBASE_PROJECT = '';
-        try {
-            let firebaseConfig = DEFAULT_FIREBASE_CONFIG;
-            if (typeof __firebase_config !== 'undefined' && __firebase_config) {
-                try {
-                    const injected = JSON.parse(__firebase_config);
-                    if (injected && injected.apiKey) firebaseConfig = injected;
-                } catch (_) { /* config iniettata non valida, uso default */ }
-            }
-            if (window.__SERVICEHUB_FIREBASE_SDK_READY && typeof initializeApp === 'function'
-                && firebaseConfig && firebaseConfig.apiKey) {
+        window.__firebaseAuthWired = false;
+
+        window.__ensureFirebaseApp = async function () {
+            const ok = await __firebaseSdkPromise;
+            if (!ok || typeof initializeApp !== 'function') return false;
+            if (app && auth && db) return true;
+            try {
+                let firebaseConfig = DEFAULT_FIREBASE_CONFIG;
+                if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                    try {
+                        const injected = JSON.parse(__firebase_config);
+                        if (injected && injected.apiKey) firebaseConfig = injected;
+                    } catch (_) { /* config iniettata non valida, uso default */ }
+                }
+                if (!(firebaseConfig && firebaseConfig.apiKey)) {
+                    console.warn('[ServiceHub] Firebase non configurato: modalità solo-locale (localStorage).');
+                    return false;
+                }
                 app = initializeApp(firebaseConfig);
                 auth = getAuth(app);
                 db = getFirestore(app);
                 window.__SERVICEHUB_FIREBASE_PROJECT = firebaseConfig.projectId || '';
                 window.__SERVICEHUB_FIREBASE_API_KEY = firebaseConfig.apiKey;
                 console.log('[ServiceHub] Firebase attivo, progetto:', firebaseConfig.projectId);
-            } else {
-                console.warn('[ServiceHub] Firebase non configurato: modalità solo-locale (localStorage).');
+                return true;
+            } catch (e) {
+                console.warn('[ServiceHub] Firebase non disponibile, modalità solo-locale attiva. Dettagli:', e && e.message);
+                app = null; auth = null; db = null;
+                return false;
             }
-        } catch (e) {
-            console.warn('[ServiceHub] Firebase non disponibile, modalità solo-locale attiva. Dettagli:', e && e.message);
-        }
+        };
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'stabile-2026-v4';
         window.__SERVICEHUB_APP_ID = appId;
         console.info('[ServiceHub] Multi-dispositivo: tutti devono usare lo stesso progetto Firebase e lo stesso appId. Path plant:', 'artifacts/' + appId + '/sharedDial/plant');
@@ -5300,14 +5316,17 @@ window.colorPreviewNumber = function(tankName, value) {
         };
         window.__retryFirebaseAuth = initAuth;
 
-        if (auth && typeof onAuthStateChanged === 'function') {
+        window.__wireFirebaseAuthOnce = function () {
+            if (window.__firebaseAuthWired) return;
+            if (!auth || typeof onAuthStateChanged !== 'function') return;
+            window.__firebaseAuthWired = true;
             onAuthStateChanged(auth, (u) => {
                 user = u;
                 if (user && user.uid) {
                     if (navigator.onLine) window.__serviceHubOfflineMode = false;
                     window.__updateCloudStatusLed();
                     if (!navigator.onLine) {
-                        /* Offline con sessione in cache: resta arancione, niente sync cloud. */
+                        /* Offline con sessione in cache: LED rosso, niente sync cloud. */
                         return;
                     }
                     syncWithCloud();
@@ -5329,7 +5348,18 @@ window.colorPreviewNumber = function(tankName, value) {
                     window.__updateCloudStatusLed();
                 }
             });
-        }
+        };
+
+        window.__bootFirebaseCloud = async function () {
+            const ready = await window.__ensureFirebaseApp();
+            if (!ready) {
+                window.__updateCloudStatusLed();
+                return false;
+            }
+            window.__wireFirebaseAuthOnce();
+            await initAuth();
+            return true;
+        };
 
         /** publicDigital: solo push manuale (Aggiorna remoto / AGGIORNA / LINK REMOTO), mai ad ogni tasto. */
         window.__publicDigitalAutoSyncEnabled = false;
@@ -11041,7 +11071,16 @@ window.updateStoricoButton = async function() {
             }
         };
 
-        document.addEventListener('DOMContentLoaded', () => {
+        document.addEventListener('DOMContentLoaded', __serviceHubMainDomBoot);
+        if (document.readyState !== 'loading') {
+            try { __serviceHubMainDomBoot(); } catch (e) {
+                console.warn('[ServiceHub] boot immediato:', e && e.message);
+            }
+        }
+
+        function __serviceHubMainDomBoot() {
+            if (window.__serviceHubMainDomBootDone) return;
+            window.__serviceHubMainDomBootDone = true;
             if (typeof window.__hidePlantCloudSyncBanner === 'function') window.__hidePlantCloudSyncBanner();
             if (typeof window.__shIsolateSpenFromPhoneAndPc === 'function') window.__shIsolateSpenFromPhoneAndPc();
             if (typeof window.__initAndroidSpenSupport === 'function') window.__initAndroidSpenSupport();
@@ -11145,21 +11184,23 @@ window.updateStoricoButton = async function() {
                 });
             }
             
-            initAuth();
-
+            /* Prima i dati locali (stoccaggio/CEB inclusi), poi Firebase in parallelo — evita schermata vuota. */
             __migratePlantBackupToStabileCurrentData();
             if (typeof window.__applyPlantFromLocalStorageFallback === 'function') {
                 window.__applyPlantFromLocalStorageFallback();
             }
-            /* Offline: i dati locali sono già la fonte — marca hydrated così i salvataggi non restano in coda bloccata. */
             if (!navigator.onLine) {
                 window.__serviceHubOfflineMode = true;
                 window.__cloudPlantHydrated = true;
                 if (typeof window.__updateCloudStatusLed === 'function') {
                     window.__updateCloudStatusLed({ forceOffline: true });
                 }
-            } else if (typeof window.__updateCloudStatusLed === 'function') {
-                window.__updateCloudStatusLed();
+            }
+            /* Online: LED resta grigio finché auth non risolve (niente flash arancione→verde). */
+            if (typeof window.__bootFirebaseCloud === 'function') {
+                void window.__bootFirebaseCloud();
+            } else if (typeof initAuth === 'function') {
+                initAuth();
             }
             if (typeof window.__applyInstantLevelsToDOM === 'function') {
                 window.__applyInstantLevelsToDOM();
@@ -11554,7 +11595,7 @@ window.updateStoricoButton = async function() {
                 }
                 if (typeof window.tryOpenTankDetailFromClick === 'function' && window.tryOpenTankDetailFromClick(e)) return;
             });
-        });
+        }
 
         // Funzione per applicare stili desktop uguali a mobile
         window.applyDesktopNumpadStyles = () => {
@@ -35525,6 +35566,16 @@ window.updateStoricoButton = async function() {
         };
 
         window.__applyPlantFromLocalStorageFallback = function () {
+            /* Pannelli dinamici devono esistere prima di scrivere i valori (stoccaggio / CEB). */
+            if (typeof window.renderStoccaggioInternoPanel === 'function') {
+                try { window.renderStoccaggioInternoPanel(); } catch (_) {}
+            }
+            if (typeof window.renderLivelliLavaggiPanel === 'function') {
+                try { window.renderLivelliLavaggiPanel(); } catch (_) {}
+            }
+            if (typeof window.syncLivelliLavaggiPanel === 'function') {
+                try { window.syncLivelliLavaggiPanel(); } catch (_) {}
+            }
             const backup = window.__readPlantBackupLocal && window.__readPlantBackupLocal();
             if (backup) {
                 let d = backup;
@@ -35535,6 +35586,9 @@ window.updateStoricoButton = async function() {
             } else if (!navigator.onLine) {
                 /* Nessun backup ma offline: sblocca comunque i salvataggi locali. */
                 window.__cloudPlantHydrated = true;
+            }
+            if (typeof window.__applyInstantLevelsToDOM === 'function') {
+                window.__applyInstantLevelsToDOM({ force: true });
             }
         };
 
@@ -35607,6 +35661,7 @@ window.updateStoricoButton = async function() {
             } catch (_) {}
             try {
                 if (typeof window.__retryFirebaseAuth === 'function') await window.__retryFirebaseAuth();
+                else if (typeof window.__bootFirebaseCloud === 'function') await window.__bootFirebaseCloud();
             } catch (_) {}
             __plantRetrySaveAfterAuth = true;
             try {
@@ -52875,7 +52930,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=380')
+                navigator.serviceWorker.register('./sw.js?v=381')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();

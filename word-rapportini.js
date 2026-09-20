@@ -160,6 +160,17 @@
         });
     }
 
+    /** Impronta FNV-1a dei byte: serve a dimostrare che il file resta quello caricato. */
+    function bufferChecksum(buffer) {
+        var bytes = new Uint8Array(buffer);
+        var h = 0x811c9dc5;
+        for (var i = 0; i < bytes.length; i++) {
+            h ^= bytes[i];
+            h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+        }
+        return h.toString(16);
+    }
+
     function idbPut(record) {
         return openIdb().then(function (db) {
             return new Promise(function (resolve, reject) {
@@ -443,28 +454,191 @@
         });
     }
 
+    /* XLSX: SheetJS serve SOLO a capire dove vanno i numeri. Riscrivere il workbook
+       con XLSX.write perde bordi, larghezze colonne e impostazioni di stampa, quindi
+       le celle vengono modificate dentro l'XML originale dello ZIP. */
     async function fillXlsxBuffer(buffer, data) {
         await ensureXlsxLib();
         var wb = window.XLSX.read(buffer, { type: 'array' });
+        var editsBySheet = {};
         (wb.SheetNames || []).forEach(function (sheetName) {
             var sheet = wb.Sheets[sheetName];
             if (!sheet) return;
+            var edits = {};
             // 1) Segnaposto {{…}}
             Object.keys(sheet).forEach(function (addr) {
                 if (!addr || addr.charAt(0) === '!') return;
                 var cell = sheet[addr];
                 if (!cell || cell.v == null) return;
                 if (typeof cell.v === 'string' && cell.v.indexOf('{{') >= 0) {
-                    cell.v = replacePlaceholdersInText(cell.v, data);
-                    cell.t = 's';
-                    delete cell.w;
+                    edits[addr] = replacePlaceholdersInText(cell.v, data);
                 }
             });
             // 2) Riempimento per etichetta (TK9201 | mm | ___ | cond | ___)
-            fillXlsxSheetByLabels(sheet, data);
+            fillXlsxSheetByLabels(sheet, data, edits);
+            if (Object.keys(edits).length) editsBySheet[sheetName] = edits;
         });
-        // cellStyles:true sulla build community corrompe le celle scritte
-        return window.XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+        if (!Object.keys(editsBySheet).length) return buffer;
+        try {
+            return await patchXlsxZipCells(buffer, editsBySheet);
+        } catch (err) {
+            /* Meglio l'originale senza numeri che un file con layout rifatto. */
+            console.warn('[ServiceHub] patch xlsx:', err && err.message);
+            return buffer;
+        }
+    }
+
+    function xmlEscape(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&apos;');
+    }
+
+    function xmlUnescape(value) {
+        return String(value == null ? '' : value)
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"')
+            .replace(/&apos;/g, "'")
+            .replace(/&amp;/g, '&');
+    }
+
+    function colLettersToNum(letters) {
+        var s = String(letters || '').toUpperCase();
+        var n = 0;
+        for (var i = 0; i < s.length; i++) n = n * 26 + (s.charCodeAt(i) - 64);
+        return n;
+    }
+
+    function splitCellRef(addr) {
+        var m = /^([A-Za-z]+)(\d+)$/.exec(String(addr || ''));
+        if (!m) return null;
+        return { colNum: colLettersToNum(m[1]), row: parseInt(m[2], 10) };
+    }
+
+    function isNumericValue(value) {
+        var s = String(value == null ? '' : value).trim();
+        return s !== '' && /^-?\d+([.,]\d+)?$/.test(s);
+    }
+
+    function buildCellXml(addr, styleAttr, value) {
+        if (isNumericValue(value)) {
+            return '<c r="' + addr + '"' + styleAttr + '><v>' +
+                String(value).trim().replace(',', '.') + '</v></c>';
+        }
+        return '<c r="' + addr + '"' + styleAttr + ' t="inlineStr"><is><t xml:space="preserve">' +
+            xmlEscape(value) + '</t></is></c>';
+    }
+
+    function insertCellXml(xml, ref, cellXml) {
+        var rowRe = new RegExp('<row\\b[^>]*\\br="' + ref.row + '"[^>]*(?:/>|>[\\s\\S]*?<\\/row>)');
+        var rowMatch = rowRe.exec(xml);
+        if (rowMatch) {
+            var rowXml = rowMatch[0];
+            var updated;
+            if (rowXml.indexOf('</row>') < 0) {
+                updated = rowXml.replace(/\/>$/, '>') + cellXml + '</row>';
+            } else {
+                var insertAt = -1;
+                var cellRe = /<c\b[^>]*\br="([A-Za-z]+)\d+"/g;
+                var cm;
+                while ((cm = cellRe.exec(rowXml))) {
+                    if (colLettersToNum(cm[1]) > ref.colNum) { insertAt = cm.index; break; }
+                }
+                if (insertAt < 0) insertAt = rowXml.lastIndexOf('</row>');
+                updated = rowXml.slice(0, insertAt) + cellXml + rowXml.slice(insertAt);
+            }
+            return xml.slice(0, rowMatch.index) + updated + xml.slice(rowMatch.index + rowXml.length);
+        }
+        var newRow = '<row r="' + ref.row + '">' + cellXml + '</row>';
+        var rowsRe = /<row\b[^>]*\br="(\d+)"/g;
+        var at = -1;
+        var rm;
+        while ((rm = rowsRe.exec(xml))) {
+            if (parseInt(rm[1], 10) > ref.row) { at = rm.index; break; }
+        }
+        if (at < 0) {
+            var close = xml.indexOf('</sheetData>');
+            if (close >= 0) {
+                at = close;
+            } else {
+                var empty = /<sheetData\s*\/>/.exec(xml);
+                if (!empty) return xml;
+                return xml.slice(0, empty.index) + '<sheetData>' + newRow + '</sheetData>' +
+                    xml.slice(empty.index + empty[0].length);
+            }
+        }
+        return xml.slice(0, at) + newRow + xml.slice(at);
+    }
+
+    function patchSheetXml(xml, edits) {
+        Object.keys(edits).forEach(function (addr) {
+            var ref = splitCellRef(addr);
+            if (!ref) return;
+            var cellRe = new RegExp('<c\\b[^>]*\\br="' + addr + '"[^>]*(?:/>|>[\\s\\S]*?<\\/c>)');
+            var found = cellRe.exec(xml);
+            if (!found) {
+                xml = insertCellXml(xml, ref, buildCellXml(addr, '', edits[addr]));
+                return;
+            }
+            var tag = found[0];
+            if (/<f[\s>\/]/.test(tag)) return; // celle con formula: non toccarle
+            var styleMatch = /\bs="(\d+)"/.exec(tag);
+            xml = xml.slice(0, found.index) +
+                buildCellXml(addr, styleMatch ? ' s="' + styleMatch[1] + '"' : '', edits[addr]) +
+                xml.slice(found.index + tag.length);
+        });
+        return xml;
+    }
+
+    function xlsxSheetPaths(zip) {
+        var map = {};
+        var wbFile = zip.file('xl/workbook.xml');
+        var relFile = zip.file('xl/_rels/workbook.xml.rels');
+        if (!wbFile || !relFile) return map;
+        var rels = {};
+        var relRe = /<Relationship\b[^>]*>/g;
+        var relXml = relFile.asText();
+        var rm;
+        while ((rm = relRe.exec(relXml))) {
+            var id = /\bId="([^"]+)"/.exec(rm[0]);
+            var target = /\bTarget="([^"]+)"/.exec(rm[0]);
+            if (!id || !target) continue;
+            var path = target[1];
+            rels[id[1]] = path.charAt(0) === '/' ? path.slice(1) : 'xl/' + path.replace(/^\.\//, '');
+        }
+        var sheetRe = /<sheet\b[^>]*>/g;
+        var wbXml = wbFile.asText();
+        var sm;
+        while ((sm = sheetRe.exec(wbXml))) {
+            var name = /\bname="([^"]*)"/.exec(sm[0]);
+            var rid = /\br:id="([^"]+)"/.exec(sm[0]) || /\bid="([^"]+)"/.exec(sm[0]);
+            if (name && rid && rels[rid[1]]) map[xmlUnescape(name[1])] = rels[rid[1]];
+        }
+        return map;
+    }
+
+    async function patchXlsxZipCells(buffer, editsBySheet) {
+        await ensureDocxLibs();
+        var zip = new window.PizZip(buffer);
+        var paths = xlsxSheetPaths(zip);
+        var changed = false;
+        Object.keys(editsBySheet).forEach(function (sheetName) {
+            var path = paths[sheetName];
+            var file = path ? zip.file(path) : null;
+            if (!file) return;
+            var xml = file.asText();
+            var out = patchSheetXml(xml, editsBySheet[sheetName]);
+            if (out && out !== xml) {
+                zip.file(path, out);
+                changed = true;
+            }
+        });
+        if (!changed) return buffer;
+        return zip.generate({ type: 'arraybuffer', mimeType: XLSX_MIME, compression: 'DEFLATE' });
     }
 
     function normLabelKey(s) {
@@ -505,9 +679,10 @@
         return '';
     }
 
-    function setSheetCellValue(sheet, rowIdx, colIdx, value) {
+    function setSheetCellValue(sheet, rowIdx, colIdx, value, edits) {
         if (value == null || value === '') return;
         var addr = window.XLSX.utils.encode_cell({ r: rowIdx, c: colIdx });
+        if (edits) edits[addr] = String(value);
         var existing = sheet[addr];
         var num = typeof value === 'number' ? value : Number(String(value).replace(',', '.'));
         if (!isNaN(num) && String(value).trim() !== '' && /^-?\d+([.,]\d+)?$/.test(String(value).trim())) {
@@ -529,7 +704,7 @@
         }
     }
 
-    function fillXlsxSheetByLabels(sheet, data) {
+    function fillXlsxSheetByLabels(sheet, data, edits) {
         if (!sheet || !window.XLSX) return;
         var range = window.XLSX.utils.decode_range(sheet['!ref'] || 'A1');
         var rows = window.XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
@@ -552,7 +727,7 @@
                 var absC = range.s.c + c;
                 var cellStr = String(row[c] == null ? '' : row[c]).trim();
                 if (/^cond/i.test(cellStr)) {
-                    if (condVal) setSheetCellValue(sheet, absR, absC + 1, condVal);
+                    if (condVal) setSheetCellValue(sheet, absR, absC + 1, condVal, edits);
                     continue;
                 }
                 if (mainFilled) continue;
@@ -560,13 +735,13 @@
                     // valore nella cella successiva se vuota
                     var next = String(row[c + 1] == null ? '' : row[c + 1]).trim();
                     if (!next && mainVal) {
-                        setSheetCellValue(sheet, absR, absC + 1, mainVal);
+                        setSheetCellValue(sheet, absR, absC + 1, mainVal, edits);
                         mainFilled = true;
                     }
                     continue;
                 }
                 if (cellStr === '' && mainVal) {
-                    setSheetCellValue(sheet, absR, absC, mainVal);
+                    setSheetCellValue(sheet, absR, absC, mainVal, edits);
                     mainFilled = true;
                 }
             }
@@ -806,6 +981,7 @@
             ext: ext,
             mime: mime,
             size: buf.byteLength,
+            sum: bufferChecksum(buf),
             fillable: !!FILLABLE_EXT[ext],
             createdAt: (existing && existing.createdAt) || now,
             updatedAt: now
@@ -865,16 +1041,15 @@
         var outMime = mime;
         var filled = false;
 
+        /* Estensione e MIME restano quelli caricati: nessuna conversione di formato. */
         if (ext === 'docx' || ext === 'docm') {
             outBuf = await fillDocxBuffer(rec.buffer, data);
-            outExt = 'docx';
-            outMime = DOCX_MIME;
+            outMime = mime || DOCX_MIME;
             filled = outBuf !== rec.buffer;
         } else if (ext === 'xlsx' || ext === 'xlsm') {
             outBuf = await fillXlsxBuffer(rec.buffer, data);
-            outExt = 'xlsx';
-            outMime = XLSX_MIME;
-            filled = true; /* SheetJS riscrive sempre il workbook */
+            outMime = mime || XLSX_MIME;
+            filled = outBuf !== rec.buffer;
         } else if (ext === 'csv' || ext === 'tsv' || ext === 'txt' || ext === 'rtf' || ext === 'json' || ext === 'xml') {
             outBuf = fillTextBuffer(rec.buffer, data);
             filled = outBuf !== rec.buffer;
@@ -933,17 +1108,21 @@
         return file;
     };
 
-    /** Verifica che il buffer in IndexedDB sia ancora i byte salvati (nessuna mutazione silenziosa). */
+    /** Verifica che i byte in IndexedDB siano ancora quelli caricati (nessuna mutazione silenziosa). */
     window.verifyWordRapportinoBufferIntegrity = async function (id) {
         var meta = window.getWordRapportinoMeta(id);
         var rec = await idbGet(id);
         if (!meta || !rec || !rec.buffer) return { ok: false, reason: 'missing' };
         var ab = await toArrayBuffer(rec.buffer);
         var size = ab.byteLength || 0;
+        var info = { size: size, ext: meta.ext || '', fileName: meta.fileName || '', sum: bufferChecksum(ab) };
         if (meta.size && size !== meta.size) {
-            return { ok: false, reason: 'size-mismatch', expected: meta.size, actual: size };
+            return Object.assign({ ok: false, reason: 'size-mismatch', expected: meta.size }, info);
         }
-        return { ok: true, size: size, ext: meta.ext || '', fileName: meta.fileName || '' };
+        if (meta.sum && meta.sum !== info.sum) {
+            return Object.assign({ ok: false, reason: 'checksum-mismatch', expected: meta.sum }, info);
+        }
+        return Object.assign({ ok: true }, info);
     };
 
     window.renderWordRapportiniList = function () {
@@ -1377,6 +1556,11 @@
             openBar.innerHTML =
                 '<a class="word-rapp-preview-open" href="' + url + '" download="' + escapeHtml(meta.fileName || 'foglio.xlsx') + '">Scarica originale</a>';
             host.appendChild(openBar);
+            var xlsTip = document.createElement('p');
+            xlsTip.className = 'word-rapp-preview-fallback';
+            xlsTip.innerHTML = 'Anteprima solo per leggere i valori: bordi e larghezze qui sono approssimativi. ' +
+                'Il file condiviso resta il tuo Excel originale, con i soli numeri aggiornati.';
+            host.appendChild(xlsTip);
             await ensureXlsxLib();
             var wb = window.XLSX.read(ab, { type: 'array' });
             var sheetBar = document.createElement('div');
@@ -1592,8 +1776,9 @@
             var integrity = typeof window.verifyWordRapportinoBufferIntegrity === 'function'
                 ? await window.verifyWordRapportinoBufferIntegrity(id)
                 : { ok: true };
-            if (integrity && integrity.ok === false && integrity.reason === 'size-mismatch') {
-                toast('Attenzione: dimensione file diversa dall’upload. Ricarica il documento ufficiale.', true);
+            if (integrity && integrity.ok === false
+                && (integrity.reason === 'size-mismatch' || integrity.reason === 'checksum-mismatch')) {
+                toast('Attenzione: il file salvato non coincide con l’upload. Ricarica il documento ufficiale.', true);
             }
             var file = await window.fillWordRapportinoTemplate(id);
             if (!file) return false;
@@ -1676,6 +1861,7 @@
                 ext: m.ext,
                 mime: m.mime,
                 size: m.size,
+                sum: m.sum || '',
                 fillable: !!m.fillable,
                 createdAt: m.createdAt || 0,
                 updatedAt: m.updatedAt || 0,
@@ -1715,6 +1901,7 @@
                 ext: meta.ext,
                 mime: meta.mime,
                 size: meta.size,
+                sum: meta.sum || '',
                 fillable: !!meta.fillable,
                 createdAt: meta.createdAt || Date.now(),
                 updatedAt: meta.updatedAt || Date.now(),
@@ -1795,6 +1982,10 @@
             parts.push(String((cs.data() || {}).d || ''));
         }
         var buffer = base64ToArrayBuffer(parts.join(''));
+        var pulledSum = bufferChecksum(buffer);
+        if (item.sum && item.sum !== pulledSum) {
+            throw new Error('File alterato durante il sync (checksum diverso)');
+        }
         await idbPut({
             id: item.id,
             buffer: buffer,
@@ -1810,6 +2001,7 @@
             ext: item.ext,
             mime: item.mime,
             size: item.size || buffer.byteLength,
+            sum: item.sum || pulledSum,
             fillable: !!item.fillable,
             createdAt: item.createdAt || Date.now(),
             updatedAt: item.updatedAt || Date.now(),

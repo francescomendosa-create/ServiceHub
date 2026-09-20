@@ -1049,7 +1049,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.09.20-s819-sotto-serbatoi';
+        window.SERVICEHUB_BUILD = '2026.09.20-analisi-clear-persist';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -5740,6 +5740,12 @@ window.colorPreviewNumber = function(tankName, value) {
             var out = Object.assign({}, existing, incoming);
             Object.keys(existing).forEach(function (k) {
                 if (window.__PLANT_RESTORE_SKIP_KEYS && window.__PLANT_RESTORE_SKIP_KEYS[k]) return;
+                /* Analisi: l'utente può svuotare i campi — non ripristinare dal backup locale. */
+                if (typeof window.__isAnalisiPlantStorageKey === 'function'
+                    ? window.__isAnalisiPlantStorageKey(k)
+                    : (String(k || '').indexOf('inp-analisi-') === 0 || String(k || '').indexOf('analisi-') === 0)) {
+                    return;
+                }
                 var ev = existing[k];
                 var iv = incoming[k];
                 var eFilled = ev != null && (typeof ev === 'object' || String(ev).trim() !== '');
@@ -7110,7 +7116,10 @@ window.colorPreviewNumber = function(tankName, value) {
                         if (!window.__shouldApplyRemoteValueToInput(el)) return;
                         var expected = payload[k] == null ? '' : String(payload[k]);
                         var domVal = String(el.value == null ? '' : el.value);
-                        if (expected.trim() === '' && domVal.trim() !== '') return;
+                        var isAnalisiKey = typeof window.__isAnalisiPlantStorageKey === 'function'
+                            ? window.__isAnalisiPlantStorageKey(k)
+                            : (String(k || '').indexOf('inp-analisi-') === 0);
+                        if (expected.trim() === '' && domVal.trim() !== '' && !isAnalisiKey) return;
                         if (!window.__plantValueEquals(domVal, expected)) {
                             el.value = expected;
                             fixed++;
@@ -7153,6 +7162,11 @@ window.colorPreviewNumber = function(tankName, value) {
             if (localBackup) {
                 for (var bi = 0; bi < guardKeys.length; bi++) {
                     var gk = guardKeys[bi];
+                    if (typeof window.__isAnalisiPlantStorageKey === 'function'
+                        ? window.__isAnalisiPlantStorageKey(gk)
+                        : (String(gk || '').indexOf('inp-analisi-') === 0 || String(gk || '').indexOf('analisi-') === 0)) {
+                        continue;
+                    }
                     var localVal = localBackup[gk];
                     var localHas = localVal != null && String(localVal).trim() !== '';
                     if (!localHas) continue;
@@ -13398,6 +13412,63 @@ window.updateStoricoButton = async function() {
             ['inp-analisi-torb-ult', 'analisi-torb-ult-input']
         ];
 
+        /** Chiavi plant relative ad Analisi (storage nascosto + input popup). */
+        window.__isAnalisiPlantStorageKey = function (k) {
+            var s = String(k || '');
+            if (s.indexOf('inp-analisi-') === 0) return true;
+            if (s.indexOf('analisi-') === 0 && s.indexOf('-input') > 0) return true;
+            return false;
+        };
+
+        window.__touchAnalisiPlantEditMs = function (ids) {
+            window.__plantFieldEditMs = window.__plantFieldEditMs || {};
+            var now = Date.now();
+            (ids || []).forEach(function (id) {
+                if (id) window.__plantFieldEditMs[id] = now;
+            });
+        };
+
+        /** Copia popup → input nascosti (anche vuoti) così cancellazioni restano definitive. */
+        window.syncAnalisiPopupToStorage = function () {
+            var touched = [];
+            (window.ANALISI_STORAGE_TO_POPUP_MAP || []).forEach(function (pair) {
+                var hidden = document.getElementById(pair[0]);
+                var popup = document.getElementById(pair[1]);
+                if (!hidden || !popup) return;
+                var val = popup.value != null ? String(popup.value).trim() : '';
+                hidden.value = val;
+                if (val) {
+                    hidden.placeholder = '';
+                    popup.placeholder = '';
+                } else {
+                    popup.placeholder = '0.00';
+                }
+                touched.push(pair[0], pair[1]);
+            });
+            window.__touchAnalisiPlantEditMs(touched);
+            return touched;
+        };
+
+        /** Svuota popup + storage nascosto. */
+        window.clearAllAnalisiStoredValues = function () {
+            var touched = [];
+            (window.ANALISI_STORAGE_TO_POPUP_MAP || []).forEach(function (pair) {
+                var hidden = document.getElementById(pair[0]);
+                var popup = document.getElementById(pair[1]);
+                if (hidden) {
+                    hidden.value = '';
+                    touched.push(pair[0]);
+                }
+                if (popup) {
+                    popup.value = '';
+                    popup.placeholder = '0.00';
+                    touched.push(pair[1]);
+                }
+            });
+            window.__touchAnalisiPlantEditMs(touched);
+            return touched;
+        };
+
         window.getAnalisiActionButton = function () {
             return document.getElementById('amb-analisi-action-btn') ||
                 document.querySelector('#amb-row-analisi .amb-input-box[data-analisi-trigger]');
@@ -13421,10 +13492,8 @@ window.updateStoricoButton = async function() {
                 const popup = document.getElementById(pair[1]);
                 if (!hidden || !popup) return;
                 const val = hidden.value != null ? String(hidden.value).trim() : '';
-                if (val) {
-                    popup.value = val;
-                    popup.placeholder = '';
-                }
+                popup.value = val;
+                popup.placeholder = val ? '' : '0.00';
             });
         };
 
@@ -13597,163 +13666,30 @@ window.updateStoricoButton = async function() {
         };
         
         window.resetAllAnalisiValues = () => {
-            // Resetta tutti gli input del popup analisi
-            const analisiInputs = [
-                'analisi-cod-input',
-                'analisi-cond-input',
-                'analisi-ph-input',
-                'analisi-o2-mbr1-input',
-                'analisi-o2-mbr2-input',
-                'analisi-o2-mbr3-input',
-                'analisi-cono-input',
-                'analisi-cod-nuovo-input',
-                'analisi-cod-vecchio-input',
-                'analisi-toc-vecchio-input',
-                'analisi-toc-nuovo-input',
-                'analisi-torb-sed-input',
-                'analisi-torb-a11005-input',
-                'analisi-torb-perm-input',
-                'analisi-torb-ult-input'
-            ];
-            
-            analisiInputs.forEach(inputId => {
-                const input = document.getElementById(inputId);
-                if (input) {
-                    input.value = '';
-                    input.placeholder = '0.00';
-                }
-            });
+            if (typeof window.clearAllAnalisiStoredValues === 'function') {
+                window.clearAllAnalisiStoredValues();
+            }
+            if (typeof window.updateAnalisiText === 'function') window.updateAnalisiText();
+            if (typeof window.updateNutrientiCalcolati === 'function') {
+                try { window.updateNutrientiCalcolati(); } catch (_) {}
+            }
+            if (typeof window.saveData === 'function') {
+                setTimeout(function () { window.saveData(true); }, 0);
+            }
         };
 
         window.confirmAnalisiValues = () => {
-            // Salva valori dal popup alle celle principali (gestisce anche valori vuoti)
-            const popupCodInput = document.getElementById('analisi-cod-input');
-            const popupCondInput = document.getElementById('analisi-cond-input');
-            const popupPhInput = document.getElementById('analisi-ph-input');
-            const popupO2Mbr1Input = document.getElementById('analisi-o2-mbr1-input');
-            const popupO2Mbr2Input = document.getElementById('analisi-o2-mbr2-input');
-            const popupO2Mbr3Input = document.getElementById('analisi-o2-mbr3-input');
-            const popupConoInput = document.getElementById('analisi-cono-input');
-            const popupCodNuovoInput = document.getElementById('analisi-cod-nuovo-input');
-            const popupCodVecchioInput = document.getElementById('analisi-cod-vecchio-input');
-            const popupTocVecchioInput = document.getElementById('analisi-toc-vecchio-input');
-            const popupTocNuovoInput = document.getElementById('analisi-toc-nuovo-input');
-            const popupTorbSedInput = document.getElementById('analisi-torb-sed-input');
-            const popupTorbA11005Input = document.getElementById('analisi-torb-a11005-input');
-            const popupTorbPermInput = document.getElementById('analisi-torb-perm-input');
-            const popupTorbUltInput = document.getElementById('analisi-torb-ult-input');
-            
-            const mainCodInput = document.getElementById('inp-analisi-cod');
-            const mainCondInput = document.getElementById('inp-analisi-cond');
-            const mainPhInput = document.getElementById('inp-analisi-ph');
-            const mainO2Mbr1Input = document.getElementById('inp-analisi-o2-mbr1');
-            const mainO2Mbr2Input = document.getElementById('inp-analisi-o2-mbr2');
-            const mainO2Mbr3Input = document.getElementById('inp-analisi-o2-mbr3');
-            const mainConoInput = document.getElementById('inp-analisi-cono');
-            const mainCodNuovoInput = document.getElementById('inp-analisi-cod-nuovo');
-            const mainCodVecchioInput = document.getElementById('inp-analisi-cod-vecchio');
-            const mainTocVecchioInput = document.getElementById('inp-analisi-toc-vecchio');
-            const mainTocNuovoInput = document.getElementById('inp-analisi-toc-nuovo');
-            const mainTorbSedInput = document.getElementById('inp-analisi-torb-sed');
-            const mainTorbA11005Input = document.getElementById('inp-analisi-torb-a11005');
-            const mainTorbPermInput = document.getElementById('inp-analisi-torb-perm');
-            const mainTorbUltInput = document.getElementById('inp-analisi-torb-ult');
-            
-            // Copia valori se presenti, non cancellare se vuoti
-            if (mainCodInput && popupCodInput && popupCodInput.value) {
-                mainCodInput.value = popupCodInput.value;
-                mainCodInput.placeholder = '';
+            if (typeof window.syncAnalisiPopupToStorage === 'function') {
+                window.syncAnalisiPopupToStorage();
             }
-            
-            if (mainCondInput && popupCondInput && popupCondInput.value) {
-                mainCondInput.value = popupCondInput.value;
-                mainCondInput.placeholder = '';
+            if (typeof window.updateAnalisiText === 'function') window.updateAnalisiText();
+            if (typeof window.updateNutrientiCalcolati === 'function') {
+                try { window.updateNutrientiCalcolati(); } catch (_) {}
             }
-            
-            if (mainO2Mbr1Input && popupO2Mbr1Input && popupO2Mbr1Input.value) {
-                mainO2Mbr1Input.value = popupO2Mbr1Input.value;
-                mainO2Mbr1Input.placeholder = '';
-            }
-            
-            if (mainO2Mbr2Input && popupO2Mbr2Input && popupO2Mbr2Input.value) {
-                mainO2Mbr2Input.value = popupO2Mbr2Input.value;
-                mainO2Mbr2Input.placeholder = '';
-            }
-            
-            if (mainO2Mbr3Input && popupO2Mbr3Input && popupO2Mbr3Input.value) {
-                mainO2Mbr3Input.value = popupO2Mbr3Input.value;
-                mainO2Mbr3Input.placeholder = '';
-            }
-                        
-            if (mainConoInput && popupConoInput && popupConoInput.value) {
-                mainConoInput.value = popupConoInput.value;
-                mainConoInput.placeholder = '';
-            }
-            
-            if (mainCodNuovoInput && popupCodNuovoInput && popupCodNuovoInput.value) {
-                mainCodNuovoInput.value = popupCodNuovoInput.value;
-                mainCodNuovoInput.placeholder = '';
-            }
-            
-            if (mainCodVecchioInput && popupCodVecchioInput && popupCodVecchioInput.value) {
-                mainCodVecchioInput.value = popupCodVecchioInput.value;
-                mainCodVecchioInput.placeholder = '';
-            }
-            
-            // Gestione PH
-            if (mainPhInput && popupPhInput && popupPhInput.value) {
-                mainPhInput.value = popupPhInput.value;
-                mainPhInput.placeholder = '';
-            }
-            
-            // Gestione TOC VECCHIO
-            if (mainTocVecchioInput && popupTocVecchioInput && popupTocVecchioInput.value) {
-                mainTocVecchioInput.value = popupTocVecchioInput.value;
-                mainTocVecchioInput.placeholder = '';
-                // Salva anche nell'input nascosto per le notifiche
-                const hiddenTocVecchioInput = document.getElementById('inp-analisi-toc-vecchio');
-                if (hiddenTocVecchioInput) hiddenTocVecchioInput.value = popupTocVecchioInput.value;
-            }
-            
-            // Gestione TOC NUOVO
-            if (mainTocNuovoInput && popupTocNuovoInput && popupTocNuovoInput.value) {
-                mainTocNuovoInput.value = popupTocNuovoInput.value;
-                mainTocNuovoInput.placeholder = '';
-                // Salva anche nell'input nascosto per le notifiche
-                const hiddenTocNuovoInput = document.getElementById('inp-analisi-toc-nuovo');
-                if (hiddenTocNuovoInput) hiddenTocNuovoInput.value = popupTocNuovoInput.value;
-            }
-            
-            // Gestione TORB SED
-            if (mainTorbSedInput && popupTorbSedInput && popupTorbSedInput.value) {
-                mainTorbSedInput.value = popupTorbSedInput.value;
-                mainTorbSedInput.placeholder = '';
-            }
-            
-            // Gestione TORB A11005
-            if (mainTorbA11005Input && popupTorbA11005Input && popupTorbA11005Input.value) {
-                mainTorbA11005Input.value = popupTorbA11005Input.value;
-                mainTorbA11005Input.placeholder = '';
-            }
-            
-            // Gestione TORB PERM
-            if (mainTorbPermInput && popupTorbPermInput && popupTorbPermInput.value) {
-                mainTorbPermInput.value = popupTorbPermInput.value;
-                mainTorbPermInput.placeholder = '';
-            }
-            
-            // Gestione TORB ULT
-            if (mainTorbUltInput && popupTorbUltInput && popupTorbUltInput.value) {
-                mainTorbUltInput.value = popupTorbUltInput.value;
-                mainTorbUltInput.placeholder = '';
-            }
-            
-            // Aggiorna testo e colore del bottone
-            window.updateAnalisiText();
 
             const modal = document.getElementById('analisi-choice-modal');
             modal.classList.add('exit-right');
-            setTimeout(function () { window.saveData(); }, 0);
+            setTimeout(function () { window.saveData(true); }, 0);
             setTimeout(() => {
                 modal.classList.remove('active', 'exit-right');
                 if (typeof window.__closeAmbWizard === 'function') window.__closeAmbWizard();
@@ -15837,7 +15773,9 @@ window.updateStoricoButton = async function() {
                             if (!window.__shouldApplyRemoteValueToInput(el)) return;
                             var localFilledForce = el.value != null && String(el.value).trim() !== '';
                             var incomingEmptyForce = writeVal == null || String(writeVal).trim() === '';
-                            if (incomingEmptyForce && localFilledForce && !window.__userResetInProgress) return;
+                            var allowEmptyAnalisi = typeof window.__isAnalisiPlantStorageKey === 'function'
+                                && window.__isAnalisiPlantStorageKey(fieldId);
+                            if (incomingEmptyForce && localFilledForce && !window.__userResetInProgress && !allowEmptyAnalisi) return;
                             el.value = writeVal;
                             if ((fieldId === 'inp-osmosi' || id === 'osmosi') && typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(el);
                         } else if (document.activeElement !== el) {
@@ -15862,7 +15800,9 @@ window.updateStoricoButton = async function() {
                         if (!window.__shouldApplyRemoteValueToInput(el)) continue;
                         var localFilledSingle = el.value != null && String(el.value).trim() !== '';
                         var incomingEmptySingle = writeValSingle == null || String(writeValSingle).trim() === '';
-                        if (incomingEmptySingle && localFilledSingle && !window.__userResetInProgress) continue;
+                        var allowEmptyAnalisiSingle = typeof window.__isAnalisiPlantStorageKey === 'function'
+                            && window.__isAnalisiPlantStorageKey(fieldId);
+                        if (incomingEmptySingle && localFilledSingle && !window.__userResetInProgress && !allowEmptyAnalisiSingle) continue;
                         el.value = writeValSingle;
                         if ((fieldId === 'inp-osmosi' || id === 'osmosi') && typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(el);
                     } else if (document.activeElement !== el) {

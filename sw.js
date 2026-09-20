@@ -1,7 +1,7 @@
 // ServiceHub Service Worker — shell offline + aggiornamento quando c'è rete.
 // Network-first per HTML/JS (cache di riserva), cache-first per icone/CDN già visti.
 
-const CACHE_NAME = 'servicehub-shell-realtime-sync-v2-v385';
+const CACHE_NAME = 'servicehub-shell-realtime-sync-v2-v386';
 
 self.addEventListener('message', (event) => {
   if (event && event.data === 'SKIP_WAITING') self.skipWaiting();
@@ -10,7 +10,7 @@ self.addEventListener('message', (event) => {
 const SHELL_FILES = [
   './',
   './index.html',
-  './word-rapportini.js?v=2026.09.19-xlsx-fill-ok',
+  './word-rapportini.js?v=2026.09.21-word-identical',
   './letture-sasol-b64.js',
   './digital-remote.css',
   './libs/docx-preview.css',

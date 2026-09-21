@@ -1,7 +1,7 @@
 // ServiceHub Service Worker — shell offline + aggiornamento quando c'è rete.
 // Network-first per HTML/JS (cache di riserva), cache-first per icone/CDN già visti.
 
-const CACHE_NAME = 'servicehub-shell-realtime-sync-v2-v395';
+const CACHE_NAME = 'servicehub-shell-realtime-sync-v2-v396';
 
 self.addEventListener('message', (event) => {
   if (event && event.data === 'SKIP_WAITING') self.skipWaiting();

@@ -478,12 +478,21 @@
             fillXlsxSheetByLabels(sheet, data, edits);
             if (Object.keys(edits).length) editsBySheet[sheetName] = edits;
         });
-        if (!Object.keys(editsBySheet).length) return buffer;
+        var cellCount = Object.keys(editsBySheet).reduce(function (n, s) {
+            return n + Object.keys(editsBySheet[s]).length;
+        }, 0);
+        if (!cellCount) {
+            window.__shLastXlsxFill = { mode: 'originale', cells: 0 };
+            return buffer;
+        }
         try {
-            return await patchXlsxZipCells(buffer, editsBySheet);
+            var patched = await patchXlsxZipCells(buffer, editsBySheet);
+            window.__shLastXlsxFill = { mode: 'chirurgico', cells: cellCount };
+            return patched;
         } catch (err) {
             /* Meglio l'originale senza numeri che un file con layout rifatto. */
             console.warn('[ServiceHub] patch xlsx:', err && err.message);
+            window.__shLastXlsxFill = { mode: 'fallita-originale', cells: 0, error: (err && err.message) || '' };
             return buffer;
         }
     }
@@ -531,6 +540,28 @@
         }
         return '<c r="' + addr + '"' + styleAttr + ' t="inlineStr"><is><t xml:space="preserve">' +
             xmlEscape(value) + '</t></is></c>';
+    }
+
+    /* Una cella assente dall'XML eredita il formato dalla riga o dalla colonna:
+       se la reinseriamo "nuda" perde bordi e allineamento (i quadratini sparirebbero). */
+    function inferCellStyleAttr(xml, ref) {
+        var rowTag = new RegExp('<row\\b[^>]*\\br="' + ref.row + '"[^>]*>').exec(xml);
+        if (rowTag && /customFormat="1"/.test(rowTag[0])) {
+            var rowStyle = /\bs="(\d+)"/.exec(rowTag[0]);
+            if (rowStyle) return ' s="' + rowStyle[1] + '"';
+        }
+        var colRe = /<col\b[^>]*>/g;
+        var cm;
+        while ((cm = colRe.exec(xml))) {
+            var min = /\bmin="(\d+)"/.exec(cm[0]);
+            var max = /\bmax="(\d+)"/.exec(cm[0]);
+            var st = /\bstyle="(\d+)"/.exec(cm[0]);
+            if (!min || !max || !st) continue;
+            if (ref.colNum >= parseInt(min[1], 10) && ref.colNum <= parseInt(max[1], 10)) {
+                return ' s="' + st[1] + '"';
+            }
+        }
+        return '';
     }
 
     function insertCellXml(xml, ref, cellXml) {
@@ -581,7 +612,7 @@
             var cellRe = new RegExp('<c\\b[^>]*\\br="' + addr + '"[^>]*(?:/>|>[\\s\\S]*?<\\/c>)');
             var found = cellRe.exec(xml);
             if (!found) {
-                xml = insertCellXml(xml, ref, buildCellXml(addr, '', edits[addr]));
+                xml = insertCellXml(xml, ref, buildCellXml(addr, inferCellStyleAttr(xml, ref), edits[addr]));
                 return;
             }
             var tag = found[0];
@@ -1044,6 +1075,7 @@
         var ext = (meta.ext || rec.ext || fileExt(meta.fileName || rec.fileName) || 'bin').toLowerCase();
         var mime = meta.mime || rec.mime || mimeFor(meta.fileName || rec.fileName);
         var data = dataOverride || window.buildWordRapportinoDataMap() || {};
+        window.__shLastXlsxFill = null;
         var outBuf = rec.buffer;
         var outExt = ext;
         var outMime = mime;
@@ -1748,7 +1780,8 @@
                 '<div class="word-rapp-panel word-rapp-panel--viewer">' +
                 '<p class="word-rapp-panel-file">File: <b>' + escapeHtml(meta.fileName || '') + '</b> · ' +
                 escapeHtml((ext || '?').toUpperCase()) + ' · ' +
-                (meta.size ? (Math.max(1, Math.round(meta.size / 1024)) + ' KB') : '?') + '</p>' +
+                (meta.size ? (Math.max(1, Math.round(meta.size / 1024)) + ' KB') : '?') +
+                ' · motore ' + escapeHtml(window.SERVICEHUB_BUILD || '?') + '</p>' +
                 '<div class="word-rapp-actions word-rapp-actions--top">' +
                 '<button type="button" class="letture-share-btn letture-share-btn--main" id="word-rapp-refresh-data-btn">Aggiorna dati</button>' +
                 '<button type="button" class="letture-share-btn" id="word-rapp-reload-preview-btn">File grezzo</button>' +
@@ -1882,10 +1915,16 @@
                 a.click();
                 setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
             }
-            if (file.__shFilled) {
-                toast('File ufficiale: stesso layout dell’originale, solo numeri aggiornati. Aprilo e stampa.');
+            var fillInfo = window.__shLastXlsxFill;
+            var buildTag = window.SERVICEHUB_BUILD ? ' · build ' + window.SERVICEHUB_BUILD : '';
+            if (file.__shFilled && fillInfo && fillInfo.mode === 'chirurgico') {
+                toast('File originale con ' + fillInfo.cells + ' celle compilate, layout intatto.' + buildTag);
+            } else if (fillInfo && fillInfo.mode === 'fallita-originale') {
+                toast('Compilazione non riuscita: inviato l’originale senza numeri.' + buildTag, true);
+            } else if (file.__shFilled) {
+                toast('File ufficiale: stesso layout dell’originale, solo numeri aggiornati.' + buildTag);
             } else {
-                toast('File ufficiale originale esportato (byte identici all’upload).');
+                toast('File ufficiale originale esportato (byte identici all’upload).' + buildTag);
             }
             return true;
         } catch (err) {

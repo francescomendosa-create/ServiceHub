@@ -1049,7 +1049,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.09.21-reset-ad-quadrati';
+        window.SERVICEHUB_BUILD = '2026.09.21-reset-veloce';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -8581,7 +8581,8 @@ window.colorPreviewNumber = function(tankName, value) {
             var store = window.loadRapportiniStore && window.loadRapportiniStore();
             if (store) {
                 window.clearAllRapportiniDataForTotalReset(store);
-                window.saveRapportiniStore(store, { pushCloud: true, flushCloud: true, forceCloudOverwrite: true });
+                /* Solo locale qui: il push cloud avviene in background dopo la chiusura del popup. */
+                window.saveRapportiniStore(store, { pushCloud: true, flushCloud: false, forceCloudOverwrite: true });
                 window.__reapplyActiveRapportinoAfterTotalReset();
             }
             var panel = document.getElementById('stoccaggio-panel-notturno');
@@ -8640,14 +8641,15 @@ window.colorPreviewNumber = function(tankName, value) {
             }
             try {
                 var plantRef = doc(db, 'artifacts', appId, 'sharedDial', 'plant');
-                await setDoc(plantRef, payload, { merge: true });
                 var rev = __plantPayloadRevision(payload);
                 if (rev > 0) window.__appliedPlantSyncRevision = rev;
                 window.__cloudPlantHydrated = true;
                 window.__lastLocalPlantSaveMs = Date.now();
+                /* Backup locale subito: l’UI può chiudersi senza attendere Firestore. */
                 if (typeof window.__setPlantSyncBaseline === 'function') window.__setPlantSyncBaseline(payload);
                 if (typeof __writePlantLocalBackup === 'function') __writePlantLocalBackup(payload);
                 if (typeof cacheCloudPlantPayload === 'function') cacheCloudPlantPayload(payload);
+                await setDoc(plantRef, payload, { merge: true });
                 return true;
             } catch (e) {
                 console.error('[ServiceHub] total reset cloud:', e && e.message);
@@ -8727,12 +8729,20 @@ window.colorPreviewNumber = function(tankName, value) {
 
         // Funzione per eseguire il reset totale completo
         window.executeTotalReset = async () => {
+            if (window.__totalResetBusy) return;
+            window.__totalResetBusy = true;
+            var resetBtn = document.querySelector('#reset-modal button[onclick*="executeTotalReset"]');
+            if (resetBtn) {
+                resetBtn.disabled = true;
+                resetBtn.textContent = 'ATTENDI…';
+                resetBtn.style.opacity = '0.7';
+            }
             try {
                 window.__userResetInProgress = true;
                 if (typeof window.__clearInstantLevelsLocal === 'function') {
                     window.__clearInstantLevelsLocal();
                 }
-                // 1. Reset dati correnti (come resetAllData)
+                // 1. Reset UI locale (immediato)
                 document.querySelectorAll('input').forEach(input => {
                     input.value = "";
                 });
@@ -8776,24 +8786,8 @@ window.colorPreviewNumber = function(tankName, value) {
 
                 window.__applyTotalResetLocalSideEffects();
 
-                // 2. Elimina archivio storico completo
-                if (user && user.uid) {
-                    const archiveRef = collection(db, "artifacts", appId, "sharedDial", "plant", "snapshots");
-                    const snapshotDocs = await getDocs(archiveRef);
-                    
-                    // Elimina tutti i documenti nell'archivio
-                    const deletePromises = snapshotDocs.docs.map(doc => deleteDoc(doc.ref));
-                    await Promise.all(deletePromises);
-                    
-                    // Pulisci anche la memoria locale
-                    if (window.savedHistory) {
-                        window.savedHistory = [];
-                    }
-                } else {
-                    if (window.savedHistory) window.savedHistory = [];
-                }
+                if (window.savedHistory) window.savedHistory = [];
 
-                // 3. Reset serbatoi (memoria + quadratini A/D/P + traccia sync)
                 if (typeof window.__clearAllTankStatusesForTotalReset === 'function') {
                     window.__clearAllTankStatusesForTotalReset();
                 } else {
@@ -8802,43 +8796,73 @@ window.colorPreviewNumber = function(tankName, value) {
                     window.__plantStatusEdits = {};
                 }
 
-                // 4. Propaga reset a cloud + backup locale (tutti i dispositivi)
-                if (typeof window.flushRapportiniPushToCloudNow === 'function') {
-                    await window.flushRapportiniPushToCloudNow({ forceOverwrite: true });
-                }
-                await window.__pushTotalResetToCloud();
-                window.__reapplyActiveRapportinoAfterTotalReset();
-                if (typeof window.clearAllConductivityPlantStorage === 'function') {
-                    window.clearAllConductivityPlantStorage();
+                /* Snapshot locale subito (senza attendere rete). */
+                if (typeof window.buildPlantPayloadFromDOM === 'function' && typeof __writePlantLocalBackup === 'function') {
+                    try {
+                        var localSnap = window.buildPlantPayloadFromDOM({ bumpRevision: true });
+                        localSnap.tankStatuses = {};
+                        localSnap.tankStatusManualAD = {};
+                        localSnap.plantStatusEdits = {};
+                        localSnap.tankLevelInputAt = {};
+                        localSnap.tankTimelineManualRefs = {};
+                        localSnap.tankTimelineManualInitial = {};
+                        localSnap.totalResetAt = Date.now();
+                        window.__persistLastAppliedTotalResetAt(localSnap.totalResetAt);
+                        if (typeof window.__setPlantSyncBaseline === 'function') window.__setPlantSyncBaseline(localSnap);
+                        __writePlantLocalBackup(localSnap);
+                        if (typeof cacheCloudPlantPayload === 'function') cacheCloudPlantPayload(localSnap);
+                        var revLocal = __plantPayloadRevision(localSnap);
+                        if (revLocal > 0) window.__appliedPlantSyncRevision = revLocal;
+                    } catch (_) {}
                 }
                 if (typeof window.flushPlantBackupNow === 'function') window.flushPlantBackupNow();
-                await window.saveData(true);
                 if (typeof window.clearAllConductivityPlantStorage === 'function') {
                     window.clearAllConductivityPlantStorage();
                 }
+
                 window.__suppressConductivityPlantFallback = false;
                 window.__userResetInProgress = false;
+                window.__totalResetBusy = false;
 
-                // 5. Chiudi la modale e mostra feedback
+                // 2. Chiudi subito il popup: cloud e archivio in background
                 closeResetModal();
-                
-                // Mostra feedback di successo
                 const successMsg = document.createElement('div');
                 successMsg.className = 'fixed top-4 left-1/2 transform -translate-x-1/2 bg-emerald-600 text-white px-6 py-3 rounded-2xl font-black text-sm shadow-2xl z-50';
                 successMsg.innerHTML = 'RESET TOTALE COMPLETATO!';
                 document.body.appendChild(successMsg);
-                
-                setTimeout(() => {
-                    successMsg.remove();
-                }, 3000);
+                setTimeout(function () { successMsg.remove(); }, 1800);
+
+                void (async function () {
+                    try {
+                        if (user && user.uid && db) {
+                            try {
+                                const archiveRef = collection(db, "artifacts", appId, "sharedDial", "plant", "snapshots");
+                                const snapshotDocs = await getDocs(archiveRef);
+                                await Promise.all(snapshotDocs.docs.map(function (d) { return deleteDoc(d.ref); }));
+                            } catch (archErr) {
+                                console.warn('[ServiceHub] reset archivio cloud:', archErr && archErr.message);
+                            }
+                        }
+                        if (typeof window.flushRapportiniPushToCloudNow === 'function') {
+                            try { await window.flushRapportiniPushToCloudNow({ forceOverwrite: true }); } catch (_) {}
+                        }
+                        try { await window.__pushTotalResetToCloud(); } catch (_) {}
+                        window.__reapplyActiveRapportinoAfterTotalReset();
+                        if (typeof window.clearAllConductivityPlantStorage === 'function') {
+                            window.clearAllConductivityPlantStorage();
+                        }
+                    } catch (bgErr) {
+                        console.warn('[ServiceHub] reset cloud background:', bgErr && bgErr.message);
+                    }
+                })();
 
             } catch (error) {
                 console.error('Errore durante il reset totale:', error);
                 window.__suppressConductivityPlantFallback = false;
                 window.__userResetInProgress = false;
+                window.__totalResetBusy = false;
                 closeResetModal();
                 
-                // Mostra messaggio di errore
                 const errorMsg = document.createElement('div');
                 errorMsg.className = 'fixed top-4 left-1/2 transform -translate-x-1/2 bg-red-600 text-white px-6 py-3 rounded-2xl font-black text-sm shadow-2xl z-50';
                 errorMsg.innerHTML = 'ERRORE: Reset non completato';
@@ -53384,7 +53408,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=398')
+                navigator.serviceWorker.register('./sw.js?v=399')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();

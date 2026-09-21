@@ -1049,7 +1049,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.09.21-fix-boot-popup';
+        window.SERVICEHUB_BUILD = '2026.09.21-quota-non-sovrascrive';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -6203,7 +6203,34 @@ window.colorPreviewNumber = function(tankName, value) {
             return snap;
         };
 
-        window.__firestoreQuotaBlocked = false;
+        /* La quota giornaliera Firestore si azzera a mezzanotte del Pacifico: finché
+           dura il blocco il documento cloud resta congelato, e riapplicarlo a ogni
+           avvio riporterebbe indietro i valori appena corretti sul dispositivo. */
+        const __QUOTA_BLOCK_KEY = 'servicehub_firestore_quota_blocked_day';
+
+        const __pacificDayKey = function (d) {
+            try {
+                return new Intl.DateTimeFormat('en-CA', {
+                    timeZone: 'America/Los_Angeles',
+                    year: 'numeric', month: '2-digit', day: '2-digit'
+                }).format(d || new Date());
+            } catch (_) {
+                return '';
+            }
+        };
+
+        window.__firestoreQuotaBlocked = (function () {
+            try {
+                const saved = localStorage.getItem(__QUOTA_BLOCK_KEY);
+                const today = __pacificDayKey();
+                if (saved && today && saved === today) {
+                    console.warn('[ServiceHub] Quota Firestore ancora esaurita: avvio in locale, cloud ignorato.');
+                    return true;
+                }
+                if (saved) localStorage.removeItem(__QUOTA_BLOCK_KEY);
+            } catch (_) {}
+            return false;
+        })();
 
         window.__isFirestoreQuotaError = function (e) {
             const c = e && e.code;
@@ -6214,7 +6241,11 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__onFirestoreQuotaExceeded = function () {
             if (window.__firestoreQuotaBlocked) return;
             window.__firestoreQuotaBlocked = true;
+            try { localStorage.setItem(__QUOTA_BLOCK_KEY, __pacificDayKey()); } catch (_) {}
             console.error('[ServiceHub] QUOTA FIRESTORE SUPERATA — sync cloud sospesa.');
+            if (typeof window.__serviceHubFlashToast === 'function') {
+                window.__serviceHubFlashToast('Quota cloud esaurita: si lavora in locale, i dati restano sul dispositivo.', true, 'warn');
+            }
         };
 
         window.__isFirestorePermissionError = function (e) {
@@ -7589,7 +7620,11 @@ window.colorPreviewNumber = function(tankName, value) {
                 if (winEmpty && loseHas) {
                     var winTs = winner === primary ? pt : st;
                     var loseTs = winner === primary ? st : pt;
-                    if (!(winTs > loseTs && loseTs > 0)) {
+                    /* Una cancellazione volontaria ha un timestamp di modifica: va rispettata
+                       anche se l'altra copia è vecchia e non ne ha nessuno (loseTs 0),
+                       altrimenti il valore cancellato torna a ogni riapertura.
+                       Resta il paracadute: un campo vuoto senza timestamp non cancella nulla. */
+                    if (!(winTs > 0 && winTs > loseTs)) {
                         winner = losePayload;
                     }
                 }
@@ -53307,7 +53342,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=396')
+                navigator.serviceWorker.register('./sw.js?v=397')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();

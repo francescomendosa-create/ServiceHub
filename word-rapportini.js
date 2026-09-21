@@ -1753,9 +1753,14 @@
                 '<button type="button" class="letture-share-btn letture-share-btn--main" id="word-rapp-refresh-data-btn">Aggiorna dati</button>' +
                 '<button type="button" class="letture-share-btn" id="word-rapp-reload-preview-btn">File grezzo</button>' +
                 '</div>' +
+                '<p class="word-rapp-preview-warn">L’anteprima qui sotto è una ricostruzione approssimativa per leggere i valori: ' +
+                'bordi, larghezze e impaginazione non sono quelli veri. Il file inviato resta il tuo originale.</p>' +
                 '<p id="word-rapp-preview-status" class="word-rapp-preview-status">Apertura anteprima…</p>' +
                 '<div id="word-rapp-preview-host" class="word-rapp-preview-host" aria-live="polite"></div>' +
                 '<p class="word-rapp-panel-hint">' + fillHint + '</p>' +
+                '<div class="word-rapp-actions">' +
+                '<button type="button" class="letture-share-btn letture-share-btn--plain" id="word-rapp-share-original-btn">Invia originale intatto</button>' +
+                '</div>' +
                 '<div class="word-rapp-actions">' +
                 '<button type="button" class="letture-share-btn" id="word-rapp-replace-btn">Sostituisci file / rinomina</button>' +
                 '<button type="button" class="letture-share-btn" id="word-rapp-placeholders-btn">Sigle disponibili</button>' +
@@ -1765,6 +1770,8 @@
                 (helpKeys.length >= 48 ? '\n…' : '') +
                 '</pre>' +
                 '</div>';
+            var origBtn = document.getElementById('word-rapp-share-original-btn');
+            if (origBtn) origBtn.onclick = function () { void window.shareWordRapportinoOriginal(id); };
             var rep = document.getElementById('word-rapp-replace-btn');
             if (rep) rep.onclick = function () { window.openAggiungiWordRapportinoModal(id); };
             var ph = document.getElementById('word-rapp-placeholders-btn');
@@ -1787,6 +1794,55 @@
         }
         modal.classList.add('active');
         if (typeof window.__syncBodyModalOpenClass === 'function') window.__syncBodyModalOpenClass();
+    };
+
+    /** Condivide/scarica un file binario senza alcuna rielaborazione. */
+    async function deliverWordFile(file) {
+        if (typeof window.canShareLetturaFile === 'function' && window.canShareLetturaFile(file) && navigator.share) {
+            try {
+                await navigator.share({ files: [file], title: file.name });
+                return true;
+            } catch (err) {
+                if (err && err.name === 'AbortError') return true;
+            }
+        }
+        if (typeof window.isLetturaShareDesktopPc === 'function' && window.isLetturaShareDesktopPc()
+            && typeof window.openLetturaDesktopShareSheet === 'function') {
+            window.openLetturaDesktopShareSheet(file, file.name, {});
+            return true;
+        }
+        if (typeof window.downloadLetturaShareFile === 'function') {
+            window.downloadLetturaShareFile(file);
+            return true;
+        }
+        var url = URL.createObjectURL(file);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = file.name;
+        a.click();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+        return true;
+    }
+
+    /** Invia i byte esatti caricati: nessun numero aggiunto, nessuna rielaborazione. */
+    window.shareWordRapportinoOriginal = async function (id) {
+        id = id || window.__activeWordRapportinoId;
+        if (!id) return false;
+        try {
+            var rec = await idbGet(id);
+            if (!rec || !rec.buffer) throw new Error('File non trovato');
+            var meta = window.getWordRapportinoMeta(id) || {};
+            var ab = await toArrayBuffer(rec.buffer);
+            var name = meta.fileName || rec.fileName || ('documento.' + (meta.ext || 'bin'));
+            var file = new File([ab], name, { type: meta.mime || rec.mime || 'application/octet-stream' });
+            await deliverWordFile(file);
+            toast('Inviato il file originale, byte per byte come l’hai caricato.');
+            return true;
+        } catch (err) {
+            console.warn('[ServiceHub] share originale:', err);
+            toast((err && err.message) || 'Invio non riuscito', true);
+            return false;
+        }
     };
 
     window.shareWordRapportinoDoc = async function (id) {

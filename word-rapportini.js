@@ -1008,7 +1008,7 @@
                 } else if (status === 'offline') {
                     toast('Salvato solo qui: cloud non connesso. Riprova con «Aggiorna dal cloud» quando c’è rete.', true);
                 } else if (status === 'quota') {
-                    toast('Salvato solo qui: quota Firestore superata.', true);
+                    toast('Salvato solo qui: quota giornaliera Firestore esaurita, il cloud rifiuta le scritture. Riprova quando si azzera.', true);
                 }
             }).catch(function (err) {
                 console.warn('[ServiceHub] sync rapportino cloud:', err && err.message);
@@ -1133,6 +1133,15 @@
         return Object.assign({ ok: true }, info);
     };
 
+    /** Id visti sul cloud all'ultima lettura: serve a marcare i file rimasti solo qui. */
+    var __wrKnownCloudIds = null;
+
+    window.__setKnownCloudRapportinoIds = function (ids) {
+        var map = {};
+        (ids || []).forEach(function (id) { if (id) map[id] = true; });
+        __wrKnownCloudIds = map;
+    };
+
     window.renderWordRapportiniList = function () {
         var host = document.getElementById('word-rapportini-list');
         if (!host) return;
@@ -1144,12 +1153,15 @@
         host.innerHTML = list.map(function (m) {
             var sizeKb = m.size ? Math.max(1, Math.round(m.size / 1024)) + ' KB' : '';
             var extLabel = (m.ext || fileExt(m.fileName) || '').toUpperCase();
+            var onlyHere = __wrKnownCloudIds && !__wrKnownCloudIds[m.id];
             return '<div class="word-rapp-item" data-id="' + m.id + '">' +
                 '<button type="button" class="word-rapp-open" data-action="open" data-id="' + m.id + '">' +
                 '<span class="word-rapp-name">' + escapeHtml(m.name) +
                 (extLabel ? ' <span class="word-rapp-ext">' + escapeHtml(extLabel) + '</span>' : '') +
+                (onlyHere ? ' <span class="word-rapp-nocloud">SOLO QUI</span>' : '') +
                 '</span>' +
-                '<span class="word-rapp-meta">' + escapeHtml(m.fileName || '') + (sizeKb ? ' · ' + sizeKb : '') + '</span>' +
+                '<span class="word-rapp-meta">' + escapeHtml(m.fileName || '') + (sizeKb ? ' · ' + sizeKb : '') +
+                (onlyHere ? ' · non ancora sul cloud' : '') +
                 '</button>' +
                 '<button type="button" class="word-rapp-del" data-action="delete" data-id="' + m.id + '" aria-label="Elimina">✕</button>' +
                 '</div>';
@@ -2027,6 +2039,7 @@
         __wrApplyingCloud = true;
         try {
             var remoteItems = Array.isArray(data.items) ? data.items : [];
+            window.__setKnownCloudRapportinoIds(remoteItems.map(function (r) { return r && r.id; }));
             var remoteIds = {};
             var changed = false;
             var remoteHadDeleted = false;
@@ -2331,6 +2344,7 @@
             /* Documenti presenti solo su questo dispositivo: pubblicali. */
             var cloudIds = {};
             items.forEach(function (it) { if (it && it.id) cloudIds[it.id] = true; });
+            window.__setKnownCloudRapportinoIds(Object.keys(cloudIds));
             var uploaded = 0;
             var pushLabels = {
                 offline: 'cloud non collegato',
@@ -2340,6 +2354,9 @@
                 busy: 'invio già in corso'
             };
             var localBefore = window.listWordRapportini();
+            if (window.__firestoreQuotaBlocked) {
+                lines.push('(quota giornaliera Firestore esaurita: il cloud sta rifiutando le scritture)');
+            }
             for (var j = 0; j < localBefore.length; j++) {
                 var lm = localBefore[j];
                 if (!lm || !lm.id || cloudIds[lm.id]) continue;
@@ -2348,6 +2365,8 @@
                     var st = await window.__pushWordRapportinoToCloud(lm.id);
                     if (st === 'ok') {
                         uploaded++;
+                        cloudIds[lm.id] = true;
+                        window.__setKnownCloudRapportinoIds(Object.keys(cloudIds));
                         lines.push('· ' + lmLabel + ': caricato sul cloud da qui');
                     } else {
                         errors++;

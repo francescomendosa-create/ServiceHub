@@ -1,13 +1,17 @@
-package it.servicehub.tablet;
+﻿package it.servicehub.tablet;
 
 import android.annotation.SuppressLint;
+import android.content.pm.ActivityInfo;
+import android.content.res.Configuration;
 import android.os.Bundle;
+import android.view.View;
 import android.webkit.CookieManager;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 
 import java.io.ByteArrayOutputStream;
@@ -22,6 +26,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
         setContentView(R.layout.activity_main);
         nativeHookJs = readAssetUtf8("native_spen_hook.js");
         webView = findViewById(R.id.hub_webview);
@@ -30,6 +35,20 @@ public class MainActivity extends AppCompatActivity {
         setupWebView();
         new SpenSamsungIme(webView).attach();
         webView.loadUrl(getString(R.string.hub_url));
+    }
+
+    @Override
+    public void onConfigurationChanged(@NonNull Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        if (webView == null) return;
+        webView.post(() -> {
+            webView.requestLayout();
+            View parent = (View) webView.getParent();
+            if (parent != null) parent.requestLayout();
+            webView.evaluateJavascript(
+                    "(function(){try{window.dispatchEvent(new Event('resize'));window.dispatchEvent(new Event('orientationchange'));if(typeof window.gestioneResize==='function')window.gestioneResize();}catch(e){}})();",
+                    null);
+        });
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -53,17 +72,12 @@ public class MainActivity extends AppCompatActivity {
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
-                injectHook(view);
-                view.postDelayed(() -> injectHook(view), 800);
-                view.postDelayed(() -> injectHook(view), 2200);
+                if (nativeHookJs != null && !nativeHookJs.isEmpty()) {
+                    view.evaluateJavascript(nativeHookJs, null);
+                }
             }
         });
-        webView.addJavascriptInterface(new SpenBridge(webView, ink), "ServiceHubAndroidSpen");
-    }
-
-    private void injectHook(WebView view) {
-        if (view == null || nativeHookJs == null || nativeHookJs.isEmpty()) return;
-        view.evaluateJavascript(nativeHookJs, null);
+        webView.addJavascriptInterface(new SpenBridge(this, webView, ink), "ServiceHubAndroidSpen");
     }
 
     private String readAssetUtf8(String name) {

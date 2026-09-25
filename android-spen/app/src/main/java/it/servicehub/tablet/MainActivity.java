@@ -3,12 +3,15 @@ package it.servicehub.tablet;
 import android.annotation.SuppressLint;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
+import android.content.res.Configuration;
 import android.os.Bundle;
+import android.view.View;
 import android.webkit.CookieManager;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 
 import java.io.ByteArrayOutputStream;
@@ -25,7 +28,8 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR);
+        /* Segue la rotazione di sistema (anche portrait). Non bloccare in landscape. */
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
         setContentView(R.layout.activity_main);
         nativeHookJs = readAssetUtf8("native_spen_hook.js");
         nativeOcrBootJs = readAssetUtf8("native_ocr_boot.js");
@@ -36,6 +40,25 @@ public class MainActivity extends AppCompatActivity {
         setupWebView();
         new SpenSamsungIme(webView).attach();
         webView.loadUrl(getString(R.string.hub_url));
+    }
+
+    @Override
+    public void onConfigurationChanged(@NonNull Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        /* Con configChanges=orientation l'activity non si ricrea: il WebView va ridisegnato a mano. */
+        if (webView == null) return;
+        webView.post(() -> {
+            webView.requestLayout();
+            View parent = (View) webView.getParent();
+            if (parent != null) parent.requestLayout();
+            webView.evaluateJavascript(
+                    "(function(){try{" +
+                            "window.dispatchEvent(new Event('resize'));" +
+                            "window.dispatchEvent(new Event('orientationchange'));" +
+                            "if(typeof window.gestioneResize==='function')window.gestioneResize();" +
+                            "}catch(e){}})();",
+                    null);
+        });
     }
 
     @SuppressLint("SetJavaScriptEnabled")

@@ -58097,7 +58097,7 @@ window.filterGeminiCaptureReadings = function(readings) {
     if (window._smartCaptureNotturnoGiornalieroMode && typeof window.filterNotturnoOcrReadings === 'function') {
         return window.filterNotturnoOcrReadings(readings);
     }
-    return (readings || []).filter(function(r) {
+    var filtered = (readings || []).filter(function(r) {
         if (!r || !r.id || r.value == null) return false;
         if (r.id === 'inp-s121') return false;
         if (r.kind === 'status') {
@@ -58113,6 +58113,10 @@ window.filterGeminiCaptureReadings = function(readings) {
         }
         return Object.assign({}, r, { value: window.fixOcrDigitValue(r.value) });
     });
+    if (typeof window.filterOcrEnabledReadings === 'function') {
+        filtered = window.filterOcrEnabledReadings(filtered);
+    }
+    return filtered;
 };
 
 window.applyStatusReadingToUI = function(fieldId, stato) {
@@ -58179,7 +58183,9 @@ window.mergeCaptureFieldsForGemini = function(tankMode) {
     if (window._smartCaptureLetturaMode && typeof window.buildLetturaCaptureFieldMap === 'function') {
         return window.buildLetturaCaptureFieldMap();
     }
-    const tank = tankMode ? window.buildTankCaptureFieldMap() : window.buildSmartCaptureFieldMap();
+    const tank = tankMode
+        ? (typeof window.getTankCaptureFieldsForOcr === 'function' ? window.getTankCaptureFieldsForOcr() : window.buildTankCaptureFieldMap())
+        : window.buildSmartCaptureFieldMap();
     const dcs = window.getDcsStoccaggioCaptureFields ? window.getDcsStoccaggioCaptureFields() : [];
     const pozzi = [
         { id: 'stat-well-2', label: 'Pozzo 2', section: 'POZZI TORCIA', kind: 'status' },
@@ -58697,6 +58703,141 @@ window.collectRapportinoTankFields = function() {
     return fields;
 };
 
+/** Serbatoi esclusi dall'OCR foto (persistente finché non li riattivi). */
+window.OCR_DISABLED_TANKS_STORAGE_KEY = 'servicehub_ocr_disabled_tanks_v1';
+
+window.loadOcrDisabledTankIds = function () {
+    try {
+        var raw = localStorage.getItem(window.OCR_DISABLED_TANKS_STORAGE_KEY);
+        var arr = raw ? JSON.parse(raw) : [];
+        return Array.isArray(arr) ? arr.filter(Boolean) : [];
+    } catch (_) {
+        return [];
+    }
+};
+
+window.saveOcrDisabledTankIds = function (ids) {
+    var clean = Array.from(new Set((ids || []).filter(Boolean)));
+    try {
+        localStorage.setItem(window.OCR_DISABLED_TANKS_STORAGE_KEY, JSON.stringify(clean));
+    } catch (_) {}
+    window.__ocrDisabledTankSet = null;
+    window.invalidateTankLabelMap();
+    if (typeof window.updateOcrTankSettingsSummary === 'function') window.updateOcrTankSettingsSummary();
+};
+
+window.getOcrDisabledTankIdSet = function () {
+    if (!window.__ocrDisabledTankSet) {
+        window.__ocrDisabledTankSet = new Set(window.loadOcrDisabledTankIds());
+    }
+    return window.__ocrDisabledTankSet;
+};
+
+window.isOcrTankFieldEnabled = function (fieldId) {
+    if (!fieldId) return true;
+    return !window.getOcrDisabledTankIdSet().has(fieldId);
+};
+
+window.filterOcrEnabledTankFields = function (fields) {
+    return (fields || []).filter(function (f) {
+        return f && f.id && window.isOcrTankFieldEnabled(f.id);
+    });
+};
+
+window.filterOcrEnabledReadings = function (readings) {
+    return (readings || []).filter(function (r) {
+        return r && r.id && window.isOcrTankFieldEnabled(r.id);
+    });
+};
+
+window.setOcrTankFieldEnabled = function (fieldId, enabled) {
+    if (!fieldId) return;
+    var set = new Set(window.loadOcrDisabledTankIds());
+    if (enabled) set.delete(fieldId);
+    else set.add(fieldId);
+    window.saveOcrDisabledTankIds(Array.from(set));
+};
+
+window.toggleOcrTankFieldEnabled = function (fieldId) {
+    window.setOcrTankFieldEnabled(fieldId, !window.isOcrTankFieldEnabled(fieldId));
+    if (typeof window.renderOcrTankSettingsList === 'function') window.renderOcrTankSettingsList();
+};
+
+window.resetAllOcrTankExclusions = function () {
+    window.saveOcrDisabledTankIds([]);
+    if (typeof window.renderOcrTankSettingsList === 'function') window.renderOcrTankSettingsList();
+};
+
+window.getOcrTankSettingsFieldList = function () {
+    var fields = window.buildTankCaptureFieldMap();
+    if (typeof window.sortTankFieldsForDisplay === 'function') {
+        fields = window.sortTankFieldsForDisplay(fields);
+    }
+    return fields;
+};
+
+window.getTankCaptureFieldsForOcr = function () {
+    return window.filterOcrEnabledTankFields(window.buildTankCaptureFieldMap());
+};
+
+window.updateOcrTankSettingsSummary = function () {
+    var disabled = window.loadOcrDisabledTankIds();
+    var n = disabled.length;
+    var txt = n
+        ? (n === 1 ? '1 sigla esclusa dalla foto' : (n + ' sigle escluse dalla foto'))
+        : 'Tutti attivi per la foto';
+    var home = document.getElementById('ocr-tank-settings-summary');
+    var modal = document.getElementById('ocr-tank-settings-modal-summary');
+    if (home) home.textContent = txt;
+    if (modal) modal.textContent = txt;
+};
+
+window.renderOcrTankSettingsList = function () {
+    var list = document.getElementById('ocr-tank-settings-list');
+    if (!list) return;
+    var fields = window.getOcrTankSettingsFieldList();
+    if (!fields.length) {
+        list.innerHTML = '<p class="text-center text-slate-400 font-bold py-6">Nessun serbatoio nel rapportino attivo.</p>';
+        window.updateOcrTankSettingsSummary();
+        return;
+    }
+    list.innerHTML = fields.map(function (f) {
+        var on = window.isOcrTankFieldEnabled(f.id);
+        var rowCls = on ? '' : ' smart-capture-row--disabled';
+        return '<div class="smart-capture-row' + rowCls + '" data-ocr-field-id="' + f.id + '">' +
+            '<span><strong>' + String(f.label || f.id).replace(/</g, '&lt;') + '</strong><br>' +
+            '<span style="color:#94a3b8;font-size:10px;">' + String(f.section || 'Serbatoi').replace(/</g, '&lt;') + '</span></span>' +
+            '<button type="button" class="ocr-tank-toggle' + (on ? ' on' : '') + '" role="switch" aria-checked="' + (on ? 'true' : 'false') + '" ' +
+            'aria-label="' + (on ? 'Escludi' : 'Includi') + ' ' + String(f.label || f.id).replace(/"/g, '') + '" ' +
+            'onclick="window.toggleOcrTankFieldEnabled(\'' + f.id + '\')"></button></div>';
+    }).join('');
+    window.updateOcrTankSettingsSummary();
+};
+
+window.openOcrTankSettingsModal = function () {
+    var modal = document.getElementById('ocr-tank-settings-modal');
+    if (!modal) return;
+    if (typeof window.renderStoccaggioInternoPanel === 'function') window.renderStoccaggioInternoPanel();
+    window.renderOcrTankSettingsList();
+    modal.classList.add('active');
+    if (typeof window.__syncBodyModalOpenClass === 'function') window.__syncBodyModalOpenClass();
+};
+
+window.closeOcrTankSettingsModal = function () {
+    var modal = document.getElementById('ocr-tank-settings-modal');
+    if (modal) modal.classList.remove('active');
+    if (typeof window.__syncBodyModalOpenClass === 'function') window.__syncBodyModalOpenClass();
+    window.updateOcrTankSettingsSummary();
+};
+
+(function __initOcrTankSettingsSummary() {
+    function run() {
+        if (typeof window.updateOcrTankSettingsSummary === 'function') window.updateOcrTankSettingsSummary();
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run);
+    else run();
+})();
+
 window.buildTankCaptureFieldMap = function() {
     const live = window.collectRapportinoTankFields();
     if (live.length) return live;
@@ -58710,7 +58851,9 @@ window.invalidateTankLabelMap = function() {
 };
 
 window.getTankLabelToIdMap = function() {
-    const fields = window.buildTankCaptureFieldMap();
+    const fields = typeof window.getTankCaptureFieldsForOcr === 'function'
+        ? window.getTankCaptureFieldsForOcr()
+        : window.buildTankCaptureFieldMap();
     const m = {};
     fields.forEach(function(f) {
         window.buildSiglaPatterns(f).forEach(function(p) {
@@ -58729,7 +58872,9 @@ window.getTankLabelToIdMap = function() {
 };
 
 window.resolveTankIdFromLabel = function(siglaText, fields) {
-    fields = fields || window.buildTankCaptureFieldMap();
+    fields = fields || (typeof window.getTankCaptureFieldsForOcr === 'function'
+        ? window.getTankCaptureFieldsForOcr()
+        : window.buildTankCaptureFieldMap());
     const k = window.normalizeSiglaKey(siglaText).replace(/\s/g, '');
     if (!k) return null;
 
@@ -58774,7 +58919,9 @@ window.resolveTankIdFromLabel = function(siglaText, fields) {
 };
 
 window.parseGeminiTankPairsJson = function(json, fields) {
-    fields = fields || window.buildTankCaptureFieldMap();
+    fields = fields || (typeof window.getTankCaptureFieldsForOcr === 'function'
+        ? window.getTankCaptureFieldsForOcr()
+        : window.buildTankCaptureFieldMap());
     const fieldIds = new Set(fields.map(function(f) { return f.id; }));
     if (!json) return [];
     // NON usare json.catalogo qui: contiene liv_max (es. 6000) che viene scambiato per il livello.
@@ -58916,6 +59063,7 @@ window.parseGeminiTankGridJson = function(json) {
             id = fromSigla;
         }
         if (typeof window.isLikelyTankCapacityMisread === 'function' && window.isLikelyTankCapacityMisread(id, val)) return;
+        if (typeof window.isOcrTankFieldEnabled === 'function' && !window.isOcrTankFieldEnabled(id)) return;
         if (used.has(id)) return;
         used.add(id);
         readings.push({ id: id, value: val, confidence: 'alta', source: slot.label });
@@ -58924,7 +59072,9 @@ window.parseGeminiTankGridJson = function(json) {
 };
 
 window.normalizeGeminiTankReadings = function(rawReadings, fields) {
-    fields = fields || window.buildTankCaptureFieldMap();
+    fields = fields || (typeof window.getTankCaptureFieldsForOcr === 'function'
+        ? window.getTankCaptureFieldsForOcr()
+        : window.buildTankCaptureFieldMap());
     const out = [];
     const used = new Set();
     (rawReadings || []).forEach(function(r) {
@@ -58967,7 +59117,9 @@ window.fixOcrTankText = function(raw) {
 };
 
 window.matchTankReadingsFromOcrText = function(ocrText, fields) {
-    fields = fields || window.buildTankCaptureFieldMap();
+    fields = fields || (typeof window.getTankCaptureFieldsForOcr === 'function'
+        ? window.getTankCaptureFieldsForOcr()
+        : window.buildTankCaptureFieldMap());
     const fixed = window.fixOcrTankText(ocrText);
     const parsed = window.matchReadingsFromOcrText(fixed, fields);
     return parsed && parsed.readings ? parsed.readings : [];
@@ -58979,7 +59131,11 @@ window.applySmartCaptureDirectly = async function(parsed) {
         return await window.applyDcsReadingsToAllRapportini(parsed.readings);
     }
     const fieldIds = new Set(
-        (window._smartCaptureTankMode ? window.buildTankCaptureFieldMap() : window.buildSmartCaptureFieldMap())
+        (window._smartCaptureTankMode
+            ? (typeof window.getTankCaptureFieldsForOcr === 'function'
+                ? window.getTankCaptureFieldsForOcr()
+                : window.buildTankCaptureFieldMap())
+            : window.buildSmartCaptureFieldMap())
             .map(function(f) { return f.id; })
     );
     let applied = 0;
@@ -59078,7 +59234,9 @@ window.parseSmartCaptureJson = function(rawText) {
 };
 
 window.parseGeminiTankPairsFromRaw = function(rawText, fields) {
-    fields = fields || window.buildTankCaptureFieldMap();
+    fields = fields || (typeof window.getTankCaptureFieldsForOcr === 'function'
+        ? window.getTankCaptureFieldsForOcr()
+        : window.buildTankCaptureFieldMap());
     if (!rawText) return [];
     const readings = [];
     const used = new Set();
@@ -59097,7 +59255,9 @@ window.parseGeminiTankPairsFromRaw = function(rawText, fields) {
 };
 
 window.extractTankReadingsFromGeminiRaw = function(raw, fields) {
-    fields = fields || window.buildTankCaptureFieldMap();
+    fields = fields || (typeof window.getTankCaptureFieldsForOcr === 'function'
+        ? window.getTankCaptureFieldsForOcr()
+        : window.buildTankCaptureFieldMap());
     if (!raw) return [];
     const json = window.parseSmartCaptureJson(raw);
     let pairs = window.parseGeminiTankPairsJson(json, fields);
@@ -59207,7 +59367,9 @@ window.runTesseractOcrPass = async function(worker, imageDataUrl, params) {
 };
 
 window.buildGeminiTankCapturePrompt = function(fields) {
-    fields = fields || window.buildTankCaptureFieldMap();
+    fields = fields || (typeof window.getTankCaptureFieldsForOcr === 'function'
+        ? window.getTankCaptureFieldsForOcr()
+        : window.buildTankCaptureFieldMap());
     const elenco = fields.map(function(f) {
         return '- "' + f.label + '" → campo_id "' + f.id + '" (' + f.section + ')';
     }).join('\n');
@@ -59754,6 +59916,9 @@ window.runLocalSmartCaptureOcr = async function(imageData, fields) {
                 return r && r.id && window.isPlausibleDcsLevel && window.isPlausibleDcsLevel(r.id, r.value);
             });
         }
+        if (typeof window.filterOcrEnabledReadings === 'function') {
+            parsed.readings = window.filterOcrEnabledReadings(parsed.readings);
+        }
     }
     parsed.engine = 'local';
     parsed.notes = (window.__smartCaptureGeminiQuota
@@ -59974,6 +60139,9 @@ window.finishSmartCapture = function(parsed) {
     if (p.notes) p.notes = window.stripGeminiNameFromOcrUi(p.notes);
     if (p.engine && p.notes && p.notes.indexOf('motore:') < 0 && p.notes.indexOf(p.engine) < 0 && !/gemini/i.test(String(p.engine))) {
         p.notes = p.notes + ' · motore: ' + p.engine;
+    }
+    if (window._smartCaptureTankMode && typeof window.filterOcrEnabledReadings === 'function') {
+        p.readings = window.filterOcrEnabledReadings(p.readings || []);
     }
     window.showSmartCaptureConfirm(p);
 };
@@ -60473,6 +60641,7 @@ window.showSmartCaptureConfirm = function(parsed) {
     const readingMap = {};
     (parsed && parsed.readings || []).forEach(function(r) {
         if (r && r.id && r.value != null) {
+            if (tankMode && typeof window.isOcrTankFieldEnabled === 'function' && !window.isOcrTankFieldEnabled(r.id)) return;
             var rv = String(r.value).trim();
             if (typeof window.applyIntegerOnlyTankValue === 'function') {
                 rv = window.applyIntegerOnlyTankValue(r.id, rv);
@@ -60577,6 +60746,7 @@ window.closeSmartCaptureConfirm = function(reopenSettings) {
 window.applySmartCaptureResults = async function() {
     const parsed = window._smartCapturePending || { readings: [] };
     const notturnoGiorMode = !!window._smartCaptureNotturnoGiornalieroMode;
+    const tankModeApply = !!window._smartCaptureTankMode;
     const readings = [];
     document.querySelectorAll('#smart-capture-confirm-list [data-field-id]').forEach(function(inp) {
         const val = String(inp.value || '').trim();
@@ -60598,7 +60768,12 @@ window.applySmartCaptureResults = async function() {
         readings.push({ id: inp.dataset.fieldId, value: v });
     });
 
-    if (!readings.length) {
+    var readingsToApply = readings;
+    if (tankModeApply && typeof window.filterOcrEnabledReadings === 'function') {
+        readingsToApply = window.filterOcrEnabledReadings(readings);
+    }
+
+    if (!readingsToApply.length) {
         alert('Inserisci almeno un livello oppure annulla.');
         return;
     }
@@ -60614,7 +60789,7 @@ window.applySmartCaptureResults = async function() {
 
     if (notturnoGiorMode) {
         var appliedNg = typeof window.applyOcrReadingsToRapportinoNotturno === 'function'
-            ? window.applyOcrReadingsToRapportinoNotturno(readings)
+            ? window.applyOcrReadingsToRapportinoNotturno(readingsToApply)
             : 0;
         if (typeof window.__showOcrAppliedToast === 'function') {
             window.__showOcrAppliedToast(appliedNg, 'rapportino notturno');
@@ -60633,7 +60808,7 @@ window.applySmartCaptureResults = async function() {
         if (typeof window.buildLetturaCaptureFieldMap === 'function') {
             window.buildLetturaCaptureFieldMap().forEach(function (f) { allowed[f.id] = true; });
         }
-        var filtered = readings.filter(function (r) {
+        var filtered = readingsToApply.filter(function (r) {
             return r && r.id && allowed[r.id] && r.kind !== 'status';
         });
         var appliedSlot = typeof window.persistLetturaSlotSnapshotFromReadings === 'function'
@@ -60658,12 +60833,12 @@ window.applySmartCaptureResults = async function() {
     const pending = window._smartCapturePending || parsed;
     const isOverview = pending.profile === 'dcs-overview-strumenti';
     const isConsumiProd = pending.profile === 'dcs-consumi-produzione' || pending.profile === 'dcs-consumi-erogazioni';
-    const isDcs = pending.profile === 'dcs-acqua' || window.readingsIncludeDcsStoccaggio(readings);
+    const isDcs = pending.profile === 'dcs-acqua' || window.readingsIncludeDcsStoccaggio(readingsToApply);
     let applied = 0;
 
     try {
         if (isConsumiProd && typeof window.applyOcrReadingsToRapportinoNotturno === 'function') {
-            applied = window.applyOcrReadingsToRapportinoNotturno(readings);
+            applied = window.applyOcrReadingsToRapportinoNotturno(readingsToApply);
             if (typeof window.__showOcrAppliedToast === 'function') {
                 window.__showOcrAppliedToast(applied, 'Consumi e Produzione');
             }
@@ -60694,12 +60869,12 @@ window.applySmartCaptureResults = async function() {
             if (typeof window.saveData === 'function') void window.saveData(true);
             if (typeof window.refreshLetturaDocView === 'function') window.refreshLetturaDocView();
         } else if (isDcs) {
-            applied = await window.applyDcsReadingsToAllRapportini(readings);
+            applied = await window.applyDcsReadingsToAllRapportini(readingsToApply);
             if (typeof window.__showOcrAppliedToast === 'function') {
                 window.__showOcrAppliedToast(applied, 'DCS');
             }
         } else if (isOverview) {
-            readings.forEach(function(r) {
+            readingsToApply.forEach(function(r) {
                 if (!r || !r.id) return;
                 if (r.kind === 'status' || String(r.id).indexOf('stat-') === 0) {
                     if (window.applyStatusReadingToUI(r.id, r.value)) applied++;
@@ -60714,10 +60889,14 @@ window.applySmartCaptureResults = async function() {
             if (typeof window.saveData === 'function') void window.saveData(true);
         } else {
             const fieldIds = new Set(
-                (window._smartCaptureTankMode ? window.buildTankCaptureFieldMap() : window.buildSmartCaptureFieldMap())
+                (window._smartCaptureTankMode
+                    ? (typeof window.getTankCaptureFieldsForOcr === 'function'
+                        ? window.getTankCaptureFieldsForOcr()
+                        : window.buildTankCaptureFieldMap())
+                    : window.buildSmartCaptureFieldMap())
                     .map(function(f) { return f.id; })
             );
-            readings.forEach(function(r) {
+            readingsToApply.forEach(function(r) {
                 if (!r || !r.id || !fieldIds.has(r.id)) return;
                 const el = document.getElementById(r.id);
                 if (!el || el.readOnly) return;

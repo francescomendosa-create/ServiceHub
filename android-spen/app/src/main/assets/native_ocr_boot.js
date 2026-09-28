@@ -115,7 +115,9 @@
         } catch (e1) {}
     }
 
-    function remapOcrFieldId(id) {
+    function remapOcrFieldId(id, sigla) {
+        var blob = String(sigla || '').toUpperCase();
+        if (/BACINO|BAC\.|BAC\s/.test(blob) && /8092/.test(blob.replace(/[^0-9]/g, ''))) return 'inp-bacino-tk8092';
         if (id === 'inp-tk8093') return 'inp-bacino-tk8093';
         return id;
     }
@@ -124,7 +126,7 @@
         var out = [];
         var seen = {};
         function add(id, label, section) {
-            id = remapOcrFieldId(id);
+            id = remapOcrFieldId(id, label);
             if (!id || seen[id] || id === 'inp-s121' || id === 'inp-s133' || id === 'tk101') return;
             seen[id] = true;
             out.push({ id: id, label: label || id, section: section || 'Serbatoi' });
@@ -152,7 +154,7 @@
     function remapReadings(list) {
         return (list || []).map(function (r) {
             if (!r || !r.id) return r;
-            var id = remapOcrFieldId(r.id);
+            var id = remapOcrFieldId(r.id, r.source || r.label || '');
             if (id === r.id) return r;
             return Object.assign({}, r, { id: id });
         });

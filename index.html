@@ -1049,7 +1049,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.10.06-capoturno-lombardo';
+        window.SERVICEHUB_BUILD = '2026.10.06-cond-persist-local';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -16485,6 +16485,24 @@ window.updateStoricoButton = async function() {
             return norm === String(level).trim().replace(/\s/g, '').replace(',', '.');
         };
 
+        window.__persistConductivityKeyLocalNow = function (cacheKey, rawVal) {
+            if (!cacheKey) return;
+            var v = rawVal != null && String(rawVal).trim() !== '' ? String(rawVal).trim() : '';
+            try {
+                ['stabilePlantBackup', 'stabileCurrentData'].forEach(function (lsKey) {
+                    var raw = localStorage.getItem(lsKey);
+                    var obj = null;
+                    if (raw) {
+                        try { obj = JSON.parse(raw); } catch (_) { obj = null; }
+                    }
+                    if (!obj || typeof obj !== 'object') obj = {};
+                    obj[cacheKey] = v;
+                    obj.__localSavedAt = Date.now();
+                    localStorage.setItem(lsKey, JSON.stringify(obj));
+                });
+            } catch (_) {}
+        };
+
         window.__touchConductivityCacheFromInput = function (input) {
             if (!input || !input.id) return;
             var shared = window.CONDUCTIVITY_SHARED_FIELD_IDS || [];
@@ -16499,6 +16517,10 @@ window.updateStoricoButton = async function() {
             }
             if (v) window.__cloudPlantCache[cacheKey] = v;
             else delete window.__cloudPlantCache[cacheKey];
+            /* Stesso dispositivo: scrivi subito la chiave __cond (niente attesa debounce 1s). */
+            if (typeof window.__persistConductivityKeyLocalNow === 'function') {
+                window.__persistConductivityKeyLocalNow(cacheKey, v);
+            }
         };
 
         window.getConductivityPlantStorageKey = function (fieldId) {
@@ -16539,19 +16561,26 @@ window.updateStoricoButton = async function() {
             return '';
         };
 
-        /** Integra cache conducibilità nel payload senza ripristinare valori cancellati. */
+        /** Integra cache/backup conducibilità: riempie chiavi mancanti o vuote (mai overwrite di valori pieni). */
         window.__mergeConductivityKeysIntoPlantPayload = function (target, source) {
             if (!target || typeof target !== 'object') return target;
             if (window.__suppressConductivityPlantFallback) return target;
             var src = source && typeof source === 'object' ? source : {};
+            var localBk = typeof window.__readPlantBackupLocal === 'function'
+                ? window.__readPlantBackupLocal() : null;
             (window.CONDUCTIVITY_SHARED_FIELD_IDS || []).forEach(function (fid) {
                 var key = typeof window.getConductivityPlantStorageKey === 'function'
                     ? window.getConductivityPlantStorageKey(fid)
                     : fid;
-                if (Object.prototype.hasOwnProperty.call(target, key)) return;
+                var cur = Object.prototype.hasOwnProperty.call(target, key) ? target[key] : undefined;
+                if (cur != null && String(cur).trim() !== '') return;
                 var fromSrc = src[key];
                 if (fromSrc != null && String(fromSrc).trim() !== '') {
                     target[key] = String(fromSrc).trim();
+                    return;
+                }
+                if (localBk && localBk[key] != null && String(localBk[key]).trim() !== '') {
+                    target[key] = String(localBk[key]).trim();
                 }
             });
             return target;
@@ -16564,6 +16593,24 @@ window.updateStoricoButton = async function() {
             if (condVal && window.__conductivityValMatchesLevel && window.__conductivityValMatchesLevel(fieldId, condVal)) {
                 condVal = '';
             }
+            var cacheKey = typeof window.getConductivityPlantStorageKey === 'function'
+                ? window.getConductivityPlantStorageKey(fieldId)
+                : fieldId;
+            /* Incoming vuoto: non cancellare cache/backup locali (race pannello vuoto / payload svuotato per errore). */
+            if (!condVal && !window.__suppressConductivityPlantFallback && !window.__userResetInProgress) {
+                var kept = '';
+                if (window.__cloudPlantCache && window.__cloudPlantCache[cacheKey] != null) {
+                    kept = String(window.__cloudPlantCache[cacheKey]).trim();
+                }
+                if (!kept && typeof window.__readPlantBackupLocal === 'function') {
+                    var bk = window.__readPlantBackupLocal();
+                    if (bk && bk[cacheKey] != null) kept = String(bk[cacheKey]).trim();
+                }
+                if (kept && !(window.__conductivityValMatchesLevel
+                    && window.__conductivityValMatchesLevel(fieldId, kept))) {
+                    condVal = kept;
+                }
+            }
             var inputs = typeof window.queryConducibilitaDomInputs === 'function'
                 ? window.queryConducibilitaDomInputs(fieldId)
                 : [];
@@ -16574,11 +16621,10 @@ window.updateStoricoButton = async function() {
                 el.value = condVal;
             });
             if (window.__cloudPlantCache) {
-                var cacheKey = typeof window.getConductivityPlantStorageKey === 'function'
-                    ? window.getConductivityPlantStorageKey(fieldId)
-                    : fieldId;
                 if (condVal) window.__cloudPlantCache[cacheKey] = condVal;
-                else delete window.__cloudPlantCache[cacheKey];
+                else if (window.__suppressConductivityPlantFallback || window.__userResetInProgress) {
+                    delete window.__cloudPlantCache[cacheKey];
+                }
             }
         };
 
@@ -16770,7 +16816,7 @@ window.updateStoricoButton = async function() {
                 : '';
         };
 
-        /** Valore conducibilità per backup plant: non azzera TK9000/TK9201 se il pannello non è montato. */
+        /** Valore conducibilità per backup plant: non azzerare se pannello vuoto ma cache/backup ancora pieni (race hydrate). */
         window.__resolveConductivityKeyForPlantPayload = function (fieldId, localBackup) {
             if (!fieldId) return '';
             var key = typeof window.getConductivityPlantStorageKey === 'function'
@@ -16783,27 +16829,41 @@ window.updateStoricoButton = async function() {
             }
             if (valDom) return valDom;
 
+            if (window.__suppressConductivityPlantFallback) {
+                return '';
+            }
+
+            var cached = '';
+            if (window.__cloudPlantCache && window.__cloudPlantCache[key] != null) {
+                cached = String(window.__cloudPlantCache[key]).trim();
+            }
+            var backupVal = '';
+            if (localBackup && localBackup[key] != null) {
+                backupVal = String(localBackup[key]).trim();
+            }
+
             var condInputs = typeof window.queryConducibilitaDomInputs === 'function'
                 ? window.queryConducibilitaDomInputs(fieldId) : [];
             var panelMounted = condInputs.length > 0;
             var allEmpty = !condInputs.some(function (el) {
                 return el && el.value != null && String(el.value).trim() !== '';
             });
-            // Pannello montato e vuoto = cancellazione reale (anche dopo RESET TOTALE): non ripristinare da backup/cache.
+
+            /* Pannello montato vuoto: cancellazione solo se utente ha appena editato (cache già vuota) o reset. */
             if (panelMounted && allEmpty) {
-                return '';
-            }
-            if (window.__suppressConductivityPlantFallback) {
+                var editMs = window.__plantFieldEditMs
+                    && (window.__plantFieldEditMs[key] || window.__plantFieldEditMs[fieldId]);
+                var recentEdit = editMs && (Date.now() - Number(editMs)) < 120000;
+                if (recentEdit && !cached) {
+                    return '';
+                }
+                if (cached) return cached;
+                if (backupVal) return backupVal;
                 return '';
             }
 
-            if (localBackup && localBackup[key] != null && String(localBackup[key]).trim() !== '') {
-                return String(localBackup[key]).trim();
-            }
-            if (window.__cloudPlantCache && window.__cloudPlantCache[key] != null) {
-                var cached = String(window.__cloudPlantCache[key]).trim();
-                if (cached) return cached;
-            }
+            if (backupVal) return backupVal;
+            if (cached) return cached;
             return '';
         };
 
@@ -53944,7 +54004,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=409')
+                navigator.serviceWorker.register('./sw.js?v=410')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();

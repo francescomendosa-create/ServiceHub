@@ -1049,7 +1049,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.10.06-cond-persist-local';
+        window.SERVICEHUB_BUILD = '2026.10.06-capoturno-copy-osmosi';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -21657,16 +21657,55 @@ window.updateStoricoButton = async function() {
             return portata ? ('in marcia ' + portata + ' mch') : 'in marcia';
         };
 
+        /** Capoturno: per ogni osmosi A/B/C solo destinazione (pozzi|demi) o ferma — mai il testo report aggregato. */
         window.readCapoturnoOsmosiValue = function (unit) {
-            if (typeof window.readSituazioneGiornalieraOsmosiUnitValue === 'function') {
-                var v = window.readSituazioneGiornalieraOsmosiUnitValue(unit);
-                if (v) return v;
+            var u = String(unit || '').trim().toUpperCase();
+            if (!u) return 'ferma';
+            var normList = function (arr) {
+                return typeof window.__normalizeOsmosiUnitsList === 'function'
+                    ? window.__normalizeOsmosiUnitsList(arr || [])
+                    : (arr || []).map(function (x) { return String(x || '').trim().toUpperCase(); }).filter(Boolean);
+            };
+            var inList = function (arr) {
+                return normList(arr).indexOf(u) >= 0;
+            };
+            var meta = typeof window.__getOsmosiMetaObjectFromDom === 'function'
+                ? window.__getOsmosiMetaObjectFromDom() : null;
+            if (meta) {
+                if (inList(meta.pozzi)) return 'pozzi';
+                if (inList(meta.demi)) return 'demi';
             }
-            var units = typeof window.__getOsmosiUnitsFromDom === 'function' ? window.__getOsmosiUnitsFromDom() : [];
-            if (units.indexOf(unit) < 0) return 'ferma';
-            var inp = document.getElementById('inp-osmosi');
-            var report = inp ? String(inp.getAttribute('data-report-value') || inp.value || '').trim() : '';
-            return report || 'marcia';
+            var inp = typeof window.__resolveOsmosiInput === 'function'
+                ? window.__resolveOsmosiInput()
+                : document.getElementById('inp-osmosi');
+            var report = inp
+                ? String(inp.getAttribute('data-report-value') || inp.value || '').trim().toUpperCase()
+                : '';
+            if (report) {
+                var destFromSeg = function (seg) {
+                    var m = String(seg || '').trim().match(/^(.+?)\s*(?:=|→|->|\s)\s*(DEMI|POZZI)\s*$/i);
+                    if (!m) return '';
+                    var unitsPart = String(m[1] || '').toUpperCase();
+                    if (unitsPart.indexOf('TUTTE') >= 0 || unitsPart.split(/[\/,\s]+/).indexOf(u) >= 0) {
+                        return String(m[2] || '').toLowerCase();
+                    }
+                    return '';
+                };
+                if (/^TUTTE\s+A\s+POZZI$/.test(report)) return 'pozzi';
+                if (/^TUTTE\s+A\s+DEMI$/.test(report)) return 'demi';
+                if (report === 'POZZI') return 'pozzi';
+                if (report === 'DEMI') return 'demi';
+                var segs = report.replace(/<br\s*\/?>/gi, ',').split(',');
+                for (var i = 0; i < segs.length; i++) {
+                    var d = destFromSeg(segs[i]);
+                    if (d) return d;
+                }
+            }
+            var selected = typeof window.__getOsmosiUnitsFromDom === 'function'
+                ? normList(window.__getOsmosiUnitsFromDom()) : [];
+            if (selected.indexOf(u) < 0) return 'ferma';
+            /* Selezionata ma senza destinazione nota → ferma (non ripetere il testo report). */
+            return 'ferma';
         };
 
         window.formatCapoturnoRowValue = function (row) {
@@ -21733,7 +21772,9 @@ window.updateStoricoButton = async function() {
         window.buildCapoturnoLombardoLines = function () {
             return (window.CAPOTURNO_LOMBARDO_ROWS || []).map(function (row) {
                 var val = window.formatCapoturnoRowValue(row);
-                return { label: row.label, value: val, line: row.label + ': ' + (val || '—') };
+                var safeVal = val || '—';
+                /* Tab tra sigla e valore: copia/incolla resta sulla stessa riga (niente elenco verticale). */
+                return { label: row.label, value: safeVal, line: row.label + '\t' + safeVal };
             });
         };
 
@@ -21741,15 +21782,17 @@ window.updateStoricoButton = async function() {
             opts = opts || {};
             var dateStr = window.formatLetturaDateIt(new Date());
             var lines = window.buildCapoturnoLombardoLines();
+            /* Una sola riga di testo per voce (sigla + tab + valore): in Word/WhatsApp l’incolla resta affiancato. */
             var rowsHtml = lines.map(function (item) {
-                return '<tr><td class="ct-lbl">' + String(item.label).replace(/</g, '&lt;') + '</td>' +
-                    '<td class="ct-val">' + String(item.value || '—').replace(/</g, '&lt;') + '</td></tr>';
+                var lbl = String(item.label).replace(/</g, '&lt;');
+                var val = String(item.value || '—').replace(/</g, '&lt;');
+                return '<p class="ct-row"><b class="ct-lbl">' + lbl + '</b>\t<span class="ct-val">' + val + '</span></p>';
             }).join('');
             var previewCls = opts.interactive ? ' lettura-doc--capoturno-preview' : '';
             return '<div class="lettura-doc lettura-doc--capoturno-lombardo' + previewCls + '" id="lettura-doc-print-root">' +
                 '<div class="ct-header"><div class="ct-title">CAPOTURNO LOMBARDO</div>' +
                 '<div class="ct-date">' + dateStr + '</div></div>' +
-                '<table class="ct-table" cellspacing="0" cellpadding="0">' + rowsHtml + '</table></div>';
+                '<div class="ct-list">' + rowsHtml + '</div></div>';
         };
 
         window.LETTURE_CAPOTURNO_DOC_CSS =
@@ -21757,11 +21800,14 @@ window.updateStoricoButton = async function() {
             '.ct-header{display:flex;justify-content:space-between;align-items:baseline;margin:0 0 10pt;border-bottom:2px solid #4c1d95;padding-bottom:6pt}' +
             '.ct-title{font-size:14pt;font-weight:800;letter-spacing:0.04em;color:#4c1d95}' +
             '.ct-date{font-size:10pt;font-weight:700;color:#334155}' +
-            '.ct-table{width:100%;border-collapse:collapse}' +
-            '.ct-table td{padding:3.5pt 4pt;border-bottom:1px solid #e2e8f0;vertical-align:top;font-size:11pt;line-height:1.25}' +
-            '.ct-lbl{font-weight:800;white-space:nowrap;width:38%;color:#0f172a}' +
+            '.ct-list{width:100%}' +
+            '.ct-row{margin:0;padding:3.5pt 0;border-bottom:1px solid #e2e8f0;font-size:11pt;line-height:1.35;' +
+            'white-space:pre-wrap;tab-stops:left 2.15in}' +
+            '.ct-lbl{font-weight:800;color:#0f172a}' +
             '.ct-val{font-weight:600;color:#1e293b}' +
-            '.lettura-doc--capoturno-preview .ct-table td{padding:5px 6px}' +
+            '.lettura-doc--capoturno-preview .ct-row{padding:5px 0;display:flex;justify-content:space-between;gap:12px;white-space:normal}' +
+            '.lettura-doc--capoturno-preview .ct-lbl{flex:0 0 38%;white-space:nowrap}' +
+            '.lettura-doc--capoturno-preview .ct-val{flex:1 1 auto;text-align:left}' +
             '@media print{.lettura-doc--capoturno-lombardo{-webkit-print-color-adjust:exact;print-color-adjust:exact}}';
 
         window.buildLetturaCapoturnoLombardoShareDocument = function () {
@@ -49863,7 +49909,7 @@ window.convertToHtml = async () => {
             padding: 8px 6px 16px;
             background: #e2e8f0;
         }
-        .letture-doc--capoturno-lombardo {
+        .lettura-doc--capoturno-lombardo {
             background: #fff; color: #000; font-family: Arial, Helvetica, sans-serif;
             padding: 14px 16px; max-width: 560px; margin: 0 auto; font-size: 14px;
             border-radius: 12px; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
@@ -49876,14 +49922,15 @@ window.convertToHtml = async () => {
             font-size: 16px; font-weight: 800; letter-spacing: 0.04em; color: #4c1d95;
         }
         .lettura-doc--capoturno-lombardo .ct-date { font-size: 12px; font-weight: 700; color: #334155; }
-        .lettura-doc--capoturno-lombardo .ct-table { width: 100%; border-collapse: collapse; }
-        .lettura-doc--capoturno-lombardo .ct-table td {
-            padding: 6px 4px; border-bottom: 1px solid #e2e8f0; vertical-align: top; line-height: 1.3;
+        .lettura-doc--capoturno-lombardo .ct-list { width: 100%; }
+        .lettura-doc--capoturno-lombardo .ct-row {
+            margin: 0; padding: 6px 0; border-bottom: 1px solid #e2e8f0;
+            line-height: 1.35; display: flex; justify-content: space-between; gap: 12px;
         }
         .lettura-doc--capoturno-lombardo .ct-lbl {
-            font-weight: 800; white-space: nowrap; width: 38%; color: #0f172a;
+            font-weight: 800; color: #0f172a; flex: 0 0 38%; white-space: nowrap;
         }
-        .lettura-doc--capoturno-lombardo .ct-val { font-weight: 600; color: #1e293b; }
+        .lettura-doc--capoturno-lombardo .ct-val { font-weight: 600; color: #1e293b; flex: 1 1 auto; }
         .letture-doc-sheet--situazione .letture-doc-body,
         .letture-doc-sheet--capoturno .letture-doc-body {
             flex: 1 1 auto;
@@ -54004,7 +54051,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=410')
+                navigator.serviceWorker.register('./sw.js?v=411')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();

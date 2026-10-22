@@ -1049,7 +1049,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.10.06-capoturno-copy-osmosi';
+        window.SERVICEHUB_BUILD = '2026.10.06-capoturno-sed-ab';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -21556,8 +21556,7 @@ window.updateStoricoButton = async function() {
             { key: 'k10500b', label: 'K10500/B', kind: 'status', statusId: 't105B' },
             { key: 'k10600', label: 'K 10600', kind: 'status', statusId: 'tmk10600' },
             { key: 'k10500a', label: 'K 10500/A', kind: 'status', statusId: 't105A' },
-            { key: 'sed-a', label: 'Sediflottatori A', kind: 'sed', unit: 'A' },
-            { key: 'sed-b', label: 'Sediflottatore B', kind: 'sed', unit: 'B' },
+            { key: 'sed', label: 'Sediflottatore', kind: 'sed-group' },
             { key: 'wwt', label: 'WWT', kind: 'wwt' },
             { key: 'osmosi-a', label: 'Osmosi A', kind: 'osmosi', unit: 'A' },
             { key: 'osmosi-b', label: 'Osmosi B', kind: 'osmosi', unit: 'B' },
@@ -21636,7 +21635,7 @@ window.updateStoricoButton = async function() {
             return on.length === 1 ? on[0] : on.join(', ');
         };
 
-        window.readCapoturnoSedValue = function (unit) {
+        window.readCapoturnoSedState = function () {
             var asset = typeof window.getWwtAmbAssettoData === 'function' ? window.getWwtAmbAssettoData() : null;
             var sed = asset && asset.sedLabel ? String(asset.sedLabel) : '';
             var portata = asset && asset.portata ? String(asset.portata).trim() : '';
@@ -21644,17 +21643,45 @@ window.updateStoricoButton = async function() {
             var vwtLabel = document.getElementById('vwt-label-text');
             if (vwtLabel) sel = String(vwtLabel.getAttribute('data-vwt-selection') || '').toUpperCase();
             var sedUp = (sel || sed).toUpperCase().replace(/\s+/g, '');
-            var u = String(unit || '').toUpperCase();
-            var active = false;
-            if (u === 'A') {
-                active = /A\/B|SERIE|A-11005|SEDIFLOTTATOREA|^A$|SEDA/.test(sedUp)
-                    || (sedUp.indexOf('A') >= 0 && sedUp.indexOf('B') < 0 && sedUp !== 'WWT');
-            } else if (u === 'B') {
-                active = /A\/B|SERIE|SEDIFLOTTATOREB|SEDB/.test(sedUp)
-                    || (sedUp.indexOf('B') >= 0 && sedUp !== 'WWT');
+            var both = /A\/B|A\+B|AEB|SERIE|AB\b/.test(sedUp);
+            var activeA = both
+                || /A-11005|SEDIFLOTTATOREA|^A$|SEDA/.test(sedUp)
+                || (sedUp.indexOf('A') >= 0 && sedUp.indexOf('B') < 0 && sedUp !== 'WWT');
+            var activeB = both
+                || /SEDIFLOTTATOREB|SEDB/.test(sedUp)
+                || (sedUp.indexOf('B') >= 0 && !both && sedUp !== 'WWT');
+            if (!both && /SEDIFLOTTATOREA/.test(sedUp) && !/SEDIFLOTTATOREB/.test(sedUp)) {
+                activeA = true;
+                activeB = false;
             }
+            if (!both && /SEDIFLOTTATOREB/.test(sedUp) && !/SEDIFLOTTATOREA/.test(sedUp) && !/A\/B|SERIE/.test(sedUp)) {
+                activeA = false;
+                activeB = true;
+            }
+            return { activeA: !!activeA, activeB: !!activeB, portata: portata };
+        };
+
+        window.readCapoturnoSedValue = function (unit) {
+            var st = typeof window.readCapoturnoSedState === 'function'
+                ? window.readCapoturnoSedState() : { activeA: false, activeB: false, portata: '' };
+            var u = String(unit || '').toUpperCase();
+            var active = (u === 'A' && st.activeA) || (u === 'B' && st.activeB);
             if (!active) return 'fermo';
-            return portata ? ('in marcia ' + portata + ' mch') : 'in marcia';
+            return st.portata ? ('in marcia ' + st.portata + ' mch') : 'in marcia';
+        };
+
+        /** Righe Capoturno sed: A+B insieme → una sola voce; altrimenti A e B separate (marcia/fermo). */
+        window.buildCapoturnoSedLines = function () {
+            var st = typeof window.readCapoturnoSedState === 'function'
+                ? window.readCapoturnoSedState() : { activeA: false, activeB: false, portata: '' };
+            var marciaTxt = st.portata ? ('in marcia ' + st.portata + ' mch') : 'in marcia';
+            if (st.activeA && st.activeB) {
+                return [{ label: 'Sediflottatore A e B', value: marciaTxt }];
+            }
+            return [
+                { label: 'Sediflottatore A', value: st.activeA ? marciaTxt : 'fermo' },
+                { label: 'Sediflottatore B', value: st.activeB ? marciaTxt : 'fermo' }
+            ];
         };
 
         /** Capoturno: per ogni osmosi A/B/C solo destinazione (pozzi|demi) o ferma — mai il testo report aggregato. */
@@ -21737,6 +21764,14 @@ window.updateStoricoButton = async function() {
             }
             if (kind === 'pozzi') return window.readCapoturnoPozziValue();
             if (kind === 'sed') return window.readCapoturnoSedValue(row.unit);
+            if (kind === 'sed-group') {
+                var stg = typeof window.readCapoturnoSedState === 'function'
+                    ? window.readCapoturnoSedState() : null;
+                if (stg && stg.activeA && stg.activeB) {
+                    return stg.portata ? ('in marcia ' + stg.portata + ' mch') : 'in marcia';
+                }
+                return '';
+            }
             if (kind === 'wwt') {
                 var wwt = typeof window.readSituazioneGiornalieraVwtValue === 'function'
                     ? window.readSituazioneGiornalieraVwtValue() : '';
@@ -21770,12 +21805,23 @@ window.updateStoricoButton = async function() {
         };
 
         window.buildCapoturnoLombardoLines = function () {
-            return (window.CAPOTURNO_LOMBARDO_ROWS || []).map(function (row) {
+            var out = [];
+            (window.CAPOTURNO_LOMBARDO_ROWS || []).forEach(function (row) {
+                if (row && row.kind === 'sed-group') {
+                    var sedLines = typeof window.buildCapoturnoSedLines === 'function'
+                        ? window.buildCapoturnoSedLines() : [];
+                    sedLines.forEach(function (item) {
+                        var sv = item.value || '—';
+                        out.push({ label: item.label, value: sv, line: item.label + '\t' + sv });
+                    });
+                    return;
+                }
                 var val = window.formatCapoturnoRowValue(row);
                 var safeVal = val || '—';
                 /* Tab tra sigla e valore: copia/incolla resta sulla stessa riga (niente elenco verticale). */
-                return { label: row.label, value: safeVal, line: row.label + '\t' + safeVal };
+                out.push({ label: row.label, value: safeVal, line: row.label + '\t' + safeVal });
             });
+            return out;
         };
 
         window.buildLetturaCapoturnoLombardoHtml = function (opts) {
@@ -54051,7 +54097,7 @@ window.convertToHtml = async () => {
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=411')
+                navigator.serviceWorker.register('./sw.js?v=412')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();

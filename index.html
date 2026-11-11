@@ -1086,7 +1086,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.11.11-restore-schede-osmosi-v1';
+        window.SERVICEHUB_BUILD = '2026.11.12-osmosi-label-text-fix';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -14604,13 +14604,36 @@ window.updateStoricoButton = async function() {
 
         window.__sanitizeOsmosiLabelDom = function () {
             const el = document.getElementById('osmosi-label-text');
+            const inp = window.__resolveOsmosiInput && window.__resolveOsmosiInput();
+            if (inp && inp.value && typeof window.__normalizeOsmosiInterfaceDisplay === 'function') {
+                const cleaned = window.__normalizeOsmosiInterfaceDisplay(inp.value);
+                if (cleaned !== String(inp.value || '').trim()) {
+                    inp.value = cleaned;
+                    if (typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(inp);
+                }
+                /* Valore corrotto tipo "LABEL TEXT â€¦ POZZI" â†’ vuoto se non resta nulla di valido. */
+                if (/\bLABEL\b/i.test(inp.value) || /\bTEXT\b/i.test(inp.value)) {
+                    inp.value = window.__normalizeOsmosiInterfaceDisplay(inp.value);
+                    if (typeof adjustOsmosiFontSize === 'function') adjustOsmosiFontSize(inp);
+                }
+            }
             if (!el) return;
             let units = [];
             if (typeof window.__parseOsmosiUnitsFromSelectedAttr === 'function') {
                 units = units.concat(window.__parseOsmosiUnitsFromSelectedAttr(el.getAttribute('data-osmosi-selected')));
             }
+            if (inp && typeof window.__parseOsmosiUnitsFromSelectedAttr === 'function') {
+                units = units.concat(window.__parseOsmosiUnitsFromSelectedAttr(inp.getAttribute('data-osmosi-selected')));
+            }
             if (typeof window.__parseOsmosiUnitsFromLabel === 'function') {
                 units = units.concat(window.__parseOsmosiUnitsFromLabel());
+            }
+            if (inp && inp.value && typeof window.__parseOsmosiUnitsFromInterfaceValue === 'function') {
+                units = units.concat(window.__parseOsmosiUnitsFromInterfaceValue(inp.value, {
+                    metaRaw: inp.getAttribute('data-osmosi-meta'),
+                    selectedRaw: inp.getAttribute('data-osmosi-selected'),
+                    reportRaw: inp.getAttribute('data-report-value')
+                }));
             }
             units = window.__normalizeOsmosiUnitsList(units);
             if (units.length) {
@@ -15599,14 +15622,12 @@ window.updateStoricoButton = async function() {
                 return sortJoin(part.split('/').map(function (u) { return u.trim(); }).filter(Boolean));
             }
             const compact = part.replace(/\s+/g, '');
-            if (/^[A-Z]{2,}$/.test(compact)) {
+            /* Solo gruppi A/B/C (es. AB, ABC). Mai spezzare parole tipo LABEL/TEXT. */
+            if (/^[ABC]{1,3}$/.test(compact)) {
                 return sortJoin(compact.split(''));
             }
-            const tokens = part.split(/\s+/).filter(Boolean);
-            if (tokens.length > 1) {
-                return sortJoin(tokens);
-            }
-            return part;
+            const tokens = part.split(/[\s+]+/).filter(Boolean);
+            return sortJoin(tokens);
         };
 
         window.__buildOsmosiInterfaceDisplay = function (demiUnits, pozziUnits) {
@@ -15634,36 +15655,62 @@ window.updateStoricoButton = async function() {
             if (!s) return '';
 
             s = s
+                .replace(/<[^>]*>/g, ' ')
                 .replace(/\(\s*DEMI\s*\)/g, ' DEMI')
                 .replace(/\(\s*POZZI\s*\)/g, ' POZZI')
                 .replace(/\s+/g, ' ')
                 .trim();
 
+            /* Scarta residui corretti da label HTML / id (label text, osmosi-label-text, ecc.). */
+            if (/\bLABEL\b/.test(s) || /\bTEXT\b/.test(s) || /OSMOSI-LABEL/.test(s)) {
+                s = s
+                    .replace(/\bOSMOSI-LABEL-TEXT\b/g, ' ')
+                    .replace(/\bLABEL-TEXT\b/g, ' ')
+                    .replace(/\bLABEL\b/g, ' ')
+                    .replace(/\bTEXT\b/g, ' ')
+                    .replace(/\bPOST\b/g, ' ')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+            }
+
+            if (!s) return '';
             if (s === 'TUTTE A DEMI' || s === 'TUTTE A POZZI' || s === 'DEMI' || s === 'POZZI') return s;
 
             const formatSegment = function (seg) {
                 const m = seg.trim().match(/^(.+?)\s+(DEMI|POZZI)$/);
-                if (!m) return seg.trim();
-                return window.__formatOsmosiUnitGroup(m[1]) + ' ' + m[2];
+                if (!m) {
+                    /* Segmento senza destinazione: tieni solo se e' gia' unita A/B/C. */
+                    const onlyUnits = window.__formatOsmosiUnitGroup(seg);
+                    return onlyUnits || '';
+                }
+                const units = window.__formatOsmosiUnitGroup(m[1]);
+                if (!units) return '';
+                return units + ' ' + m[2];
             };
 
+            let out;
             if (s.indexOf(',') >= 0) {
-                return s.split(',').map(formatSegment).join(', ');
+                out = s.split(',').map(formatSegment).filter(Boolean).join(', ');
+            } else {
+                const mixed = s.match(/^(.+?)\s+DEMI\s+(.+)\s+POZZI\s*$/);
+                if (mixed) {
+                    const demiPart = window.__formatOsmosiUnitGroup(mixed[1]);
+                    const pozziPart = window.__formatOsmosiUnitGroup(mixed[2]);
+                    const parts = [];
+                    if (demiPart) parts.push(demiPart + ' DEMI');
+                    if (pozziPart) parts.push(pozziPart + ' POZZI');
+                    out = parts.join(', ');
+                } else {
+                    const singleDest = s.match(/^(.+?)\s+(DEMI|POZZI)$/);
+                    if (singleDest) {
+                        const units = window.__formatOsmosiUnitGroup(singleDest[1]);
+                        out = units ? (units + ' ' + singleDest[2]) : '';
+                    } else {
+                        out = window.__formatOsmosiUnitGroup(s) || '';
+                    }
+                }
             }
-
-            const mixed = s.match(/^(.+?)\s+DEMI\s+(.+)\s+POZZI\s*$/);
-            if (mixed) {
-                const demiPart = window.__formatOsmosiUnitGroup(mixed[1]);
-                const pozziPart = window.__formatOsmosiUnitGroup(mixed[2]);
-                return demiPart + ' DEMI, ' + pozziPart + ' POZZI';
-            }
-
-            const singleDest = s.match(/^(.+?)\s+(DEMI|POZZI)$/);
-            if (singleDest) {
-                return window.__formatOsmosiUnitGroup(singleDest[1]) + ' ' + singleDest[2];
-            }
-
-            return s;
+            return out || '';
         };
 
         /** Report preview: niente tag HTML (es. &lt;br&gt;) — solo testo tipo "C DEMI, A POZZI". */

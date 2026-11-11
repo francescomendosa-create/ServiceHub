@@ -1063,7 +1063,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.11.11-force-upd-ios';
+        window.SERVICEHUB_BUILD = '2026.11.11-bd-toggle-fix';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -5694,6 +5694,9 @@ window.colorPreviewNumber = function(tankName, value) {
             } else {
                 d = window.__stripRapportinoKeysFromPlantPayload(d);
             }
+            if (typeof window.canonicalizeBluedownStatusInPayload === 'function') {
+                d = window.canonicalizeBluedownStatusInPayload(d) || d;
+            }
             if (typeof window.__mergeOsmosiFieldsFromSources === 'function' && opts.skipBackupMerge) {
                 d = window.__mergeOsmosiFieldsFromSources(d);
             }
@@ -6020,11 +6023,27 @@ window.colorPreviewNumber = function(tankName, value) {
             }
             document.querySelectorAll('.status-cell-btn, .status-header, .vwt-label-dynamic, .osmosi-label-dynamic').forEach(function(btn) {
                 if (btn.id && btn.id !== 'numpad-tank-btn') {
-                    const payload = {
-                        text: btn.innerHTML,
-                        class: btn.className,
-                        style: btn.getAttribute('style') || ''
-                    };
+                    /* Skip small BD status (t105A…): solo header canonico. */
+                    if (btn.classList.contains('bd-comp-status')) return;
+                    if ((window.BLOWDOWN_STATUS_TO_HEADER || {})[btn.id]) return;
+                    var payload;
+                    var bdComp = typeof window.getBluedownCompressorByAnyId === 'function'
+                        ? window.getBluedownCompressorByAnyId(btn.id) : null;
+                    if (bdComp && btn.classList.contains('status-header')) {
+                        var bdState = typeof window.readBluedownCompressorState === 'function'
+                            ? window.readBluedownCompressorState(btn) : 'FERMO';
+                        payload = {
+                            text: bdState,
+                            class: 'status-header compact ' + (bdState === 'MARCIA' ? 'bg-marcia' : 'bg-fermo'),
+                            style: ''
+                        };
+                    } else {
+                        payload = {
+                            text: btn.innerHTML,
+                            class: btn.className,
+                            style: btn.getAttribute('style') || ''
+                        };
+                    }
                     if (btn.id === 'vwt-label-text') {
                         payload.selection = btn.getAttribute('data-vwt-selection') || '';
                         payload.reportText = btn.getAttribute('data-report-value') ||
@@ -6062,6 +6081,9 @@ window.colorPreviewNumber = function(tankName, value) {
                     data[btn.id] = payload;
                 }
             });
+            if (typeof window.canonicalizeBluedownStatusInPayload === 'function') {
+                window.canonicalizeBluedownStatusInPayload(data);
+            }
             data.tankStatuses = window.__ensureTankStatusesObject ? window.__ensureTankStatusesObject() : (window.tankStatuses || {});
             data.tankStatusManualAD = window.__ensureTankStatusManualADObject ? window.__ensureTankStatusManualADObject() : (window.tankStatusManualAD || {});
             if (typeof window.loadLetturaQuadStore === 'function') {
@@ -7369,18 +7391,16 @@ window.colorPreviewNumber = function(tankName, value) {
         window.__capturePlantStatusStateFromEl = function (el) {
             if (!el || !el.id) return null;
             var id = el.id;
-            var bdComp = (window.BLOWDOWN_COMPRESSORS || []).find(function (c) {
-                return c.headerId === id || c.statusId === id;
-            });
+            var bdComp = typeof window.getBluedownCompressorByAnyId === 'function'
+                ? window.getBluedownCompressorByAnyId(id)
+                : (window.BLOWDOWN_COMPRESSORS || []).find(function (c) {
+                    return c.headerId === id || c.statusId === id;
+                });
             if (bdComp) {
-                var st = 'FERMO';
-                if (el.classList && el.classList.contains('status-header')) {
-                    st = typeof window.readBluedownCompressorState === 'function'
-                        ? window.readBluedownCompressorState(el) : 'FERMO';
-                } else {
-                    st = String(el.textContent || '').trim().toUpperCase().indexOf('MARCIA') >= 0
-                        ? 'MARCIA' : 'FERMO';
-                }
+                var headerEl = document.getElementById(bdComp.headerId) || el;
+                var st = typeof window.readBluedownCompressorState === 'function'
+                    ? window.readBluedownCompressorState(headerEl)
+                    : (String(headerEl.textContent || '').trim().toUpperCase().indexOf('MARCIA') >= 0 ? 'MARCIA' : 'FERMO');
                 return {
                     text: st,
                     class: 'status-header compact ' + (st === 'MARCIA' ? 'bg-marcia' : 'bg-fermo'),
@@ -7465,28 +7485,39 @@ window.colorPreviewNumber = function(tankName, value) {
 
         window.__reconcilePlantStatusEditsToDom = function (payload) {
             if (!payload) return;
+            if (typeof window.canonicalizeBluedownStatusInPayload === 'function') {
+                window.canonicalizeBluedownStatusInPayload(payload);
+            }
             var edits = window.__getPlantStatusEditsFromPayload(payload);
             Object.keys(edits).forEach(function (id) {
                 var entry = edits[id];
                 if (!entry || entry.state == null) return;
-                var el = document.getElementById(id);
+                var targetId = typeof window.resolveBluedownStatusStorageId === 'function'
+                    ? window.resolveBluedownStatusStorageId(id) : id;
+                var el = document.getElementById(targetId);
                 if (!el) {
                     var hiddenModules = window.hiddenModules || [];
                     for (var hi = 0; hi < hiddenModules.length; hi++) {
                         var hiddenSection = document.getElementById(hiddenModules[hi]);
                         if (hiddenSection) {
-                            el = hiddenSection.querySelector('#' + id);
+                            el = hiddenSection.querySelector('#' + targetId);
                             if (el) break;
                         }
                     }
                 }
-                if (!el) el = document.querySelector('#' + id);
+                if (!el) el = document.querySelector('#' + targetId);
                 if (!el) return;
+                /* Mai applicare stato al <small id="t105A">: solo header. */
+                if (el.classList && el.classList.contains('bd-comp-status')) {
+                    var parentHeader = el.closest && el.closest('.status-header');
+                    if (parentHeader) el = parentHeader;
+                    else return;
+                }
                 var cur = window.__capturePlantStatusStateFromEl(el);
                 var want = entry.state;
                 var curMarcia = String(cur.text || '').trim().toUpperCase().indexOf('MARCIA') >= 0;
-                var wantMarcia = String(want.text || '').trim().toUpperCase().indexOf('MARCIA') >= 0;
-                if (curMarcia === wantMarcia && String(cur.class || '') === String(want.class || '')) return;
+                var wantMarcia = String(want.text || want || '').trim().toUpperCase().indexOf('MARCIA') >= 0;
+                if (curMarcia === wantMarcia) return;
                 if (typeof window.__applyPlantStatusFromStored === 'function') {
                     window.__applyPlantStatusFromStored(el, want, { force: true });
                 }
@@ -7494,23 +7525,42 @@ window.colorPreviewNumber = function(tankName, value) {
         };
 
         window.__shouldApplyRemotePlantStatusField = function (id, remoteData, localBackup) {
-            if (!window.__shouldApplyRemoteStatusValue(id)) return false;
+            var canonId = typeof window.resolveBluedownStatusStorageId === 'function'
+                ? window.resolveBluedownStatusStorageId(id) : id;
+            if (!window.__shouldApplyRemoteStatusValue(canonId)) return false;
+            if (canonId !== id && !window.__shouldApplyRemoteStatusValue(id)) return false;
             if (!localBackup && typeof window.__readPlantBackupLocal === 'function') {
                 localBackup = window.__readPlantBackupLocal();
             }
             if (!localBackup || !remoteData) return true;
             var rEdits = window.__getPlantStatusEditsFromPayload(remoteData);
             var lEdits = window.__getPlantStatusEditsFromPayload(localBackup);
-            var rt = window.__plantStatusEditTimestamp(rEdits, id);
-            var lt = window.__plantStatusEditTimestamp(lEdits, id);
+            var rt = Math.max(
+                window.__plantStatusEditTimestamp(rEdits, canonId),
+                window.__plantStatusEditTimestamp(rEdits, id)
+            );
+            var lt = Math.max(
+                window.__plantStatusEditTimestamp(lEdits, canonId),
+                window.__plantStatusEditTimestamp(lEdits, id)
+            );
             return !(lt > rt);
         };
 
         window.__touchPlantStatusEdit = function (id) {
             if (!id) return;
             var now = Date.now();
+            var canonId = typeof window.resolveBluedownStatusStorageId === 'function'
+                ? window.resolveBluedownStatusStorageId(id) : id;
             window.__plantFieldEditMs = window.__plantFieldEditMs || {};
+            window.__plantFieldEditMs[canonId] = now;
             window.__plantFieldEditMs[id] = now;
+            var bdComp = typeof window.getBluedownCompressorByAnyId === 'function'
+                ? window.getBluedownCompressorByAnyId(canonId) : null;
+            if (bdComp) {
+                window.__plantFieldEditMs[bdComp.headerId] = now;
+                window.__plantFieldEditMs[bdComp.statusId] = now;
+            }
+            id = canonId;
             var el = document.getElementById(id);
             if (!el) {
                 var hiddenModules = window.hiddenModules || [];
@@ -7527,11 +7577,19 @@ window.colorPreviewNumber = function(tankName, value) {
                 ? window.__capturePlantStatusStateFromEl(el) : null;
             window.__plantStatusEdits = window.__plantStatusEdits || {};
             window.__plantStatusEdits[id] = { t: now, state: state || { text: '', class: '', style: '' } };
+            if (bdComp) {
+                window.__plantStatusEdits[bdComp.headerId] = window.__plantStatusEdits[id];
+                try { delete window.__plantStatusEdits[bdComp.statusId]; } catch (_) {}
+            }
         };
 
         window.__shouldApplyRemoteStatusValue = function (id) {
             if (!id) return true;
-            var last = window.__plantFieldEditMs && window.__plantFieldEditMs[id];
+            var canonId = typeof window.resolveBluedownStatusStorageId === 'function'
+                ? window.resolveBluedownStatusStorageId(id) : id;
+            var last = window.__plantFieldEditMs && (
+                window.__plantFieldEditMs[canonId] || window.__plantFieldEditMs[id]
+            );
             if (last && Date.now() - last < window.__PLANT_REMOTE_GUARD_MS) return false;
             return true;
         };
@@ -7738,8 +7796,15 @@ window.colorPreviewNumber = function(tankName, value) {
                 state = val.trim().toUpperCase();
             }
             if (html) {
-                el.innerHTML = html;
-                if (className) el.className = className;
+                var bdFromHtml = typeof window.getBluedownCompressorByAnyId === 'function'
+                    ? window.getBluedownCompressorByAnyId(id) : null;
+                if (bdFromHtml && typeof window.setBluedownCompressorHeader === 'function') {
+                    var htmlState = /MARCIA/i.test(html) ? 'MARCIA' : 'FERMO';
+                    window.setBluedownCompressorHeader(bdFromHtml, htmlState);
+                } else {
+                    el.innerHTML = html;
+                    if (className) el.className = className;
+                }
             } else if (state) {
                 if (id === 'stat-f' && typeof window.applyFiltraStatoToEl === 'function') {
                     window.applyFiltraStatoToEl(el, state);
@@ -7749,12 +7814,26 @@ window.colorPreviewNumber = function(tankName, value) {
                     el.innerText = isMarcia ? 'MARCIA' : 'FERMO';
                     el.className = 'status-cell-btn ' + (isMarcia ? 'bg-marcia' : 'bg-fermo');
                 } else if (el.classList && el.classList.contains('status-header')) {
-                    const comp = (window.BLOWDOWN_COMPRESSORS || []).find(function (c) { return c.headerId === id; });
+                    const comp = typeof window.getBluedownCompressorByAnyId === 'function'
+                        ? window.getBluedownCompressorByAnyId(id)
+                        : (window.BLOWDOWN_COMPRESSORS || []).find(function (c) { return c.headerId === id; });
                     if (comp && typeof window.setBluedownCompressorHeader === 'function') {
                         window.setBluedownCompressorHeader(comp, isMarcia ? 'MARCIA' : 'FERMO');
                     } else {
                         el.innerText = isMarcia ? 'MARCIA' : 'FERMO';
                         if (className) el.className = className;
+                    }
+                } else if (el.classList && el.classList.contains('bd-comp-status')) {
+                    /* Mai scrivere MARCIA/FERMO sul small come se fosse un bottone. */
+                    var parentH = el.closest && el.closest('.status-header');
+                    var compFromSmall = typeof window.getBluedownCompressorByAnyId === 'function'
+                        ? window.getBluedownCompressorByAnyId(id) : null;
+                    if (compFromSmall && typeof window.setBluedownCompressorHeader === 'function') {
+                        window.setBluedownCompressorHeader(compFromSmall, isMarcia ? 'MARCIA' : 'FERMO');
+                    } else if (parentH) {
+                        return window.__applyPlantStatusFromStored(parentH, isMarcia ? 'MARCIA' : 'FERMO', opts);
+                    } else {
+                        el.textContent = isMarcia ? 'MARCIA' : 'FERMO';
                     }
                 } else {
                     el.innerText = isMarcia ? 'MARCIA' : 'FERMO';
@@ -15989,6 +16068,9 @@ window.updateStoricoButton = async function() {
 
         function applyData(data, opts) {
             if (!data) return;
+            if (typeof window.canonicalizeBluedownStatusInPayload === 'function') {
+                window.canonicalizeBluedownStatusInPayload(data);
+            }
             const forcePlant =
                 opts && opts.forceRemotePlant === true;
             const localStatusBackup = forcePlant
@@ -16075,8 +16157,9 @@ window.updateStoricoButton = async function() {
                     }
                     continue;
                 }
-                var bdStatusToHeader = { t105A: 'h105A', t105B: 'h105B', tmk10600: 'hmk10600' };
-                var plantKey = bdStatusToHeader[id] || id;
+                var plantKey = (typeof window.resolveBluedownStatusStorageId === 'function')
+                    ? window.resolveBluedownStatusStorageId(id)
+                    : (({ t105A: 'h105A', t105B: 'h105B', tmk10600: 'hmk10600' })[id] || id);
                 var condOverlap = window.CONDUCTIVITY_LEVEL_OVERLAP_FIELD_IDS || [];
                 if (window.CONDUCTIVITY_SHARED_FIELD_IDS && window.CONDUCTIVITY_SHARED_FIELD_IDS.indexOf(plantKey) >= 0
                     && condOverlap.indexOf(plantKey) < 0) {
@@ -27966,14 +28049,71 @@ window.updateStoricoButton = async function() {
             { toggleId: 'mk10600', headerId: 'hmk10600', statusId: 'tmk10600', sigla: 'MK 10600', inputs: ['vmk10600_fic', 'vmk10600_pc', 'vmk10600_lc'] }
         ];
         window.BLOWDOWN_MEASURE_LABELS = ['FIC', 'PIC', 'LIC'];
+        window.BLOWDOWN_STATUS_TO_HEADER = { t105A: 'h105A', t105B: 'h105B', tmk10600: 'hmk10600' };
+
+        /** Sempre header (h105A…): le chiavi t105A… legacy rompevano toggle + sync. */
+        window.resolveBluedownStatusStorageId = function (id) {
+            var raw = String(id || '');
+            if (!raw) return raw;
+            var map = window.BLOWDOWN_STATUS_TO_HEADER || {};
+            if (map[raw]) return map[raw];
+            var comp = (window.BLOWDOWN_COMPRESSORS || []).find(function (c) {
+                return c.headerId === raw || c.statusId === raw || c.toggleId === raw;
+            });
+            return comp ? comp.headerId : raw;
+        };
+
+        window.getBluedownCompressorByAnyId = function (id) {
+            var headerId = window.resolveBluedownStatusStorageId(id);
+            return (window.BLOWDOWN_COMPRESSORS || []).find(function (c) {
+                return c.headerId === headerId || c.statusId === id || c.toggleId === id;
+            }) || null;
+        };
+
+        window.canonicalizeBluedownStatusInPayload = function (data) {
+            if (!data || typeof data !== 'object') return data;
+            var map = window.BLOWDOWN_STATUS_TO_HEADER || {};
+            Object.keys(map).forEach(function (statusId) {
+                var headerId = map[statusId];
+                if (data[statusId] == null) return;
+                if (data[headerId] == null) data[headerId] = data[statusId];
+                try { delete data[statusId]; } catch (_) { data[statusId] = undefined; }
+            });
+            if (data.plantStatusEdits && typeof data.plantStatusEdits === 'object') {
+                var edits = data.plantStatusEdits;
+                Object.keys(map).forEach(function (statusId) {
+                    var headerId = map[statusId];
+                    if (!edits[statusId]) return;
+                    if (!edits[headerId] ||
+                        (Number(edits[statusId].t) || 0) >= (Number(edits[headerId].t) || 0)) {
+                        edits[headerId] = edits[statusId];
+                    }
+                    try { delete edits[statusId]; } catch (_) { edits[statusId] = undefined; }
+                });
+            }
+            if (data.plantFieldEditMs && typeof data.plantFieldEditMs === 'object') {
+                var ms = data.plantFieldEditMs;
+                Object.keys(map).forEach(function (statusId) {
+                    var headerId = map[statusId];
+                    if (ms[statusId] == null) return;
+                    var a = Number(ms[headerId]) || 0;
+                    var b = Number(ms[statusId]) || 0;
+                    if (b >= a) ms[headerId] = b;
+                    try { delete ms[statusId]; } catch (_) { ms[statusId] = undefined; }
+                });
+            }
+            return data;
+        };
 
         window.readBluedownCompressorState = function (headerEl) {
             if (!headerEl) return 'FERMO';
-            const statusEl = headerEl.querySelector('small[id^="t"]');
+            var statusEl = headerEl.querySelector && headerEl.querySelector('.bd-comp-status, small[id^="t"]');
             if (statusEl) {
-                return String(statusEl.textContent || '').trim().toUpperCase() === 'MARCIA' ? 'MARCIA' : 'FERMO';
+                return String(statusEl.textContent || '').trim().toUpperCase().indexOf('MARCIA') >= 0 ? 'MARCIA' : 'FERMO';
             }
-            return headerEl.classList.contains('bg-marcia') ? 'MARCIA' : 'FERMO';
+            if (headerEl.classList && headerEl.classList.contains('bg-marcia')) return 'MARCIA';
+            var raw = String(headerEl.textContent || '').trim().toUpperCase();
+            return raw.indexOf('MARCIA') >= 0 ? 'MARCIA' : 'FERMO';
         };
 
         window.setBluedownCompressorHeader = function (comp, state) {
@@ -27984,7 +28124,17 @@ window.updateStoricoButton = async function() {
             h.className = 'status-header compact ' + (st === 'MARCIA' ? 'bg-marcia' : 'bg-fermo');
             h.innerHTML = '<span class="bd-comp-name">' + comp.sigla + '</span>' +
                 '<small id="' + comp.statusId + '" class="bd-comp-status text-[10px] tracking-wide">' + st + '</small>';
+            h.setAttribute('role', 'button');
+            h.setAttribute('tabindex', '0');
             h.setAttribute('onclick', "window.toggleComp('" + comp.toggleId + "', '" + comp.sigla + "')");
+            if (!h.getAttribute('data-bd-touch-bound')) {
+                h.setAttribute('data-bd-touch-bound', '1');
+                h.addEventListener('touchend', function (ev) {
+                    if (ev && ev.cancelable) ev.preventDefault();
+                    if (ev) ev.stopPropagation();
+                    window.toggleComp(comp.toggleId, comp.sigla);
+                }, { passive: false });
+            }
         };
 
         window.syncBluedownBdLabels = function () {
@@ -28006,11 +28156,16 @@ window.updateStoricoButton = async function() {
             (window.BLOWDOWN_COMPRESSORS || []).forEach(function (comp) {
                 const h = document.getElementById(comp.headerId);
                 if (!h) return;
+                const stEl = document.getElementById(comp.statusId);
+                const stOk = !!(stEl && h.contains(stEl) && stEl.classList.contains('bd-comp-status'));
                 const raw = String(h.textContent || '').replace(/\s+/g, '');
-                const corrupted = /FERMOFERMO|MK10500[AB]FERMO/i.test(raw) ||
+                const corrupted = /FERMOFERMO|MARCIAMARCIA|MK10500[AB]FERMO/i.test(raw) ||
                     !h.querySelector('.bd-comp-name') ||
-                    !document.getElementById(comp.statusId);
+                    !stOk ||
+                    (stEl && stEl.classList.contains('status-header'));
                 if (corrupted) {
+                    window.setBluedownCompressorHeader(comp, window.readBluedownCompressorState(h));
+                } else if (!h.getAttribute('data-bd-touch-bound')) {
                     window.setBluedownCompressorHeader(comp, window.readBluedownCompressorState(h));
                 }
             });
@@ -37890,10 +38045,13 @@ window.updateStoricoButton = async function() {
         window.toggleComp = function (id, sigla) {
             const now = Date.now();
             window.__bdToggleGuard = window.__bdToggleGuard || {};
-            if (window.__bdToggleGuard[id] && (now - window.__bdToggleGuard[id]) < 280) return;
+            /* 450ms: assorbe touchend+click sintetico iOS senza “togglare due volte”. */
+            if (window.__bdToggleGuard[id] && (now - window.__bdToggleGuard[id]) < 450) return;
             window.__bdToggleGuard[id] = now;
 
-            const comp = (window.BLOWDOWN_COMPRESSORS || []).find(function (c) { return c.toggleId === id; });
+            const comp = typeof window.getBluedownCompressorByAnyId === 'function'
+                ? window.getBluedownCompressorByAnyId(id)
+                : (window.BLOWDOWN_COMPRESSORS || []).find(function (c) { return c.toggleId === id; });
             const statusId = comp ? comp.statusId : ('t' + id);
             const headerId = comp ? comp.headerId : ('h' + id);
 
@@ -37926,12 +38084,17 @@ window.updateStoricoButton = async function() {
             const nextState = curState === 'FERMO' ? 'MARCIA' : 'FERMO';
             const goingMarcia = nextState === 'MARCIA';
 
+            if (typeof window.__markPlantUiBusy === 'function') window.__markPlantUiBusy(900);
+
             if (comp && typeof window.setBluedownCompressorHeader === 'function') {
                 window.setBluedownCompressorHeader(comp, nextState);
                 h = findElement(headerId) || h;
             } else {
                 const t = findElement(statusId);
-                if (t) t.textContent = nextState;
+                if (t) {
+                    t.textContent = nextState;
+                    t.className = 'bd-comp-status text-[10px] tracking-wide';
+                }
                 h.className = 'status-header compact ' + (goingMarcia ? 'bg-marcia' : 'bg-fermo');
             }
 
@@ -37963,7 +38126,13 @@ window.updateStoricoButton = async function() {
             if (typeof window.__touchPlantStatusEdit === 'function') window.__touchPlantStatusEdit(headerId);
             window.__lastStatusTapTs = Date.now();
             if (typeof window.__noteUserUiTouch === 'function') window.__noteUserUiTouch();
-            /* Solo header: non salvare t105A/t105B come stato separato (rompeva il toggle). */
+            /* Solo header: elimina chiavi legacy t105A/t105B dal buffer locale. */
+            if (window.__plantStatusEdits) {
+                try {
+                    delete window.__plantStatusEdits[statusId];
+                    delete window.__plantStatusEdits['t' + id];
+                } catch (_) {}
+            }
             if (typeof window.__queuePlantStatusPersist === 'function') {
                 window.__queuePlantStatusPersist(headerId);
             }
@@ -48853,9 +49022,22 @@ window.convertToHtml = async () => {
         .bd-column { flex: 1 1 0; min-width: 0; border-right: 1px solid var(--border-main); display: flex; flex-direction: column; }
         #sec-bluedown .flex.flex-row.grow { display: flex; flex: 1 1 auto; min-width: 0; width: 100%; }
         #sec-bluedown .bd-column:last-child { border-right: none; }
-        .status-header.compact { font-size: 9px !important; padding: 6px 4px !important; line-height: 1.1 !important; gap: 2px; white-space: normal !important; word-break: keep-all !important; overflow: hidden; }
+        .status-header.compact {
+            font-size: 9px !important;
+            padding: 8px 4px !important;
+            line-height: 1.1 !important;
+            gap: 2px;
+            white-space: normal !important;
+            word-break: keep-all !important;
+            overflow: hidden;
+            min-height: 44px;
+            touch-action: manipulation;
+            -webkit-user-select: none;
+            user-select: none;
+            cursor: pointer;
+        }
         .status-header.compact .bd-comp-name,
-        .status-header.compact .bd-comp-status { display: block; width: 100%; line-height: 1.1; }
+        .status-header.compact .bd-comp-status { display: block; width: 100%; line-height: 1.1; pointer-events: none; }
         .status-header.compact .bd-comp-name { font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .status-header.compact .bd-comp-status { font-size: 10px; letter-spacing: 0.04em; }
         .bd-input-row { display: flex; align-items: stretch; flex: 1; border-bottom: 1px solid var(--border-main); }
@@ -54589,7 +54771,7 @@ window.convertToHtml = async () => {
             });
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=419')
+                navigator.serviceWorker.register('./sw.js?v=420')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();

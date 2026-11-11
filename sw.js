@@ -1,7 +1,7 @@
 // ServiceHub Service Worker — shell offline + aggiornamento quando c'è rete.
 // Network-first per HTML/JS (cache di riserva), cache-first per icone/CDN già visti.
 
-const CACHE_NAME = 'servicehub-shell-realtime-sync-v2-v418';
+const CACHE_NAME = 'servicehub-shell-realtime-sync-v2-v419';
 
 self.addEventListener('message', (event) => {
   if (event && event.data === 'SKIP_WAITING') self.skipWaiting();
@@ -51,7 +51,8 @@ function putInCache(req, res) {
 }
 
 function networkFirst(req, fallbackUrl) {
-  return fetch(req).then((res) => putInCache(req, res)).catch(() =>
+  /* no-store: su iOS altrimenti resta HTML/SW vecchi dalla HTTP cache di Safari. */
+  return fetch(req, { cache: 'no-store' }).then((res) => putInCache(req, res)).catch(() =>
     caches.match(req).then((cached) => {
       if (cached) return cached;
       if (fallbackUrl) return caches.match(fallbackUrl);

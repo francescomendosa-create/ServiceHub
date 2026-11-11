@@ -1063,7 +1063,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.11.11-land-mgmt-topfix';
+        window.SERVICEHUB_BUILD = '2026.11.11-force-upd-ios';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -54544,19 +54544,16 @@ window.convertToHtml = async () => {
                     window.__serviceHubMarkUpdateApplied();
                     return;
                 }
-                var pending = false;
-                try { pending = sessionStorage.getItem('sh_appupdate_pending') === '1'; } catch (_) {}
-                if (pending) {
-                    var retries = 0;
-                    try { retries = parseInt(sessionStorage.getItem('sh_appupdate_retries') || '0', 10); } catch (_) {}
-                    if (retries < 2) {
-                        try { sessionStorage.setItem('sh_appupdate_retries', String(retries + 1)); } catch (_) {}
-                        await window.applyAppUpdate();
-                        return;
-                    }
-                    try { sessionStorage.removeItem('sh_appupdate_retries'); } catch (_) {}
+                /* Aggiornamento automatico: su iPhone il popup spesso non basta / resta SW vecchio. */
+                try { sessionStorage.setItem('sh_pending_build', m[1]); } catch (_) {}
+                var retries = 0;
+                try { retries = parseInt(sessionStorage.getItem('sh_appupdate_retries') || '0', 10); } catch (_) {}
+                if (retries >= 4) {
+                    window.showAppUpdateModal(m[1]);
+                    return;
                 }
-                window.showAppUpdateModal(m[1]);
+                try { sessionStorage.setItem('sh_appupdate_retries', String(retries + 1)); } catch (_) {}
+                await window.applyAppUpdate();
             } catch (e) {
                 console.warn('[ServiceHub] check update:', e);
             }
@@ -54568,29 +54565,42 @@ window.convertToHtml = async () => {
                 const nw = reg.installing;
                 if (!nw) return;
                 nw.addEventListener('statechange', function() {
-                    if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+                    if (nw.state === 'installed') {
+                        if (nw !== navigator.serviceWorker.controller) {
+                            try { nw.postMessage('SKIP_WAITING'); } catch (_) {}
+                        }
                         window.checkForAppUpdateFromNetwork();
                     }
                 });
             });
-            setInterval(function() { reg.update(); }, 2 * 60 * 1000);
+            if (reg.waiting) {
+                try { reg.waiting.postMessage('SKIP_WAITING'); } catch (_) {}
+            }
+            setInterval(function() { reg.update(); }, 60 * 1000);
             window.checkForAppUpdateFromNetwork();
         };
 
         if ('serviceWorker' in navigator) {
+            var __shReloadingForSw = false;
+            navigator.serviceWorker.addEventListener('controllerchange', function () {
+                if (__shReloadingForSw) return;
+                __shReloadingForSw = true;
+                try { window.__serviceHubReloadFresh(); } catch (_) { location.reload(); }
+            });
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=417')
+                navigator.serviceWorker.register('./sw.js?v=419')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();
                         window.onSwRegistrationReady(reg);
                     })
                     .catch(function(err) { console.warn('[ServiceHub] SW fallito:', err); });
-                setTimeout(window.checkForAppUpdateFromNetwork, 1500);
+                setTimeout(window.checkForAppUpdateFromNetwork, 800);
+                setTimeout(window.checkForAppUpdateFromNetwork, 2500);
                 setInterval(function() {
                     if (document.visibilityState === 'visible') window.checkForAppUpdateFromNetwork();
-                }, 2 * 60 * 1000);
+                }, 60 * 1000);
             });
             document.addEventListener('visibilitychange', function() {
                 if (document.visibilityState === 'visible') {
@@ -54600,10 +54610,10 @@ window.convertToHtml = async () => {
             });
         } else {
             window.addEventListener('load', function() {
-                setTimeout(window.checkForAppUpdateFromNetwork, 1500);
+                setTimeout(window.checkForAppUpdateFromNetwork, 800);
                 setInterval(function() {
                     if (document.visibilityState === 'visible') window.checkForAppUpdateFromNetwork();
-                }, 2 * 60 * 1000);
+                }, 60 * 1000);
             });
         }
 

@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <!-- Viewport semplice: come i siti normali. La corona e la barra indirizzi
+       funzionano solo con scroll del DOCUMENTO, non di un div interno. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="disabled-adaptations" content="watch" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <title>Service Watch</title>
+  <meta name="theme-color" content="#307eb4" />
+  <meta name="application-name" content="Service Watch" />
+  <meta name="apple-mobile-web-app-title" content="Service Watch" />
+  <link rel="manifest" href="watch-manifest.json?v=sw15" />
+  <link rel="icon" type="image/png" href="sh-icon-192.png?v=sw14" id="sw-favicon" />
+  <link rel="apple-touch-icon" href="sh-touch.png?v=sw14" id="sw-touch-icon" />
+  <style>
+    :root {
+      --sw-bg-home: #1e5a82;
+      --sw-bg-panel: #0f172a;
+      --sw-tail-bg: #1e5a82;
+      --sw-scroll-top: 54px;
+      --sw-scroll-bottom: 112px;
+      --sw-ui-scale: 0.97;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html {
+      margin: 0;
+      padding: 0;
+      overflow-x: hidden;
+      -webkit-text-size-adjust: 100%;
+      text-size-adjust: 100%;
+    }
+    /* IMPORTANTE: niente overflow:hidden sul body — serve scroll nativo pagina */
+    body {
+      margin: 0;
+      padding: 0;
+      overflow-x: hidden;
+      background: var(--sw-tail-bg);
+      font-family: system-ui, -apple-system, sans-serif;
+      color: #fff;
+      -webkit-overflow-scrolling: touch;
+    }
+    body.sw-bg-home { --sw-tail-bg: var(--sw-bg-home); background: var(--sw-bg-home); }
+    body.sw-bg-panel { --sw-tail-bg: var(--sw-bg-panel); background: var(--sw-bg-panel); }
+
+    /* Home icona: solo icona centrata, zero spazio sopra/sotto */
+    body.sw-home-only .sw-scroll-above,
+    body.sw-home-only .sw-scroll-below {
+      display: none !important;
+      min-height: 0 !important;
+      padding: 0 !important;
+      margin: 0 !important;
+    }
+    body.sw-home-only #sw-page { min-height: 100dvh; }
+    body.sw-home-only #view-home {
+      padding: 0;
+      min-height: 100dvh;
+    }
+
+    #sw-page {
+      min-height: calc(100dvh + var(--sw-scroll-top) + var(--sw-scroll-bottom));
+      background: var(--sw-tail-bg);
+      zoom: var(--sw-ui-scale);
+    }
+    .sw-scroll-stage {
+      min-height: 100dvh;
+      background: var(--sw-tail-bg);
+    }
+    .sw-scroll-edge {
+      padding: 10px 8px;
+      text-align: center;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      line-height: 1.45;
+      pointer-events: none;
+      user-select: none;
+      background: var(--sw-tail-bg);
+    }
+    .sw-scroll-above {
+      min-height: var(--sw-scroll-top);
+      padding: 10px 8px 4px;
+      line-height: 1.2;
+      font-size: 8px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.55);
+    }
+    body.sw-bg-panel .sw-scroll-above { color: #64748b; }
+    .sw-scroll-below {
+      min-height: var(--sw-scroll-bottom);
+      color: rgba(255, 255, 255, 0.62);
+    }
+    body.sw-bg-panel .sw-scroll-below { color: #64748b; }
+
+    .sw-view { width: 100%; min-height: 100dvh; }
+    .sw-view--hidden { display: none !important; }
+    #view-home {
+      display: flex; align-items: center; justify-content: center;
+      padding: max(28px, 10vh) max(10px, 4vw) max(12px, 5vh);
+      cursor: pointer;
+      background: var(--sw-bg-home);
+    }
+    #sw-icon-canvas {
+      width: min(64vw, 64vh); height: min(64vw, 64vh);
+      border-radius: 22%; box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    }
+    button, .sw-chem-cell { touch-action: manipulation; }
+    .sw-panel {
+      display: flex; flex-direction: column;
+      min-height: 100dvh; background: var(--sw-bg-panel);
+    }
+    .sw-topbar {
+      display: flex; align-items: center; gap: 8px;
+      padding: max(10px, env(safe-area-inset-top, 0px)) 10px 8px;
+      background: #1e293b; border-bottom: 1px solid #334155;
+      flex-shrink: 0;
+    }
+    .sw-back {
+      border: none; background: #334155; color: #fff;
+      font-weight: 800; font-size: 10px; text-transform: uppercase;
+      padding: 8px 10px; border-radius: 8px; cursor: pointer;
+    }
+    .sw-top-title {
+      flex: 1; text-align: center; font-size: 12px; font-weight: 900;
+      letter-spacing: 0.08em; text-transform: uppercase;
+    }
+    #view-chemicals .sw-top-title {
+      font-size: clamp(13px, 5.5vmin, 16px);
+      letter-spacing: 0.08em;
+    }
+    .sw-top-spacer { width: 52px; }
+    .sw-menu-body, .sw-empty-body { flex: 1; padding: 12px 10px; }
+    .sw-chem-body {
+      flex: 0 0 auto;
+      padding: 8px 6px 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .sw-menu-hint {
+      margin: 0 0 12px; font-size: 9px; font-weight: 700;
+      text-align: center; color: #94a3b8; text-transform: uppercase;
+    }
+    #sw-menu-list { display: flex; flex-direction: column; gap: 10px; }
+    .sw-menu-btn {
+      width: 100%; border: none; border-radius: 14px;
+      padding: 18px 12px; font-size: 14px; font-weight: 900;
+      letter-spacing: 0.06em; text-transform: uppercase;
+      color: #fff; cursor: pointer;
+    }
+    .sw-menu-btn--chem {
+      background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+      border-bottom: 3px solid #4c1d95;
+      font-size: clamp(17px, 7.5vmin, 22px);
+      padding: 20px 12px;
+      letter-spacing: 0.1em;
+    }
+    .sw-menu-btn--cnt {
+      background: linear-gradient(135deg, #14b8a6, #0d9488);
+      border-bottom: 3px solid #115e59;
+      font-size: clamp(16px, 7vmin, 20px);
+      padding: 18px 12px;
+      letter-spacing: 0.08em;
+    }
+    .sw-menu-btn--com {
+      background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+      border-bottom: 3px solid #1e3a8a;
+      font-size: clamp(16px, 7vmin, 20px);
+      padding: 18px 12px;
+      letter-spacing: 0.08em;
+    }
+    .sw-menu-btn:active { filter: brightness(0.92); }
+    .sw-empty-msg {
+      text-align: center; font-size: 11px; font-weight: 700;
+      color: #94a3b8; line-height: 1.5; padding: 20px 8px;
+    }
+    .sw-chem-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+    }
+    .sw-chem-cell {
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; gap: 6px; min-height: 98px;
+      padding: 12px 8px; border: 2.5px solid #7c3aed; border-radius: 14px;
+      background: #2e1065; cursor: pointer;
+    }
+    .sw-chem-cell:active { filter: brightness(0.95); }
+    .sw-chem-lbl {
+      font-size: clamp(12px, 4.8vmin, 14px);
+      font-weight: 900; letter-spacing: 0.1em; color: #ddd6fe;
+    }
+    .sw-chem-val {
+      font-size: clamp(36px, 14vmin, 42px);
+      font-weight: 900; line-height: 1; color: #ede9fe; font-variant-numeric: tabular-nums;
+    }
+    .sw-chem-val--hp { font-size: clamp(40px, 15vmin, 46px); }
+    .sw-chem-reset {
+      width: 100%; border: none; border-radius: 14px;
+      padding: 16px 12px; min-height: 48px;
+      background: linear-gradient(180deg, #ef4444, #dc2626);
+      color: #fff;
+      font-size: clamp(14px, 6vmin, 18px);
+      font-weight: 900; letter-spacing: 0.1em;
+      text-transform: uppercase; cursor: pointer;
+      margin: 4px 0 0;
+      box-shadow: 0 4px 0 #991b1b, 0 2px 10px rgba(220, 38, 38, 0.45);
+    }
+    .sw-chem-reset:active {
+      filter: brightness(0.92);
+      transform: translateY(2px);
+      box-shadow: 0 2px 0 #991b1b, 0 1px 6px rgba(220, 38, 38, 0.35);
+    }
+    #view-contatori .sw-top-title {
+      font-size: clamp(13px, 5.5vmin, 16px);
+      letter-spacing: 0.08em;
+    }
+    .sw-cnt-body {
+      flex: 0 0 auto;
+      padding: 10px 8px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .sw-cnt-cell {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-height: 88px;
+      padding: 10px 8px;
+      border: 2px solid #0f766e;
+      border-radius: 12px;
+      background: #134e4a;
+      cursor: pointer;
+      width: 100%;
+      color: inherit;
+    }
+    .sw-cnt-cell:active { filter: brightness(0.95); }
+    .sw-cnt-lbl {
+      font-size: clamp(10px, 4vmin, 12px);
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      color: #99f6e4;
+      text-transform: uppercase;
+    }
+    .sw-cnt-val {
+      font-size: clamp(28px, 11vmin, 36px);
+      font-weight: 900;
+      line-height: 1;
+      color: #ecfdf5;
+      font-variant-numeric: tabular-nums;
+      min-height: 1.1em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
+    }
+    .sw-cnt-hint {
+      margin: 0;
+      font-size: 8px;
+      font-weight: 700;
+      text-align: center;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .sw-cnt-numpad {
+      position: fixed;
+      inset: 0;
+      z-index: 200;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      background: #0f172a;
+      padding: max(6px, env(safe-area-inset-top, 0px)) 5px max(6px, env(safe-area-inset-bottom, 0px));
+      zoom: 1;
+      touch-action: manipulation;
+    }
+    .sw-cnt-numpad.sw-view--hidden { display: none !important; }
+    .sw-cnt-numpad-header {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 2px 2px 4px;
+      position: relative;
+      z-index: 2;
+    }
+    .sw-cnt-numpad-header .sw-back {
+      padding: 7px 12px;
+      position: relative;
+      z-index: 2;
+    }
+    .sw-cnt-numpad-display-wrap {
+      flex-shrink: 0;
+      width: 100%;
+      padding: 0 2px 6px;
+    }
+    .sw-cnt-numpad-display {
+      width: 100%;
+      box-sizing: border-box;
+      text-align: center;
+      font-size: clamp(26px, 10.5vmin, 32px);
+      font-weight: 900;
+      font-variant-numeric: tabular-nums;
+      color: #ecfdf5;
+      padding: 8px 6px;
+      background: #134e4a;
+      border-radius: 10px;
+      border: 2px solid #0f766e;
+      line-height: 1.1;
+      white-space: nowrap;
+      overflow: hidden;
+      letter-spacing: 0.02em;
+    }
+    .sw-cnt-numpad-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 4px;
+      flex: 0 0 auto;
+      align-content: end;
+      padding: 0 1px 2px;
+    }
+    .sw-numpad-key {
+      border: none;
+      border-radius: 10px;
+      background: #1e293b;
+      color: #fff;
+      font-size: clamp(17px, 7vmin, 20px);
+      font-weight: 900;
+      min-height: 0;
+      height: clamp(32px, 12vmin, 38px);
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    .sw-numpad-key:active { filter: brightness(0.9); }
+    .sw-numpad-key--action {
+      background: #334155;
+      font-size: clamp(9px, 3.6vmin, 11px);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .sw-numpad-key--ok {
+      background: linear-gradient(180deg, #14b8a6, #0d9488);
+      color: #fff;
+    }
+    .sw-numpad-key--del { font-size: clamp(14px, 6vmin, 18px); }
+
+    /* Comunica — chat Gemini da Watch */
+    #view-comunica .sw-top-title {
+      font-size: clamp(13px, 5.5vmin, 16px);
+      letter-spacing: 0.08em;
+    }
+    .sw-comunica-body {
+      flex: 1;
+      min-height: 0;
+      padding: 8px 8px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .sw-comunica-log {
+      flex: 1;
+      min-height: 110px;
+      max-height: none;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      background: #052e16;
+      border: 2px solid #22c55e;
+      border-radius: 14px;
+      padding: 10px 8px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .sw-comunica-empty {
+      margin: 0;
+      font-size: 10px;
+      font-weight: 700;
+      color: #94a3b8;
+      text-align: center;
+      line-height: 1.45;
+      padding: 12px 4px;
+    }
+    .sw-comunica-last-label {
+      display: block;
+      font-size: 8px;
+      font-weight: 900;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #86efac;
+      text-align: center;
+      margin-bottom: 6px;
+    }
+    .sw-comunica-last-text {
+      margin: 0;
+      font-size: clamp(15px, 6.4vmin, 20px);
+      font-weight: 800;
+      line-height: 1.25;
+      color: #f0fdf4;
+      text-align: center;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .sw-comunica-status {
+      margin: 0;
+      font-size: 8px;
+      font-weight: 800;
+      text-align: center;
+      color: #93c5fd;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .sw-comunica-dictate {
+      width: 100%;
+      border: none;
+      border-radius: 14px;
+      padding: 16px 12px;
+      min-height: 48px;
+      background: linear-gradient(135deg, #2563eb, #1d4ed8);
+      color: #fff;
+      font-size: clamp(14px, 6vmin, 17px);
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+      border-bottom: 3px solid #1e3a8a;
+    }
+    .sw-comunica-dictate:active { filter: brightness(0.92); }
+    .sw-comunica-hint {
+      margin: 0;
+      font-size: 8px;
+      font-weight: 700;
+      text-align: center;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      line-height: 1.4;
+    }
+    #sw-comunica-input {
+      position: absolute;
+      left: -9999px;
+      width: 1px;
+      height: 1px;
+      opacity: 0.01;
+      border: 0;
+      padding: 0;
+      margin: 0;
+    }
+    .sw-comunica-confirm {
+      position: fixed;
+      inset: 0;
+      z-index: 220;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      background: rgba(2, 6, 23, 0.92);
+      padding: max(8px, env(safe-area-inset-top, 0px)) 8px max(10px, env(safe-area-inset-bottom, 0px));
+    }
+    .sw-comunica-confirm.sw-view--hidden { display: none !important; }
+    .sw-comunica-confirm-card {
+      background: #1e293b;
+      border: 2px solid #3b82f6;
+      border-radius: 14px;
+      padding: 10px 10px 12px;
+    }
+    .sw-comunica-confirm-title {
+      margin: 0 0 8px;
+      font-size: 9px;
+      font-weight: 900;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #93c5fd;
+      text-align: center;
+    }
+    .sw-comunica-preview {
+      min-height: 52px;
+      max-height: 28vh;
+      overflow-y: auto;
+      background: #0f172a;
+      border-radius: 10px;
+      padding: 10px;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.35;
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin-bottom: 10px;
+    }
+    .sw-comunica-confirm-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .sw-comunica-btn {
+      border: none;
+      border-radius: 12px;
+      padding: 14px 8px;
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #fff;
+      cursor: pointer;
+    }
+    .sw-comunica-btn--cancel { background: #475569; }
+    .sw-comunica-btn--send {
+      background: linear-gradient(180deg, #22c55e, #16a34a);
+      border-bottom: 3px solid #14532d;
+    }
+    .sw-comunica-btn:active { filter: brightness(0.92); }
+
+    @media (max-width: 220px), (max-height: 260px) {
+      :root { --sw-scroll-top: 44px; --sw-scroll-bottom: 92px; --sw-ui-scale: 0.96; }
+      .sw-chem-val { font-size: clamp(32px, 13vmin, 36px); }
+      .sw-chem-val--hp { font-size: clamp(36px, 14vmin, 40px); }
+      .sw-chem-cell { min-height: 86px; }
+      .sw-chem-reset { min-height: 44px; padding: 14px 10px; font-size: clamp(13px, 5.5vmin, 16px); }
+      .sw-menu-btn--chem { font-size: 16px; }
+      .sw-menu-btn--cnt { font-size: 15px; }
+      #view-chemicals .sw-top-title { font-size: 13px; }
+      #view-contatori .sw-top-title { font-size: 13px; }
+      .sw-cnt-cell { min-height: 80px; }
+      .sw-numpad-key { height: 30px; }
+    }
+  </style>
+</head>
+<body class="sw-bg-home sw-home-only">
+  <script>window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';</script>
+  <script>
+    (function () {
+      var BUILD = window.SERVICE_WATCH_BUILD || 'dev';
+      try {
+        var u = new URL(location.href);
+        if (u.searchParams.get('v') !== BUILD) {
+          u.searchParams.set('v', BUILD);
+          location.replace(u.toString());
+          return;
+        }
+      } catch (_) {}
+    })();
+  </script>
+  <div id="sw-page">
+    <p class="sw-scroll-edge sw-scroll-above" id="sw-scroll-above" aria-hidden="true">Service Watch</p>
+    <div class="sw-scroll-stage">
+      <section id="view-home" class="sw-view" aria-label="Service Watch home">
+        <canvas id="sw-icon-canvas" aria-hidden="true"></canvas>
+      </section>
+
+      <section id="view-menu" class="sw-view sw-view--hidden sw-panel" aria-label="Schede">
+        <div class="sw-topbar">
+          <button type="button" class="sw-back" id="sw-back-menu">Indietro</button>
+          <div class="sw-top-title">Schede</div>
+          <div class="sw-top-spacer"></div>
+        </div>
+        <div class="sw-menu-body">
+          <p class="sw-menu-hint">Tocca una scheda</p>
+          <div id="sw-menu-list"></div>
+          <p id="sw-menu-empty" class="sw-empty-msg sw-view--hidden">Nessuna scheda attiva.<br>Abilita Chemicals, Contatori o Comunica dalle impostazioni Watch sull'iPhone.</p>
+        </div>
+      </section>
+
+      <section id="view-empty" class="sw-view sw-view--hidden sw-panel" aria-label="Nessuna scheda">
+        <div class="sw-topbar">
+          <button type="button" class="sw-back" id="sw-back-empty">Indietro</button>
+          <div class="sw-top-title">Service Watch</div>
+          <div class="sw-top-spacer"></div>
+        </div>
+        <div class="sw-empty-body">
+          <p class="sw-empty-msg">Nessuna scheda attiva su Apple Watch.<br>Vai su ServiceHub → Impostazioni → Watch e abilita <strong>Chemicals</strong>, <strong>Contatori</strong> o <strong>Comunica</strong>.</p>
+        </div>
+      </section>
+
+      <section id="view-chemicals" class="sw-view sw-view--hidden sw-panel" aria-label="Chemicals">
+        <div class="sw-topbar">
+          <button type="button" class="sw-back" id="sw-back-chem">Indietro</button>
+          <div class="sw-top-title">Chemicals</div>
+          <div class="sw-top-spacer"></div>
+        </div>
+        <div class="sw-chem-body">
+          <div class="sw-chem-grid">
+            <button type="button" class="sw-chem-cell" id="sw-btn-pass" aria-label="Incrementa PASS">
+              <span class="sw-chem-lbl">PASS</span>
+              <span class="sw-chem-val" id="sw-chem-pass">0</span>
+            </button>
+            <button type="button" class="sw-chem-cell" id="sw-btn-hp" aria-label="Incrementa HP">
+              <span class="sw-chem-lbl">HP</span>
+              <span class="sw-chem-val sw-chem-val--hp" id="sw-chem-hp">0</span>
+            </button>
+          </div>
+          <button type="button" class="sw-chem-reset" id="sw-btn-reset">Reset</button>
+        </div>
+      </section>
+
+      <section id="view-contatori" class="sw-view sw-view--hidden sw-panel" aria-label="Contatori">
+        <div class="sw-topbar">
+          <button type="button" class="sw-back" id="sw-back-cnt">Indietro</button>
+          <div class="sw-top-title">Contatori</div>
+          <div class="sw-top-spacer"></div>
+        </div>
+        <div class="sw-cnt-body">
+          <p class="sw-cnt-hint">Tocca il valore per digitare</p>
+          <button type="button" class="sw-cnt-cell" id="sw-cnt-tk9000-btn" aria-label="Modifica contatore TK 9000">
+            <span class="sw-cnt-lbl">TK 9000</span>
+            <span class="sw-cnt-val" id="sw-cnt-tk9000-val">—</span>
+          </button>
+        </div>
+      </section>
+
+      <section id="view-comunica" class="sw-view sw-view--hidden sw-panel" aria-label="Comunica">
+        <div class="sw-topbar">
+          <button type="button" class="sw-back" id="sw-back-com">Indietro</button>
+          <div class="sw-top-title">Comunica</div>
+          <div class="sw-top-spacer"></div>
+        </div>
+        <div class="sw-comunica-body">
+          <div id="sw-comunica-log" class="sw-comunica-log" aria-live="polite"></div>
+          <p id="sw-comunica-status" class="sw-comunica-status sw-view--hidden"></p>
+          <button type="button" class="sw-comunica-dictate" id="sw-comunica-dictate">Dettare</button>
+          <p class="sw-comunica-hint">Tastiera Watch → microfono → Fine → Invio</p>
+          <input id="sw-comunica-input" type="text" enterkeyhint="done" autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true" aria-label="Detta comando Gemini" />
+        </div>
+      </section>
+    </div>
+
+    <p class="sw-scroll-edge sw-scroll-below" id="sw-scroll-below" aria-hidden="true">↓ Scorri in basso</p>
+  </div>
+
+  <div id="sw-cnt-numpad" class="sw-cnt-numpad sw-view--hidden" aria-label="Tastierino contatore">
+    <div class="sw-cnt-numpad-header">
+      <button type="button" class="sw-back" id="sw-cnt-numpad-cancel">Annulla</button>
+    </div>
+    <div class="sw-cnt-numpad-display-wrap">
+      <div class="sw-cnt-numpad-display" id="sw-cnt-numpad-display">—</div>
+    </div>
+    <div class="sw-cnt-numpad-grid" id="sw-cnt-numpad-grid"></div>
+  </div>
+
+  <div id="sw-comunica-confirm" class="sw-comunica-confirm sw-view--hidden" aria-label="Conferma messaggio">
+    <div class="sw-comunica-confirm-card">
+      <p class="sw-comunica-confirm-title">Inviare a Gemini?</p>
+      <div id="sw-comunica-preview" class="sw-comunica-preview"></div>
+      <div class="sw-comunica-confirm-actions">
+        <button type="button" class="sw-comunica-btn sw-comunica-btn--cancel" id="sw-comunica-cancel">Cancella</button>
+        <button type="button" class="sw-comunica-btn sw-comunica-btn--send" id="sw-comunica-send">Invio</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var BASE_ICON = 'sh-icon-512.png?v=sw14';
+      var BASE_FALLBACK = 'sh-icon-192.png?v=sw14';
+      var BUILD = window.SERVICE_WATCH_BUILD || 'dev';
+      var ICON_SCALE = 0.64;
+
+      function applyScrollLabels() {
+        var below = document.getElementById('sw-scroll-below');
+        if (below) {
+          below.innerHTML = 'Service Watch<br>' + BUILD;
+        }
+      }
+
+      async function clearWatchClientCaches() {
+        try {
+          if ('serviceWorker' in navigator) {
+            var regs = await navigator.serviceWorker.getRegistrations();
+            await Promise.all(regs.map(function (r) { return r.unregister(); }));
+          }
+        } catch (_) {}
+        try {
+          if ('caches' in window) {
+            var keys = await caches.keys();
+            await Promise.all(keys.map(function (k) { return caches.delete(k); }));
+          }
+        } catch (_) {}
+      }
+
+      async function checkWatchAppUpdate() {
+        try {
+          var remoteUrl = new URL(location.href);
+          remoteUrl.searchParams.set('_swcheck', String(Date.now()));
+          var res = await fetch(remoteUrl.toString(), { cache: 'no-store' });
+          if (!res.ok) return;
+          var html = await res.text();
+          var m = html.match(/SERVICE_WATCH_BUILD\s*=\s*['"]([^'"]+)['"]/);
+          if (!m || !m[1]) return;
+          if (m[1] === BUILD) return;
+          await clearWatchClientCaches();
+          var next = new URL(location.href);
+          next.searchParams.set('v', m[1]);
+          next.searchParams.delete('_swcheck');
+          location.replace(next.toString());
+        } catch (_) {}
+      }
+
+      function registerWatchServiceWorker() {
+        if (!('serviceWorker' in navigator)) return;
+        var swUrl = new URL('sw-watch.js?v=sw1', location.href).href;
+        navigator.serviceWorker.register(swUrl, { scope: './' }).then(function (reg) {
+          if (reg && typeof reg.update === 'function') reg.update();
+        }).catch(function () {});
+      }
+
+      function getTopPad() {
+        return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sw-scroll-top')) || 54;
+      }
+
+      function ensurePageHeight() {
+        var page = document.getElementById('sw-page');
+        if (!page) return;
+        if (document.body.classList.contains('sw-home-only')) {
+          page.style.minHeight = window.innerHeight + 'px';
+          return;
+        }
+        var top = getTopPad();
+        var bottom = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sw-scroll-bottom')) || 112;
+        var minH = window.innerHeight + top + bottom + 8;
+        page.style.minHeight = minH + 'px';
+      }
+      window.swEnsurePageHeight = ensurePageHeight;
+
+      function blockPinchZoom() {
+        document.addEventListener('touchstart', function (e) {
+          if (e.touches && e.touches.length > 1) e.preventDefault();
+        }, { passive: false });
+        document.addEventListener('gesturestart', function (e) { e.preventDefault(); }, { passive: false });
+        document.addEventListener('gesturechange', function (e) { e.preventDefault(); }, { passive: false });
+        document.addEventListener('gestureend', function (e) { e.preventDefault(); }, { passive: false });
+      }
+
+      function loadImage(src) {
+        return new Promise(function (resolve, reject) {
+          var im = new Image();
+          im.onload = function () { resolve(im); };
+          im.onerror = function () { reject(new Error('icon')); };
+          im.src = src;
+        });
+      }
+      function drawServiceWatchIcon(ctx, img, size) {
+        ctx.drawImage(img, 0, 0, size, size);
+        var bandTop = Math.round(size * 0.70);
+        var grad = ctx.createLinearGradient(0, bandTop, 0, size);
+        grad.addColorStop(0, 'rgba(42, 122, 176, 0.98)');
+        grad.addColorStop(1, 'rgba(28, 88, 132, 1)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, bandTop, size, size - bandTop);
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = '900 ' + Math.round(size * 0.082) + 'px system-ui,sans-serif';
+        ctx.fillText('Service', size / 2, size * 0.835);
+        ctx.font = '900 ' + Math.round(size * 0.074) + 'px system-ui,sans-serif';
+        ctx.fillText('Watch', size / 2, size * 0.925);
+      }
+      function paintIcon() {
+        var canvas = document.getElementById('sw-icon-canvas');
+        if (!canvas) return;
+        var dpr = Math.min(window.devicePixelRatio || 1, 3);
+        var vw = window.innerWidth || 320;
+        var vh = window.innerHeight || 320;
+        var iconPx = Math.round(Math.min(vw, vh) * ICON_SCALE);
+        canvas.width = Math.round(iconPx * dpr);
+        canvas.height = Math.round(iconPx * dpr);
+        canvas.style.width = iconPx + 'px';
+        canvas.style.height = iconPx + 'px';
+        var ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        loadImage(new URL(BASE_ICON, location.href).href)
+          .catch(function () { return loadImage(new URL(BASE_FALLBACK, location.href).href); })
+          .then(function (img) { drawServiceWatchIcon(ctx, img, iconPx); })
+          .catch(function () {});
+      }
+
+      window.swSetInitialScroll = function () {
+        if (document.body.classList.contains('sw-home-only')) {
+          window.scrollTo(0, 0);
+          return;
+        }
+        window.scrollTo(0, getTopPad());
+      };
+
+      blockPinchZoom();
+      applyScrollLabels();
+      registerWatchServiceWorker();
+      ensurePageHeight();
+      requestAnimationFrame(function () {
+        ensurePageHeight();
+        window.swSetInitialScroll();
+      });
+      paintIcon();
+      setTimeout(checkWatchAppUpdate, 900);
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') checkWatchAppUpdate();
+      });
+      window.addEventListener('focus', function () { checkWatchAppUpdate(); });
+      window.addEventListener('resize', function () {
+        ensurePageHeight();
+        paintIcon();
+      });
+    })();
+  </script>
+  <script>
+    (function () {
+      var s = document.createElement('script');
+      s.type = 'module';
+      s.src = 'watch-app.js?v=' + encodeURIComponent(window.SERVICE_WATCH_BUILD || 'dev');
+      document.body.appendChild(s);
+    })();
+  </script>
+</body>
+</html>

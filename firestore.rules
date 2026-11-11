@@ -1,0 +1,79 @@
+rules_version = '2';
+
+// ServiceHub / STABILE 2026 — Firestore
+// Dopo modifica: Firebase Console → Firestore → Rules → Incolla → Publish
+//
+// sharedDial/plant: lettura aperta (read: true) così onSnapshot/getDoc non vengono
+// bloccati da edge case Auth; SCRITTURA solo con utente autenticato (signInAnonymously ok).
+// Resto di sharedDial: read+write solo autenticati.
+//
+// publicDigital: lettura pubblica; create/update con vincoli owner/teamAppId
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /artifacts/{appId}/users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+      match /{document=**} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+    }
+
+    // Doc singolo cruscotto (numeri condivisi tra tablet)
+    match /artifacts/{appId}/sharedDial/plant {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    // Rapportini (Generale / Notturno) — snapshot per dispositivo, sync multi-tablet
+    match /artifacts/{appId}/sharedDial/rapportini {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    // Documenti ufficiali caricati (Word/Excel/PDF) + chunk — sync multi-dispositivo
+    match /artifacts/{appId}/sharedDial/wordRapportini {
+      allow read: if true;
+      allow write: if request.auth != null;
+      match /{path=**} {
+        allow read: if true;
+        allow write: if request.auth != null;
+      }
+    }
+
+    // Sotto "plant" (es. snapshots dei backup): stessa politica
+    match /artifacts/{appId}/sharedDial/plant/{path=**} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    // settings, meta, alarmConfig, aiMemory, aiChat, …
+    match /artifacts/{appId}/sharedDial/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+
+    // Puntatore pubblico: l'app Service Remote installata legge l'ultimo link senza incollare URL.
+    match /artifacts/{appId}/publicDigital/__latest {
+      allow read: if true;
+      allow create, update: if request.auth != null
+        && request.resource.data.teamAppId == appId
+        && request.resource.data.keys().hasAll(['shareKey', 'updatedAt', 'teamAppId']);
+      allow delete: if false;
+    }
+
+    match /artifacts/{appId}/publicDigital/{shareId} {
+      allow read: if true;
+      allow create: if shareId != '__latest'
+        && request.auth != null
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.keys().hasAll(['ownerUid', 'updatedAt', 'cardsHTML', 'teamAppId']);
+      allow update: if shareId != '__latest'
+        && request.auth != null
+        && request.resource.data.ownerUid == resource.data.ownerUid
+        && request.resource.data.teamAppId == resource.data.teamAppId
+        && request.resource.data.teamAppId == appId
+        && request.resource.data.keys().hasAll(['ownerUid', 'updatedAt', 'cardsHTML', 'teamAppId']);
+      allow delete: if request.auth != null && resource.data.ownerUid == request.auth.uid;
+    }
+  }
+}

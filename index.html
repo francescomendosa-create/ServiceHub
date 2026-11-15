@@ -1086,7 +1086,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.11.12-osmosi-reset-stay-clear';
+        window.SERVICEHUB_BUILD = '2026.11.15-ocr-iphone-no-reload';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -38376,8 +38376,10 @@ window.updateStoricoButton = async function() {
 
         window.openSettings = () => { 
     forceBlur(); 
-    window.setSmartCaptureLoading && window.setSmartCaptureLoading(false);
-    if (!window._smartCaptureNativeCameraPending) {
+    var ocrBusy = (typeof window.__isSmartCaptureSessionActive === 'function' && window.__isSmartCaptureSessionActive())
+        || window._smartCaptureNativeCameraPending;
+    if (!ocrBusy) {
+        window.setSmartCaptureLoading && window.setSmartCaptureLoading(false);
         window._smartCaptureAbort = true;
     }
     if (typeof window.__unlockServiceHubUi === 'function') window.__unlockServiceHubUi();
@@ -54878,7 +54880,26 @@ window.convertToHtml = async () => {
             }
         };
 
+        /** True se fotocamera OCR / analisi Gemini e' in corso: non ricaricare l'app. */
+        window.__isSmartCaptureSessionActive = function () {
+            if (window._smartCaptureNativeCameraPending) return true;
+            if (window._smartCaptureOcrRunning) return true;
+            try {
+                var loading = document.getElementById('smart-capture-loading');
+                if (loading && loading.classList.contains('active')) return true;
+                var confirm = document.getElementById('smart-capture-confirm-modal');
+                if (confirm && confirm.classList.contains('active')) return true;
+                if (document.body && document.body.classList.contains('smart-capture-camera-open')) return true;
+            } catch (_) {}
+            return false;
+        };
+
         window.__serviceHubReloadFresh = function() {
+            if (typeof window.__isSmartCaptureSessionActive === 'function' && window.__isSmartCaptureSessionActive()) {
+                window.__pendingAppReloadAfterOcr = true;
+                console.warn('[ServiceHub] reload differito: OCR/foto in corso');
+                return;
+            }
             let base = location.href.split('#')[0].split('?')[0];
             if (!/\.html$/i.test(base)) base = base.replace(/\/?$/, '/') + 'index.html';
             var target = '';
@@ -54889,6 +54910,13 @@ window.convertToHtml = async () => {
         };
 
         window.applyAppUpdate = async function() {
+            if (typeof window.__isSmartCaptureSessionActive === 'function' && window.__isSmartCaptureSessionActive()) {
+                window.__pendingAppReloadAfterOcr = true;
+                if (typeof window.__serviceHubFlashToast === 'function') {
+                    window.__serviceHubFlashToast('Aggiornamento dopo OCRâ€¦', false);
+                }
+                return;
+            }
             const btn = document.getElementById('app-update-ok-btn');
             if (btn) { btn.disabled = true; btn.textContent = 'Aggiornamento…'; }
             const modal = document.getElementById('app-update-modal');
@@ -54920,6 +54948,9 @@ window.convertToHtml = async () => {
 
         window.checkForAppUpdateFromNetwork = async function() {
             try {
+                if (typeof window.__isSmartCaptureSessionActive === 'function' && window.__isSmartCaptureSessionActive()) {
+                    return;
+                }
                 let href = location.href.split('?')[0].split('#')[0];
                 if (!/\.html$/i.test(href)) href = href.replace(/\/?$/, '/') + 'index.html';
                 const url = href + '?buildcheck=' + Date.now();
@@ -54972,12 +55003,16 @@ window.convertToHtml = async () => {
             var __shReloadingForSw = false;
             navigator.serviceWorker.addEventListener('controllerchange', function () {
                 if (__shReloadingForSw) return;
+                if (typeof window.__isSmartCaptureSessionActive === 'function' && window.__isSmartCaptureSessionActive()) {
+                    window.__pendingAppReloadAfterOcr = true;
+                    return;
+                }
                 __shReloadingForSw = true;
                 try { window.__serviceHubReloadFresh(); } catch (_) { location.reload(); }
             });
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=425')
+                navigator.serviceWorker.register('./sw.js?v=429')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();
@@ -54992,6 +55027,10 @@ window.convertToHtml = async () => {
             });
             document.addEventListener('visibilitychange', function() {
                 if (document.visibilityState === 'visible') {
+                    /* iPhone: al ritorno dalla fotocamera non aggiornare/ricaricare â€” uccide OCR Gemini. */
+                    if (typeof window.__isSmartCaptureSessionActive === 'function' && window.__isSmartCaptureSessionActive()) {
+                        return;
+                    }
                     if (window._swRegistration) window._swRegistration.update();
                     window.checkForAppUpdateFromNetwork();
                 }
@@ -60769,7 +60808,7 @@ window.callGeminiTankOcr = async function(promptText, imageData) {
     ];
     const t = window.GEMINI_TIMING || {};
     const out = await window.runGeminiWithKeyRotation(parts, {
-        models: ['gemini-2.5-flash-lite', 'gemini-2.5-flash'],
+        models: ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-flash'],
         timeoutMs: t.tankOcrMs || 68000,
         generationConfig: { temperature: 0.05, maxOutputTokens: 4096 },
         clearCooldowns: false
@@ -61648,6 +61687,8 @@ window.runSmartCaptureOnFiles = async function(files) {
     }
     window.ensureGeminiApiKeySaved && window.ensureGeminiApiKeySaved();
     window._smartCaptureAbort = false;
+    window._smartCaptureOcrRunning = true;
+    try { sessionStorage.setItem('sh_ocr_busy', '1'); } catch (_) {}
 
     let merged = null;
     let firstPhotoUrl = null;
@@ -61704,7 +61745,16 @@ window.runSmartCaptureOnFiles = async function(files) {
             window.finishSmartCapture(window.buildSmartCaptureFailureResult(new Error(failMsg)));
         }
     } finally {
+        window._smartCaptureOcrRunning = false;
+        try { sessionStorage.removeItem('sh_ocr_busy'); } catch (_) {}
         window.setSmartCaptureLoading(false);
+        if (window.__pendingAppReloadAfterOcr) {
+            window.__pendingAppReloadAfterOcr = false;
+            setTimeout(function () {
+                if (typeof window.__isSmartCaptureSessionActive === 'function' && window.__isSmartCaptureSessionActive()) return;
+                if (typeof window.__serviceHubReloadFresh === 'function') window.__serviceHubReloadFresh();
+            }, 2500);
+        }
     }
 };
 
@@ -61749,6 +61799,17 @@ window.openNativeCameraCapture = function() {
     window.closeSmartCaptureCamera(false);
     window._smartCaptureAbort = false;
     window._smartCaptureNativeCameraPending = true;
+    if (!window._smartCaptureLetturaMode && !window._smartCaptureNotturnoGiornalieroMode) {
+        window._smartCaptureTankMode = true;
+    }
+    try {
+        sessionStorage.setItem('sh_ocr_cam_pending', JSON.stringify({
+            tank: !!window._smartCaptureTankMode,
+            lettura: !!window._smartCaptureLetturaMode,
+            notturno: !!window._smartCaptureNotturnoGiornalieroMode,
+            ts: Date.now()
+        }));
+    } catch (_) {}
     const settings = document.getElementById('settings-modal');
     if (settings) settings.classList.remove('active');
     let input = document.getElementById('smart-capture-camera-input');
@@ -61767,6 +61828,7 @@ window.openNativeCameraCapture = function() {
             clearTimeout(window._smartCaptureNativeCameraTimer);
             window._smartCaptureNativeCameraTimer = null;
         }
+        try { sessionStorage.removeItem('sh_ocr_cam_pending'); } catch (_) {}
         const file = input.files && input.files[0];
         input.value = '';
         if (!file) {
@@ -61775,14 +61837,16 @@ window.openNativeCameraCapture = function() {
         }
         const list = window.getSmartCaptureImageFiles([file]);
         if (!list.length) {
-            alert('Foto non riconosciuta. iPhone: Impostazioni → Fotocamera → Formati → Massima compatibilità (JPG).');
+            alert('Foto non riconosciuta. iPhone: Impostazioni â†’ Fotocamera â†’ Formati â†’ Massima compatibilitÃ  (JPG).');
             if (settings) { settings.classList.add('active'); document.body.classList.add('sh-settings-open'); }
             return;
         }
         window._smartCaptureAbort = false;
-        window._smartCaptureTankMode = true;
+        if (!window._smartCaptureLetturaMode && !window._smartCaptureNotturnoGiornalieroMode) {
+            window._smartCaptureTankMode = true;
+        }
         if (typeof window.setSmartCaptureLoading === 'function') {
-            window.setSmartCaptureLoading(true, 'Foto acquisita · analisi…');
+            window.setSmartCaptureLoading(true, 'Foto acquisita Â· analisiâ€¦');
         }
         window.runSmartCaptureOnFile(list[0]);
     };
@@ -61790,10 +61854,9 @@ window.openNativeCameraCapture = function() {
     window._smartCaptureNativeCameraTimer = setTimeout(function () {
         window._smartCaptureNativeCameraPending = false;
         window._smartCaptureNativeCameraTimer = null;
-    }, 120000);
+    }, 180000);
     input.click();
 };
-
 window.smartCaptureFromCamera = async function() {
     const menu = document.getElementById('smart-capture-menu');
     if (menu) menu.classList.remove('open');

@@ -1086,7 +1086,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.11.19-ocr-confirm-list-fix2';
+        window.SERVICEHUB_BUILD = '2026.11.19-ocr-gemini-parse-fix';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -55047,7 +55047,7 @@ window.convertToHtml = async () => {
             });
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=431')
+                navigator.serviceWorker.register('./sw.js?v=432')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();
@@ -59373,8 +59373,15 @@ window.isLikelyGeminiFailureRaw = function(raw) {
     const json = window.parseSmartCaptureJson(raw);
     if (json && json.error) return true;
     if (!json) return !window.isDcsAcquaTableText(t) && !window.isDcsOverviewStrumentiText(t);
-    return !(json.catalogo || json.applica_ora || json.coppie || json.stati_pozzi ||
-        json.tipo === 'dcs-tabella' || json.tipo === 'dcs-acqua' || json.tipo === 'dcs-overview-strumenti');
+    var tipo = String(json.tipo || json.type || '').toLowerCase();
+    if (json.catalogo || json.tutti_serbatoi || json.applica_ora || json.coppie || json.pairs ||
+        json.serbatoi || json.readings || json.righe || json.rows || json.stati_pozzi || json.stati) {
+        return false;
+    }
+    if (/dcs-tabella|dcs-acqua|dcs-overview|overview|stoccaggio|hold-?up|consumi|tank/.test(tipo)) {
+        return false;
+    }
+    return true;
 };
 
 window.isPlausibleDcsLevel = function(fieldId, value) {
@@ -59524,7 +59531,8 @@ window.filterGeminiCaptureReadings = function(readings) {
     if (window._smartCaptureNotturnoGiornalieroMode && typeof window.filterNotturnoOcrReadings === 'function') {
         return window.filterNotturnoOcrReadings(readings);
     }
-    var filtered = (readings || []).filter(function(r) {
+    /* Conferma: non buttare letture Gemini. Esclusioni solo in Applica / finish. */
+    return (readings || []).filter(function(r) {
         if (!r || !r.id || r.value == null) return false;
         if (r.id === 'inp-s121') return false;
         if (r.kind === 'status') {
@@ -59532,18 +59540,18 @@ window.filterGeminiCaptureReadings = function(readings) {
             return st === 'MARCIA' || st === 'FERMO';
         }
         const v = window.fixOcrDigitValue(r.value);
-        if (!window.isValidOcrValue(v)) return false;
-        return window.isPlausibleCaptureLevel(r.id, v);
+        return window.isValidOcrValue(v);
     }).map(function(r) {
         if (r.kind === 'status') {
             return Object.assign({}, r, { value: window.normalizeDcsStatus(r.value) });
         }
-        return Object.assign({}, r, { value: window.fixOcrDigitValue(r.value) });
+        var v = window.fixOcrDigitValue(r.value);
+        var out = Object.assign({}, r, { value: v });
+        if (typeof window.isPlausibleCaptureLevel === 'function' && !window.isPlausibleCaptureLevel(r.id, v)) {
+            out.confidence = 'bassa';
+        }
+        return out;
     });
-    if (typeof window.filterOcrEnabledReadings === 'function') {
-        filtered = window.filterOcrEnabledReadings(filtered);
-    }
-    return filtered;
 };
 
 window.applyStatusReadingToUI = function(fieldId, stato) {
@@ -60352,7 +60360,7 @@ window.parseGeminiTankPairsJson = function(json, fields) {
     const fieldIds = new Set(fields.map(function(f) { return f.id; }));
     if (!json) return [];
     // NON usare json.catalogo qui: contiene liv_max (es. 6000) che viene scambiato per il livello.
-    let pairs = json.applica_ora || json.coppie || json.pairs || json.serbatoi || json.readings;
+    let pairs = json.applica_ora || json.coppie || json.pairs || json.serbatoi || json.readings || json.righe || json.rows;
     if (!pairs && Array.isArray(json)) pairs = json;
     if (!Array.isArray(pairs)) return [];
     const readings = [];
@@ -60365,8 +60373,7 @@ window.parseGeminiTankPairsJson = function(json, fields) {
         val = window.fixOcrDigitValue(val);
         if (!window.isValidOcrValue(val)) return;
         const tag = p.tag_strumento || p.strumento || p.tag || '';
-        let id = p.campo_id || p.field_id || p.campo || null;
-        if (id && !fieldIds.has(id)) id = null;
+        let id = p.campo_id || p.field_id || p.campo || p.fieldId || null;
         if (!id && tag) id = window.resolveFieldIdFromInstrumentTag(tag, sigla);
         if (!id && sigla && typeof window.resolveDcsAcquaTarget === 'function') {
             const t = window.resolveDcsAcquaTarget(sigla, p.descrizione || p.description || '');
@@ -60843,7 +60850,7 @@ window.callGeminiTankOcr = async function(promptText, imageData) {
     ];
     const t = window.GEMINI_TIMING || {};
     const out = await window.runGeminiWithKeyRotation(parts, {
-        models: ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-flash'],
+        models: ['gemini-2.5-flash-lite', 'gemini-2.5-flash'],
         timeoutMs: t.tankOcrMs || 68000,
         generationConfig: { temperature: 0.05, maxOutputTokens: 4096 },
         clearCooldowns: false
@@ -61356,6 +61363,9 @@ window.runLocalSmartCaptureOcr = async function(imageData, fields) {
 
 window.runSmartCaptureAnalysis = async function(imageData) {
     const tankMode = !!window._smartCaptureTankMode;
+    if (typeof window.ensureGeminiKeysNeverLost === 'function') window.ensureGeminiKeysNeverLost();
+    if (typeof window.ensureGeminiApiKeySaved === 'function') window.ensureGeminiApiKeySaved();
+    if (typeof window.loadGeminiKeySettings === 'function') window.loadGeminiKeySettings();
     const fields = window.mergeCaptureFieldsForGemini(tankMode);
     if (!fields.length && !tankMode) throw new Error('Nessun campo mappabile trovato nell\'interfaccia.');
 
@@ -61363,12 +61373,11 @@ window.runSmartCaptureAnalysis = async function(imageData) {
         throw new Error('I PDF non sono supportati. Usa una foto JPG/PNG.');
     }
 
-    if (typeof window.loadGeminiKeySettings === 'function') window.loadGeminiKeySettings();
     const geminiKey = window.getGeminiApiKey && window.getGeminiApiKey();
     let geminiQuotaHit = false;
 
     if (!geminiKey && window.SMART_CAPTURE_PREFER_GEMINI) {
-        throw new Error('Nessuna chiave Gemini trovata. Impostazioni → inserisci almeno la chiave 1 e premi OK sul test.');
+        throw new Error('Nessuna chiave Gemini trovata. Impostazioni -> Implementa IA -> chiave 1 + test OK.');
     }
 
     if (geminiKey && window.SMART_CAPTURE_PREFER_GEMINI && !window._smartCaptureAbort) {
@@ -61377,45 +61386,45 @@ window.runSmartCaptureAnalysis = async function(imageData) {
                 typeof window.runGeminiNotturnoMultiCapture === 'function') {
                 return await window.runGeminiNotturnoMultiCapture(imageData, fields);
             }
-            if (tankMode && !window._smartCaptureNotturnoGiornalieroMode && !window._smartCaptureLetturaMode &&
-                typeof window.runStoccaggioInternoCapture === 'function') {
-                window.setSmartCaptureLoadingMessage('STOCCAGGIO INTERNO (riga per riga)…');
-                var stoccResult = await window.runStoccaggioInternoCapture(imageData);
-                var stoccJson = window.parseSmartCaptureJson(stoccResult.rawGemini || stoccResult.rawTextPreview || '');
-                var isStoccScreen = window.isDcsStoccaggioInternoScreen(stoccResult.rawGemini || '', stoccJson);
-                if ((isStoccScreen || (stoccResult.readings && stoccResult.readings.length >= 2)) &&
-                    stoccResult.readings && stoccResult.readings.length >= 1) {
-                    return stoccResult;
-                }
-            }
-            if (!tankMode && !window._smartCaptureNotturnoGiornalieroMode && !window._smartCaptureLetturaMode &&
-                typeof window.runConsumiProduzioneCapture === 'function') {
-                window.setSmartCaptureLoadingMessage('Consumi e Produzione (IERI)…');
-                var consumiResult = await window.runConsumiProduzioneCapture(imageData);
-                var consumiJson = window.parseSmartCaptureJson(consumiResult.rawGemini || consumiResult.rawTextPreview || '');
-                var isConsumiScreen = window.isDcsConsumiProduzioneScreen(consumiResult.rawGemini || '', consumiJson);
-                if (isConsumiScreen && consumiResult.readings && consumiResult.readings.length >= 1) {
-                    return consumiResult;
-                }
-            }
-            window.setSmartCaptureLoadingMessage('Analisi foto (sigle e livelli)…');
+
+            /* Un solo passaggio Gemini (prompt unificato). Niente stoccaggio obbligatorio prima:
+               prima faceva 2-3 chiamate e spremeva le chiavi -> lista vuota dopo attesa lunga. */
+            var keyLbl = window.__lastGeminiKeyLabel || 'chiave attiva';
+            window.setSmartCaptureLoadingMessage('Analisi foto (' + keyLbl + ')...');
             const geminiResult = await window.runGeminiPrimaryCapture(imageData, fields);
             if (geminiResult.readings && geminiResult.readings.length > 0) {
-                if ((geminiResult.profile === 'dcs-acqua' || geminiResult.profile === 'dcs-stoccaggio-interno') && typeof window.integrateDcsCatalog === 'function') {
+                if ((geminiResult.profile === 'dcs-acqua' || geminiResult.profile === 'dcs-stoccaggio-interno') &&
+                    typeof window.integrateDcsCatalog === 'function') {
                     const json = window.parseSmartCaptureJson(geminiResult.rawGemini);
                     if (json) window.integrateDcsCatalog(json);
                 }
                 return geminiResult;
             }
-            // iPhone: secondo tentativo Gemini (modello alternativo) prima di arrendersi — mai Tesseract.
-            if (window.isIosDevice && window.isIosDevice()) {
-                window.setSmartCaptureLoadingMessage('Secondo tentativo…');
-                const iosRetry = await window.runGeminiSmartCaptureOcr(imageData, fields);
-                if (iosRetry.readings && iosRetry.readings.length > 0) {
-                    return iosRetry;
-                }
+
+            /* Se sembra Stoccaggio Interno e il primary non ha estratto, UN solo pass dedicato. */
+            var stoccJson = window.parseSmartCaptureJson(geminiResult.rawGemini || '');
+            var looksStocc = window.isDcsStoccaggioInternoScreen(geminiResult.rawGemini || '', stoccJson);
+            if (tankMode && looksStocc && typeof window.runStoccaggioInternoCapture === 'function' &&
+                !window._smartCaptureAbort) {
+                window.setSmartCaptureLoadingMessage('Stoccaggio Interno (secondo pass)...');
+                var stoccResult = await window.runStoccaggioInternoCapture(imageData);
+                if (stoccResult.readings && stoccResult.readings.length >= 1) return stoccResult;
             }
-            console.warn('Gemini: risposta senza letture utilizzabili', geminiResult.rawTextPreview);
+
+            /* iPhone: un retry OCR dedicato se ancora vuoto. */
+            if (window.isIosDevice && window.isIosDevice() && !window._smartCaptureAbort) {
+                window.setSmartCaptureLoadingMessage('Secondo tentativo...');
+                const iosRetry = await window.runGeminiSmartCaptureOcr(imageData, fields);
+                if (iosRetry.readings && iosRetry.readings.length > 0) return iosRetry;
+            }
+
+            /* Anche senza match campi: mostra conferma con note + raw, non silenzio. */
+            if (geminiResult && (geminiResult.rawGemini || geminiResult.rawTextPreview)) {
+                geminiResult.notes = (geminiResult.notes || 'Nessuna sigla mappata') +
+                    ' - controlla foto / chiave in Impostazioni';
+                return geminiResult;
+            }
+            console.warn('Gemini: risposta senza letture utilizzabili', geminiResult && geminiResult.rawTextPreview);
         } catch (errGem) {
             console.warn('Gemini primary capture:', errGem);
             if (errGem && (errGem.geminiQuota || window.isGeminiQuotaOrBlockedError(errGem.message))) {
@@ -61429,24 +61438,22 @@ window.runSmartCaptureAnalysis = async function(imageData) {
     var iosDevice = typeof window.isIosDevice === 'function' && window.isIosDevice();
     var iosLocalOk = iosDevice && window.SMART_CAPTURE_IOS_LOCAL_FALLBACK === true;
 
-    // iPhone: mai OCR locale (Tesseract) — numeri inventati. Stesso percorso Gemini del PC.
     if (iosDevice && !iosLocalOk) {
         if (geminiQuotaHit) {
-            throw new Error('Quota esaurita. Riprova più tardi (su iPhone non uso OCR locale per evitare numeri errati).');
+            throw new Error('Quota esaurita. Riprova piu tardi o testa le 3 chiavi in Impostazioni -> Implementa IA.');
         }
         throw new Error('Nessuna sigla/livello trovato nella foto. Avvicina il DCS, luce uniforme, riprova. ' +
-            'iPhone: Impostazioni → Fotocamera → Formati → Massima compatibilità (JPG).');
+            'Controlla Impostazioni -> Implementa IA (test chiavi). iPhone: Fotocamera -> Formati -> Massima compatibilita (JPG).');
     }
 
     if (window.SMART_CAPTURE_GEMINI_ONLY && !geminiQuotaHit) {
         throw new Error('Nessuna sigla/livello trovato nella foto. Avvicina il DCS, luce uniforme, riprova.');
     }
 
-    // OCR locale (Tesseract): solo PC con quota esaurita o modalità offline esplicita.
     if (geminiQuotaHit) {
-        window.setSmartCaptureLoadingMessage('Quota: OCR locale (controlla i numeri)…');
+        window.setSmartCaptureLoadingMessage('Quota: OCR locale (controlla i numeri)...');
     } else {
-        window.setSmartCaptureLoadingMessage('OCR locale sulla foto…');
+        window.setSmartCaptureLoadingMessage('OCR locale sulla foto...');
     }
 
     window.__smartCaptureGeminiQuota = !!geminiQuotaHit;
@@ -61461,14 +61468,14 @@ window.runSmartCaptureAnalysis = async function(imageData) {
         hint = '\n\nTesto rilevato:\n' + localResult.rawTextPreview.trim().slice(0, 120);
     }
 
-    const noKeyHint = !geminiKey ? '\n\nSuggerimento: salva la chiave in Impostazioni → Implementa IA.' : '';
+    const noKeyHint = !geminiKey ? '\n\nSuggerimento: salva la chiave in Impostazioni -> Implementa IA.' : '';
 
     if (tankMode) {
         return {
             readings: [],
             engine: 'none',
             rawTextPreview: (localResult.rawTextPreview || '').trim(),
-            notes: 'Nessun livello rilevato nella foto' + hint + noKeyHint + ' — inserisci manualmente'
+            notes: 'Nessun livello rilevato nella foto' + hint + noKeyHint + ' - inserisci manualmente'
         };
     }
 
@@ -61476,7 +61483,6 @@ window.runSmartCaptureAnalysis = async function(imageData) {
         'Non ho trovato livelli serbatoi nella foto.' + hint + noKeyHint
     );
 };
-
 window._smartCaptureAbort = false;
 
 window.cancelSmartCaptureLoading = function() {

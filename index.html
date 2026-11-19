@@ -1086,7 +1086,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.11.15-ocr-iphone-no-reload';
+        window.SERVICEHUB_BUILD = '2026.11.19-ocr-confirm-list-fix2';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -52484,6 +52484,41 @@ window.convertToHtml = async () => {
         }
         #smart-capture-confirm-modal { z-index: 10085; }
         #smart-capture-confirm-modal.active { background: rgba(0,0,0,0.75); backdrop-filter: blur(5px); visibility: visible; }
+        /* iPhone Safari: flex child con overflow collassa a height 0 senza basis/height espliciti. */
+        #smart-capture-confirm-modal .modal-content-centered {
+            display: flex !important;
+            flex-direction: column !important;
+            max-height: min(88vh, 720px) !important;
+            overflow: hidden !important;
+        }
+        #smart-capture-confirm-list {
+            display: block !important;
+            flex: 1 1 42vh !important;
+            flex-grow: 1 !important;
+            flex-shrink: 1 !important;
+            flex-basis: 42vh !important;
+            min-height: 220px !important;
+            height: 42vh !important;
+            max-height: min(58vh, 480px) !important;
+            overflow-x: hidden !important;
+            overflow-y: auto !important;
+            -webkit-overflow-scrolling: touch !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+        }
+        body.sh-device-phone #smart-capture-confirm-list {
+            flex-basis: 48vh !important;
+            min-height: 240px !important;
+            height: 48vh !important;
+            max-height: min(62vh, 520px) !important;
+        }
+        #smart-capture-confirm-photo-wrap:not(.hidden) {
+            max-height: 72px !important;
+            flex-shrink: 0 !important;
+        }
+        #smart-capture-confirm-photo-wrap:not(.hidden) img {
+            max-height: 72px !important;
+        }
         .smart-capture-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid #334155; font-size: 12px; }
         .smart-capture-row input { width: 96px; font-size: 20px; font-weight: 800; text-align: center; padding: 8px; border-radius: 10px; border: 2px solid #475569; background: #0f172a; color: #34d399; }
         .smart-capture-row:last-child { border-bottom: none; }
@@ -55012,7 +55047,7 @@ window.convertToHtml = async () => {
             });
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=429')
+                navigator.serviceWorker.register('./sw.js?v=431')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();
@@ -61530,14 +61565,23 @@ window.finishSmartCapture = function(parsed) {
     }
     if (p.notes) p.notes = window.stripGeminiNameFromOcrUi(p.notes);
     if (p.engine && p.notes && p.notes.indexOf('motore:') < 0 && p.notes.indexOf(p.engine) < 0 && !/gemini/i.test(String(p.engine))) {
-        p.notes = p.notes + ' · motore: ' + p.engine;
+        p.notes = p.notes + ' | motore: ' + p.engine;
+    }
+    /* Se non siamo in Letture/Notturno, resta modalita serbatoi (lista conferma). */
+    if (!window._smartCaptureLetturaMode && !window._smartCaptureNotturnoGiornalieroMode) {
+        window._smartCaptureTankMode = true;
     }
     if (window._smartCaptureTankMode && typeof window.filterOcrEnabledReadings === 'function') {
+        var beforeFilter = (p.readings || []).slice();
         p.readings = window.filterOcrEnabledReadings(p.readings || []);
+        /* Filtro esclusioni non deve svuotare tutta la lista se Gemini ha letto qualcosa. */
+        if (!p.readings.length && beforeFilter.length) {
+            p.readings = beforeFilter;
+            p.notes = (p.notes || '') + ' Â· (mostrate anche sigle escluse - controlla)'
+        }
     }
     window.showSmartCaptureConfirm(p);
 };
-
 window.smartCaptureFromGallery = function() {
     const menu = document.getElementById('smart-capture-menu');
     if (menu) menu.classList.remove('open');
@@ -62056,18 +62100,23 @@ window.showSmartCaptureConfirm = function(parsed) {
 
     const readingMap = {};
     (parsed && parsed.readings || []).forEach(function(r) {
-        if (r && r.id && r.value != null) {
-            if (tankMode && typeof window.isOcrTankFieldEnabled === 'function' && !window.isOcrTankFieldEnabled(r.id)) return;
-            var rv = String(r.value).trim();
-            if (typeof window.applyIntegerOnlyTankValue === 'function') {
-                rv = window.applyIntegerOnlyTankValue(r.id, rv);
-            }
-            readingMap[r.id] = rv;
+        if (!r) return;
+        var rid = r.id || r.fieldId || r.campo_id || '';
+        if (!rid) return;
+        if (r.value == null || String(r.value).trim() === '') return;
+        /* In conferma mostriamo tutte le letture Gemini; le esclusioni valgono in Applica. */
+        var rv = String(r.value).trim();
+        if (typeof window.applyIntegerOnlyTankValue === 'function') {
+            rv = window.applyIntegerOnlyTankValue(rid, rv);
         }
+        readingMap[rid] = rv;
+        if (!r.id) r.id = rid;
     });
-
     const displayOrder = (tankMode && isDcsAcqua) ? fields : (isOverview ? (function() {
-        return fields.filter(function(f) { return readingMap[f.id]; });
+        var withVal = fields.filter(function(f) { return readingMap[f.id]; });
+        /* Overview: match UI se possibile; altrimenti [] -> fallback sulle letture Gemini. */
+        if (withVal.length) return withVal;
+        return [];
     })() : (tankMode ? (function() {
         const sorted = window.sortTankFieldsForDisplay(fields);
         const withVal = sorted.filter(function(f) { return readingMap[f.id]; });
@@ -62077,14 +62126,53 @@ window.showSmartCaptureConfirm = function(parsed) {
         }
         return sorted;
     })() : fields));
-    const rows = tankMode ? displayOrder : (parsed.readings || []).map(function(r) {
-        return fieldMap[r.id] || { id: r.id, label: r.id, section: '' };
+    let rows = tankMode ? displayOrder.slice() : (parsed.readings || []).map(function(r) {
+        return fieldMap[r.id] || { id: r.id, label: r.label || r.id, section: r.section || '' };
     }).filter(function(f, i, arr) {
         return f && f.id && arr.findIndex(function(x) { return x.id === f.id; }) === i;
     });
 
+    /* Aggiungi letture Gemini senza match nella mappa campi (ID diversi / overview). */
+    if (parsed && parsed.readings && parsed.readings.length) {
+        var have = {};
+        rows.forEach(function(f) { if (f && f.id) have[f.id] = true; });
+        parsed.readings.forEach(function(r) {
+            if (!r) return;
+            var rid = r.id || r.fieldId || r.campo_id;
+            if (!rid || have[rid]) return;
+            if (r.value == null || String(r.value).trim() === '') return;
+            have[rid] = true;
+            rows.push(fieldMap[rid] || { id: rid, label: r.label || r.serbatoio || rid, section: r.section || 'OCR' });
+            if (readingMap[rid] == null) readingMap[rid] = String(r.value).trim();
+        });
+    }
     if (!rows.length && tankMode) {
         fields.forEach(function(f) { rows.push(f); });
+    }
+    /* Ultimo fallback: righe dalle letture Gemini anche senza mappa campi. */
+    if (!rows.length && parsed && parsed.readings && parsed.readings.length) {
+        rows = parsed.readings.map(function(r) {
+            return fieldMap[r.id] || { id: r.id, label: r.label || r.serbatoio || r.id, section: r.section || 'OCR' };
+        }).filter(function(f, i, arr) {
+            return f && f.id && arr.findIndex(function(x) { return x.id === f.id; }) === i;
+        });
+        (parsed.readings || []).forEach(function(r) {
+            if (r && r.id && r.value != null && readingMap[r.id] == null) {
+                readingMap[r.id] = String(r.value).trim();
+            }
+        });
+    }
+    if (!rows.length) {
+        list.innerHTML = '<p class="text-center text-amber-300 font-bold py-8 text-xs uppercase leading-relaxed">Nessuna sigla in lista.<br>Gemini: ' +
+            String((parsed && parsed.notes) || 'nessun dettaglio').replace(/</g, '&lt;').slice(0, 160) +
+            '</p>';
+        if (parsed && parsed.notes && hint) {
+            hint.textContent = window.stripGeminiNameFromOcrUi
+                ? window.stripGeminiNameFromOcrUi(parsed.notes)
+                : parsed.notes;
+        }
+        modal.classList.add('active');
+        return;
     }
 
     list.innerHTML = rows.map(function(f) {

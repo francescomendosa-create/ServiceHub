@@ -1086,7 +1086,7 @@ window.colorPreviewNumber = function(tankName, value) {
     </script>
     <title>STABILE 2026 - V4.5</title>
     <script>
-        window.SERVICEHUB_BUILD = '2026.11.19-ocr-gemini-parse-fix';
+        window.SERVICEHUB_BUILD = '2026.11.22-ocr-gemini-keys-aq';
         window.SERVICE_WATCH_BUILD = '2026.06.14-watch-comunica-v18';
         window.AI_QUICK_CHAT_PLACEHOLDER = 'Parla o scrivi…';
         window.AI_QUICK_CHAT_LISTENING = 'Ascolto…';
@@ -55047,7 +55047,7 @@ window.convertToHtml = async () => {
             });
             window.addEventListener('load', function() {
                 if (/\/remote\//i.test(location.pathname) || /\/op\//i.test(location.pathname)) return;
-                navigator.serviceWorker.register('./sw.js?v=432')
+                navigator.serviceWorker.register('./sw.js?v=433')
                     .then(function(reg) {
                         console.log('[ServiceHub] PWA, scope:', reg.scope);
                         reg.update();
@@ -62440,11 +62440,12 @@ window.applySmartCaptureResults = async function() {
 };
 
 // --- INTEGRAZIONE GEMINI AI (fino a 3 chiavi con rotazione automatica) ---
-/** Fallback nel bundle: ripristino se localStorage/cloud vuoti (temporaneo). */
-window.GEMINI_BUILTIN_KEYS = [
+/** Fallback nel bundle: vuoto — le chiavi stanno solo in Impostazioni / localStorage (no secret in git). */
+window.GEMINI_BUILTIN_KEYS = ['', '', ''];
+/** Prefissi/chiavi AIza note come morte: non ripiantarle da backup/cloud. */
+window.GEMINI_DEAD_KEYS = [
     'AIzaSyCx80ru6-RXeTi3GvqkFsMVyMf-vpgIoVw',
-    'AIzaSyBSsRE_1Os04-bxpd5JTLIniy3UK4OqKys',
-    ''
+    'AIzaSyBSsRE_1Os04-bxpd5JTLIniy3UK4OqKys'
 ];
 window.GEMINI_KEYS_STORAGE = 'servicehub_gemini_api_keys_v1';
 window.GEMINI_KEYS_BACKUP_STORAGE = 'servicehub_gemini_api_keys_v1_backup';
@@ -62495,7 +62496,37 @@ window.__geminiCfgFromBuiltin = function() {
     const built = (window.GEMINI_BUILTIN_KEYS || []).map(function(k) { return String(k || '').trim(); });
     while (built.length < 3) built.push('');
     if (!built.some(function(k) { return k.length > 8; })) return null;
-    return window.__normalizeGeminiKeysCfg({ keys: built.slice(0, 3), activeIndex: 0, keyMeta: {} });
+    let active = 0;
+    for (let i = 0; i < 3; i++) {
+        if (built[i] && built[i].length > 8) { active = i; break; }
+    }
+    return window.__normalizeGeminiKeysCfg({ keys: built.slice(0, 3), activeIndex: active, keyMeta: {} });
+};
+
+window.stripDeadGeminiKeys = function(cfg) {
+    cfg = window.__normalizeGeminiKeysCfg(cfg || {});
+    const dead = window.GEMINI_DEAD_KEYS || [];
+    let changed = false;
+    for (let i = 0; i < 3; i++) {
+        const k = String(cfg.keys[i] || '').trim();
+        if (!k) continue;
+        if (dead.indexOf(k) >= 0) {
+            cfg.keys[i] = '';
+            changed = true;
+        }
+    }
+    if (!cfg.keys[cfg.activeIndex] || String(cfg.keys[cfg.activeIndex]).length <= 8) {
+        cfg.activeIndex = 0;
+        for (let j = 0; j < 3; j++) {
+            if (cfg.keys[j] && String(cfg.keys[j]).length > 8) {
+                cfg.activeIndex = j;
+                break;
+            }
+        }
+        changed = true;
+    }
+    cfg.__shStrippedDead = changed;
+    return cfg;
 };
 
 window.__readGeminiKeysCfgFromStorageKey = function(storageKey) {
@@ -62541,6 +62572,7 @@ window.recoverGeminiKeysFromAllSources = function() {
     }
     const built = window.__geminiCfgFromBuiltin();
     if (built) cfg = window.__mergeGeminiKeysCfgPreferFilled(cfg || window.__normalizeGeminiKeysCfg({}), built);
+    cfg = window.stripDeadGeminiKeys(cfg || window.__normalizeGeminiKeysCfg({}));
     return window.__geminiCfgHasKeys(cfg) ? window.__normalizeGeminiKeysCfg(cfg) : null;
 };
 
@@ -62587,16 +62619,20 @@ window.unpackGeminiKeysFromCloud = function(pack) {
 
 window.applyGeminiKeysFromCloud = function(pack) {
     if (window.__geminiApplyingFromCloud) return;
-    const remote = window.unpackGeminiKeysFromCloud(pack);
-    if (!remote || !window.__geminiCfgHasKeys(remote)) return;
+    let remote = window.unpackGeminiKeysFromCloud(pack);
+    if (!remote) return;
+    remote = window.stripDeadGeminiKeys(remote);
+    if (!window.__geminiCfgHasKeys(remote)) return;
     try { localStorage.setItem(window.GEMINI_KEYS_CLOUD_CACHE, JSON.stringify(remote)); } catch (e) {}
     const local = window.recoverGeminiKeysFromAllSources();
     let merged;
     if (local && window.__geminiCfgHasKeys(local)) {
-        merged = window.__mergeGeminiKeysCfgPreferFilled(local, remote);
+        /* Locali valide vincono: il cloud non ripianta slot morti sopra le AQ nuove. */
+        merged = window.__mergeGeminiKeysCfgPreferFilled(remote, local);
     } else {
         merged = remote;
     }
+    merged = window.stripDeadGeminiKeys(merged);
     if (!window.__geminiCfgHasKeys(merged)) return;
     window.__geminiApplyingFromCloud = true;
     try {
@@ -62609,8 +62645,12 @@ window.applyGeminiKeysFromCloud = function(pack) {
 };
 
 window.ensureGeminiKeysNeverLost = function() {
-    const current = window.__readGeminiKeysCfgFromStorageKey(window.GEMINI_KEYS_STORAGE);
+    let current = window.__readGeminiKeysCfgFromStorageKey(window.GEMINI_KEYS_STORAGE);
     if (window.__geminiCfgHasKeys(current)) {
+        current = window.stripDeadGeminiKeys(current);
+        const built = window.__geminiCfgFromBuiltin();
+        if (built) current = window.__mergeGeminiKeysCfgPreferFilled(current, built);
+        current = window.stripDeadGeminiKeys(current);
         window.persistGeminiKeysLocalAll(current);
         return current;
     }
@@ -62633,9 +62673,10 @@ window.loadGeminiKeysConfig = function() {
         const recovered = window.recoverGeminiKeysFromAllSources();
         if (recovered) cfg = recovered;
     }
-    cfg = window.__normalizeGeminiKeysCfg(cfg || {});
+    cfg = window.stripDeadGeminiKeys(window.__normalizeGeminiKeysCfg(cfg || {}));
     const legacy = (localStorage.getItem('servicehub_gemini_api_key') || '').trim();
-    if (legacy && !cfg.keys[0]) cfg.keys[0] = legacy;
+    const dead = window.GEMINI_DEAD_KEYS || [];
+    if (legacy && !cfg.keys[0] && dead.indexOf(legacy) < 0) cfg.keys[0] = legacy;
     return cfg;
 };
 

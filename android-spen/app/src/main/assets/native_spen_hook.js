@@ -17,9 +17,10 @@
     window.__shSpenRecognizeDigitsLocal = function () { return ''; };
 
     var SH_BLOCKED_GEMINI_KEY = 'AIzaSyCx80ru6-RXeTi3GvqkFsMVyMf-vpgIoVw';
-    var SH_LIVE_GEMINI_KEY = 'AIzaSyBSsRE_1Os04-bxpd5JTLIniy3UK4OqKys';
-    // Non seminare la chiave del progetto 747271305155: ogni tentativo è una chiamata Gemini bruciata.
-    window.GEMINI_BUILTIN_KEYS = [SH_LIVE_GEMINI_KEY, '', ''];
+    var SH_BLOCKED_GEMINI_KEY_2 = 'AIzaSyBSsRE_1Os04-bxpd5JTLIniy3UK4OqKys';
+    // Nessuna chiave live nel repo (GitHub secret scanning). Solo Impostazioni / localStorage.
+    window.GEMINI_BUILTIN_KEYS = ['', '', ''];
+    window.GEMINI_DEAD_KEYS = [SH_BLOCKED_GEMINI_KEY, SH_BLOCKED_GEMINI_KEY_2];
 
     function persistGeminiCfgLocal(cfg) {
         try {
@@ -36,12 +37,17 @@
         } catch (eP) {}
     }
 
+    function isDeadGeminiKey(apiKey) {
+        var dead = window.GEMINI_DEAD_KEYS || [SH_BLOCKED_GEMINI_KEY, SH_BLOCKED_GEMINI_KEY_2];
+        return dead.indexOf(String(apiKey || '')) >= 0;
+    }
+
     function stripBlockedGeminiKey(cfg) {
         if (!cfg || !cfg.keys) return cfg;
         var changed = false;
         var i;
         for (i = 0; i < cfg.keys.length; i++) {
-            if (cfg.keys[i] === SH_BLOCKED_GEMINI_KEY) {
+            if (isDeadGeminiKey(cfg.keys[i])) {
                 cfg.keys[i] = '';
                 changed = true;
             }
@@ -60,7 +66,8 @@
     }
 
     function alignGeminiCallBudgetWithWeb() {
-        window.GEMINI_BUILTIN_KEYS = [SH_LIVE_GEMINI_KEY, '', ''];
+        window.GEMINI_BUILTIN_KEYS = ['', '', ''];
+        window.GEMINI_DEAD_KEYS = [SH_BLOCKED_GEMINI_KEY, SH_BLOCKED_GEMINI_KEY_2];
         if (typeof window.isGeminiInvalidKeyError === 'function' && !window.isGeminiInvalidKeyError.__shV139) {
             var origInv = window.isGeminiInvalidKeyError;
             window.isGeminiInvalidKeyError = function (message) {
@@ -76,7 +83,7 @@
             var origSlots = window.getGeminiKeySlots;
             window.getGeminiKeySlots = function () {
                 return origSlots.apply(this, arguments).filter(function (s) {
-                    return s && s.key && s.key !== SH_BLOCKED_GEMINI_KEY;
+                    return s && s.key && !isDeadGeminiKey(s.key);
                 });
             };
             window.getGeminiKeySlots.__shV140 = true;
@@ -91,7 +98,7 @@
         if (typeof window.geminiFetchModelOnce === 'function' && !window.geminiFetchModelOnce.__shV140Guard) {
             var origFetch = window.geminiFetchModelOnce;
             window.geminiFetchModelOnce = function (apiKey, modelName, parts, timeoutMs, genConfig) {
-                if (String(apiKey || '') === SH_BLOCKED_GEMINI_KEY) {
+                if (isDeadGeminiKey(apiKey)) {
                     var err = new Error('API_KEY_SERVICE_BLOCKED');
                     err.geminiApiError = true;
                     return Promise.reject(err);
@@ -103,7 +110,7 @@
         if (typeof window.geminiGenerateWithOneKey === 'function' && !window.geminiGenerateWithOneKey.__shV140) {
             var origGen = window.geminiGenerateWithOneKey;
             window.geminiGenerateWithOneKey = function (apiKey, parts, opts) {
-                if (String(apiKey || '') === SH_BLOCKED_GEMINI_KEY) {
+                if (isDeadGeminiKey(apiKey)) {
                     return Promise.reject(new Error('API_KEY_SERVICE_BLOCKED'));
                 }
                 return origGen.apply(this, arguments);
@@ -126,9 +133,29 @@
         try { existing = JSON.parse(localStorage.getItem('servicehub_gemini_api_keys_v1') || 'null'); } catch (e) {}
         if (existing && existing.keys) {
             stripBlockedGeminiKey(existing);
-            if (existing.__shStrippedBlocked) persistGeminiCfgLocal(existing);
+            var mergedExisting = false;
+            for (var mi = 0; mi < 3; mi++) {
+                if ((!existing.keys[mi] || String(existing.keys[mi]).length <= 8) && built[mi] && built[mi].length > 8) {
+                    existing.keys[mi] = built[mi];
+                    mergedExisting = true;
+                }
+            }
+            if (!existing.keys[existing.activeIndex] || String(existing.keys[existing.activeIndex]).length <= 8) {
+                for (var aj = 0; aj < 3; aj++) {
+                    if (existing.keys[aj] && String(existing.keys[aj]).length > 8) {
+                        existing.activeIndex = aj;
+                        mergedExisting = true;
+                        break;
+                    }
+                }
+            }
+            if (existing.__shStrippedBlocked || mergedExisting) persistGeminiCfgLocal(existing);
         } else {
-            var cfg = { keys: built.slice(0, 3), activeIndex: 0, keyMeta: {} };
+            var activeIdx = 0;
+            for (var ai = 0; ai < 3; ai++) {
+                if (built[ai] && built[ai].length > 8) { activeIdx = ai; break; }
+            }
+            var cfg = { keys: built.slice(0, 3), activeIndex: activeIdx, keyMeta: {} };
             persistGeminiCfgLocal(cfg);
             if (typeof window.ensureGeminiKeysNeverLost === 'function') {
                 try { window.ensureGeminiKeysNeverLost(); } catch (e3) {}
